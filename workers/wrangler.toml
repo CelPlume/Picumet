@@ -1,0 +1,29 @@
+name = "picumet-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "00000000000000000000000000000000"
+
+[vars]
+ENVIRONMENT = "development"
+APP_BASE_URL = "http://localhost:5173"
+# 允许的 CORS 来源（逗号分隔）
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+
+# D1 数据库
+[[d1_databases]]
+binding = "DB"
+database_name = "picumet-db"
+database_id = "local-picumet-db-0000000000000000000000"
+migrations_dir = "migrations"
+
+# KV 存储
+[[kv_namespaces]]
+binding = "KV"
+id = "local-picumet-kv-0000000000000000000000"
+
+# R2 存储桶
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "picumet-storage"
+preview_bucket_name = "picumet-storage"

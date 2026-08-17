@@ -1,0 +1,188 @@
+// 文件预览：图片 / 视频 / 音频 / 代码高亮
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Download, Link2, X, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
+import type { FileListItem } from '@shared/types';
+import { Dialog, Button, Spinner } from '@/components/ui/core';
+import { toast } from '@/components/ui/toast';
+import { isImage, isVideo, isAudio, isCode } from '@/lib/utils';
+import { apiFetch } from '@/lib/api';
+import { useVerifyPassword } from './data';
+import hljs from 'highlight.js/lib/core';
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import python from 'highlight.js/lib/languages/python';
+import go from 'highlight.js/lib/languages/go';
+import rust from 'highlight.js/lib/languages/rust';
+import java from 'highlight.js/lib/languages/java';
+import cpp from 'highlight.js/lib/languages/cpp';
+import css from 'highlight.js/lib/languages/css';
+import json from 'highlight.js/lib/languages/json';
+import markdown from 'highlight.js/lib/languages/markdown';
+import yaml from 'highlight.js/lib/languages/yaml';
+import xml from 'highlight.js/lib/languages/xml';
+import bash from 'highlight.js/lib/languages/bash';
+import 'highlight.js/styles/github-dark.css';
+
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('go', go);
+hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('java', java);
+hljs.registerLanguage('cpp', cpp);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('bash', bash);
+
+function resolveUrl(file: FileListItem): string {
+  return `/api/files/${file.id}/download`;
+}
+
+export function PreviewModal({
+  file,
+  onClose,
+  onDownload,
+  onCopyLink,
+}: {
+  file: FileListItem | null;
+  onClose: () => void;
+  onDownload?: (f: FileListItem) => void;
+  onCopyLink?: (f: FileListItem) => void;
+}) {
+  const { t } = useTranslation();
+  const verify = useVerifyPassword();
+  const [password, setPassword] = useState('');
+  const [verifiedUrl, setVerifiedUrl] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [rotation, setRotation] = useState(0);
+  const [content, setContent] = useState<string | null>(null);
+  const [loadingContent, setLoadingContent] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    setVerifiedUrl(null);
+    setPassword('');
+    setZoom(1);
+    setRotation(0);
+    setContent(null);
+  }, [file?.id]);
+
+  const url = useMemo(() => {
+    if (file?.hasPassword && !verifiedUrl) return null;
+    return verifiedUrl ?? (file ? resolveUrl(file) : null);
+  }, [file, verifiedUrl]);
+
+  // 代码文件加载纯文本
+  useEffect(() => {
+    if (!file || !isCode(file.name) || !url) return;
+    setLoadingContent(true);
+    fetch(url, { credentials: 'include' })
+      .then((r) => r.text())
+      .then((text) => {
+        const highlighted = hljs.highlightAuto(text).value;
+        setContent(highlighted);
+      })
+      .catch(() => setContent('<span>无法加载</span>'))
+      .finally(() => setLoadingContent(false));
+  }, [file, url]);
+
+  if (!file) return null;
+
+  const doVerify = async () => {
+    const res = await verify.mutateAsync({ id: file.id, password });
+    setVerifiedUrl(res.url);
+    if (isVideo(file.name) && videoRef.current) void videoRef.current.play();
+  };
+
+  const ext = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
+  const codeLang = ext.replace('.', '');
+
+  return (
+    <Dialog open={!!file} onClose={onClose} width="max-w-4xl" title={file.name}>
+      <div className="flex h-[60vh] items-center justify-center overflow-hidden bg-black/5 dark:bg-black/40 rounded-md">
+        {file.hasPassword && !verifiedUrl ? (
+          <div className="w-full max-w-sm p-6 text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-muted text-2xl">🔒</div>
+            <h3 className="mb-2 font-medium">{t('files.passwordPrompt')}</h3>
+            <div className="flex gap-2">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={t('files.passwordPlaceholder')}
+                className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+                onKeyDown={(e) => e.key === 'Enter' && doVerify()}
+              />
+              <Button onClick={doVerify} loading={verify.isPending}>
+                {t('files.verify')}
+              </Button>
+            </div>
+            {verify.isError && <p className="mt-2 text-sm text-destructive">{t('err.invalidPassword')}</p>}
+          </div>
+        ) : isImage(file.name) ? (
+          <div className="flex flex-col items-center">
+            <img
+              src={url ?? ''}
+              alt={file.name}
+              className="max-h-[52vh] max-w-full object-contain transition-transform"
+              style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
+            />
+            <div className="mt-3 flex items-center gap-1 rounded-md bg-background p-1 shadow">
+              <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}>
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <span className="w-12 text-center text-xs">{Math.round(zoom * 100)}%</span>
+              <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.min(3, z + 0.1))}>
+                <ZoomIn className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setRotation((r) => (r + 90) % 360)}>
+                <RotateCw className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        ) : isVideo(file.name) ? (
+          <video ref={videoRef} src={url ?? ''} controls autoPlay className="max-h-[56vh] max-w-full rounded" />
+        ) : isAudio(file.name) ? (
+          <div className="w-full max-w-md p-6 text-center">
+            <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-primary/10 text-4xl">🎵</div>
+            <audio ref={audioRef} src={url ?? ''} controls className="w-full" />
+          </div>
+        ) : isCode(file.name) ? (
+          loadingContent ? (
+            <Spinner />
+          ) : (
+            <pre className="h-full w-full overflow-auto p-4 text-sm scrollbar-thin">
+              <code className={`language-${codeLang}`} dangerouslySetInnerHTML={{ __html: content ?? '' }} />
+            </pre>
+          )
+        ) : (
+          <div className="text-center text-muted-foreground">
+            <p className="mb-2">无法预览此文件类型</p>
+            <Button variant="outline" onClick={() => onDownload?.(file)}>
+              <Download className="h-4 w-4" /> {t('common.download')}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={() => onCopyLink?.(file)}>
+          <Link2 className="h-4 w-4" /> {t('common.copy')}
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => onDownload?.(file)}>
+          <Download className="h-4 w-4" /> {t('common.download')}
+        </Button>
+        <Button size="sm" onClick={onClose}>
+          <X className="h-4 w-4" /> {t('common.close')}
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+export { toast };

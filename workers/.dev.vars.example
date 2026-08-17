@@ -1,0 +1,11 @@
+# 本地开发环境变量（复制为 .dev.vars）
+JWT_SECRET=dev-secret-change-me-please-32-chars-min
+JWT_SECRET_OLD=
+ENCRYPTION_KEY=dev-encryption-key-32-characters-minimum!
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM=Picumet <noreply@example.com>
+TURNSTILE_SECRET_KEY=
+ENVIRONMENT=development

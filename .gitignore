@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+.omx/
+coverage/
+playwright-report/
+test-results/
+.tmp/
+screenshots/
