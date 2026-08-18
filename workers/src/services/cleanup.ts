@@ -1,7 +1,7 @@
 // 定时任务：过期配额释放、移动源对象清理、过期分享标记
 import { Db, SessionRepo, ShareRepo, FileRepo, MountRepo, ProviderRepo, QuotaRepo } from '../db';
-import { getProvider } from '../providers';
-import type { Env } from '../types';
+import { getProvider } from './storage/providers';
+import type { Env } from '../shared/types';
 
 /** 释放过期上传会话的配额预留 */
 export async function releaseExpiredReservations(env: Env): Promise<number> {

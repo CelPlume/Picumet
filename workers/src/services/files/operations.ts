@@ -1,0 +1,170 @@
+// 文件路由 B：删除、移动、批量操作、任务状态
+import { Hono } from 'hono';
+import type { AppBindings } from '../../shared/types';
+import { FileRepo, MountRepo, JobRepo } from '../../db';
+import { getDb } from '../../middleware/auth';
+import { requirePermission } from '../permissions/principal';
+import { moveWithSaga, cleanupObjects } from '../files/move';
+import { ok } from '../../shared/response';
+import { ApiError } from '../../shared/errors';
+import { normalizePath } from '../../utils/path';
+import { toFileListItem } from '../../db/repos/files';
+import { MoveFileSchema, BatchOpSchema } from './schemas';
+
+export const fileOpsRoutes = new Hono<AppBindings>();
+
+async function resolveFile(c: Parameters<typeof ok>[0]) {
+  const db = getDb(c);
+  const id = c.req.param('id') as string;
+  const file = await FileRepo.getFileById(db, id);
+  if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  const mount = await MountRepo.getMountById(db, file.mountId);
+  if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+  return { file, mount, db };
+}
+
+function ipOf(c: Parameters<typeof ok>[0]): string | undefined {
+  const cf = (c.req.raw as Request & { cf?: { connectingIp?: string } }).cf;
+  if (cf?.connectingIp) return cf.connectingIp;
+  return c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? c.req.header('x-real-ip') ?? undefined;
+}
+
+// ============ 删除（硬删除） ============
+fileOpsRoutes.delete('/:id', async (c) => {
+  const { file, mount, db } = await resolveFile(c);
+  await requirePermission(c, mount, file.path, 'delete', file.ownerId);
+
+  let objectKeys: string[] = [];
+  let totalSize = 0;
+  let fileCount = 0;
+
+  if (file.type === 'folder') {
+    const descendants = await FileRepo.listDescendants(db, mount.id, file.path);
+    objectKeys = descendants.filter((d) => d.type === 'file').map((d) => d.objectKey);
+    totalSize = descendants.reduce((sum, d) => sum + d.size, 0);
+    fileCount = descendants.length;
+  } else {
+    objectKeys = [file.objectKey];
+    totalSize = file.size;
+    fileCount = 1;
+  }
+
+  await db.transaction(async (tx) => {
+    if (file.type === 'folder') {
+      await tx.query(
+        `DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
+        [mount.id, file.path, `${file.path}/%`]
+      );
+    } else {
+      await tx.query(`DELETE FROM file_metadata WHERE id = ?`, [file.id]);
+    }
+    await tx.query(
+      `UPDATE user_quotas SET used_storage = MAX(0, used_storage - ?), used_files = MAX(0, used_files - ?), updated_at = ? WHERE user_id = ?`,
+      [totalSize, fileCount, Date.now(), file.ownerId]
+    );
+    await tx.query(
+      `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
+       VALUES (?, ?, 'delete', ?, ?, ?, ?, ?, 200, ?)`,
+      [crypto.randomUUID(), c.get('userId'), file.path, JSON.stringify({ fileCount }), ipOf(c), c.req.header('user-agent'), totalSize, Date.now()]
+    );
+    await tx.query(`DELETE FROM shares WHERE file_id = ?`, [file.id]);
+  });
+
+  await cleanupObjects(c, mount.id, objectKeys);
+
+  return ok(c, { deleted: fileCount, size: totalSize });
+});
+
+// ============ 移动（Saga：复制 → 校验 → 原子切换 → 异步清理源，复用 services/move） ============
+fileOpsRoutes.post('/:id/move', async (c) => {
+  const { file } = await resolveFile(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = MoveFileSchema.safeParse(body);
+  if (!parsed.success) throw ApiError.badRequest('缺少目标路径');
+  const targetPath = normalizePath(parsed.data.targetPath);
+
+  const job = await moveWithSaga(c, { fileId: file.id, targetDir: targetPath });
+  return ok(c, { jobId: job.id, status: job.status });
+});
+
+// ============ 任务状态 ============
+fileOpsRoutes.get('/jobs/:jobId', async (c) => {
+  const db = getDb(c);
+  const job = await JobRepo.getJob(db, c.req.param('jobId'));
+  if (!job || job.userId !== c.get('userId')) throw new ApiError(404, 'NOT_FOUND', '任务不存在');
+  return ok(c, {
+    job: {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      progress: job.progress,
+      errorMessage: job.errorMessage,
+      createdAt: job.createdAt,
+      completedAt: job.completedAt,
+    },
+  });
+});
+
+// ============ 批量操作 ============
+fileOpsRoutes.post('/batch', async (c) => {
+  const db = getDb(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = BatchOpSchema.safeParse(body);
+  if (!parsed.success) throw ApiError.badRequest('批量参数无效');
+  const { action, fileIds, targetPath } = parsed.data;
+
+  const succeeded: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+
+  for (const id of fileIds) {
+    try {
+      const file = await FileRepo.getFileById(db, id);
+      if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+      const mount = await MountRepo.getMountById(db, file.mountId);
+      if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+
+      if (action === 'delete') {
+        await requirePermission(c, mount, file.path, 'delete', file.ownerId);
+        let keys: string[] = [];
+        let size = file.size;
+        let count = 1;
+        if (file.type === 'folder') {
+          const desc = await FileRepo.listDescendants(db, mount.id, file.path);
+          keys = desc.filter((d) => d.type === 'file').map((d) => d.objectKey);
+          size = desc.reduce((s, d) => s + d.size, 0);
+          count = desc.length;
+        } else {
+          keys = [file.objectKey];
+        }
+        await db.transaction(async (tx) => {
+          if (file.type === 'folder') {
+            await tx.query(`DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)`, [mount.id, file.path, `${file.path}/%`]);
+          } else {
+            await tx.query(`DELETE FROM file_metadata WHERE id = ?`, [file.id]);
+          }
+          await tx.query(
+            `UPDATE user_quotas SET used_storage = MAX(0, used_storage - ?), used_files = MAX(0, used_files - ?), updated_at = ? WHERE user_id = ?`,
+            [size, count, Date.now(), file.ownerId]
+          );
+          await tx.query(`DELETE FROM shares WHERE file_id = ?`, [file.id]);
+        });
+        await cleanupObjects(c, mount.id, keys);
+        succeeded.push(id);
+      } else if (action === 'move') {
+        if (!targetPath) throw ApiError.badRequest('移动需要 targetPath');
+        const tPath = normalizePath(targetPath);
+        const job = await moveWithSaga(c, { fileId: id, targetDir: tPath });
+        if (job.status === 'failed') {
+          throw new ApiError(422, 'OPERATION_FAILED', job.errorMessage ?? '移动失败');
+        }
+        succeeded.push(id);
+      }
+    } catch (err) {
+      failed.push({ id, error: err instanceof ApiError ? err.message : '操作失败' });
+    }
+  }
+
+  return ok(c, { succeeded, failed });
+});
+
+export { toFileListItem };
