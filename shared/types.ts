@@ -22,6 +22,8 @@ export interface User {
   lastLoginAt?: number;
   /** 服务端内部字段，不返回前端 */
   passwordHash?: string;
+  /** 会话版本：登出/改密/禁用时递增，使旧 JWT 立即失效（审计 H-05） */
+  sessionVersion: number;
 }
 
 export interface Quota {
@@ -92,6 +94,8 @@ export interface Conditions {
 
 export interface PathRule {
   id: string;
+  /** 挂载点 ID（NULL = 全局规则，适用于所有挂载；审计 H-01） */
+  mountId?: string;
   pathPattern: string;
   effect: RuleEffect;
   role?: Role;

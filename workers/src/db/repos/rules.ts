@@ -8,6 +8,7 @@ export const RuleRepo = {
   async createRule(db: Db, r: {
     pathPattern: string;
     effect: 'allow' | 'deny';
+    mountId?: string;
     role?: Role;
     userId?: string;
     apiKeyId?: string;
@@ -20,10 +21,10 @@ export const RuleRepo = {
     const id = uuid();
     const now = Date.now();
     await db.run(
-      `INSERT INTO path_rules (id, path_pattern, effect, role, user_id, api_key_id, permissions, require_password,
+      `INSERT INTO path_rules (id, path_pattern, effect, mount_id, role, user_id, api_key_id, permissions, require_password,
         password_hash, allowed_ips, priority, created_at, updated_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [id, r.pathPattern, r.effect, r.role ?? null, r.userId ?? null, r.apiKeyId ?? null,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [id, r.pathPattern, r.effect, r.mountId ?? null, r.role ?? null, r.userId ?? null, r.apiKeyId ?? null,
         JSON.stringify(r.permissions), r.requirePassword ? 1 : 0, r.passwordHash ?? null,
         r.allowedIps?.join(',') ?? null, r.priority ?? 0, now, now]
     );
@@ -46,26 +47,36 @@ export const RuleRepo = {
   async deleteRule(db: Db, id: string): Promise<void> {
     await db.run('DELETE FROM path_rules WHERE id = ?', [id]);
   },
-  /** 查询所有可能匹配某主体的规则（用户/角色/API密钥） */
-  async findCandidates(db: Db, principal: { id?: string; role?: string; apiKeyId?: string }): Promise<PathRule[]> {
-    const conditions: string[] = ['status = \'active\''];
-    const params: unknown[] = [];
+  /**
+   * 查询所有可能匹配某主体的规则（用户/角色/API密钥）。
+   * mountId 可选：传入时只返回该挂载的规则 + 全局规则（mount_id IS NULL）；
+   * 不传时返回全部（管理/兼容场景）。
+   */
+  async findCandidates(db: Db, principal: { id?: string; role?: string; apiKeyId?: string }, mountId?: string): Promise<PathRule[]> {
+    // mount 过滤是 AND 关系；主体条件之间是 OR 关系
+    const scope: string[] = ['status = \'active\''];
+    const scopeParams: unknown[] = [];
+    if (mountId) {
+      scope.push('(mount_id = ? OR mount_id IS NULL)');
+      scopeParams.push(mountId);
+    }
+    const subject: string[] = [];
+    const subjectParams: unknown[] = [];
     if (principal.apiKeyId) {
-      conditions.push('api_key_id = ?');
-      params.push(principal.apiKeyId);
+      subject.push('api_key_id = ?');
+      subjectParams.push(principal.apiKeyId);
     }
     if (principal.id) {
-      conditions.push('user_id = ?');
-      params.push(principal.id);
+      subject.push('user_id = ?');
+      subjectParams.push(principal.id);
     }
     if (principal.role) {
-      conditions.push('role = ?');
-      params.push(principal.role);
+      subject.push('role = ?');
+      subjectParams.push(principal.role);
     }
-    // 也包含任何主体都适用的规则？不——路径规则必须绑定主体
     const rows = await db.all(
-      `SELECT * FROM path_rules WHERE ${conditions.join(' OR ')} ORDER BY priority DESC`,
-      params
+      `SELECT * FROM path_rules WHERE ${scope.join(' AND ')}${subject.length ? ` AND (${subject.join(' OR ')})` : ''} ORDER BY priority DESC`,
+      [...scopeParams, ...subjectParams]
     );
     return rows.map(mapPathRule);
   },

@@ -37,6 +37,7 @@ export function mapUser(row: Row): User {
     updatedAt: num(row.updated_at),
     lastLoginAt: row.last_login_at ? num(row.last_login_at) : undefined,
     passwordHash: str(row.password_hash),
+    sessionVersion: row.session_version === null || row.session_version === undefined ? 0 : num(row.session_version),
   };
 }
 
@@ -138,6 +139,7 @@ export function toFileListItem(f: FileMetadata): FileListItem {
 export function mapPathRule(row: Row): PathRule {
   return {
     id: str(row.id)!,
+    mountId: str(row.mount_id),
     pathPattern: str(row.path_pattern)!,
     effect: (str(row.effect) ?? 'allow') as PathRule['effect'],
     role: row.role ? (str(row.role) as Role) : undefined,

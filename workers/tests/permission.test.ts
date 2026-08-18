@@ -4,7 +4,7 @@ import {
   checkPermission,
   checkMovePermission,
   checkPasswordProtection,
-} from '../src/services/permission';
+} from '../src/services/permissions/check';
 import {
   isPathWithinBoundary,
   normalizePath,
@@ -342,6 +342,60 @@ describe('密码保护检查（文件级 > 路径级）', () => {
   it('无密码保护', () => {
     const res = checkPasswordProtection(undefined, undefined);
     expect(res.required).toBe(false);
+  });
+});
+
+// 审计 H-01：挂载隔离 —— 同路径、不同挂载的规则互不影响；全局规则（mountId 为空）跨挂载生效
+describe('H-01 挂载隔离（findCandidates / loadPrincipalRules）', () => {
+  it('findCandidates 按 mountId 过滤：另一挂载的规则不会返回', async () => {
+    const { createTestContext, initSeeded } = await import('./helpers');
+    const ctx = createTestContext();
+    await initSeeded(ctx);
+    const { RuleRepo, Db } = await import('../src/db');
+    const db = Db.fromSqlite(ctx.db);
+    const mountA = 'mount-a';
+    const mountB = 'mount-b';
+    const rA = await RuleRepo.createRule(db, {
+      pathPattern: '/private/**', effect: 'deny', mountId: mountA,
+      role: 'user', permissions: ['read'], requirePassword: false, priority: 0,
+    });
+    await RuleRepo.createRule(db, {
+      pathPattern: '/private/**', effect: 'allow', mountId: mountB,
+      role: 'user', permissions: ['read'], requirePassword: false, priority: 0,
+    });
+    const gotForA = await RuleRepo.findCandidates(db, { role: 'user' }, mountA);
+    const gotForB = await RuleRepo.findCandidates(db, { role: 'user' }, mountB);
+    expect(gotForA.some((r) => r.id === rA.id)).toBe(true);
+    // 挂载 A 的规则不应出现在挂载 B 的候选中
+    expect(gotForB.some((r) => r.id === rA.id)).toBe(false);
+  });
+
+  it('mountId 为空（全局规则）在所有挂载生效', async () => {
+    const { createTestContext, initSeeded } = await import('./helpers');
+    const ctx = createTestContext();
+    await initSeeded(ctx);
+    const { RuleRepo, Db } = await import('../src/db');
+    const db = Db.fromSqlite(ctx.db);
+    const g = await RuleRepo.createRule(db, {
+      pathPattern: '/global/**', effect: 'allow', // mountId 省略 → 全局
+      role: 'user', permissions: ['read'], requirePassword: false, priority: 0,
+    });
+    const gotA = await RuleRepo.findCandidates(db, { role: 'user' }, 'any-mount');
+    const gotB = await RuleRepo.findCandidates(db, { role: 'user' }, 'another-mount');
+    expect(gotA.some((r) => r.id === g.id)).toBe(true);
+    expect(gotB.some((r) => r.id === g.id)).toBe(true);
+  });
+
+  it('checkPermission：同一路径不同挂载应用各自规则', async () => {
+    const alice = userPrincipal({ id: 'alice', defaultPath: '/' });
+    const mountA: Mount = { ...mount, id: 'mA' };
+    const mountB: Mount = { ...mount, id: 'mB' };
+    const denyA = rule({ id: 'dA', mountId: 'mA', role: 'user', pathPattern: '/private/**', effect: 'deny' });
+    const allowB = rule({ id: 'aB', mountId: 'mB', role: 'user', pathPattern: '/private/**', effect: 'allow' });
+    // 挂载 A 只看到自己的规则 → deny
+    expect(checkPermission(alice, mountA, '/private/x.txt', 'read', [denyA])).toBe('deny');
+    // 挂载 B 只看到自己的规则 → allow
+    expect(checkPermission(alice, mountB, '/private/x.txt', 'read', [allowB])).toBe('allow');
   });
 });
 
