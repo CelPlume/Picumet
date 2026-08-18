@@ -119,6 +119,11 @@ export class R2BindingProvider implements StorageProviderInterface {
     return null;
   }
 
+  async getMultipartUploadUrl(): Promise<string | null> {
+    // R2 绑定不支持分片预签名 URL → 由 Worker 代理上传分片
+    return null;
+  }
+
   async getDownloadUrl(): Promise<string | null> {
     return null;
   }

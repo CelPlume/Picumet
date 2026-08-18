@@ -212,6 +212,23 @@ export class S3Provider implements StorageProviderInterface {
     }
   }
 
+  async getMultipartUploadUrl(key: string, uploadId: string, partNumber: number, expiresInSeconds = 900): Promise<string | null> {
+    try {
+      return await getSignedUrl(
+        this.client,
+        new UploadPartCommand({
+          Bucket: this.bucketName,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: partNumber,
+        }),
+        { expiresIn: expiresInSeconds }
+      );
+    } catch {
+      return null;
+    }
+  }
+
   getPublicUrl(key: string): string | null {
     if (!this.publicDomain) return null;
     const base = this.publicDomain.replace(/\/+$/, '');

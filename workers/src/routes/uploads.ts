@@ -106,13 +106,21 @@ uploadRoutes.post('/upload-session', async (c) => {
     let parts: Array<{ partNumber: number; url: string }> = [];
     if (!useMultipart) {
       uploadUrl = await provider.getUploadUrl(objectKey, mimeType, 900);
+    } else if (typeof provider.getMultipartUploadUrl === 'function' && uploadId) {
+      // 支持分片预签名的 Provider（如 S3）：一次性下发全部预签名分片 URL（前端并发直传）
+      for (let i = 1; i <= (totalParts ?? 0); i++) {
+        const url = await provider.getMultipartUploadUrl(objectKey, uploadId, i, 900);
+        if (!url) break;
+        parts.push({ partNumber: i, url });
+      }
+      if (parts.length !== totalParts) parts = []; // 不完整则整体退回 Worker 代理
     }
 
     return ok(c, {
       sessionId,
       uploadUrl,
       uploadId,
-      uploadMode: uploadUrl ? 'presigned' : 'worker',
+      uploadMode: useMultipart && parts.length > 0 ? 'presigned' : uploadUrl ? 'presigned' : 'worker',
       totalParts,
       parts,
       expiresAt: Date.now() + SESSION_TTL * 1000,
@@ -175,7 +183,50 @@ uploadRoutes.put('/upload/multipart/:sessionId/part/:partNumber', async (c) => {
 
   await SessionRepo.updateStatus(db, sessionId, { status: 'uploading' });
   const res = await provider.uploadPart(session.objectKey, session.uploadId, partNumber, body);
+  // 服务端留存分片 ETag：断点续传与完成校验的依据（Worker 代理路径）
+  await SessionRepo.recordPart(db, sessionId, partNumber, res.etag);
   return ok(c, { partNumber, etag: res.etag });
+});
+
+// ============ 分片状态查询（断点续传契约） ============
+uploadRoutes.get('/upload/multipart/:sessionId/parts', async (c) => {
+  const db = getDb(c);
+  const userId = c.get('userId');
+  const sessionId = c.req.param('sessionId');
+  const session = await SessionRepo.getSession(db, sessionId);
+  if (!session || session.userId !== userId) throw new ApiError(404, 'NOT_FOUND', '上传会话不存在');
+  if (!session.uploadId) throw new ApiError(409, 'OPERATION_FAILED', '非分片上传会话');
+
+  const recorded = await SessionRepo.getParts(db, sessionId);
+  const done = new Set(recorded.map((p) => p.partNumber));
+  const missing: number[] = [];
+  for (let i = 1; i <= (session.totalParts ?? 0); i++) {
+    if (!done.has(i)) missing.push(i);
+  }
+
+  // 支持预签名的 Provider：为缺失分片补发预签名 URL（仅返回缺失部分，支持续传）
+  let presigned: Array<{ partNumber: number; url: string }> = [];
+  if (missing.length > 0) {
+    const provider = await providerForMount(db, session.mountId, c.env as Env);
+    if (typeof provider.getMultipartUploadUrl === 'function') {
+      for (const partNumber of missing) {
+        const url = await provider.getMultipartUploadUrl(session.objectKey, session.uploadId, partNumber, 900);
+        if (!url) break;
+        presigned.push({ partNumber, url });
+      }
+      if (presigned.length !== missing.length) presigned = [];
+    }
+  }
+
+  return ok(c, {
+    sessionId,
+    totalParts: session.totalParts ?? 0,
+    completedCount: recorded.length,
+    parts: recorded,
+    missingParts: missing,
+    presignedParts: presigned,
+    uploadMode: presigned.length > 0 ? 'presigned' : 'worker',
+  });
 });
 
 // ============ 中止分片上传 ============
@@ -224,22 +275,22 @@ uploadRoutes.post('/upload-complete', async (c) => {
 
   const provider = await providerForMount(db, session.mountId, c.env as Env);
 
-  // 1. HEAD 验证对象真实存在
+  // 1-3. 单文件：HEAD 验证对象真实存在与大小/ETag（分片对象在合并后才存在，跳过前置 HEAD）
   const head = await provider.headObject(session.objectKey);
-  if (!head) {
-    await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
-    throw new ApiError(422, 'OPERATION_FAILED', '对象不存在，上传校验失败');
-  }
-
-  // 2. 校验大小
-  if (head.size !== session.fileSize) {
-    await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
-    throw new ApiError(422, 'OPERATION_FAILED', `文件大小不匹配（期望 ${session.fileSize}，实际 ${head.size}）`);
-  }
-
-  // 3. 校验 ETag（单文件）
-  let finalEtag = head.etag;
+  let finalEtag: string | undefined = head?.etag;
   if (!session.uploadId) {
+    if (!head) {
+      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      throw new ApiError(422, 'OPERATION_FAILED', '对象不存在，上传校验失败');
+    }
+
+    // 2. 校验大小
+    if (head.size !== session.fileSize) {
+      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      throw new ApiError(422, 'OPERATION_FAILED', `文件大小不匹配（期望 ${session.fileSize}，实际 ${head.size}）`);
+    }
+
+    // 3. 校验 ETag（单文件）
     if (!clientEtag) throw ApiError.badRequest('缺少 etag');
     if (head.etag && clientEtag && head.etag !== clientEtag && !head.etag.includes(clientEtag)) {
       await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
@@ -248,13 +299,26 @@ uploadRoutes.post('/upload-complete', async (c) => {
     finalEtag = head.etag;
   }
 
-  // 4. 分片上传：服务端合并
+  // 4. 分片上传：服务端合并（支持断点续传，优先用服务端记录的分片）
   if (session.uploadId) {
     await SessionRepo.updateStatus(db, sessionId, { status: 'verifying' });
-    const uploadParts = parts ?? [];
-    if (uploadParts.length !== (session.totalParts ?? 0)) {
+    const total = session.totalParts ?? 0;
+    // 服务端已记录分片（Worker 代理路径）→ 以服务端为准；否则使用客户端上报（预签名直传路径）
+    const recorded = await SessionRepo.getParts(db, sessionId);
+    const uploadParts = recorded.length > 0 ? recorded : (parts ?? []);
+    if (total === 0 || uploadParts.length < total) {
       await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
-      throw new ApiError(422, 'OPERATION_FAILED', '分片不完整，无法合并');
+      throw new ApiError(422, 'OPERATION_FAILED', `分片不完整，无法合并（已完成 ${uploadParts.length}/${total}）`);
+    }
+    // 校验分片编号覆盖 1..total（无缺口、无越界）
+    const numbers = new Set(uploadParts.map((p) => p.partNumber));
+    const coverageOk = uploadParts.length === total && (() => {
+      for (let i = 1; i <= total; i++) if (!numbers.has(i)) return false;
+      return true;
+    })();
+    if (!coverageOk) {
+      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      throw new ApiError(422, 'OPERATION_FAILED', '分片编号不连续，无法合并');
     }
     const sorted = [...uploadParts].sort((a, b) => a.partNumber - b.partNumber);
     try {

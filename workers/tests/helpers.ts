@@ -1,6 +1,6 @@
 // 测试辅助：内存版 D1/KV/R2 + 应用构建
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp } from '../src/index';
@@ -12,7 +12,11 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync: DatabaseSyncCtor } = require('node:sqlite') as typeof import('node:sqlite');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATION = readFileSync(join(__dirname, '..', 'migrations', '0001_initial.sql'), 'utf-8');
+const MIGRATIONS_DIR = join(__dirname, '..', 'migrations');
+const MIGRATIONS = readdirSync(MIGRATIONS_DIR)
+  .filter((f) => /^\d+_.*\.sql$/.test(f))
+  .sort()
+  .map((f) => readFileSync(join(MIGRATIONS_DIR, f), 'utf-8'));
 
 // ============ Mock KV ============
 class MockKV {
@@ -193,7 +197,7 @@ export interface TestContext {
 export function createTestContext(): TestContext {
   const db = new DatabaseSyncCtor(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
-  db.exec(MIGRATION);
+  for (const sql of MIGRATIONS) db.exec(sql);
   const kv = new MockKV();
   const r2 = new MockR2();
   const env = {

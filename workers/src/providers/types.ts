@@ -53,6 +53,8 @@ export interface StorageProviderInterface {
   getUploadUrl(key: string, contentType?: string, expiresInSeconds?: number): Promise<string | null>;
   getDownloadUrl(key: string, expiresInSeconds?: number): Promise<string | null>;
   getPublicUrl(key: string): string | null;
+  /** 分片预签名 URL（可选）：支持时返回可直传地址；返回 null 表示需走 Worker 代理上传 */
+  getMultipartUploadUrl?(key: string, uploadId: string, partNumber: number, expiresInSeconds?: number): Promise<string | null>;
   /** 连通性测试 */
   testConnection(): Promise<{ connected: boolean; latency?: number; message: string }>;
 }

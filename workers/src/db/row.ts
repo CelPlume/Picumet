@@ -203,6 +203,7 @@ export interface UploadSessionRow {
   quotaReserved: number;
   uploadId?: string;
   totalParts?: number;
+  partsCompleted?: Array<{ partNumber: number; etag: string }>;
   status: UploadSessionStatus;
   idempotencyKey?: string;
   expiresAt: number;
@@ -226,6 +227,9 @@ export function mapUploadSession(row: Row): UploadSessionRow {
     quotaReserved: num(row.quota_reserved),
     uploadId: str(row.upload_id),
     totalParts: row.total_parts !== null && row.total_parts !== undefined ? num(row.total_parts) : undefined,
+    partsCompleted: row.parts_completed
+      ? (parseJson<Array<{ partNumber: number; etag: string }>>(row.parts_completed as string, []))
+      : undefined,
     status: (str(row.status) ?? 'pending') as UploadSessionStatus,
     idempotencyKey: str(row.idempotency_key),
     expiresAt: num(row.expires_at),

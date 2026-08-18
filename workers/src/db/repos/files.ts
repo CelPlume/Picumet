@@ -215,6 +215,26 @@ export const SessionRepo = {
     if (sets.length === 0) return;
     await db.run(`UPDATE upload_sessions SET ${sets.join(', ')} WHERE id = ?`, [...params, id]);
   },
+  /** 记录已成功上传的分片（断点续传依据，Worker 代理路径服务端留存） */
+  async recordPart(db: Db, sessionId: string, partNumber: number, etag: string): Promise<void> {
+    const row = await db.first('SELECT parts_completed FROM upload_sessions WHERE id = ?', [sessionId]);
+    const existing = row?.parts_completed
+      ? JSON.parse(String(row.parts_completed)) as Array<{ partNumber: number; etag: string }>
+      : [];
+    const merged = [...existing.filter((p) => p.partNumber !== partNumber), { partNumber, etag }].sort(
+      (a, b) => a.partNumber - b.partNumber
+    );
+    await db.run('UPDATE upload_sessions SET parts_completed = ? WHERE id = ?', [JSON.stringify(merged), sessionId]);
+  },
+  async getParts(db: Db, sessionId: string): Promise<Array<{ partNumber: number; etag: string }>> {
+    const row = await db.first('SELECT parts_completed FROM upload_sessions WHERE id = ?', [sessionId]);
+    if (!row?.parts_completed) return [];
+    try {
+      return JSON.parse(String(row.parts_completed)) as Array<{ partNumber: number; etag: string }>;
+    } catch {
+      return [];
+    }
+  },
   async listExpired(db: Db): Promise<Row[]> {
     return db.all(
       `SELECT id, user_id, quota_reserved FROM upload_sessions
