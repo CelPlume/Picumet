@@ -6,11 +6,16 @@ import {
 } from '../db';
 import { getDb, getClientIp } from '../middleware/auth';
 import { getProvider } from '../providers';
+import { requirePermission } from '../services/principal';
 import { ok } from '../utils/response';
 import { ApiError } from '../utils/errors';
-import { normalizePath, objectKeyFromPath, isValidFileName, renderPathTemplate, buildTemplateVars } from '../utils/path';
+import {
+  normalizePath, objectKeyFromPath, isValidFileName, isPathWithinBoundary,
+  renderPathTemplate, buildTemplateVars, validateFileType,
+} from '../utils/path';
 import { uuid } from '../utils/crypto';
 import type { Env } from '../types';
+import { ReconciliationRepo } from '../db';
 
 export const compatRoutes = new Hono();
 
@@ -64,6 +69,10 @@ async function uploadBytes(
   customPath?: string
 ) {
   if (!isValidFileName(fileName)) throw ApiError.badRequest('文件名包含非法字符');
+  validateFileType(fileName, mimeType);
+
+  // M-3：密钥上传根（规范化），最终目标必须落在其边界内
+  const uploadRoot = normalizePath(uploadPathTemplate || '/uploads');
 
   // 渲染路径模板
   const extMatch = fileName.match(/\.[^.]+$/)?.[0] ?? '';
@@ -82,6 +91,11 @@ async function uploadBytes(
         ? rendered
         : normalizePath(`${rendered}/${fileName}`);
 
+  // M-3：customPath 与模板结果都不得越过密钥上传根
+  if (!isPathWithinBoundary(targetPath, uploadRoot)) {
+    throw new ApiError(403, 'FORBIDDEN', '上传目标超出密钥配置的上传根目录');
+  }
+
   // 配额预留
   const reserved = await QuotaRepo.reserve(db, userId, size);
   if (!reserved) throw new ApiError(413, 'QUOTA_EXCEEDED', '存储配额不足');
@@ -91,33 +105,42 @@ async function uploadBytes(
     throw new ApiError(413, 'QUOTA_EXCEEDED', '文件数量配额已满');
   }
 
+  let objectKey: string | undefined;
+  let mountId: string | undefined;
+
   try {
     const mount = await MountRepo.findMountForPath(db, targetPath);
     if (!mount) throw new ApiError(404, 'NOT_FOUND', '目标挂载点不存在');
+    // M-3/H-3：最终路径再次通过统一权限服务（API Key 权限 ∩ 路径规则）
+    await requirePermission(c, mount, targetPath, 'write');
     const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
     if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
     const provider = await getProvider(db, providerRow, c.env as Env);
-    const objectKey = objectKeyFromPath(mount.mountPath, providerRow.pathPrefix, targetPath);
+    const key = objectKeyFromPath(mount.mountPath, providerRow.pathPrefix, targetPath);
+    objectKey = key;
+    mountId = mount.id;
 
-    await provider.putObject(objectKey, bytes, mimeType);
-    const head = await provider.headObject(objectKey);
+    await provider.putObject(key, bytes, mimeType);
+    const head = await provider.headObject(key);
     if (!head || head.size !== size) {
       throw new ApiError(422, 'OPERATION_FAILED', '上传校验失败');
     }
 
-    const file = await FileRepo.createFile(db, {
-      mountId: mount.id,
-      objectKey,
-      path: targetPath.slice(0, -(fileName.length + 1)) || '/',
-      name: fileName,
-      type: 'file',
-      mimeType,
-      size,
-      etag: head.etag,
-      ownerId: userId,
-    });
-
+    // H-5：元数据 + 配额 + 日志同一批提交（对象已写入，DB 侧原子；失败即补偿删对象）
+    const fileId = uuid();
     await db.transaction(async (tx) => {
+      await FileRepo.createFileTx(tx, {
+        id: fileId,
+        mountId: mount.id,
+        objectKey: key,
+        path: targetPath.slice(0, -(fileName.length + 1)) || '/',
+        name: fileName,
+        type: 'file',
+        mimeType,
+        size,
+        etag: head.etag,
+        ownerId: userId,
+      });
       await tx.query(
         `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
         [size, size, Date.now(), userId]
@@ -132,14 +155,32 @@ async function uploadBytes(
     // 兼容图床响应：返回 URL
     const base = c.env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
     return ok(c, {
-      url: `${base}/api/files/${file.id}/download`,
-      fileId: file.id,
+      url: `${base}/api/files/${fileId}/download`,
+      fileId,
       path: targetPath,
       size,
       filename: fileName,
     });
   } catch (err) {
+    // 补偿：释放预留；尽力删除已写对象，失败记录孤儿供对账
     await QuotaRepo.releaseReservation(db, userId, size);
+    if (objectKey && mountId) {
+      try {
+        const mount = await MountRepo.getMountById(db, mountId);
+        const providerRow = mount ? await ProviderRepo.getProviderById(db, mount.providerId) : null;
+        if (providerRow) {
+          const provider = await getProvider(db, providerRow, c.env as Env);
+          await provider.deleteObject(objectKey);
+        }
+      } catch (cleanupErr) {
+        await ReconciliationRepo.createOrphanObject(db, {
+          mountId,
+          objectKey,
+          reason: 'upload_db_failed',
+          error: cleanupErr instanceof Error ? cleanupErr.message : 'unknown',
+        });
+      }
+    }
     throw err;
   }
 }

@@ -39,6 +39,24 @@ export const FileRepo = {
     );
     return (await this.getFileById(db, id)) as FileMetadata;
   },
+  /** 事务内插入（D1 batch / node:sqlite 事务均可）。审计 H-5：元数据 + 配额 + 日志应同批提交。 */
+  async createFileTx(tx: Tx, f: FileInsert & { id: string }): Promise<void> {
+    const now = f.createdAt ?? Date.now();
+    await tx.query(
+      `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, mime_type, size, etag, checksum_md5,
+        custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [f.id, f.mountId, f.objectKey, f.path, f.name, f.type, f.mimeType ?? null, f.size ?? 0, f.etag ?? null, f.checksumMd5 ?? null,
+        f.customTitle ?? null, f.customColor ?? null, f.coverUrl ?? null, f.iconEmoji ?? null, f.accessPassword ?? null,
+        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, now, now]
+    );
+  },
+  async updateFileTx(tx: Tx, id: string, fields: Record<string, unknown>): Promise<void> {
+    const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) return;
+    const sets = entries.map(([k]) => `${k} = ?`).join(', ');
+    await tx.query(`UPDATE file_metadata SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
+  },
   async getFileById(db: Db, id: string): Promise<FileMetadata | null> {
     const row = await db.first('SELECT * FROM file_metadata WHERE id = ?', [id]);
     return row ? mapFile(row) : null;

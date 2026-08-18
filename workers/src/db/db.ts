@@ -55,7 +55,9 @@ class D1Backend implements Backend {
   }
 
   async transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-    // D1：使用 batch 收集器保证原子性（事务内仅允许写操作）
+    // D1：使用 batch 收集器保证原子性（事务内仅允许写操作）。
+    // 注意：这只是 D1 侧的写批原子性，不覆盖对象存储——对象与 DB 的跨系统一致性
+    // 由调用方通过补偿/对账（orphan_objects / reconciliation_reports）保证。
     const ops: Array<{ sql: string; params: unknown[] }> = [];
     const tx: Tx = {
       query: async (sql, params = []) => {

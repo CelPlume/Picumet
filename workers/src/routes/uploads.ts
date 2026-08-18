@@ -2,7 +2,7 @@
 import { Hono } from 'hono';
 import type { AppBindings } from '../types';
 import { z } from 'zod';
-import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo } from '../db';
+import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, ReconciliationRepo } from '../db';
 import { getDb } from '../middleware/auth';
 import { requirePermission } from '../services/principal';
 import { getProvider } from '../providers';
@@ -13,7 +13,6 @@ import { normalizePath, objectKeyFromPath, isValidFileName, validateFileType } f
 import { uuid } from '../utils/crypto';
 import { sha256Hex } from '../utils/crypto';
 import type { Env } from '../types';
-import type { FileInsert } from '../db/repos/files';
 import type { StorageProviderInterface } from '../providers/types';
 
 const SESSION_TTL = 60 * 60; // 1 小时
@@ -340,45 +339,58 @@ uploadRoutes.post('/upload-complete', async (c) => {
     finalEtag = finalHead.etag;
   }
 
-  // 5. 事务提交元数据 + 配额
+  // 5. 事务提交元数据 + 配额（原子；DB 失败 → 记录孤儿 + 释放预留）
   const mount = await MountRepo.getMountById(db, session.mountId);
-  const file = await FileRepo.createFile(db, {
-    mountId: session.mountId,
-    objectKey: session.objectKey,
-    path: session.path,
-    name: session.fileName,
-    type: 'file',
-    mimeType: session.mimeType,
-    size: session.fileSize,
-    etag: finalEtag,
-    ownerId: userId,
-  });
-
-  await db.transaction(async (tx) => {
-    await tx.query(
-      `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?),
-       used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
-      [session.fileSize, session.quotaReserved, Date.now(), userId]
-    );
-    await tx.query(
-      `UPDATE upload_sessions SET status = 'completed', completed_at = ? WHERE id = ?`,
-      [Date.now(), sessionId]
-    );
-    await tx.query(
-      `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
-       VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
-      [uuid(), userId, session.path, JSON.stringify({ fileName: session.fileName }), getIp(c), c.req.header('user-agent'), session.fileSize, Date.now()]
-    );
-  });
+  const fileId = uuid();
+  try {
+    await db.transaction(async (tx) => {
+      await FileRepo.createFileTx(tx, {
+        id: fileId,
+        mountId: session.mountId,
+        objectKey: session.objectKey,
+        path: session.path,
+        name: session.fileName,
+        type: 'file',
+        mimeType: session.mimeType,
+        size: session.fileSize,
+        etag: finalEtag,
+        ownerId: userId,
+      });
+      await tx.query(
+        `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?),
+         used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
+        [session.fileSize, session.quotaReserved, Date.now(), userId]
+      );
+      await tx.query(
+        `UPDATE upload_sessions SET status = 'completed', completed_at = ? WHERE id = ?`,
+        [Date.now(), sessionId]
+      );
+      await tx.query(
+        `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
+         VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
+        [uuid(), userId, session.path, JSON.stringify({ fileName: session.fileName }), getIp(c), c.req.header('user-agent'), session.fileSize, Date.now()]
+      );
+    });
+  } catch (err) {
+    // H-5：对象已写入/合并，但元数据提交失败 → 释放预留并记录孤儿供对账
+    await QuotaRepo.releaseReservation(db, userId, session.quotaReserved);
+    await ReconciliationRepo.createOrphanObject(db, {
+      mountId: session.mountId,
+      objectKey: session.objectKey,
+      reason: 'upload_commit_failed',
+      error: err instanceof Error ? err.message : 'unknown',
+    });
+    throw err;
+  }
 
   void mount;
   return ok(c, {
     file: {
-      id: file.id,
-      name: file.name,
-      path: file.path,
-      size: file.size,
-      createdAt: file.createdAt,
+      id: fileId,
+      name: session.fileName,
+      path: session.path,
+      size: session.fileSize,
+      createdAt: Date.now(),
     },
   });
 });
