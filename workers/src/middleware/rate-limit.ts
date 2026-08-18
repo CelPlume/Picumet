@@ -1,12 +1,18 @@
 // 速率限制中间件：基于 KV 的固定窗口计数（IP + 用户 双层）
 import { createMiddleware } from 'hono/factory';
 import { SettingsRepo } from '../db';
-import { ApiError } from '../utils/errors';
-import { fail } from '../utils/response';
+import { ApiError } from '../shared/errors';
+import { fail } from '../shared/response';
 import { getDb, getClientIp } from './auth';
 
 const DEFAULT_LIMIT = 50;
 
+/**
+ * KV 固定窗口计数（审计 M-01：best-effort）。
+ * Cloudflare KV 无原子自增：get→put 在并发下可能丢失更新，使实际通过量略超阈值。
+ * 该限流定位为 best-effort 保护，不保证严格精确；生产如需强一致请启用
+ * Cloudflare Rate Limiting / Durable Object 原子计数。认证与敏感写接口仍 fail-closed。
+ */
 async function checkLimit(kv: KVNamespace, key: string, limit: number, windowMs: number): Promise<boolean> {
   const now = Date.now();
   const windowStart = now - (now % windowMs);

@@ -6,10 +6,10 @@
 // 4) 限流 fail-closed：存储异常时 503，防止限流被绕过
 import { createMiddleware } from 'hono/factory';
 import type { Context } from 'hono';
-import { ApiError } from '../utils/errors';
-import { fail } from '../utils/response';
+import { ApiError } from '../shared/errors';
+import { fail } from '../shared/response';
 import { decryptSecret } from '../utils/crypto';
-import type { AppBindings, Env, FreeModeSession } from '../types';
+import type { AppBindings, Env, FreeModeSession } from '../shared/types';
 
 const FM_COOKIE = 'fm_token';
 
@@ -53,6 +53,7 @@ function siteOk(c: Context): boolean {
   return sfs.toLowerCase() !== 'cross-site';
 }
 
+/** KV 固定窗口计数（审计 M-01：best-effort，见 rate-limit.ts 注释） */
 async function checkLimit(kv: KVNamespace, key: string, limit: number, windowMs: number): Promise<boolean> {
   const now = Date.now();
   const windowStart = now - (now % windowMs);

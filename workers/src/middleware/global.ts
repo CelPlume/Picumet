@@ -2,8 +2,8 @@
 import type { Context, Next } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { Db } from '../db';
-import { fail } from '../utils/response';
-import { ApiError, isApiError } from '../utils/errors';
+import { fail } from '../shared/response';
+import { ApiError, isApiError } from '../shared/errors';
 import { uuid } from '../utils/crypto';
 
 /** 初始化请求上下文（Db、requestId） */

@@ -1,7 +1,7 @@
 // CSRF 防护：Cookie 认证的写操作需携带 X-CSRF-Token（API Key 认证不受影响）
 import { createMiddleware } from 'hono/factory';
-import { ApiError } from '../utils/errors';
-import { fail } from '../utils/response';
+import { ApiError } from '../shared/errors';
+import { fail } from '../shared/response';
 import { randomString } from '../utils/crypto';
 
 const CSRF_TTL = 7200; // 2 小时
