@@ -8,9 +8,11 @@ import { getDb } from '../middleware/auth';
 import { S3Provider } from '../providers';
 import { ok } from '../utils/response';
 import { ApiError } from '../utils/errors';
-import { hashPassword, randomString, signJwt, encryptSecret, decryptSecret } from '../utils/crypto';
-import { isPrivateHost } from '../utils/ssrf';
-import type { Env, FreeModeSession } from '../types';
+import { hashPassword, randomString, encryptSecret } from '../utils/crypto';
+import { isPrivateHost, validateEndpoint } from '../utils/ssrf';
+import { normalizePath, isPathWithinBoundary, isValidFileName, validateFileType } from '../utils/path';
+import { freeModeOriginGuard, freeModeInitGuard, freeModeSessionGuard } from '../middleware/free-mode';
+import type { FreeModeSession } from '../types';
 
 const initSchema = z.object({
   type: z.enum(['r2', 's3', 'oracle']),
@@ -22,10 +24,19 @@ const initSchema = z.object({
   sessionHours: z.number().int().min(1).max(8).default(1),
 });
 
+/** 单次上传大小上限（1GB，防止无配额场景的资源耗尽） */
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+
 export const freeModeRoutes = new Hono<AppBindings>();
 
 const FM_COOKIE = 'fm_token';
-const JWT_TTL = 7 * 24 * 3600;
+
+// 会话守卫：/files、/upload、/object、/logout 需要有效会话
+freeModeRoutes.use('*', freeModeOriginGuard);
+freeModeRoutes.use('/files', freeModeSessionGuard);
+freeModeRoutes.use('/upload', freeModeSessionGuard);
+freeModeRoutes.use('/object', freeModeSessionGuard);
+freeModeRoutes.use('/logout', freeModeSessionGuard);
 
 async function buildProvider(session: FreeModeSession) {
   return new S3Provider({
@@ -38,14 +49,62 @@ async function buildProvider(session: FreeModeSession) {
   });
 }
 
+/** 读取中间件注入的会话 */
+function requireSession(c: Context): FreeModeSession {
+  const s = c.get('freeModeSession');
+  if (!s) throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话不存在');
+  return s;
+}
+
+/**
+ * 审计 H-2：校验并规范化对象键。
+ * 拒绝父级片段（.. / ~）、控制字符、反斜杠；结果必须落在会话根目录边界内。
+ */
+function validateFreeModeKey(rawKey: string, mountPath: string): string {
+  if (!rawKey || rawKey.length > 2048) throw ApiError.badRequest('key 缺失或过长');
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawKey);
+  } catch {
+    throw ApiError.badRequest('key 解码失败');
+  }
+  decoded = decoded.normalize('NFC');
+  if (decoded.includes('..') || decoded.includes('~')) {
+    throw ApiError.badRequest('key 包含非法路径片段');
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1F\x7F\\]/.test(decoded)) {
+    throw ApiError.badRequest('key 包含非法字符');
+  }
+  const normalized = decoded.replace(/^\/+/, '');
+  const asPath = `/${normalized}`;
+  if (!isPathWithinBoundary(asPath, normalizePath(mountPath))) {
+    throw new ApiError(403, 'FORBIDDEN', 'key 超出会话根目录');
+  }
+  return normalized;
+}
+
+/** 校验并规范化上传目录前缀（会话根边界内） */
+function validateFreeModeDir(dir: string | undefined | null, mountPath: string): string {
+  const p = normalizePath(dir ?? '/');
+  if (!isPathWithinBoundary(p, normalizePath(mountPath))) {
+    throw new ApiError(403, 'FORBIDDEN', '上传路径超出会话根目录');
+  }
+  return p === '/' ? '' : p.replace(/^\/+/, '') + '/';
+}
+
 // ============ 初始化自由模式 ============
-freeModeRoutes.post('/init', async (c) => {
+freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
   const db = getDb(c);
   const body = await c.req.json().catch(() => null);
   if (!body) throw ApiError.badRequest('请求体格式错误');
   const parsed = initSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '存储配置无效');
 
+  // M-1：endpoint 校验（scheme/端口白名单 + 私网黑名单）
+  if (!validateEndpoint(parsed.data.endpoint)) {
+    throw ApiError.badRequest('不允许使用内网/本地地址或非法 endpoint');
+  }
   const host = new URL(parsed.data.endpoint).hostname;
   if (isPrivateHost(host)) throw ApiError.badRequest('不允许使用内网/本地地址');
 
@@ -95,12 +154,11 @@ freeModeRoutes.post('/init', async (c) => {
   const sid = randomString(24);
   await c.env.KV.put(`fm:${sid}`, sealed, { expirationTtl: ttl });
 
-  // 签发 JWT + free-mode cookie
-  const token = await signJwt({ sub: user.id, username: user.username, role: user.role }, c.env.JWT_SECRET as string, JWT_TTL);
-  c.header('Set-Cookie', [
-    `auth_token=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${JWT_TTL}`,
-    `${FM_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}`,
-  ].join(', '));
+  // M-2：自由模式仅使用不可复用 sid（不再签发 7 天 JWT 的 auth_token）；
+  // 会话级 CSRF token 一并下发（写操作需携带 X-CSRF-Token）
+  const csrfToken = randomString(32);
+  await c.env.KV.put(`fm:csrf:${sid}`, csrfToken, { expirationTtl: ttl });
+  c.header('Set-Cookie', `${FM_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}`);
 
   await LogRepo.create(db, {
     userId: user.id,
@@ -115,14 +173,16 @@ freeModeRoutes.post('/init', async (c) => {
     expiresAt: session.expiresAt,
     sessionHours: parsed.data.sessionHours,
     provider: { type: parsed.data.type, bucket: parsed.data.bucket },
+    csrfToken,
   }, undefined, 201);
 });
 
 // ============ 自由模式文件列表 ============
 freeModeRoutes.get('/files', async (c) => {
-  const session = await loadSession(c);
+  const session = requireSession(c);
   const provider = await buildProvider(session);
-  const prefix = normalizePrefix(c.req.query('path') ?? '/');
+  // 列表前缀同样走规范化（拒绝 .. 逃逸）
+  const prefix = validateFreeModeDir(c.req.query('path'), session.mountPath);
   const res = await provider.listObjects(prefix, {});
   return ok(c, {
     items: res.keys
@@ -145,7 +205,7 @@ freeModeRoutes.get('/files', async (c) => {
 
 // ============ 自由模式上传 ============
 freeModeRoutes.post('/upload', async (c) => {
-  const session = await loadSession(c);
+  const session = requireSession(c);
   const provider = await buildProvider(session);
   const contentType = c.req.header('content-type') ?? '';
   let fileName = c.req.header('x-file-name') ?? '';
@@ -162,62 +222,45 @@ freeModeRoutes.post('/upload', async (c) => {
     bytes = new Uint8Array(await c.req.arrayBuffer());
   }
 
-  const targetPath = (c.req.query('path') ?? '/') + fileName;
-  await provider.putObject(targetPath.replace(/^\//, ''), bytes, contentType || undefined);
-  const head = await provider.headObject(targetPath.replace(/^\//, ''));
-  return ok(c, { key: targetPath.replace(/^\//, ''), size: head?.size ?? bytes.byteLength }, undefined, 201);
+  // H-2：文件名 + 类型 + 大小校验
+  if (!isValidFileName(fileName)) throw ApiError.badRequest('文件名包含非法字符');
+  validateFileType(fileName, contentType);
+  if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+    throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '单次上传超过大小上限');
+  }
+
+  // H-2：目录前缀 + 最终 key 必须落在会话根目录内
+  const prefix = validateFreeModeDir(c.req.query('path'), session.mountPath);
+  const targetKey = validateFreeModeKey(prefix + fileName, session.mountPath);
+
+  await provider.putObject(targetKey, bytes, contentType || undefined);
+  const head = await provider.headObject(targetKey);
+  return ok(c, { key: targetKey, size: head?.size ?? bytes.byteLength }, undefined, 201);
 });
 
 // ============ 自由模式删除对象 ============
 freeModeRoutes.delete('/object', async (c) => {
-  const session = await loadSession(c);
+  const session = requireSession(c);
   const provider = await buildProvider(session);
-  const key = c.req.query('key');
-  if (!key) throw ApiError.badRequest('缺少 key');
+  const rawKey = c.req.query('key');
+  const key = validateFreeModeKey(rawKey ?? '', session.mountPath);
   await provider.deleteObject(key);
   return ok(c, null);
 });
 
 // ============ 自由模式退出 ============
 freeModeRoutes.post('/logout', async (c) => {
+  // 会话守卫已校验会话与 CSRF；此处按 sid 撤销 KV 状态
   const cookie = c.req.raw.headers.get('cookie') ?? '';
   const match = cookie.split(';').map((s) => s.trim()).find((s) => s.startsWith(`${FM_COOKIE}=`));
-  const sid = match ? match.slice(`${FM_COOKIE}=`.length) : null;
-  if (sid) await c.env.KV.delete(`fm:${sid}`);
-  c.header('Set-Cookie', [
-    `auth_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
-    `${FM_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
-  ].join(', '));
+  const sidValue = match ? match.slice(`${FM_COOKIE}=`.length) : null;
+  if (sidValue) {
+    await c.env.KV.delete(`fm:${sidValue}`);
+    await c.env.KV.delete(`fm:csrf:${sidValue}`);
+  }
+  c.header('Set-Cookie', `${FM_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
   return ok(c, null);
 });
-
-async function loadSession(c: Context): Promise<FreeModeSession> {
-  const cookie = c.req.raw.headers.get('cookie') ?? '';
-  const match = cookie.split(';').map((s) => s.trim()).find((s) => s.startsWith(`${FM_COOKIE}=`));
-  const sid = match ? match.slice(`${FM_COOKIE}=`.length) : null;
-  if (!sid) throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话不存在');
-  const raw = await (c.env as Env).KV.get(`fm:${sid}`);
-  if (!raw) throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期');
-  let session: FreeModeSession;
-  try {
-    session = JSON.parse(await decryptSecret(raw, (c.env as Env).ENCRYPTION_KEY as string)) as FreeModeSession;
-  } catch {
-    throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期');
-  }
-  if (Date.now() > session.expiresAt) {
-    await (c.env as Env).KV.delete(`fm:${sid}`);
-    throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期');
-  }
-  if (session.ip && session.ip !== ipOf(c)) {
-    throw new ApiError(403, 'FORBIDDEN', '会话 IP 不匹配');
-  }
-  return session;
-}
-
-function normalizePrefix(p: string): string {
-  const s = p.replace(/^\//, '');
-  return s === '' ? '' : s.endsWith('/') ? s : s + '/';
-}
 
 function ipOf(c: Context): string {
   const raw = c.req.raw as Request & { cf?: { connectingIp?: string } };

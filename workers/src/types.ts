@@ -69,6 +69,8 @@ export interface AppVariables {
     mountPath: string;
     expiresAt: number;
   };
+  /** 自由模式已解密会话（由 freeModeSessionGuard 注入） */
+  freeModeSession?: FreeModeSession;
   requestId: string;
 }
 
