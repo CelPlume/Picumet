@@ -10,3 +10,6 @@ playwright-report/
 test-results/
 .tmp/
 screenshots/
+
+# build artifacts
+*.tsbuildinfo
