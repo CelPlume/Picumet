@@ -8,6 +8,7 @@ import { toast } from '@/components/ui/toast';
 import { isImage, isVideo, isAudio, isCode } from '@/lib/utils';
 import { apiFetch } from '@/lib/api';
 import { useVerifyPassword } from './data';
+import { escapeHtml } from '@/lib/escape';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -77,14 +78,16 @@ export function PreviewModal({
     return verifiedUrl ?? (file ? resolveUrl(file) : null);
   }, [file, verifiedUrl]);
 
-  // 代码文件加载纯文本
+  // 代码文件加载纯文本（先 HTML 转义再高亮，双重防注入）
   useEffect(() => {
     if (!file || !isCode(file.name) || !url) return;
     setLoadingContent(true);
     fetch(url, { credentials: 'include' })
       .then((r) => r.text())
       .then((text) => {
-        const highlighted = hljs.highlightAuto(text).value;
+        // highlight.js 默认会转义，这里先行转义作为纵深防御，
+        // 确保任何语言定义/高亮路径都不会把原始 <script> 带进 innerHTML
+        const highlighted = hljs.highlightAuto(escapeHtml(text)).value;
         setContent(highlighted);
       })
       .catch(() => setContent('<span>无法加载</span>'))
