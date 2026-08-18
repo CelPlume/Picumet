@@ -8,6 +8,8 @@ import { apiFetch, ApiError } from '@/lib/api';
 
 interface Rule {
   id: string;
+  mountId?: string;
+  mountName?: string;
   pathPattern: string;
   effect: 'allow' | 'deny';
   role?: string;
@@ -20,11 +22,18 @@ interface Rule {
   status: string;
 }
 
+interface MountItem {
+  id: string;
+  mountPath: string;
+  name: string;
+}
+
 const ALL_PERMS = ['read', 'write', 'update', 'delete', 'share', 'download'];
 
 export default function AdminPermissions() {
   const { t } = useTranslation();
   const [rules, setRules] = useState<Rule[]>([]);
+  const [mounts, setMounts] = useState<MountItem[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState<Record<string, string | boolean | string[]>>({
     pathPattern: '/public/**',
@@ -32,11 +41,17 @@ export default function AdminPermissions() {
     subject: 'role',
     role: 'guest',
     priority: '0',
+    mountId: '',
   });
 
   const load = async () => {
-    const res = await apiFetch<{ rules: Rule[] }>('/api/admin/rules');
-    setRules(res.data.rules);
+    const [rRes, mRes] = await Promise.all([
+      apiFetch<{ rules: Rule[] }>('/api/admin/rules'),
+      apiFetch<{ mounts: MountItem[] }>('/api/admin/mounts'),
+    ]);
+    const mountById = new Map(mRes.data.mounts.map((m) => [m.id, m]));
+    setRules(rRes.data.rules.map((r) => ({ ...r, mountName: r.mountId ? mountById.get(r.mountId)?.name : undefined })));
+    setMounts(mRes.data.mounts);
   };
 
   useEffect(() => {
@@ -62,6 +77,7 @@ export default function AdminPermissions() {
       requirePassword: Boolean(form.requirePassword),
       priority: Number(form.priority ?? 0),
     };
+    if (form.mountId) body.mountId = form.mountId;
     if (subject === 'role') body.role = form.role;
     if (subject === 'user') body.userId = form.userId;
     if (subject === 'guest') body.role = 'guest';
@@ -84,7 +100,6 @@ export default function AdminPermissions() {
 
   const subjectLabel = (r: Rule) =>
     r.userId ? `用户:${r.userId}` : r.apiKeyId ? `密钥:${r.apiKeyId}` : `角色:${r.role ?? r.apiKeyId ?? '-'}`;
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -94,20 +109,20 @@ export default function AdminPermissions() {
 
       <div className="space-y-2">
         {rules.map((r) => (
-          <Card key={r.id} className="flex items-center gap-3 p-3">
+          <Card key={r.id} className="flex flex-wrap items-center gap-3 p-3">
             <ShieldCheck className={`h-5 w-5 shrink-0 ${r.effect === 'allow' ? 'text-emerald-500' : 'text-destructive'}`} />
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 basis-40">
               <p className="font-mono text-sm"><code>{r.pathPattern}</code></p>
-              <p className="text-xs text-muted-foreground">{subjectLabel(r)} · priority {r.priority}</p>
+              <p className="truncate text-xs text-muted-foreground">{subjectLabel(r)} · priority {r.priority}{r.mountId ? ` · ${r.mountName ?? r.mountId}` : ''}</p>
             </div>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
               {r.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
               {r.requirePassword && <Badge variant="warning">密码</Badge>}
+              <Badge variant={r.effect === 'allow' ? 'success' : 'destructive'}>{r.effect}</Badge>
+              <button onClick={() => del(r.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10">
+                <Trash2 className="h-4 w-4" />
+              </button>
             </div>
-            <Badge variant={r.effect === 'allow' ? 'success' : 'destructive'}>{r.effect}</Badge>
-            <button onClick={() => del(r.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10">
-              <Trash2 className="h-4 w-4" />
-            </button>
           </Card>
         ))}
         {rules.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">暂无权限规则</p>}
@@ -128,6 +143,15 @@ export default function AdminPermissions() {
           <div>
             <Label>{t('admin.rulePath')}</Label>
             <Input className="mt-1 font-mono" value={form.pathPattern as string} onChange={(e) => set('pathPattern', e.target.value)} placeholder="/public/**" />
+          </div>
+          <div>
+            <Label>挂载点</Label>
+            <select value={form.mountId as string} onChange={(e) => set('mountId', e.target.value)} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+              <option value="">全部挂载（全局规则）</option>
+              {mounts.map((m) => (
+                <option key={m.id} value={m.id}>{m.name} · {m.mountPath}</option>
+              ))}
+            </select>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

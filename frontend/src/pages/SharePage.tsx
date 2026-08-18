@@ -55,12 +55,12 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
   const [error, setError] = useState<string | null>(null);
   const [showQr, setShowQr] = useState(false);
 
-  const load = async (pwd?: string) => {
+  const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const q = pwd ? `?password=${encodeURIComponent(pwd)}` : '';
-      const res = await apiFetch<{ share: ShareInfo }>(`/api/shares/${id}${q}`);
+      // M-02：不再把密码放入 URL；依赖验证接口种下的授权 cookie
+      const res = await apiFetch<{ share: ShareInfo }>(`/api/shares/${id}`);
       setInfo(res.data.share);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '加载失败');
@@ -74,16 +74,26 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const verify = () => {
+  const verify = async () => {
     if (!password) return;
-    void load(password);
+    try {
+      // M-02：POST 提交密码，服务端校验后种短期授权 cookie
+      await apiFetch<{ authorized: boolean }>(`/api/shares/${id}/verify`, {
+        method: 'POST',
+        body: { password },
+      });
+      setPassword('');
+      await load();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : '密码错误');
+    }
   };
 
   const download = async () => {
     if (!id || !info?.file) return;
     try {
-      const q = info.requiresPassword ? `?password=${encodeURIComponent(password)}` : '';
-      const res = await apiFetch<{ url: string }>(`/api/shares/${id}/download${q}`);
+      // M-02：不携带密码；授权 cookie 已种下
+      const res = await apiFetch<{ url: string }>(`/api/shares/${id}/download`);
       window.open(res.data.url, '_blank');
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : '下载失败');
@@ -95,9 +105,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
     toast('success', '链接已复制');
   };
 
-  const previewUrl = info?.file
-    ? `/api/shares/${id}/preview${info.requiresPassword ? `?password=${encodeURIComponent(password)}` : ''}`
-    : null;
+  const previewUrl = info?.file ? `/api/shares/${id}/preview` : null;
 
   const file = info?.file;
   const ext = file?.name.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
