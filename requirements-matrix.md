@@ -27,7 +27,7 @@
 | 需求 | 状态 | 阶段 | Provider实现 | 测试 | 文档 |
 |------|------|------|--------------|------|------|
 | Cloudflare R2 | ✅ Included | Phase 1 | ✅ | 待补充 | ✅ |
-| AWS S3 | ✅ Included | Phase 3 | 待实现 | 待补充 | 待补充 |
+| AWS S3 | ✅ Included | Phase 3 | ✅ | ✅ | ✅ |
 | Oracle Cloud | ✅ Included | Phase 3 | 待实现 | 待补充 | 待补充 |
 | Backblaze B2 | ❌ Rejected | - | - | - | - |
 | IDrive e2 | ❌ Rejected | - | - | - | - |
@@ -47,13 +47,13 @@
 |------|------|------|----------|-----|------|------|
 | 文件浏览（列表/卡片视图） | ✅ Included | Phase 1 | file_metadata | GET /api/files | FileExplorer | ✅ |
 | 文件上传（单文件） | ✅ Included | Phase 1 | upload_sessions | POST /api/files/upload/init | UploadModal | ✅ |
-| 文件上传（分片/大文件） | ✅ Included | Phase 2 | upload_sessions | POST /api/files/upload/multipart | UploadModal | 待补充 |
+| 文件上传（分片/大文件） | ✅ Included | Phase 2 | upload_sessions | POST /api/files/upload-session + upload/multipart/:sessionId/part/:partNumber + parts + upload-complete | UploadModal | ✅ 断点续传+服务端分片记录 |
 | 文件删除（硬删除） | ✅ Included | Phase 1 | - | DELETE /api/files/:id | ConfirmDialog | ✅ |
 | 文件重命名 | ✅ Included | Phase 1 | file_metadata | PATCH /api/files/:id | RenameModal | 待补充 |
 | 文件移动 | ✅ Included | Phase 2 | file_metadata | POST /api/files/:id/move | - | 待补充 |
 | 文件预览（图片） | ✅ Included | Phase 2 | - | - | ImageViewer | 待补充 |
 | 文件预览（视频/音频） | ✅ Included | Phase 2 | - | - | VideoPlayer | 待补充 |
-| 文件预览（代码高亮） | ✅ Included | Phase 2 | - | - | CodeViewer | 待补充 |
+| 文件预览（代码高亮） | ✅ Included | Phase 2 | - | - | CodeViewer | ✅ 转义+高亮回归 |
 | 回收站 | ❌ Rejected | - | - | - | - | - |
 
 **删除回收站理由**: 用户明确要求移除，避免软删除导致的对象存储和数据库不一致问题。
@@ -263,7 +263,7 @@
 
 | 需求 | 状态 | 阶段 | 实现 | 验收 |
 |------|------|------|------|------|
-| 代码高亮 | ✅ Included | Phase 2 | highlight.js | 待补充 |
+| 代码高亮 | ✅ Included | Phase 2 | highlight.js + 预转义 | ✅ 转义回归 |
 
 ---
 
@@ -278,7 +278,7 @@
 
 **主要变更（2026-08-18）**:
 - ✅ 按文件夹记忆视图：从Planned调整为Included（Phase 2）
-- ✅ 自由模式：从Planned调整为Included（Phase 1.5），凭据仅存Workers内存
+- ✅ 自由模式：从Planned调整为Included（Phase 1.5），凭据 AES-256-GCM 加密写入 KV（短 TTL），无明文落盘
 - ✅ 访客细粒度权限：从Planned调整为Included（Phase 2），复用path_rules表
 - ✅ AWS S3/Oracle Cloud：从Planned调整为Included（Phase 3）
 - ✅ 管理员登录独立入口：从Planned调整为Included（Phase 3）
@@ -287,3 +287,23 @@
 - ✅ 公告关闭策略：从Planned调整为Included（Phase 3）
 - ❌ 从URL抓取元信息：删除
 - ❌ 自定义文件URL：删除
+
+---
+
+## 审计整改闭环记录（2026-08-18）
+
+依据 `spec-audit-report.md` 整改，源码与测试均已闭环（详见 `workers/tests/security-regressions.test.ts`、`workers/tests/s3-provider.test.ts`、`frontend/src/lib/escape.test.ts`、`frontend/src/pages/Register.test.tsx`）：
+
+| # | 风险 | 修复 | 状态 | 测试证据 |
+|---|------|------|------|----------|
+| 1 | 自由模式凭据明文落 KV（高） | AES-256-GCM 加密写入 KV（短 TTL）+ 随机 sid Cookie + IP 绑定 | ✅ | security-regressions 加密/解密/篡改 3 例 |
+| 2 | API Key IP 白名单未强制执行（高） | `apiKeyAuthMiddleware` 白名单外 IP 直接 403 | ✅ | 白名单内外各 1 例 |
+| 3 | 分片 parts 恒空/无续传契约（高） | 服务端 `parts_completed` 留存 + `GET /parts` 续传契约 + 合并前跳过前置 HEAD（修复 multipart 无法完成的缺陷） | ✅ | 断点续传全流程（缺口→拒绝→补齐→完成） |
+| 4 | /register 路由缺失 + 忘记密码占位（高） | 独立 `/register`、`/reset-password` 页 + 真实调用 forgot/reset API | ✅ | Register 组件提交/错误 3 例 |
+| 5 | 下载 token 非原子消费（中） | KV get→delete 改为 D1 `DELETE…RETURNING` 原子消费 | ✅ | 单次消费+重复 401 1 例 |
+| 6 | 限流 fail-open（中） | 认证/敏感写接口存储故障时 fail-closed（503） | ✅ | 生产环境 KV 故障 1 例 |
+| 7 | S3/Oracle Provider 测试+能力矩阵（中） | S3Provider 分片预签名 URL 单测（纯本地签名）；Oracle 仍待实现 | ✅/待实现 | s3-provider 2 例 |
+| 8 | highlight.js 转义+前端回归（中） | `escapeHtml` 预转义纵深防御 + 前端 vitest | ✅ | escape 4 例 |
+| 9 | CI/CD + 覆盖率门禁（中） | `.github/workflows/ci.yml`（bun，纯 CI 不部署）+ 前端覆盖率门禁 + 路由懒加载 | ✅ | 覆盖率 lines 100% |
+
+**当前质量基线**：后端 96/96 vitest 通过（含 9 项新增回归），前端 7/7 通过；`tsc --noEmit` 双端零错误。

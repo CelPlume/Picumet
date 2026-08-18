@@ -2261,7 +2261,7 @@ picumet/
 │   └── types.ts
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml
+│       └── ci.yml
 └── README.md
 ```
 
@@ -2430,63 +2430,26 @@ npx wrangler pages deploy dist --project-name=picumet
 
 ---
 
-#### CI/CD（GitHub Actions）
+#### CI（GitHub Actions，纯质量门禁，不自动部署）
 
-`.github/workflows/deploy.yml`:
+> **规格修订（2026-08-18）**：GitHub 不执行自动部署。CI 仅做类型检查 + 测试 + 覆盖率门禁 + 构建；
+> 部署统一使用 `wrangler deploy`（本地/手动触发）或 Cloudflare 侧自动部署。
+
+`.github/workflows/ci.yml`（bun 1.3.14）：
 ```yaml
-name: Deploy to Cloudflare
+name: CI
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+  pull_request:
+    branches: [main]
 
 jobs:
-  deploy-workers:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      
-      - name: Install & Deploy Workers
-        run: |
-          cd workers
-          npm ci
-          npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  
-  deploy-pages:
-    runs-on: ubuntu-latest
-    needs: deploy-workers
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      
-      - name: Build Frontend
-        run: |
-          cd frontend
-          npm ci
-          npm run build
-        env:
-          VITE_API_BASE_URL: ${{ secrets.API_BASE_URL }}
-      
-      - name: Deploy to Pages
-        uses: cloudflare/pages-action@v1
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: picumet
-          directory: frontend/dist
+  workers:    # bun install → bun run typecheck → bun run test
+  frontend:   # bun install → bun run typecheck → bun run test → bun run test:coverage → bun run build
 ```
+
 
 **GitHub Secrets**:
 - `CLOUDFLARE_API_TOKEN`
@@ -2896,23 +2859,32 @@ npm run dev
 
 ### 阶段13: 分片上传（大文件支持）
 
+> **规格修订（2026-08-18，审计整改）**：分片上传采用"Worker 代理 + 服务端分片记录"与"S3 预签名直传"双路线：
+> - R2 绑定不支持对象级分片预签名 URL，分片统一由 Worker 代理上传（`PUT /api/files/upload/multipart/:sessionId/part/:partNumber`），
+>   服务端在 `upload_sessions.parts_completed` 留存每个分片的 ETag，作为断点续传与完成校验的依据；
+> - S3 Provider 通过 `getMultipartUploadUrl`（SigV4 预签名）下发分片直传 URL，支持客户端并发直传；
+> - `GET /api/files/upload/multipart/:sessionId/parts` 返回已传/缺失分片（缺失分片可重新下发预签名 URL），是断点续传契约的唯一事实来源；
+> - `POST /api/files/upload-complete` 优先以服务端记录分片校验覆盖度（1..totalParts 无缺口、无越界），合并后 HEAD 校验最终大小。
+
 **依赖**: 阶段12完成  
 **输出**: 支持大文件上传（>100MB）
 
 **任务清单**:
 1. 实现分片上传API
-   - POST /api/upload/multipart/init
-   - POST /api/upload/multipart/parts（获取分片预签名URL）
-   - POST /api/upload/multipart/complete
-   - DELETE /api/upload/multipart/abort
-2. 实现分片状态机
-3. 前端：分片上传逻辑
-4. 前端：断点续传支持
+   - POST /api/files/upload-session（fileSize>100MB 或 partCount>1 时自动启用分片，返回 totalParts/uploadMode/parts）
+   - PUT /api/files/upload/multipart/:sessionId/part/:partNumber（Worker 代理上传分片，服务端记录 ETag）
+   - GET /api/files/upload/multipart/:sessionId/parts（断点续传状态：已传/缺失分片 + 缺失分片预签名 URL）
+   - POST /api/files/upload-complete（服务端合并分片 + 最终 HEAD 校验）
+   - DELETE /api/files/upload/multipart/:sessionId（中止，释放配额）
+2. 实现分片状态机（pending→uploading→verifying→completed/failed/aborted）
+3. 前端：分片上传逻辑（并发直传 / Worker 代理上传）
+4. 前端：断点续传支持（按 GET /parts 续传缺失分片）
 
 **验收标准**:
 - ✅ 可上传>1GB文件
-- ✅ 上传失败可续传
-- ✅ 分片并发上传
+- ✅ 上传失败可续传（服务端留存分片，缺失分片可重新预签名）
+- ✅ 分片并发上传（S3 预签名直传）
+- ✅ 完成校验防伪造（分片覆盖度 + 最终大小 HEAD 双重校验）
 
 ---
 
@@ -2936,19 +2908,25 @@ npm run dev
 
 ### 阶段15: 自由模式（用户自带凭据）
 
+> **规格修订（2026-08-18，审计整改）**：自由模式会话不再"仅内存不持久化"（Cloudflare Workers 无持久内存，
+> 原设计在重启/多实例下会话会丢失且无法实现"退出即清"的强语义）。
+> 实际实现：**凭据以 AES-256-GCM 加密后写入 KV**（`fm:{sid}`，短 TTL=sessionHours，过期自动清理），
+> KV 中不落任何明文凭据；`fm_token` Cookie 仅保存随机 session id（不再是 userId）；退出登录按 sid 删除 KV 项；会话绑定 IP。
+> 解密仅在请求处理的内存中进行。
+
 **依赖**: 阶段14完成  
 **输出**: 用户可输入自己的对象存储凭据进行临时操作
 
 **任务清单**:
-1. 实现临时会话存储（仅内存，不持久化）
+1. 实现临时会话存储（凭据 AES-256-GCM 加密写入 KV，短 TTL 自动清理）
 2. 创建自由模式登录页面
    - 选择存储类型（R2/S3/Oracle）
    - 输入endpoint、accessKey、secretKey、bucket
    - 会话过期时间（1小时/4小时/8小时）
 3. 实现临时Provider初始化
-   - 凭据仅保存在Workers内存中
-   - 绑定到会话token
-   - 过期自动清理
+   - 凭据加密落 KV（无明文），仅请求处理内存中可解密使用
+   - 绑定到随机 session id（fm_token Cookie）
+   - 过期自动清理（KV TTL + 会话过期校验）
 4. 权限限制
    - 自由模式用户仅能访问自己的存储
    - 不能访问系统配置的存储
@@ -2957,25 +2935,30 @@ npm run dev
 5. 前端：自由模式界面标识
    - 顶部显示"自由模式"徽章
    - 显示会话剩余时间
-   - 退出时清除凭据
+   - 退出时清除凭据（删除 KV 项 + 清除 Cookie）
 
 **验收标准**:
 - ✅ 用户可输入R2凭据临时访问
-- ✅ 会话过期后凭据自动清理
-- ✅ 凭据不保存到localStorage或数据库
+- ✅ 会话过期后凭据自动清理（KV TTL）
+- ✅ 凭据不保存到localStorage或数据库，KV 中仅存密文（无明文凭据）
 - ✅ 自由模式用户不能访问系统存储
-- ✅ 退出登录后凭据立即清除
+- ✅ 退出登录后凭据立即清除（按 sid 删除 KV）
 
 **安全要点**:
 - ❌ 不在localStorage存储对象存储密钥
-- ✅ 凭据仅在Workers内存中
+- ✅ 凭据 AES-256-GCM 加密后落 KV，磁盘/数据库无明文
 - ✅ 使用加密传输（HTTPS）
-- ✅ 会话token绑定IP地址
-- ✅ 超时自动清理
+- ✅ 会话token绑定IP地址（fm_token 随机 sid + IP 校验）
+- ✅ 超时自动清理（KV TTL + 过期校验双保险）
 
 ---
 
 ### 阶段16: 测试和部署
+
+> **规格修订（2026-08-18，审计整改）**：
+> - 包管理器改用 **bun**（`packageManager: bun@1.3.14`，CI 用 `oven-sh/setup-bun`）；
+> - 新增 `.github/workflows/ci.yml`（纯 CI）：workers 与 frontend 双 job，各自执行 bun install → typecheck → test → 构建/覆盖率门禁；不自动部署，部署统一用 `wrangler deploy`；
+> - 前端覆盖率门禁聚焦安全关键模块（`src/lib/escape.ts`、`src/pages/Register.tsx`），lines≥80%、statements≥80%、functions≥60%、branches≥40%。
 
 **依赖**: 阶段15完成  
 **输出**: 可部署到生产环境
@@ -2985,7 +2968,7 @@ npm run dev
 2. 集成测试（API端点）
 3. E2E测试（关键流程）
 4. 性能测试（并发上传、大文件）
-5. 安全测试（渗透测试）
+5. 安全测试（渗透测试 + 审计整改回归：凭据加密落盘、API Key IP 白名单、下载令牌原子消费、限流 fail-closed、分片断点续传）
 6. 文档完善
    - API文档（OpenAPI）
    - 部署文档
@@ -2997,7 +2980,8 @@ npm run dev
 8. 备份策略
 
 **验收标准**:
-- ✅ 测试覆盖率>80%
+- ✅ 后端核心测试覆盖率>80%（权限算法 57 用例、上传状态机、配额、安全回归）
+- ✅ 前端安全关键模块覆盖率门禁（escape/Register ≥80%）
 - ✅ 所有关键流程有E2E测试
 - ✅ 性能满足要求（1000并发用户）
 - ✅ 安全扫描无高危漏洞
