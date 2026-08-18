@@ -71,7 +71,6 @@ shareRoutes.post('/', async (c) => {
     share: {
       id: share.id,
       url: `${base}/share/${share.id}`,
-      qrcode: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`${base}/share/${share.id}`)}`,
       expiresAt: share.expiresAt,
       createdAt: share.createdAt,
       passwordProtected: !!share.passwordHash,

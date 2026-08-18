@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import QRCode from 'qrcode';
 import { Download, Link2, Lock, Share2, Eye, QrCode } from 'lucide-react';
 import { Logo } from '@/components/layout/Logo';
 import { Button, Input, Badge } from '@/components/ui/core';
@@ -9,6 +10,28 @@ import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { formatBytes, formatDateTime } from '@/lib/utils';
 import type { FileListItem } from '@shared/types';
+
+// M-5：本地生成二维码 data URL，不依赖第三方 qrserver
+function LocalQr({ data }: { data: string }) {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    let alive = true;
+    QRCode.toDataURL(data, { width: 180, margin: 1 })
+      .then((url) => {
+        if (alive) setSrc(url);
+      })
+      .catch(() => {
+        if (alive) setSrc('');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [data]);
+  if (!src) {
+    return <div className="h-[190px] w-[190px] animate-pulse rounded-md bg-muted" aria-label="二维码加载中" />;
+  }
+  return <img src={src} alt="QR" className="rounded-md border" />;
+}
 
 interface ShareInfo {
   id: string;
@@ -151,11 +174,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
 
             {showQr && (
               <div className="flex justify-center">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(window.location.href)}`}
-                  alt="QR"
-                  className="rounded-md border"
-                />
+                <LocalQr data={window.location.href} />
               </div>
             )}
 

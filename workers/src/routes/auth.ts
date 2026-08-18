@@ -133,7 +133,8 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
   );
 });
 
-authRoutes.get('/verify-email', async (c) => {
+// 邮箱验证（M-5：与 requirements-matrix 的 /api/auth/verify 命名对齐，提供兼容别名）
+const verifyEmailHandler = async (c: Parameters<typeof ok>[0]) => {
   const db = getDb(c);
   const token = c.req.query('token');
   if (!token) throw ApiError.badRequest('缺少验证令牌');
@@ -151,7 +152,10 @@ authRoutes.get('/verify-email', async (c) => {
         <a href="/login" style="display:inline-block;margin-top:16px;padding:10px 24px;background:#3B82F6;color:#fff;border-radius:8px;text-decoration:none">前往登录</a>
       </div>
     </body></html>`);
-});
+};
+
+authRoutes.get('/verify-email', verifyEmailHandler);
+authRoutes.get('/verify', verifyEmailHandler);
 
 authRoutes.post('/login', authRateLimitMiddleware, async (c) => {
   const db = getDb(c);
