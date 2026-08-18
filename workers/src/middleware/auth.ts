@@ -122,6 +122,13 @@ export const apiKeyAuthMiddleware = createMiddleware<{ Bindings: Env; Variables:
     if (apiKey.expiresAt && Date.now() > apiKey.expiresAt) {
       return fail(c, new ApiError(401, 'INVALID_TOKEN', 'API 密钥已过期'));
     }
+    // 强制执行 IP 白名单：不在白名单内的客户端 IP 直接拒绝，不可绕过
+    if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
+      const clientIp = getClientIp(c);
+      if (!apiKey.allowedIps.includes(clientIp)) {
+        return fail(c, new ApiError(403, 'FORBIDDEN', '该 API 密钥不允许从当前 IP 使用'));
+      }
+    }
     await ApiKeyRepo.touchKey(db, apiKey.id);
     const owner = await UserRepo.getUserById(db, apiKey.userId);
     if (!owner || owner.status !== 'active') {
