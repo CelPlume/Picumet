@@ -2,7 +2,7 @@
 // CSRF 必带、Origin 跨站拒绝、路径/文件名边界、不再签发长寿命 JWT、logout 撤销会话
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { createTestContext, initSeeded, request, json, type TestContext } from './helpers';
-import { S3Provider } from '../src/providers';
+import { S3Provider } from '../src/services/storage/providers';
 import { encryptSecret } from '../src/utils/crypto';
 
 let ctx: TestContext;

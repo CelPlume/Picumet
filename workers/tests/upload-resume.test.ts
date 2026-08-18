@@ -1,7 +1,7 @@
 // 分片上传断点续传契约回归（审计 Fix 3）
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
-import type { Env } from '../src/types';
+import type { Env } from '../src/shared/types';
 
 let ctx: TestContext;
 

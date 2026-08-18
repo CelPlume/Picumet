@@ -1,6 +1,6 @@
 // S3Provider 预签名分片 URL 单测（getSignedUrl 为本地签名，不联网）
 import { describe, it, expect } from 'vitest';
-import { S3Provider } from '../src/providers/s3-provider';
+import { S3Provider } from '../src/services/storage/s3';
 
 describe('S3Provider 分片预签名', () => {
   it('getMultipartUploadUrl 本地签名，URL 含签名参数与分片号', async () => {

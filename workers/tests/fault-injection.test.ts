@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
 import { FileRepo } from '../src/db';
-import { R2BindingProvider } from '../src/providers/r2-provider';
+import { R2BindingProvider } from '../src/services/storage/r2';
 
 let ctx: TestContext;
 

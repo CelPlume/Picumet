@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp } from '../src/index';
 import { ensureSeed } from '../src/seed';
-import type { Env } from '../src/types';
+import type { Env } from '../src/shared/types';
 import type { DatabaseSync } from 'node:sqlite';
 
 const require = createRequire(import.meta.url);

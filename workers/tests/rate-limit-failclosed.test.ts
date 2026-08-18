@@ -1,7 +1,7 @@
 // 限流 fail-closed 回归（审计 Fix 6）
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, json, type TestContext } from './helpers';
-import type { Env } from '../src/types';
+import type { Env } from '../src/shared/types';
 
 let ctx: TestContext;
 
