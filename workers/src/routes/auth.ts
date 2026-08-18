@@ -230,7 +230,7 @@ authRoutes.post('/forgot-password', authRateLimitMiddleware, async (c) => {
   }
   const token = randomString(40);
   await c.env.KV.put(`pwd:reset:${token}`, user.id, { expirationTtl: 15 * 60 });
-  const url = `${c.env.APP_BASE_URL}/login?reset=${token}`;
+  const url = `${c.env.APP_BASE_URL}/reset-password?token=${token}`;
   if (hasSmtp(c.env)) {
     await sendMail(
       {

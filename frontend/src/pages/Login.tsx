@@ -1,7 +1,8 @@
-// 登录 / 注册（Tab 切换）+ 忘记密码
+// 登录页 + 忘记密码（真实调用 /api/auth/forgot-password）
 import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useEffect } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Button, Input, Label, Dialog } from '@/components/ui/core';
 import { useAuth } from '@/stores/auth';
@@ -15,37 +16,56 @@ export default function Login() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const [tab, setTab] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [showReset, setShowReset] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSending, setResetSending] = useState(false);
 
   const redirect = params.get('redirect') || '/files';
+
+  useEffect(() => {
+    if (params.get('registered') === '1') {
+      toast('success', t('login.registered'));
+    }
+    if (params.get('resetDone') === '1') {
+      toast('success', t('login.resetDone'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = async () => {
     setError('');
     setLoading(true);
     try {
-      if (tab === 'login') {
-        await apiFetch<unknown>('/api/auth/login', { method: 'POST', body: { username, password } });
-        const me = await apiFetch<{ user: User; quota: Quota }>('/api/auth/me');
-        useAuth.getState().setAuth(me.data.user, me.data.quota);
-        navigate(redirect, { replace: true });
-      } else {
-        const res = await apiFetch<{ user: { email: string } }>('/api/auth/register', {
-          method: 'POST',
-          body: { username, password, email },
-        });
-        toast('success', res.message ?? '注册成功');
-        setTab('login');
-      }
+      await apiFetch<unknown>('/api/auth/login', { method: 'POST', body: { username, password } });
+      const me = await apiFetch<{ user: User; quota: Quota }>('/api/auth/me');
+      useAuth.getState().setAuth(me.data.user, me.data.quota);
+      navigate(redirect, { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : t('err.network'));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const sendReset = async () => {
+    if (!resetEmail) return;
+    setResetSending(true);
+    try {
+      const res = await apiFetch<{ message: string }>('/api/auth/forgot-password', {
+        method: 'POST',
+        body: { email: resetEmail },
+      });
+      toast('success', res.data?.message ?? t('login.emailSent').replace('{{email}}', resetEmail));
+      setShowReset(false);
+      setResetEmail('');
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('err.network'));
+    } finally {
+      setResetSending(false);
     }
   };
 
@@ -66,54 +86,33 @@ export default function Login() {
           <div className="mb-6 flex justify-center">
             <Logo size={36} />
           </div>
-
-          <div className="mb-6 grid grid-cols-2 rounded-lg bg-muted p-1 text-sm font-medium">
-            <button
-              onClick={() => setTab('login')}
-              className={`rounded-md py-2 transition-colors ${tab === 'login' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
-            >
-              {t('common.login')}
-            </button>
-            <button
-              onClick={() => setTab('register')}
-              className={`rounded-md py-2 transition-colors ${tab === 'register' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
-            >
-              {t('common.register')}
-            </button>
-          </div>
+          <h1 className="mb-6 text-center text-xl font-semibold">{t('common.login')}</h1>
 
           <div className="space-y-4">
             <div>
               <Label>{t('login.username')}</Label>
               <Input className="mt-1.5" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" autoFocus />
             </div>
-            {tab === 'register' && (
-              <div>
-                <Label>{t('login.email')}</Label>
-                <Input className="mt-1.5" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-              </div>
-            )}
             <div>
               <Label>{t('login.password')}</Label>
               <Input className="mt-1.5" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" onKeyDown={(e) => e.key === 'Enter' && submit()} />
             </div>
 
-            {tab === 'login' && (
-              <div className="flex justify-end">
-                <button className="text-xs text-primary hover:underline" onClick={() => setShowReset(true)}>
-                  {t('login.forgot')}
-                </button>
-              </div>
-            )}
+            <div className="flex justify-end">
+              <button className="text-xs text-primary hover:underline" onClick={() => setShowReset(true)}>
+                {t('login.forgot')}
+              </button>
+            </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}
 
             <Button className="w-full" size="lg" onClick={submit} loading={loading}>
-              {tab === 'login' ? t('common.login') : t('common.register')}
+              {t('common.login')}
             </Button>
 
             <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <Link to="/free-mode" className="text-primary hover:underline">自由模式</Link>
+              <Link to="/register" className="text-primary hover:underline">{t('login.registerNow')}</Link>
+              <Link to="/free-mode" className="text-primary hover:underline">{t('login.freeMode')}</Link>
             </div>
           </div>
         </div>
@@ -124,20 +123,18 @@ export default function Login() {
         open={showReset}
         onClose={() => setShowReset(false)}
         title={t('login.resetPassword')}
-        footer={
-          <Button onClick={() => setShowReset(false)}>{t('common.close')}</Button>
-        }
+        footer={<Button onClick={() => setShowReset(false)}>{t('common.close')}</Button>}
       >
         <div className="space-y-3">
           <Label>{t('login.email')}</Label>
-          <Input type="email" placeholder="you@example.com" />
-          <Button
-            className="w-full"
-            onClick={async () => {
-              toast('success', t('login.emailSent').replace('{{email}}', ''));
-              setShowReset(false);
-            }}
-          >
+          <Input
+            type="email"
+            value={resetEmail}
+            onChange={(e) => setResetEmail(e.target.value)}
+            placeholder="you@example.com"
+            onKeyDown={(e) => e.key === 'Enter' && sendReset()}
+          />
+          <Button className="w-full" onClick={sendReset} loading={resetSending}>
             {t('login.sendReset')}
           </Button>
         </div>

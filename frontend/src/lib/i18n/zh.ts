@@ -80,6 +80,13 @@ export const zhCN = {
     resetPassword: '重置密码',
     newPassword: '新密码',
     sendReset: '发送重置链接',
+    submitReset: '确认重置',
+    confirmPassword: '确认密码',
+    newPasswordShort: '密码至少 8 位',
+    passwordMismatch: '两次输入的密码不一致',
+    registered: '注册成功，请登录',
+    resetDone: '密码已重置，请登录',
+    freeMode: '自由模式',
   },
   files: {
     title: '文件',

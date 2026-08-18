@@ -1,32 +1,35 @@
-// 路由与页面组织
+// 路由与页面组织（页面按路由懒加载，降低首屏 JS）
 import { Routes, Route, Navigate, Outlet, useLocation, Link } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FullPageSpinner } from '@/components/ui/core';
 import { Toaster } from '@/components/ui/toast';
 import { useAuth } from '@/stores/auth';
 import { apiFetch } from '@/lib/api';
-import Landing from '@/pages/Landing';
-import Login from '@/pages/Login';
-import FreeMode from '@/pages/FreeMode';
-import Files from '@/pages/Files';
-import MyShares from '@/pages/MyShares';
-import SharePage from '@/pages/SharePage';
-import SettingsLayout from '@/pages/settings/SettingsLayout';
-import ProfilePage from '@/pages/settings/Profile';
-import SecurityPage from '@/pages/settings/Security';
-import ApiKeysPage from '@/pages/settings/ApiKeys';
-import AppearancePage from '@/pages/settings/Appearance';
-import AdminLayout from '@/pages/admin/AdminLayout';
-import AdminDashboard from '@/pages/admin/Dashboard';
-import AdminUsers from '@/pages/admin/Users';
-import AdminStorage from '@/pages/admin/Storage';
-import AdminMounts from '@/pages/admin/Mounts';
-import AdminPermissions from '@/pages/admin/Permissions';
-import AdminShares from '@/pages/admin/Shares';
-import AdminFiles from '@/pages/admin/Files';
-import AdminLogs from '@/pages/admin/Logs';
-import AdminSettings from '@/pages/admin/Settings';
+
+const Landing = lazy(() => import('@/pages/Landing'));
+const Login = lazy(() => import('@/pages/Login'));
+const Register = lazy(() => import('@/pages/Register'));
+const ResetPassword = lazy(() => import('@/pages/ResetPassword'));
+const FreeMode = lazy(() => import('@/pages/FreeMode'));
+const Files = lazy(() => import('@/pages/Files'));
+const MyShares = lazy(() => import('@/pages/MyShares'));
+const SharePage = lazy(() => import('@/pages/SharePage'));
+const SettingsLayout = lazy(() => import('@/pages/settings/SettingsLayout'));
+const ProfilePage = lazy(() => import('@/pages/settings/Profile'));
+const SecurityPage = lazy(() => import('@/pages/settings/Security'));
+const ApiKeysPage = lazy(() => import('@/pages/settings/ApiKeys'));
+const AppearancePage = lazy(() => import('@/pages/settings/Appearance'));
+const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'));
+const AdminDashboard = lazy(() => import('@/pages/admin/Dashboard'));
+const AdminUsers = lazy(() => import('@/pages/admin/Users'));
+const AdminStorage = lazy(() => import('@/pages/admin/Storage'));
+const AdminMounts = lazy(() => import('@/pages/admin/Mounts'));
+const AdminPermissions = lazy(() => import('@/pages/admin/Permissions'));
+const AdminShares = lazy(() => import('@/pages/admin/Shares'));
+const AdminFiles = lazy(() => import('@/pages/admin/Files'));
+const AdminLogs = lazy(() => import('@/pages/admin/Logs'));
+const AdminSettings = lazy(() => import('@/pages/admin/Settings'));
 
 function RequireAuth() {
   const { user, loading } = useAuth();
@@ -81,10 +84,12 @@ export default function App() {
 
   void user;
   return (
-    <>
+    <Suspense fallback={<FullPageSpinner />}>
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/free-mode" element={<FreeMode />} />
         <Route path="/share/:id" element={<SharePage />} />
         <Route path="/i/:id" element={<SharePage imageMode />} />
@@ -119,6 +124,6 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
       </Routes>
       <Toaster />
-    </>
+    </Suspense>
   );
 }

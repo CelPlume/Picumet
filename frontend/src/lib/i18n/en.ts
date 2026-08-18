@@ -80,6 +80,13 @@ export const enUS = {
     resetPassword: 'Reset password',
     newPassword: 'New password',
     sendReset: 'Send reset link',
+    submitReset: 'Reset password',
+    confirmPassword: 'Confirm password',
+    newPasswordShort: 'Password must be at least 8 characters',
+    passwordMismatch: 'Passwords do not match',
+    registered: 'Registration successful, please sign in',
+    resetDone: 'Password reset, please sign in',
+    freeMode: 'Free mode',
   },
   files: {
     title: 'Files',
