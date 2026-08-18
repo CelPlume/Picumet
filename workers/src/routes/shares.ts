@@ -202,7 +202,7 @@ shareRoutes.get('/:id/download', async (c) => {
   const canDownload = await ShareRepo.incrementDownload(db, shareId, share.maxDownloads);
   if (!canDownload) throw new ApiError(410, 'SHARE_LIMIT_REACHED', '下载次数已达上限');
 
-  const token = await createDownloadToken(c.env as Env, {
+  const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,
     objectKey: file.objectKey,

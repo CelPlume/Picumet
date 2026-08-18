@@ -14,7 +14,7 @@ export const gatewayRoutes = new Hono<AppBindings>();
 gatewayRoutes.get('/download/:token', async (c) => {
   const db = getDb(c);
   const token = c.req.param('token');
-  const payload = await consumeDownloadToken(c.env as Env, token);
+  const payload = await consumeDownloadToken(db, token);
   if (!payload) throw new ApiError(401, 'INVALID_TOKEN', '下载链接无效或已过期');
 
   const file = await FileRepo.getFileById(db, payload.fileId);

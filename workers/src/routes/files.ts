@@ -215,7 +215,7 @@ filesRoutes.post('/:id/verify-password', async (c) => {
   if (!verifyPassword(password, file.accessPassword)) {
     throw new ApiError(401, 'INVALID_PASSWORD', '密码错误');
   }
-  const token = await createDownloadToken(c.env as Env, {
+  const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,
     objectKey: file.objectKey,
@@ -241,7 +241,7 @@ filesRoutes.get('/:id/download', async (c) => {
   if (file.accessPassword) {
     throw new ApiError(403, 'PASSWORD_REQUIRED', '该文件受密码保护，请先验证密码');
   }
-  const token = await createDownloadToken(c.env as Env, {
+  const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,
     objectKey: file.objectKey,
@@ -274,7 +274,7 @@ filesRoutes.get('/:id/copy-links', async (c) => {
   if (accessMode === 'public_cdn') {
     baseUrl = provider.getPublicUrl(file.objectKey) as string;
   } else {
-    const token = await createDownloadToken(c.env as Env, {
+    const token = await createDownloadToken(db, {
       fileId: file.id,
       mountId: file.mountId,
       objectKey: file.objectKey,

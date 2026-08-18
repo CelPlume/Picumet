@@ -1,10 +1,10 @@
-// 下载网关：签名 Token、访问模式判定、流式代理
+// 下载网关：签名 Token（D1 原子消费）、访问模式判定、流式代理
 import type { Context } from 'hono';
 import type { FileMetadata, Mount } from '@shared/types';
 import type { StorageProviderInterface } from '../providers/types';
 import { randomString } from '../utils/crypto';
 import { ApiError } from '../utils/errors';
-import type { Env } from '../types';
+import type { Db } from '../db';
 
 export interface DownloadTokenPayload {
   fileId: string;
@@ -21,33 +21,37 @@ export interface DownloadTokenPayload {
 
 const TOKEN_TTL = 15 * 60; // 15 分钟
 
-export async function createDownloadToken(env: Env, payload: Omit<DownloadTokenPayload, 'expiresAt' | 'createdAt'>): Promise<string> {
+export async function createDownloadToken(db: Db, payload: Omit<DownloadTokenPayload, 'expiresAt' | 'createdAt'>): Promise<string> {
   const token = randomString(48);
   const full: DownloadTokenPayload = {
     ...payload,
     expiresAt: Date.now() + TOKEN_TTL * 1000,
     createdAt: Date.now(),
   };
-  await env.KV.put(`dl:${token}`, JSON.stringify(full), { expirationTtl: TOKEN_TTL });
+  await db.run(
+    `INSERT INTO download_tokens (token, payload, expires_at, created_at) VALUES (?, ?, ?, ?)`,
+    [token, JSON.stringify(full), full.expiresAt, full.createdAt]
+  );
   return token;
 }
 
-export async function getDownloadToken(env: Env, token: string): Promise<DownloadTokenPayload | null> {
-  const raw = await env.KV.get(`dl:${token}`);
-  if (!raw) return null;
+/**
+ * 原子消费下载令牌：单条 DELETE ... RETURNING，并发请求下只有一个能取到 payload。
+ * 取到即删除，保证一次性令牌不可被并发重复消费。
+ */
+export async function consumeDownloadToken(db: Db, token: string): Promise<DownloadTokenPayload | null> {
+  const row = await db.first(
+    `DELETE FROM download_tokens WHERE token = ? AND expires_at > ? RETURNING payload`,
+    [token, Date.now()]
+  );
+  if (!row?.payload) return null;
   try {
-    const payload = JSON.parse(raw) as DownloadTokenPayload;
+    const payload = JSON.parse(String(row.payload)) as DownloadTokenPayload;
     if (Date.now() > payload.expiresAt) return null;
     return payload;
   } catch {
     return null;
   }
-}
-
-export async function consumeDownloadToken(env: Env, token: string): Promise<DownloadTokenPayload | null> {
-  const payload = await getDownloadToken(env, token);
-  await env.KV.delete(`dl:${token}`);
-  return payload;
 }
 
 /**
