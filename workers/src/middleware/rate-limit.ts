@@ -20,12 +20,15 @@ async function checkLimit(kv: KVNamespace, key: string, limit: number, windowMs:
 /**
  * 全局限流：读 system_settings 的 rate_limit_enabled / rate_limit_requests_per_minute。
  * 非生产环境（开发/测试）跳过，避免误伤本地调试。
+ * 存储异常时：认证/敏感写接口 fail-closed（503），其余 fail-open。
  */
 export const rateLimitMiddleware = createMiddleware(async (c, next) => {
   if ((c.env.ENVIRONMENT as string) !== 'production') {
     await next();
     return;
   }
+  const path = c.req.path;
+  const sensitive = /\/api\/auth\/(login|register|forgot-password|reset-password)$/.test(path);
   try {
     const db = getDb(c);
     const enabledRaw = await SettingsRepo.get(db, 'rate_limit_enabled');
@@ -50,7 +53,10 @@ export const rateLimitMiddleware = createMiddleware(async (c, next) => {
     }
     await next();
   } catch {
-    // 限流故障不影响主流程
+    // 存储异常：认证/敏感写接口 fail-closed，防止限流被绕过；其余接口 fail-open 保证可用性
+    if (sensitive) {
+      return fail(c, new ApiError(503, 'SERVICE_UNAVAILABLE', '服务暂不可用，请稍后再试'));
+    }
     await next();
   }
 });
