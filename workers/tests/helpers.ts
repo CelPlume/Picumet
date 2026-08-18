@@ -274,3 +274,24 @@ export async function getCsrf(ctx: TestContext, cookie: string): Promise<string>
   const data = (await json(res)) as { data: { token: string } };
   return data.data.token;
 }
+
+/**
+ * 为 API 密钥授予路径规则（H-3 交集语义：API Key 需要规则才能访问）。
+ * 直接经 RuleRepo 落库，避免测试走管理员 HTTP 流程。
+ */
+export async function grantApiKeyRule(
+  ctx: TestContext,
+  apiKeyId: string,
+  permissions: string[],
+  pathPattern = '/'
+): Promise<void> {
+  const { RuleRepo, Db } = await import('../src/db');
+  await RuleRepo.createRule(Db.fromSqlite(ctx.db), {
+    pathPattern,
+    effect: 'allow',
+    apiKeyId,
+    permissions: permissions as Parameters<typeof RuleRepo.createRule>[1]['permissions'],
+    requirePassword: false,
+    priority: 100,
+  });
+}

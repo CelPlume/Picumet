@@ -1,6 +1,6 @@
 // API 集成测试：分享、API 密钥、兼容上传、WebDAV、管理员、安全
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
+import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
 
 let ctx: TestContext;
 
@@ -123,7 +123,10 @@ describe('API 密钥与兼容上传', () => {
     expect(createRes.status).toBe(201);
     const createData = await json(createRes);
     const fullToken = createData.data.key.fullToken;
+    const keyIdForRule = createData.data.key.keyId as string;
     expect(fullToken).toMatch(/^pk_[A-Za-z0-9]+\.sk_[A-Za-z0-9]+$/);
+    // H-3：API Key 交集语义——授予上传根内写权限规则
+    await grantApiKeyRule(ctx, keyIdForRule, ['write', 'read'], '/uploads/**');
 
     // 列表
     const listRes = await request(ctx, '/api/keys', { cookie: authCookie });
@@ -181,6 +184,8 @@ describe('WebDAV', () => {
     });
     const createData = await json(createRes);
     const { keyId, secret } = createData.data.key;
+    // H-3：API Key 交集语义——授予根路径全部权限规则
+    await grantApiKeyRule(ctx, keyId, ['write', 'read', 'delete'], '/');
     const basic = Buffer.from(`${keyId}:${secret}`).toString('base64');
     const auth = { Authorization: `Basic ${basic}` };
 

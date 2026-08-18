@@ -7,6 +7,7 @@ import { getDb } from '../middleware/auth';
 import { ok } from '../utils/response';
 import { ApiError } from '../utils/errors';
 import { randomString, sha256Hex } from '../utils/crypto';
+import { normalizePath } from '../utils/path';
 
 const createSchema = z.object({
   name: z.string().min(1).max(100),
@@ -31,6 +32,16 @@ keyRoutes.post('/', async (c) => {
   const activeCount = await ApiKeyRepo.countActiveByUser(db, userId);
   if (activeCount >= 20) throw new ApiError(403, 'FORBIDDEN', 'API 密钥数量已达上限（20）');
 
+  // M-3：uploadPath 规范化（拒绝 .. / ~ 逃逸），作为密钥上传根边界
+  let uploadPath = '/uploads';
+  if (parsed.data.uploadPath !== undefined) {
+    try {
+      uploadPath = normalizePath(parsed.data.uploadPath);
+    } catch {
+      throw ApiError.badRequest('uploadPath 必须是合法路径（不允许 .. 或 ~）');
+    }
+  }
+
   const keyId = 'pk_' + randomString(24);
   const secret = 'sk_' + randomString(48);
   const fullToken = `${keyId}.${secret}`;
@@ -43,7 +54,7 @@ keyRoutes.post('/', async (c) => {
     tokenHash,
     permissions: parsed.data.permissions,
     protocols: parsed.data.protocols,
-    uploadPath: parsed.data.uploadPath ?? '/uploads',
+    uploadPath,
     allowedIps: parsed.data.allowedIps,
     expiresAt: parsed.data.expiresIn ? Date.now() + parsed.data.expiresIn * 1000 : undefined,
   });
@@ -58,7 +69,7 @@ keyRoutes.post('/', async (c) => {
       name: parsed.data.name,
       permissions: parsed.data.permissions,
       protocols: parsed.data.protocols,
-      uploadPath: parsed.data.uploadPath ?? '/uploads',
+      uploadPath,
       createdAt: Date.now(),
       expiresAt: parsed.data.expiresIn ? Date.now() + parsed.data.expiresIn * 1000 : undefined,
     },

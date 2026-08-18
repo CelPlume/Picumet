@@ -1,6 +1,6 @@
 // API Key IP 白名单回归（审计 Fix 2）
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
+import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
 
 let ctx: TestContext;
 
@@ -22,6 +22,7 @@ describe('API Key IP 白名单', () => {
     expect(createRes.status).toBe(201);
     const createData = await json(createRes);
     const fullToken = createData.data.key.fullToken as string;
+    await grantApiKeyRule(ctx, createData.data.key.keyId as string, ['write', 'read'], '/uploads/**');
 
     const form = new FormData();
     form.append('file', new File([new Blob(['ip-content'])], 'ip.txt', { type: 'text/plain' }));
@@ -56,6 +57,7 @@ describe('API Key IP 白名单', () => {
     });
     const createData = await json(createRes);
     const fullToken = createData.data.key.fullToken as string;
+    await grantApiKeyRule(ctx, createData.data.key.keyId as string, ['write', 'read'], '/');
     const form = new FormData();
     form.append('file', new File([new Blob(['open-ip-content'])], 'open.txt', { type: 'text/plain' }));
     const res = await request(ctx, '/api/upload', {
