@@ -7,7 +7,7 @@
 - **前端**：React 18 + Vite + TypeScript + Tailwind CSS（shadcn 风格 UI）+ React Router 6 + TanStack Query 5 + Zustand + i18next（中/英）
 - **后端**：Cloudflare Workers + Hono 4 + D1 (SQLite) + KV + R2
 - **存储协议**：S3 兼容（R2 / AWS S3 / Oracle Cloud），本地开发走 R2 绑定
-- **测试**：Vitest（权限真值表 57 / 文件状态机 / 配额 / 安全回归 / API 集成 / S3 预签名，后端 96 项 + 前端 7 项）
+- **测试**：Vitest（权限真值表 57 / 文件状态机 / 配额 / 安全回归 / API 集成 / S3 预签名 / 故障注入，后端 122 项 + 前端 7 项）
 
 ## 快速开始（本地开发）
 
@@ -36,14 +36,15 @@ bun run dev
 - 前端：http://localhost:5173
 - API：http://localhost:8787
 
-内置账号（开发种子）：
+内置账号（**仅开发种子**）：
 - 管理员：`admin` / `admin123456`
 - 演示用户：`demo` / `demo123456`
+> 生产环境通过 `ADMIN_PASSWORD` 注入管理员密码（≥12 位强密码），无固定默认凭据（审计 H-02）。
 
 ## 测试
 
 ```bash
-cd workers && bun run test            # 后端 96 项（权限真值表、上传状态机、配额、安全回归、API 集成、WebDAV、S3 预签名）
+cd workers && bun run test            # 后端 127 项（权限真值表、上传状态机、配额、安全回归、API 集成、WebDAV、S3 预签名、故障注入）
 cd workers && bun run typecheck       # 后端类型检查
 cd frontend && bun run test           # 前端 7 项（XSS 转义、注册页交互）
 cd frontend && bun run test:coverage  # 前端覆盖率门禁（安全关键模块 ≥80%）
@@ -66,27 +67,39 @@ CI：`.github/workflows/ci.yml` 在 push/PR 到 main 时执行 bun install → t
 
 ## 目录结构
 
-```
-picumet/
-├── frontend/        # React 前端（Vite + TS + Tailwind）
-├── workers/         # Cloudflare Workers API（Hono + D1/KV/R2）
-│   ├── migrations/  # D1 数据库迁移
-│   ├── src/
-│   │   ├── routes/    # API 路由（auth/files/shares/keys/admin/webdav/compat/free-mode/gateway）
-│   │   ├── middleware/ # 认证/管理员/CSRF/限流/错误处理/安全头
-│   │   ├── services/   # 权限判定、网关、清理任务
-│   │   ├── providers/  # R2 绑定 + S3 协议 Provider 工厂
-│   │   └── db/         # 数据仓库（D1 与 node:sqlite 双后端）
-│   └── tests/        # Vitest 测试
-├── shared/          # 前后端共享类型
-└── spec.md / requirements-matrix.md
-```
+```mermaid
+flowchart LR
+    subgraph picumet["picumet/"]
+        FRONTEND["frontend/ · React 前端（Vite + TS + Tailwind）"]
+        WORKERS["workers/ · Cloudflare Workers API（Hono + D1/KV/R2）"]
+        WV_SERVICES["services/ · auth · permissions · files · uploads<br/>shares · storage · webdav · free-mode<br/>admin · users · keys · public"]
+        WV_SHARED["shared/ · schemas / types / errors / response"]
+        WV_MW["middleware/ · auth / csrf / rate-limit / global"]
+        WV_DB["db/ · repos/（D1 + node:sqlite 双后端）"]
+        WV_UTILS["utils/ · path / crypto / ssrf / smtp"]
+        WV_MIG["migrations/ · D1 迁移"]
+        WV_TESTS["tests/ · Vitest"]
+        ROOT_SHARED["shared/ · 前后端共享类型"]
+        DOCS["docs/ · 架构 / API / 页面 / 开发 / 部署"]
+        SPEC["spec.md · spec_refactored.md · requirements-matrix.md"]
+    end
 
-## 部署
-
-参考 `spec.md` 的「部署方案」章节（Cloudflare Pages + Workers + D1 + KV + R2）。
+    WORKERS --> WV_SERVICES
+    WV_SERVICES --> WV_SHARED
+    WV_SERVICES --> WV_MW
+    WV_SERVICES --> WV_DB
+    WV_SERVICES --> WV_UTILS
+    WV_SERVICES --> WV_MIG
+    WV_SERVICES --> WV_TESTS
+    WV_SERVICES --> ROOT_SHARED
+```
 
 ## 文档
 
+- [系统架构](docs/ARCHITECTURE.md) — 服务化架构、服务明细、数据模型、安全设计
+- [API 设计](docs/API.md) — 认证方式、统一响应、全部端点
+- [页面设计](docs/UI.md) — 页面路由、布局、交互
+- [开发指南](docs/DEVELOPMENT.md) — 本地开发、测试、代码规范、常见坑点
+- [部署指南](docs/DEPLOYMENT.md) — Cloudflare 部署、CI、Secrets、成本
 - [技术规格](spec.md)
 - [需求追踪矩阵](requirements-matrix.md)

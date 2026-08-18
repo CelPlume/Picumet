@@ -16,42 +16,52 @@
 
 ## Architecture / Project Map（架构/文件结构）
 
-```
-picumet/
-├── frontend/                   # React 前端
-│   ├── src/
-│   │   ├── components/         # UI 组件（shadcn-ui）
-│   │   ├── pages/              # 页面组件
-│   │   ├── hooks/              # 自定义 Hooks
-│   │   ├── lib/                # 工具函数
-│   │   └── main.tsx            # 应用入口
-│   ├── package.json
-│   ├── vite.config.ts          # Vite 配置（含 API 代理）
-│   └── tsconfig.json
-├── workers/                    # Cloudflare Workers 后端
-│   ├── src/
-│   │   ├── routes/             # API 路由模块
-│   │   ├── middleware/         # 认证、权限、CORS 中间件
-│   │   ├── services/           # 业务逻辑层
-│   │   ├── providers/          # 存储提供商（R2/S3/Oracle）
-│   │   ├── utils/              # 工具函数
-│   │   └── index.ts            # Workers 入口（Hono app）
-│   ├── migrations/             # D1 数据库迁移脚本
-│   │   └── 0001_initial.sql
-│   ├── wrangler.toml           # Cloudflare Workers 配置
-│   ├── package.json
-│   └── tsconfig.json
-├── shared/                     # 前后端共享类型
-│   └── types.ts
-├── spec.md                     # 完整技术规格说明书
-├── requirements-matrix.md      # 需求追踪矩阵
-├── .github/
-│   └── workflows/
-│       └── deploy.yml          # GitHub Actions CI/CD
-└── README.md
+```mermaid
+flowchart LR
+    subgraph frontend["frontend/ · React 前端"]
+        FE_SRC["src/ · components / pages / hooks / lib / stores"]
+        FE_VITE["vite.config.ts · 代理 /api/* → 8787"]
+    end
+
+    subgraph workers["workers/ · Cloudflare Workers 后端"]
+        direction TB
+        SRC["src/"]
+        SERVICES["services/ · 业务服务<br/>auth · permissions · files · uploads<br/>shares · storage · webdav<br/>free-mode · admin · users · keys · public"]
+        SHARED["shared/ · schemas / types / errors / response"]
+        MW["middleware/ · auth / csrf / rate-limit / free-mode / global"]
+        DB["db/ · repos/ · D1 + node:sqlite 双后端"]
+        UTILS["utils/ · path / crypto / ssrf / smtp"]
+        INDEX["index.ts · Hono 路由组装"]
+        MIGRATIONS["migrations/ · 0001 · 0002 · 0003"]
+        WRANGLER["wrangler.toml"]
+    end
+
+    subgraph shared_ts["shared/ · 前后端共享类型"]
+        TYPES["types.ts"]
+    end
+
+    subgraph docs_["docs/ · 文档"]
+        ARCH["ARCHITECTURE.md · 架构"]
+        API_DOC["API.md · API 设计"]
+        UI_DOC["UI.md · 页面"]
+        DEV_DOC["DEVELOPMENT.md · 开发"]
+        DEPLOY_DOC["DEPLOYMENT.md · 部署"]
+    end
+
+    FE_SRC --> FE_VITE
+    FE_VITE -->|HTTP /api| INDEX
+    INDEX --> SERVICES
+    SERVICES --> SHARED
+    SERVICES --> MW
+    SERVICES --> DB
+    SERVICES --> UTILS
+    SERVICES -->|共享类型| TYPES
+    SRC --> INDEX
+    SRC --> MIGRATIONS
+    SRC --> WRANGLER
 ```
 
-> 项目入口：[README](README.md)、[技术规格](spec.md)、[需求矩阵](requirements-matrix.md)。
+> 项目入口：[README](README.md)、[技术规格](spec.md)、[需求矩阵](requirements-matrix.md)、[系统架构](docs/ARCHITECTURE.md)。
 >
 > **强制规则**：执行任何代码、迁移、测试、发布或文档变更前，必须阅读并遵守本工作协议。质量门槛、安全约束、性能基线、迁移治理和提交规范均属于本工作协议的一部分。
 
@@ -573,7 +583,13 @@ const canonicalPath = normalizePath(req.query.path);
 ## Contact & Resources（联系与资源）
 
 **文档**：
+- [系统架构](docs/ARCHITECTURE.md) — 服务化架构、服务明细、数据模型、安全设计
+- [API 设计](docs/API.md) — 认证方式、统一响应、全部端点
+- [页面设计](docs/UI.md) — 页面路由、布局、交互
+- [开发指南](docs/DEVELOPMENT.md) — 本地开发、测试、代码规范、常见坑点
+- [部署指南](docs/DEPLOYMENT.md) — Cloudflare 部署、CI、Secrets、成本
 - [完整技术规格](spec.md)
+- [服务化重构规格](spec_refactored.md)
 - [需求追踪矩阵](requirements-matrix.md)
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 - [Hono 框架文档](https://hono.dev/)
@@ -586,3 +602,4 @@ const canonicalPath = normalizePath(req.query.path);
 
 **变更历史**：
 - 2026-08-18：初始版本，基于 spec.md v2.0 和 requirements-matrix.md
+- 2026-08-18：服务化重构（Plan A），新增 docs/ 文档体系（架构/API/页面/开发/部署）
