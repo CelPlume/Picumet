@@ -1,4 +1,4 @@
-// 自由模式：用户自带对象存储凭据的临时会话（凭据仅存 KV，TTL 自动清理）
+// 自由模式：用户自带对象存储凭据的临时会话（凭据加密写入 KV，短 TTL 自动清理）
 import { Hono } from 'hono';
 import type { AppBindings } from '../types';
 import type { Context } from 'hono';
@@ -8,7 +8,7 @@ import { getDb } from '../middleware/auth';
 import { S3Provider } from '../providers';
 import { ok } from '../utils/response';
 import { ApiError } from '../utils/errors';
-import { hashPassword, randomString, signJwt } from '../utils/crypto';
+import { hashPassword, randomString, signJwt, encryptSecret, decryptSecret } from '../utils/crypto';
 import { isPrivateHost } from '../utils/ssrf';
 import type { Env, FreeModeSession } from '../types';
 
@@ -90,13 +90,16 @@ freeModeRoutes.post('/init', async (c) => {
   };
 
   const ttl = parsed.data.sessionHours * 3600;
-  await c.env.KV.put(`fm:${user.id}`, JSON.stringify(session), { expirationTtl: ttl });
+  // 凭据不以明文落盘：加密后写入 KV（短 TTL），仅 Workers 内存中可解密使用
+  const sealed = await encryptSecret(JSON.stringify(session), c.env.ENCRYPTION_KEY as string);
+  const sid = randomString(24);
+  await c.env.KV.put(`fm:${sid}`, sealed, { expirationTtl: ttl });
 
   // 签发 JWT + free-mode cookie
   const token = await signJwt({ sub: user.id, username: user.username, role: user.role }, c.env.JWT_SECRET as string, JWT_TTL);
   c.header('Set-Cookie', [
     `auth_token=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${JWT_TTL}`,
-    `${FM_COOKIE}=${user.id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}`,
+    `${FM_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}`,
   ].join(', '));
 
   await LogRepo.create(db, {
@@ -177,8 +180,10 @@ freeModeRoutes.delete('/object', async (c) => {
 
 // ============ 自由模式退出 ============
 freeModeRoutes.post('/logout', async (c) => {
-  const session = await loadSession(c);
-  await c.env.KV.delete(`fm:${session.userId}`);
+  const cookie = c.req.raw.headers.get('cookie') ?? '';
+  const match = cookie.split(';').map((s) => s.trim()).find((s) => s.startsWith(`${FM_COOKIE}=`));
+  const sid = match ? match.slice(`${FM_COOKIE}=`.length) : null;
+  if (sid) await c.env.KV.delete(`fm:${sid}`);
   c.header('Set-Cookie', [
     `auth_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
     `${FM_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
@@ -189,13 +194,18 @@ freeModeRoutes.post('/logout', async (c) => {
 async function loadSession(c: Context): Promise<FreeModeSession> {
   const cookie = c.req.raw.headers.get('cookie') ?? '';
   const match = cookie.split(';').map((s) => s.trim()).find((s) => s.startsWith(`${FM_COOKIE}=`));
-  const userId = match ? match.slice(`${FM_COOKIE}=`.length) : null;
-  if (!userId) throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话不存在');
-  const raw = await (c.env as Env).KV.get(`fm:${userId}`);
+  const sid = match ? match.slice(`${FM_COOKIE}=`.length) : null;
+  if (!sid) throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话不存在');
+  const raw = await (c.env as Env).KV.get(`fm:${sid}`);
   if (!raw) throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期');
-  const session = JSON.parse(raw) as FreeModeSession;
+  let session: FreeModeSession;
+  try {
+    session = JSON.parse(await decryptSecret(raw, (c.env as Env).ENCRYPTION_KEY as string)) as FreeModeSession;
+  } catch {
+    throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期');
+  }
   if (Date.now() > session.expiresAt) {
-    await (c.env as Env).KV.delete(`fm:${userId}`);
+    await (c.env as Env).KV.delete(`fm:${sid}`);
     throw new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期');
   }
   if (session.ip && session.ip !== ipOf(c)) {
