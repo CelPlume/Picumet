@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 纯 CI：类型检查 + 测试 + 覆盖率门禁 + 构建。
+# 部署不在此处自动执行，统一用 `wrangler deploy`（本地/CI 手动触发）或 Cloudflare 侧自动部署。
+jobs:
+  workers:
+    name: Workers (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        working-directory: workers
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: workers
+        run: bun run typecheck
+
+      - name: Tests
+        working-directory: workers
+        run: bun run test
+
+  frontend:
+    name: Frontend (typecheck + tests + coverage + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: frontend
+        run: bun run typecheck
+
+      - name: Tests
+        working-directory: frontend
+        run: bun run test
+
+      - name: Coverage gate
+        working-directory: frontend
+        run: bun run test:coverage
+
+      - name: Build
+        working-directory: frontend
+        run: bun run build
