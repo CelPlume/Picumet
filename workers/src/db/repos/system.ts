@@ -109,8 +109,12 @@ export const ShareRepo = {
     return res.changes > 0;
   },
   async getShareWithFile(db: Db, id: string) {
+    // 显式列名避免 SELECT * 中 shares.id 被 file_metadata.id 覆盖（审计发现）
     const row = await db.first(
-      `SELECT s.*, f.*, u.username AS creator_name
+      `SELECT f.id AS file_row_id, f.*, s.id, s.file_id, s.creator_id, s.title, s.password_hash, s.expires_at,
+              s.max_views, s.view_count, s.max_downloads, s.download_count,
+              s.allow_preview, s.allow_download, s.created_at, s.last_accessed_at, s.status,
+              u.username AS creator_name
        FROM shares s
        JOIN file_metadata f ON f.id = s.file_id
        LEFT JOIN users u ON u.id = s.creator_id
@@ -119,7 +123,8 @@ export const ShareRepo = {
     );
     if (!row) return null;
     const share = mapShare(row);
-    const file = mapFile(row);
+    // mapFile 读 row.id 会拿到分享 id（s.id 覆盖），用 file_row_id 修正
+    const file = { ...mapFile(row), id: str(row.file_row_id) ?? '' };
     return {
       share,
       file,
