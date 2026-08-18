@@ -10,7 +10,7 @@ import { ApiError } from '../utils/errors';
 import { encryptSecret, hashPassword } from '../utils/crypto';
 import { normalizePath } from '../utils/path';
 import type { Env } from '../types';
-import { isPrivateHost } from '../utils/ssrf';
+import { validateEndpoint } from '../utils/ssrf';
 
 const providerSchema = z.object({
   name: z.string().min(1).max(100),
@@ -82,14 +82,9 @@ adminStorageRoutes.post('/storage/providers', async (c) => {
 
   // R2 绑定模式：endpoint 为空表示使用本地/生产 R2 绑定
   const isBindingR2 = type === 'r2' && !endpoint;
-  if (!isBindingR2 && endpoint) {
-    try {
-      if (!/^https?:\/\//.test(endpoint)) throw new Error('endpoint 需以 http(s):// 开头');
-      const host = new URL(endpoint).hostname;
-      if (isPrivateHost(host)) throw new Error('不允许使用内网/本地地址');
-    } catch (err) {
-      throw ApiError.badRequest(`存储端点无效：${err instanceof Error ? err.message : '格式错误'}`);
-    }
+  // M-1：统一 SSRF 校验（scheme/端口/userinfo + IPv4/IPv6 私网保留段）
+  if (!isBindingR2 && endpoint && !validateEndpoint(endpoint)) {
+    throw ApiError.badRequest('存储端点无效：必须为公网 http(s) 地址，且不允许私网/保留地址');
   }
 
   const provider = await ProviderRepo.createProvider(db, {
