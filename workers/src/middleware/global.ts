@@ -46,7 +46,8 @@ export const securityHeaders = async (c: Context, next: Next) => {
     'Content-Security-Policy',
     [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+      // L-1：移除 script-src 的 unsafe-inline（仅保留 self + Turnstile 挑战域）
+      "script-src 'self' https://challenges.cloudflare.com",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: https: blob:",
       "font-src 'self' data:",
