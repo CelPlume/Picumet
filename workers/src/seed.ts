@@ -1,9 +1,9 @@
 // 启动种子：默认管理员、演示用户、默认 R2 绑定 Provider + 根挂载、演示文件夹
 import { Db, UserRepo, MountRepo, ProviderRepo, FileRepo, QuotaRepo } from './db';
 import { hashPassword } from './utils/crypto';
-import { getProvider } from './providers';
+import { getProvider } from './services/storage/providers';
 import { objectKeyFromPath } from './utils/path';
-import type { Env } from './types';
+import type { Env } from './shared/types';
 
 export async function ensureSeed(env: Env): Promise<void> {
   if (await env.KV.get('seed:done')) return;
@@ -12,30 +12,60 @@ export async function ensureSeed(env: Env): Promise<void> {
   await env.KV.put('seed:done', '1');
 }
 
+const isProduction = (env: Env): boolean => (env.ENVIRONMENT ?? 'development') === 'production';
+
+/**
+ * 初始管理员密码解析（审计 H-02）：
+ * - 生产：必须通过 env.ADMIN_PASSWORD 提供，强制强密码；缺失则不创建（fail-closed）
+ * - 开发：默认 admin123456（本地便利），可用 env 覆盖
+ */
+function resolveAdminCredentials(env: Env): { username: string; password: string } | null {
+  const username = (env.ADMIN_USERNAME ?? 'admin').trim() || 'admin';
+  const password = (env.ADMIN_PASSWORD ?? '').trim();
+  if (isProduction(env)) {
+    if (!password) {
+      console.error('[seed] 生产环境未配置 ADMIN_PASSWORD，跳过创建初始管理员（fail-closed）');
+      return null;
+    }
+    // 强密码要求：至少 12 位，含字母和数字
+    if (password.length < 12 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      throw new Error('ADMIN_PASSWORD 必须是至少 12 位且包含字母和数字的强密码');
+    }
+    return { username, password };
+  }
+  // 开发：默认或 env 覆盖
+  return { username, password: password || 'admin123456' };
+}
+
 async function seedAll(db: Db, env: Env): Promise<void> {
   const now = Date.now();
+  const dev = !isProduction(env);
 
   // 1. 默认管理员
+  const adminCreds = resolveAdminCredentials(env);
   let admin = await UserRepo.getUserByUsername(db, 'admin');
-  if (!admin) {
+  if (!admin && adminCreds) {
     admin = await UserRepo.createUser(db, {
-      username: 'admin',
-      email: 'admin@picumet.local',
-      passwordHash: hashPassword('admin123456'),
+      username: adminCreds.username,
+      email: `${adminCreds.username}@picumet.local`,
+      passwordHash: hashPassword(adminCreds.password),
       role: 'admin',
     });
     await QuotaRepo.setQuota(db, admin.id, 20 * 1024 * 1024 * 1024);
   }
 
-  // 2. 演示用户
-  let demo = await UserRepo.getUserByUsername(db, 'demo');
-  if (!demo) {
-    demo = await UserRepo.createUser(db, {
-      username: 'demo',
-      email: 'demo@picumet.local',
-      passwordHash: hashPassword('demo123456'),
-      role: 'user',
-    });
+  // 2. 演示用户（仅开发）
+  let demo: Awaited<ReturnType<typeof UserRepo.getUserByUsername>> = null;
+  if (dev) {
+    demo = await UserRepo.getUserByUsername(db, 'demo');
+    if (!demo) {
+      demo = await UserRepo.createUser(db, {
+        username: 'demo',
+        email: 'demo@picumet.local',
+        passwordHash: hashPassword((env.DEMO_PASSWORD ?? 'demo123456').trim() || 'demo123456'),
+        role: 'user',
+      });
+    }
   }
 
   // 3. 默认 R2 绑定 Provider
@@ -66,7 +96,7 @@ async function seedAll(db: Db, env: Env): Promise<void> {
   }
 
   // 5. 演示数据（仅开发环境且库为空时）
-  if ((env.ENVIRONMENT ?? 'development') === 'development') {
+  if (dev) {
     const count = await db.first('SELECT COUNT(*) AS c FROM file_metadata');
     if (Number((count as { c?: unknown })?.c ?? 0) === 0 && demo) {
       await seedDemoFolder(db, env, rootMount.id, demo.id, '/图片', '图片');
@@ -78,6 +108,7 @@ async function seedAll(db: Db, env: Env): Promise<void> {
   }
 
   void admin;
+  void demo;
 }
 
 async function seedDemoFolder(db: Db, env: Env, mountId: string, ownerId: string, path: string, name: string): Promise<void> {

@@ -3,9 +3,9 @@ import type { Context, Next } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { Db, UserRepo, ApiKeyRepo } from '../db';
 import { verifyJwt, sha256Hex } from '../utils/crypto';
-import { ApiError } from '../utils/errors';
-import { fail } from '../utils/response';
-import type { AppBindings, AppVariables, Env } from '../types';
+import { ApiError } from '../shared/errors';
+import { fail } from '../shared/response';
+import type { AppBindings, AppVariables, Env } from '../shared/types';
 
 type AppContext = Context<AppBindings>;
 
@@ -52,6 +52,11 @@ export const authMiddleware = createMiddleware<{ Bindings: Env; Variables: AppVa
   }
   if (user.role !== payload.role) {
     return fail(c, new ApiError(401, 'ROLE_CHANGED', '账号角色已变更，请重新登录'));
+  }
+  // 会话撤销（审计 H-05）：JWT 中的会话版本必须与当前一致，否则旧会话已失效
+  const tokenSv = payload.sv ?? 0;
+  if (tokenSv !== user.sessionVersion) {
+    return fail(c, new ApiError(401, 'SESSION_REVOKED', '会话已失效，请重新登录'));
   }
   c.set('userId', user.id);
   c.set('userRole', user.role);
@@ -170,7 +175,9 @@ export const optionalAuthMiddleware = createMiddleware<{ Bindings: Env; Variable
     const payload = await verifyJwt(token, [c.env.JWT_SECRET as string, (c.env.JWT_SECRET_OLD as string) ?? '']);
     if (payload) {
       const user = await UserRepo.getUserById(db, payload.sub);
-      if (user && user.status === 'active' && user.role === payload.role) {
+      // 会话撤销（审计 H-05）：旧 JWT 不填充用户信息
+      const tokenSv = payload.sv ?? 0;
+      if (user && user.status === 'active' && user.role === payload.role && tokenSv === user.sessionVersion) {
         c.set('userId', user.id);
         c.set('userRole', user.role);
         c.set('user', {

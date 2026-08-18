@@ -34,6 +34,10 @@ export const UserRepo = {
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
     await db.run(`UPDATE users SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
   },
+  /** 递增会话版本（审计 H-05）：使该用户所有已签发 JWT 立即失效 */
+  async bumpSessionVersion(db: Db, id: string): Promise<void> {
+    await db.run(`UPDATE users SET session_version = session_version + 1, updated_at = ? WHERE id = ?`, [Date.now(), id]);
+  },
   async deleteUser(db: Db, id: string): Promise<void> {
     await db.run('DELETE FROM users WHERE id = ?', [id]);
   },

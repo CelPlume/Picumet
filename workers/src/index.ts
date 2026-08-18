@@ -4,25 +4,25 @@ import { corsHeaders, securityHeaders, initContext, errorHandler } from './middl
 import { authMiddleware, adminMiddleware, optionalAuthMiddleware, apiKeyAuthMiddleware } from './middleware/auth';
 import { csrfMiddleware } from './middleware/csrf';
 import { rateLimitMiddleware } from './middleware/rate-limit';
-import { authRoutes } from './routes/auth';
-import { filesRoutes } from './routes/files';
-import { fileOpsRoutes } from './routes/file-ops';
-import { uploadRoutes } from './routes/uploads';
-import { shareRoutes } from './routes/shares';
-import { userRoutes } from './routes/users';
-import { keyRoutes } from './routes/keys';
-import { adminRoutes } from './routes/admin';
-import { adminStorageRoutes } from './routes/admin-storage';
-import { compatRoutes } from './routes/compat';
-import { webdavRoutes } from './routes/webdav';
-import { freeModeRoutes } from './routes/free-mode';
-import { gatewayRoutes } from './routes/gateway';
-import { publicRoutes } from './routes/public';
+import { authRoutes } from './services/auth/handlers';
+import { filesRoutes } from './services/files/handlers';
+import { fileOpsRoutes } from './services/files/operations';
+import { uploadRoutes } from './services/uploads/handlers';
+import { shareRoutes } from './services/shares/handlers';
+import { userRoutes } from './services/users/handlers';
+import { keyRoutes } from './services/keys/handlers';
+import { adminRoutes } from './services/admin/handlers';
+import { adminStorageRoutes } from './services/admin/storage';
+import { compatRoutes } from './services/uploads/compat';
+import { webdavRoutes } from './services/webdav/handlers';
+import { freeModeRoutes } from './services/free-mode/handlers';
+import { gatewayRoutes } from './services/shares/gateway';
+import { publicRoutes } from './services/public/handlers';
 import { ensureSeed } from './seed';
 import { runScheduledTasks } from './services/cleanup';
-import { ok, fail } from './utils/response';
-import { ApiError } from './utils/errors';
-import type { AppVariables, Env } from './types';
+import { ok, fail } from './shared/response';
+import { ApiError } from './shared/errors';
+import type { AppVariables, Env } from './shared/types';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -88,10 +88,45 @@ app.notFound((c) => fail(c, new ApiError(404, 'NOT_FOUND', '接口不存在')));
 // ---------- 入口 ----------
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    try {
-      await ensureSeed(env);
-    } catch (err) {
-      console.error('seed failed', err);
+    // 生产 fail-closed（审计 H-02/M-06）：未完成初始化（缺管理员或 seed 失败）时，
+    // 业务 API 返回 503，仅放行健康检查与公共路由；不再静默吞错继续服务。
+    const isProd = (env.ENVIRONMENT as string) === 'production';
+    let seedReady = false;
+    if (isProd) {
+      try {
+        const marker = await env.KV.get('seed:done');
+        seedReady = marker === '1';
+        if (!seedReady) {
+          // 尝试完成初始化；失败则由下方 fail-closed 拦截
+          await ensureSeed(env);
+          seedReady = true;
+        }
+      } catch (err) {
+        console.error('seed failed (production fail-closed)', err);
+        seedReady = false;
+      }
+      if (!seedReady) {
+        const url = new URL(request.url);
+        const publicPath = url.pathname === '/' ||
+          url.pathname.startsWith('/api/health') ||
+          url.pathname.startsWith('/api/public');
+        if (!publicPath) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: { code: 'INITIALIZATION_REQUIRED', message: '服务尚未完成初始化，请联系管理员' },
+              timestamp: Date.now(),
+            }),
+            { status: 503, headers: { 'Content-Type': 'application/json; charset=utf-8' } }
+          );
+        }
+      }
+    } else {
+      try {
+        await ensureSeed(env);
+      } catch (err) {
+        console.error('seed failed', err);
+      }
     }
     return app.fetch(request, env, ctx);
   },

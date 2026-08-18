@@ -46,17 +46,19 @@ export interface JwtPayload {
   username: string;
   role: string;
   type: 'access';
+  /** 会话版本（审计 H-05）：登出/改密/禁用时递增，旧 JWT 立即失效 */
+  sv?: number;
   iat: number;
   exp: number;
   jti: string;
 }
 
 export async function signJwt(
-  payload: { sub: string; username: string; role: string },
+  payload: { sub: string; username: string; role: string; sv?: number },
   secret: string,
   expiresInSeconds: number
 ): Promise<string> {
-  return new SignJWT({ username: payload.username, role: payload.role, type: 'access' })
+  return new SignJWT({ username: payload.username, role: payload.role, type: 'access', sv: payload.sv ?? 0 })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(payload.sub)
     .setJti(uuid())

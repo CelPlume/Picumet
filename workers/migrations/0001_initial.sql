@@ -346,8 +346,8 @@ INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALU
 ('rate_limit_requests_per_minute', '50', '每分钟最大请求数', unixepoch() * 1000);
 
 -- ============ 初始管理员账户 ============
--- 默认管理员: admin / admin123456（首次登录后请立即修改）
--- 密码哈希由后端启动时确保存在（见 seed 逻辑），此处占位由代码写入。
+-- 管理员账户由 seed 逻辑创建：生产环境从 env.ADMIN_PASSWORD 注入（审计 H-02），
+-- 不再在代码/迁移中硬编码固定凭据。
 
 -- ============ ROLLBACK ============
 -- 如需降级，按逆序删除表：
