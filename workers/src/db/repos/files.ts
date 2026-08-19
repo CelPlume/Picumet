@@ -70,18 +70,27 @@ export const FileRepo = {
     return row ? mapFile(row) : null;
   },
   async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number }): Promise<{ rows: FileMetadata[]; total: number }> {
-    const where: string[] = ['mount_id = ?', 'path = ?'];
-    const params: unknown[] = [mountId, path];
+    // 文件行 path = 父目录；文件夹行 path = 自身全路径 → 需额外匹配深度 1 的子文件夹
+    const base: string[] = [];
+    const params: unknown[] = [mountId];
+    if (opts.type) {
+      if (opts.type === 'file') {
+        base.push("type = 'file' AND path = ?");
+        params.push(path);
+      } else if (opts.type === 'folder') {
+        base.push("type = 'folder' AND path LIKE ? AND path NOT LIKE ?");
+        params.push(`${path === '/' ? '' : path}/%`, `${path === '/' ? '' : path}/%/%`);
+      }
+    } else {
+      base.push("(type = 'file' AND path = ?) OR (type = 'folder' AND path LIKE ? AND path NOT LIKE ?)");
+      params.push(path, `${path === '/' ? '' : path}/%`, `${path === '/' ? '' : path}/%/%`);
+    }
     if (opts.search) {
-      where.push('name LIKE ?');
+      base.push('name LIKE ?');
       params.push(`%${opts.search}%`);
     }
-    if (opts.type) {
-      where.push('type = ?');
-      params.push(opts.type);
-    }
-    const whereSql = where.join(' AND ');
-    const countRow = await db.first(`SELECT COUNT(*) AS c FROM file_metadata WHERE ${whereSql}`, params);
+    const whereSql = base.map((b) => `(${b})`).join(' AND ');
+    const countRow = await db.first(`SELECT COUNT(*) AS c FROM file_metadata WHERE mount_id = ? AND ${whereSql}`, params);
     const total = num(countRow?.c);
     const sortMap: Record<string, string> = {
       name: 'name',
@@ -94,7 +103,7 @@ export const FileRepo = {
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
     const rows = await db.all(
-      `SELECT * FROM file_metadata WHERE ${whereSql}
+      `SELECT * FROM file_metadata WHERE mount_id = ? AND ${whereSql}
        ORDER BY type = 'folder' DESC, ${sortCol} ${order}, name ASC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
