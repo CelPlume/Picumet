@@ -8,12 +8,14 @@ import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
 import { toast } from '@/components/ui/toast';
 import { useAuth } from '@/stores/auth';
+import { useSite } from '@/stores/site';
 
 type ProviderType = 'r2' | 's3' | 'oracle';
 
 export default function FreeMode() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const site = useSite();
   const [type, setType] = useState<ProviderType>('r2');
   const [endpoint, setEndpoint] = useState('');
   const [region, setRegion] = useState('');
@@ -54,7 +56,7 @@ export default function FreeMode() {
         <Link to="/" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> {t('common.back')}
         </Link>
-        <Logo size={24} />
+        <Logo size={24} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} />
       </header>
 
       <div className="flex flex-1 items-start justify-center px-4 py-10">

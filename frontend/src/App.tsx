@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { FullPageSpinner } from '@/components/ui/core';
 import { Toaster } from '@/components/ui/toast';
 import { useAuth } from '@/stores/auth';
+import { useSite } from '@/stores/site';
 import { apiFetch } from '@/lib/api';
 
 const Landing = lazy(() => import('@/pages/Landing'));
@@ -71,6 +72,8 @@ export default function App() {
   useEffect(() => {
     // 同步主题语言到账号（可选）
     void useAuth.getState().fetchMe();
+    // 读取站点设置（标题/Logo/Favicon）
+    void useSite.getState().load();
     // 校验免费模式会话
     if (document.cookie.includes('fm_token=')) {
       useAuth.getState().setFreeMode(true);

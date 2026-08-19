@@ -1,48 +1,79 @@
 // 主题切换 + 语言切换 + 用户菜单（顶栏小组件）
 import { useTranslation } from 'react-i18next';
-import { Moon, Sun, Languages, LogOut, Settings, Shield, User } from 'lucide-react';
+import { Moon, Sun, Languages, LogOut, Settings, Shield, User, Monitor, Check } from 'lucide-react';
 import { useAuth } from '@/stores/auth';
 import { useTheme } from '@/stores/theme';
 import { setLocale } from '@/lib/i18n';
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
 import { Button } from '@/components/ui/core';
 
+const THEME_OPTIONS = [
+  { value: 'light', label: '浅色', icon: <Sun className="h-4 w-4" /> },
+  { value: 'dark', label: '深色', icon: <Moon className="h-4 w-4" /> },
+  { value: 'system', label: '跟随系统', icon: <Monitor className="h-4 w-4" /> },
+];
+
 export function ThemeToggle() {
   const theme = useTheme((s) => s.theme);
   const set = useTheme((s) => s.set);
   const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const currentIcon = THEME_OPTIONS.find((o) => o.value === theme)?.icon ?? (dark ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />);
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      title="切换主题"
-      onClick={() => set({ theme: dark ? 'light' : 'dark' })}
+    <Dropdown
+      trigger={
+        <Button variant="ghost" size="icon" title="主题" aria-label="切换主题">
+          {currentIcon}
+        </Button>
+      }
     >
-      {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-    </Button>
+      {(close) => (
+        <>
+          <DropdownLabel>外观主题</DropdownLabel>
+          {THEME_OPTIONS.map((opt) => (
+            <DropdownItem
+              key={opt.value}
+              icon={opt.icon}
+              onClick={() => {
+                set({ theme: opt.value as 'light' | 'dark' | 'system' });
+                close();
+              }}
+            >
+              <span className="flex w-full items-center justify-between gap-8">
+                <span>{opt.label}</span>
+                {theme === opt.value && <Check className="h-4 w-4 text-primary" />}
+              </span>
+            </DropdownItem>
+          ))}
+        </>
+      )}
+    </Dropdown>
   );
 }
 
 export function LanguageSwitcher() {
   const { i18n } = useTranslation();
-  const current = i18n.language?.startsWith('en') ? 'English' : '中文';
+  const current = i18n.language?.startsWith('zh') ? '中文' : 'English';
   return (
     <Dropdown
       trigger={
-        <Button variant="ghost" size="icon" title="语言">
+        <Button variant="ghost" size="icon" title="语言" aria-label="切换语言">
           <Languages className="h-4 w-4" />
         </Button>
       }
     >
       {(close) => (
         <>
+          <DropdownLabel>语言 / Language</DropdownLabel>
           <DropdownItem
             onClick={() => {
               setLocale('zh-CN');
               close();
             }}
           >
-            <span className={i18n.language?.startsWith('zh') ? 'font-semibold' : ''}>中文</span>
+            <span className="flex w-full items-center justify-between gap-8">
+              <span>中文</span>
+              {i18n.language?.startsWith('zh') && <Check className="h-4 w-4 text-primary" />}
+            </span>
           </DropdownItem>
           <DropdownItem
             onClick={() => {
@@ -50,7 +81,10 @@ export function LanguageSwitcher() {
               close();
             }}
           >
-            <span className={i18n.language?.startsWith('en') ? 'font-semibold' : ''}>English</span>
+            <span className="flex w-full items-center justify-between gap-8">
+              <span>English</span>
+              {i18n.language?.startsWith('en') && <Check className="h-4 w-4 text-primary" />}
+            </span>
           </DropdownItem>
         </>
       )}

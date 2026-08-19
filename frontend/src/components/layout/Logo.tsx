@@ -1,5 +1,21 @@
-// 品牌 Logo
-export function Logo({ size = 32 }: { size?: number }) {
+// 品牌 Logo（支持站点自定义 Logo 图片与标题）
+export function Logo({
+  size = 32,
+  siteLogo,
+  siteTitle = 'Picumet',
+}: {
+  size?: number;
+  siteLogo?: string;
+  siteTitle?: string;
+}) {
+  if (siteLogo) {
+    return (
+      <div className="flex items-center gap-2 select-none" style={{ width: size + 90 }}>
+        <img src={siteLogo} alt={siteTitle} style={{ width: size, height: size }} className="rounded object-contain" />
+        <span className="text-lg font-bold tracking-tight">{siteTitle}</span>
+      </div>
+    );
+  }
   return (
     <div
       className="flex items-center gap-2 select-none"
