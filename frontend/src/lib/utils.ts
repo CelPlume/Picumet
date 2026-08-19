@@ -89,6 +89,21 @@ export function fileIconEmoji(name: string, type: string): string {
   return '📄';
 }
 
+export function fileIconName(name: string, type: string): string {
+  if (type === 'folder') return 'mdi:folder';
+  const ext = fileExt(name);
+  if (IMAGE_EXT.includes(ext)) return 'mdi:file-image';
+  if (VIDEO_EXT.includes(ext)) return 'mdi:file-video';
+  if (AUDIO_EXT.includes(ext)) return 'mdi:file-music';
+  if (['.pdf'].includes(ext)) return 'mdi:file-pdf-box';
+  if (['.doc', '.docx'].includes(ext)) return 'mdi:file-word';
+  if (['.xls', '.xlsx', '.csv'].includes(ext)) return 'mdi:file-excel';
+  if (['.ppt', '.pptx'].includes(ext)) return 'mdi:file-powerpoint';
+  if (['.zip', '.tar', '.gz', '.rar', '.7z'].includes(ext)) return 'mdi:archive';
+  if (CODE_EXT.includes(ext)) return 'mdi:file-code';
+  return 'mdi:file';
+}
+
 export function normalizeVirtualPath(p: string): string {
   if (!p) return '/';
   let s = p;

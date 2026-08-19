@@ -36,10 +36,10 @@ export function PropertiesPanel({
   };
 
   return (
-    <div className="flex h-full flex-col rounded-lg border bg-card">
+    <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b px-4 py-3">
         <h3 className="font-medium">{t('files.propertiesTitle')}</h3>
-        <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent">
+        <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label="关闭">
           <X className="h-4 w-4" />
         </button>
       </div>

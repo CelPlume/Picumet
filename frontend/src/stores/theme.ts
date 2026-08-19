@@ -9,6 +9,7 @@ export interface AppearanceSettings {
   backgroundType: 'none' | 'image' | 'color';
   backgroundUrl?: string;
   backgroundColor?: string;
+  fileIcons: 'iconify' | 'emoji';
 }
 
 const DEFAULT: AppearanceSettings = {
@@ -16,6 +17,7 @@ const DEFAULT: AppearanceSettings = {
   accentColor: '#3B82F6',
   enableBlur: true,
   backgroundType: 'none',
+  fileIcons: 'iconify',
 };
 
 function load(): AppearanceSettings {
@@ -33,6 +35,7 @@ interface ThemeState extends AppearanceSettings {
 
 function applyTheme(s: AppearanceSettings) {
   const root = document.documentElement;
+  const body = document.body;
   const dark =
     s.theme === 'dark' ||
     (s.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -45,13 +48,29 @@ function applyTheme(s: AppearanceSettings) {
     root.style.setProperty('--ring', `${r} ${g} ${b}`);
   }
 
-  // 背景
-  let bg = '';
-  if (s.backgroundType === 'color' && s.backgroundColor) bg = s.backgroundColor;
-  root.style.setProperty('--app-bg', bg);
-
   // 模糊
   root.style.setProperty('--enable-blur', s.enableBlur ? '1' : '0');
+
+  // 背景
+  let bg = '';
+  let bgImage = '';
+  if (s.backgroundType === 'color' && s.backgroundColor) bg = s.backgroundColor;
+  // 自定义背景图片（LocalStorage 优先）
+  const customBg = localStorage.getItem('picumet:custom-background');
+  if (s.backgroundType === 'image') {
+    const src = s.backgroundUrl || customBg || '';
+    if (src) bgImage = src;
+  }
+  if (bgImage) {
+    body.style.backgroundImage = `url(${bgImage})`;
+    body.style.backgroundSize = 'cover';
+    body.style.backgroundPosition = 'center';
+    body.style.backgroundAttachment = 'fixed';
+  } else {
+    body.style.backgroundImage = '';
+    body.style.backgroundAttachment = '';
+  }
+  root.style.setProperty('--app-bg', bg);
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {

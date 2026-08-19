@@ -1,69 +1,108 @@
 // 外观设置
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Card, CardContent, CardHeader, CardTitle, Input, Label, Switch } from '@/components/ui/core';
+import { Upload, X, Image as ImageIcon } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, Input, Label, Switch, Button } from '@/components/ui/core';
+import { RadioGroup } from '@/components/ui/radio';
+import { ColorPicker } from '@/components/ui/colorpicker';
 import { useTheme } from '@/stores/theme';
+import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
 
 const COLORS = ['#3B82F6', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#0EA5E9', '#64748B'];
 
+const MAX_BG_SIZE = 2 * 1024 * 1024; // 2MB
+
 export default function AppearancePage() {
   const { t } = useTranslation();
   const theme = useTheme();
+  const [uploadingBg, setUploadingBg] = useState(false);
+
+  const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('error', '仅支持图片文件');
+      return;
+    }
+    if (file.size > MAX_BG_SIZE) {
+      toast('error', '图片文件不能超过 2MB');
+      return;
+    }
+    setUploadingBg(true);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      theme.set({ backgroundType: 'image', backgroundUrl: base64 });
+      localStorage.setItem('picumet:custom-background', base64);
+      toast('success', '背景图片已上传');
+      setUploadingBg(false);
+    };
+    reader.onerror = () => {
+      toast('error', '图片读取失败');
+      setUploadingBg(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearBackground = () => {
+    theme.set({ backgroundType: 'none', backgroundUrl: undefined });
+    localStorage.removeItem('picumet:custom-background');
+    toast('success', '已清除背景图片');
+  };
 
   const themeOptions = [
-    { id: 'light' as const, label: t('settings.themeLight') },
-    { id: 'dark' as const, label: t('settings.themeDark') },
-    { id: 'system' as const, label: t('settings.themeSystem') },
+    { value: 'light', label: t('settings.themeLight'), description: '始终使用浅色模式' },
+    { value: 'dark', label: t('settings.themeDark'), description: '始终使用深色模式' },
+    { value: 'system', label: t('settings.themeSystem'), description: '跟随操作系统外观' },
   ];
 
   return (
-    <div className="max-w-xl space-y-4">
+    <div className="max-w-2xl space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>{t('settings.theme')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex gap-2">
-            {themeOptions.map((o) => (
-              <button
-                key={o.id}
-                onClick={() => theme.set({ theme: o.id })}
-                className={cn(
-                  'flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors',
-                  theme.theme === o.id ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
-                )}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
+          <RadioGroup
+            value={theme.theme}
+            onValueChange={(v) => theme.set({ theme: v as 'light' | 'dark' | 'system' })}
+            options={themeOptions}
+          />
 
           <div>
             <Label>{t('settings.accentColor')}</Label>
-            <div className="mt-1.5 flex flex-wrap items-center gap-2">
-              {COLORS.map((c) => (
-                <button
-                  key={c}
-                  onClick={() => theme.set({ accentColor: c })}
-                  className={cn(
-                    'h-7 w-7 rounded-full transition-transform hover:scale-110',
-                    theme.accentColor === c && 'ring-2 ring-offset-2 ring-foreground'
-                  )}
-                  style={{ background: c }}
-                />
-              ))}
-              <input
-                type="color"
-                value={theme.accentColor}
-                onChange={(e) => theme.set({ accentColor: e.target.value })}
-                className="h-7 w-9 cursor-pointer rounded border"
-              />
+            <div className="mt-1.5">
+              <ColorPicker value={theme.accentColor} onChange={(c) => theme.set({ accentColor: c })} presets={COLORS} />
             </div>
           </div>
 
           <div className="flex items-center justify-between">
-            <span className="text-sm">{t('settings.enableBlur')}</span>
+            <div>
+              <p className="text-sm font-medium">{t('settings.enableBlur')}</p>
+              <p className="text-xs text-muted-foreground">为弹窗、下拉菜单启用背景模糊</p>
+            </div>
             <Switch checked={theme.enableBlur} onChange={(v) => theme.set({ enableBlur: v })} />
+          </div>
+
+          <div>
+            <Label>文件图标风格</Label>
+            <div className="mt-1.5 flex gap-2">
+              {(['iconify', 'emoji'] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => theme.set({ fileIcons: v })}
+                  className={cn(
+                    'rounded-md border px-3 py-1.5 text-sm font-medium transition-colors',
+                    theme.fileIcons === v ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
+                  )}
+                >
+                  {v === 'iconify' ? 'Iconify 图标' : 'Emoji'}
+                </button>
+              ))}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -73,30 +112,35 @@ export default function AppearancePage() {
           <CardTitle>{t('settings.background')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex gap-2">
-            {(['none', 'image', 'color'] as const).map((bt) => (
-              <button
-                key={bt}
-                onClick={() => theme.set({ backgroundType: bt })}
-                className={cn(
-                  'flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors',
-                  theme.backgroundType === bt ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
-                )}
-              >
-                {bt === 'none' ? t('settings.backgroundNone') : bt === 'image' ? t('settings.backgroundImage') : t('settings.backgroundColor')}
-              </button>
-            ))}
-          </div>
+          <RadioGroup
+            value={theme.backgroundType}
+            onValueChange={(v) => theme.set({ backgroundType: v as 'none' | 'image' | 'color' })}
+            options={[
+              { value: 'none', label: t('settings.backgroundNone') },
+              { value: 'image', label: t('settings.backgroundImage') },
+              { value: 'color', label: t('settings.backgroundColor') },
+            ]}
+          />
 
           {theme.backgroundType === 'image' && (
-            <div>
+            <div className="space-y-2">
               <Label>{t('settings.backgroundImage')}</Label>
-              <Input
-                className="mt-1"
-                value={theme.backgroundUrl ?? ''}
-                onChange={(e) => theme.set({ backgroundUrl: e.target.value })}
-                placeholder={t('settings.backgroundUrlPlaceholder')}
-              />
+              <div className="flex gap-2">
+                <label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground hover:bg-accent">
+                  <Upload className="h-4 w-4" />
+                  {uploadingBg ? '上传中...' : '上传图片（≤2MB）'}
+                  <input type="file" accept="image/*" className="hidden" onChange={handleBackgroundUpload} disabled={uploadingBg} />
+                </label>
+                {theme.backgroundUrl && (
+                  <Button variant="outline" onClick={clearBackground}>
+                    <X className="h-4 w-4" /> 清除
+                  </Button>
+                )}
+              </div>
+              <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                <ImageIcon className="h-3.5 w-3.5" />
+                支持 JPG/PNG/WebP，最大 2MB，图片将保存在浏览器本地存储中。
+              </p>
             </div>
           )}
 

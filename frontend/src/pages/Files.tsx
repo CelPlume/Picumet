@@ -4,10 +4,12 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Upload, FolderPlus, LayoutGrid, List as ListIcon, ChevronRight, ArrowDown, ArrowUp,
-  Folder, FileText, Search, Image as ImageIcon, Film, Music, Star, Share2,
+  Folder, Search, CheckSquare,
 } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner } from '@/components/ui/core';
+import { Select } from '@/components/ui/select';
+import { Drawer } from '@/components/ui/drawer';
 import { toast } from '@/components/ui/toast';
 import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks } from '@/components/files/data';
 import { FileCard, FileRow, BulkActionsBar, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
@@ -33,6 +35,7 @@ export default function Files() {
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [multiSelect, setMultiSelect] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [previewFile, setPreviewFile] = useState<FileListItem | null>(null);
   const [propsFile, setPropsFile] = useState<FileListItem | null>(null);
@@ -43,6 +46,8 @@ export default function Files() {
   const [newFolder, setNewFolder] = useState(false);
   const [folderName, setFolderName] = useState('');
   const [bulkDelete, setBulkDelete] = useState(false);
+  const [bulkMove, setBulkMove] = useState(false);
+  const [bulkMoveTarget, setBulkMoveTarget] = useState('');
 
   useEffect(() => setPath(routePath), [routePath]);
   useEffect(() => localStorage.setItem('picumet:view', view), [view]);
@@ -119,6 +124,19 @@ export default function Files() {
       }
     },
     [copyLinks]
+  );
+
+  // 单击单选；Ctrl/Shift/⌘ 或多选模式切换选择；属性由显式操作打开
+  const handleFileClick = useCallback(
+    (e: React.MouseEvent, f: FileListItem) => {
+      e.stopPropagation();
+      if (multiSelect || e.shiftKey || e.ctrlKey || e.metaKey) {
+        toggleSelect(f.id);
+      } else {
+        setSelected(new Set([f.id]));
+      }
+    },
+    [multiSelect, toggleSelect]
   );
 
   const handlers: FileActionHandlers = {
@@ -198,14 +216,20 @@ export default function Files() {
     }
   };
 
-  const quickLinks = [
-    { icon: <Folder className="h-4 w-4 text-sky-500" />, label: '全部文件', path: '/' },
-    { icon: <ImageIcon className="h-4 w-4 text-emerald-500" />, label: '图片', path: '/图片' },
-    { icon: <Film className="h-4 w-4 text-rose-500" />, label: '视频', path: '/视频' },
-    { icon: <Music className="h-4 w-4 text-amber-500" />, label: '音乐', path: '/音乐' },
-    { icon: <FileText className="h-4 w-4 text-blue-500" />, label: '文档', path: '/文档' },
-    { icon: <Star className="h-4 w-4 text-yellow-500" />, label: '收藏', path: '/收藏' },
-  ];
+  const doBulkMove = async () => {
+    if (!bulkMoveTarget || selected.size === 0) return;
+    try {
+      for (const id of selected) {
+        await moveFile.mutateAsync({ id, targetPath: bulkMoveTarget });
+      }
+      toast('success', `已移动 ${selected.size} 项`);
+      clearSelection();
+      setBulkMove(false);
+      setBulkMoveTarget('');
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : '批量移动失败');
+    }
+  };
 
   const moveOptions = [
     { label: '根目录 /', path: '/' },
@@ -214,31 +238,7 @@ export default function Files() {
 
   return (
     <AppShell activeNav="files">
-      <div className="flex gap-4">
-        {/* 侧边栏 */}
-        <aside className="hidden w-52 shrink-0 flex-col gap-1 md:flex">
-          {quickLinks.map((q) => (
-            <button
-              key={q.label}
-              onClick={() => navigate(`/files${q.path === '/' ? '' : q.path}`)}
-              className={cn(
-                'flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-                path === q.path ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent'
-              )}
-            >
-              {q.icon}
-              {q.label}
-            </button>
-          ))}
-          <button
-            onClick={() => navigate('/shares')}
-            className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent"
-          >
-            <Share2 className="h-4 w-4 text-emerald-500" />
-            我的分享
-          </button>
-        </aside>
-
+      <div className="flex items-start gap-4">
         {/* 主区域 */}
         <div className="min-w-0 flex-1">
           {/* 面包屑 + 工具栏 */}
@@ -261,21 +261,44 @@ export default function Files() {
             </div>
             <div className="flex items-center gap-1.5">
               <Button variant="outline" size="sm" onClick={() => setShowUpload(true)}>
-                <Upload className="h-4 w-4" /> {t('files.upload')}
+                <Upload className="h-4 w-4" /> <span className="hidden sm:inline">{t('files.upload')}</span>
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setNewFolder(true)}>
+              <Button variant="outline" size="sm" onClick={() => setNewFolder(true)} className="hidden sm:inline-flex">
                 <FolderPlus className="h-4 w-4" /> {t('files.newFolder')}
               </Button>
+              {!multiSelect ? (
+                <Button variant="outline" size="sm" onClick={() => setMultiSelect(true)}>
+                  <CheckSquare className="h-4 w-4" /> <span className="hidden sm:inline">选择</span>
+                </Button>
+              ) : (
+                <>
+                  <Button variant="outline" size="sm" onClick={() => setSelected(new Set(items.map((f) => f.id)))}>
+                    全选
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      clearSelection();
+                      setMultiSelect(false);
+                    }}
+                  >
+                    退出
+                  </Button>
+                </>
+              )}
               <div className="ml-1 flex items-center rounded-md border">
                 <button
                   onClick={() => setView('grid')}
                   className={cn('rounded-l-md p-1.5', view === 'grid' ? 'bg-accent' : 'text-muted-foreground')}
+                  aria-label="卡片视图"
                 >
                   <LayoutGrid className="h-4 w-4" />
                 </button>
                 <button
                   onClick={() => setView('list')}
                   className={cn('rounded-r-md p-1.5', view === 'list' ? 'bg-accent' : 'text-muted-foreground')}
+                  aria-label="列表视图"
                 >
                   <ListIcon className="h-4 w-4" />
                 </button>
@@ -284,22 +307,26 @@ export default function Files() {
           </div>
 
           {/* 搜索 + 排序 */}
-          <div className="mb-3 flex items-center gap-2">
-            <div className="relative max-w-sm flex-1">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[140px] max-w-sm flex-1">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className="pl-8" />
             </div>
+            <Select
+              value={sort ?? 'name'}
+              onValueChange={(v) => setSort(v === 'name' ? undefined : v)}
+              options={[
+                { value: 'name', label: '按名称' },
+                { value: 'time', label: '按时间' },
+                { value: 'size', label: '按大小' },
+              ]}
+              className="w-28"
+            />
             <button
-              onClick={() => {
-                const opts = ['name', 'time', 'size'] as const;
-                const idx = opts.indexOf((sort as (typeof opts)[number]) ?? 'name');
-                setSort(opts[(idx + 1) % opts.length]);
-              }}
-              className="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-accent"
+              onClick={() => setOrder((o) => (o === 'asc' ? 'desc' : 'asc'))}
+              className="rounded-md border p-1.5 text-muted-foreground hover:bg-accent"
+              title={order === 'asc' ? '升序' : '降序'}
             >
-              {sort === 'time' ? '时间' : sort === 'size' ? '大小' : '名称'}
-            </button>
-            <button onClick={() => setOrder((o) => (o === 'asc' ? 'desc' : 'asc'))} className="rounded-md border p-1.5 text-muted-foreground hover:bg-accent">
               {order === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
             </button>
           </div>
@@ -320,7 +347,7 @@ export default function Files() {
               }
             />
           ) : view === 'grid' ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
               {items.map((f) => (
                 <FileCard
                   key={f.id}
@@ -329,6 +356,9 @@ export default function Files() {
                   onSelect={() => toggleSelect(f.id)}
                   onDoubleClick={() => openItem(f)}
                   onContext={(e) => contextMenu(e, f)}
+                  onSingleClick={handleFileClick}
+                  handlers={handlers}
+                  multiSelect={multiSelect}
                 />
               ))}
             </div>
@@ -342,6 +372,9 @@ export default function Files() {
                   onSelect={() => toggleSelect(f.id)}
                   onDoubleClick={() => openItem(f)}
                   onContext={(e) => contextMenu(e, f)}
+                  onSingleClick={handleFileClick}
+                  handlers={handlers}
+                  multiSelect={multiSelect}
                 />
               ))}
             </div>
@@ -349,17 +382,32 @@ export default function Files() {
 
           {selected.size > 0 && (
             <div className="sticky bottom-4 mt-4">
-              <BulkActionsBar count={selected.size} onClear={clearSelection} onMove={() => toast('info', '请使用文件右键菜单移动')} onDelete={() => setBulkDelete(true)} />
+              <BulkActionsBar
+                count={selected.size}
+                onClear={clearSelection}
+                onMove={() => setBulkMove(true)}
+                onDelete={() => setBulkDelete(true)}
+              />
             </div>
           )}
         </div>
 
-        {propsFile && (
-          <aside className="hidden w-72 shrink-0 lg:block">
+        {/* 宽屏：固定属性侧栏（xl+） - 始终渲染 */}
+        <aside className="hidden xl:block w-80 shrink-0 overflow-hidden border-l bg-muted/20">
+          {propsFile ? (
             <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
-          </aside>
-        )}
+          ) : (
+            <div className="flex h-full min-h-[16rem] items-center justify-center p-4 text-sm text-muted-foreground">
+              选择文件查看属性
+            </div>
+          )}
+        </aside>
       </div>
+
+      {/* 窄屏：属性抽屉（<xl） */}
+      <Drawer open={!!propsFile} onClose={() => setPropsFile(null)} side="right" className="xl:hidden">
+        <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
+      </Drawer>
 
       {/* ===== 弹窗 ===== */}
       {showUpload && (
@@ -414,6 +462,35 @@ export default function Files() {
               key={o.path}
               onClick={() => void doMove(o.path)}
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
+            >
+              <Folder className="h-4 w-4 text-sky-500" />
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </Dialog>
+
+      {/* 批量移动 */}
+      <Dialog
+        open={bulkMove}
+        onClose={() => setBulkMove(false)}
+        title="批量移动"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setBulkMove(false)}>{t('common.cancel')}</Button>
+            <Button onClick={doBulkMove} disabled={!bulkMoveTarget}>{t('common.confirm')}</Button>
+          </>
+        }
+      >
+        <div className="space-y-1">
+          {moveOptions.map((o) => (
+            <button
+              key={o.path}
+              onClick={() => setBulkMoveTarget(o.path)}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent',
+                bulkMoveTarget === o.path && 'bg-accent font-medium'
+              )}
             >
               <Folder className="h-4 w-4 text-sky-500" />
               {o.label}
