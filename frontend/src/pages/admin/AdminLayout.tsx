@@ -1,7 +1,7 @@
 // 管理后台布局
 import { NavLink, Outlet } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { LayoutDashboard, Users, HardDrive, FolderTree, ShieldCheck, Share2, Files, ScrollText, Settings } from 'lucide-react';
+import { LayoutDashboard, Users, HardDrive, ShieldCheck, Share2, Files, ScrollText, Settings } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { cn } from '@/lib/utils';
 
@@ -11,7 +11,6 @@ export default function AdminLayout() {
     { to: '/admin', end: true, icon: <LayoutDashboard className="h-4 w-4" />, label: t('admin.dashboard') },
     { to: '/admin/users', icon: <Users className="h-4 w-4" />, label: t('admin.users') },
     { to: '/admin/storage', icon: <HardDrive className="h-4 w-4" />, label: t('admin.storage') },
-    { to: '/admin/mounts', icon: <FolderTree className="h-4 w-4" />, label: t('admin.mounts') },
     { to: '/admin/permissions', icon: <ShieldCheck className="h-4 w-4" />, label: t('admin.permissions') },
     { to: '/admin/shares', icon: <Share2 className="h-4 w-4" />, label: t('admin.shares') },
     { to: '/admin/files', icon: <Files className="h-4 w-4" />, label: t('admin.files') },

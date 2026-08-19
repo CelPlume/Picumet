@@ -25,7 +25,6 @@ const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'));
 const AdminDashboard = lazy(() => import('@/pages/admin/Dashboard'));
 const AdminUsers = lazy(() => import('@/pages/admin/Users'));
 const AdminStorage = lazy(() => import('@/pages/admin/Storage'));
-const AdminMounts = lazy(() => import('@/pages/admin/Mounts'));
 const AdminPermissions = lazy(() => import('@/pages/admin/Permissions'));
 const AdminShares = lazy(() => import('@/pages/admin/Shares'));
 const AdminFiles = lazy(() => import('@/pages/admin/Files'));
@@ -115,7 +114,7 @@ export default function App() {
             <Route index element={<AdminDashboard />} />
             <Route path="users" element={<AdminUsers />} />
             <Route path="storage" element={<AdminStorage />} />
-            <Route path="mounts" element={<AdminMounts />} />
+            <Route path="mounts" element={<Navigate to="/admin/storage?tab=mounts" replace />} />
             <Route path="permissions" element={<AdminPermissions />} />
             <Route path="shares" element={<AdminShares />} />
             <Route path="files" element={<AdminFiles />} />
