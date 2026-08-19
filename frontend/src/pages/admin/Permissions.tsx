@@ -3,7 +3,11 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog, Switch } from '@/components/ui/core';
+import { Select } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from '@/components/ui/toast';
+import { Pagination } from '@/components/ui/pagination';
 import { apiFetch, ApiError } from '@/lib/api';
 
 interface Rule {
@@ -34,7 +38,13 @@ export default function AdminPermissions() {
   const { t } = useTranslation();
   const [rules, setRules] = useState<Rule[]>([]);
   const [mounts, setMounts] = useState<MountItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
+  const [editMode, setEditMode] = useState<'gui' | 'code'>('gui');
+  const [jsonText, setJsonText] = useState('');
+  const [jsonError, setJsonError] = useState<string | null>(null);
   const [form, setForm] = useState<Record<string, string | boolean | string[]>>({
     pathPattern: '/public/**',
     effect: 'allow',
@@ -46,17 +56,19 @@ export default function AdminPermissions() {
 
   const load = async () => {
     const [rRes, mRes] = await Promise.all([
-      apiFetch<{ rules: Rule[] }>('/api/admin/rules'),
+      apiFetch<{ rules: Rule[]; pagination: { total: number } }>(`/api/admin/rules?page=${page}&limit=${pageSize}`),
       apiFetch<{ mounts: MountItem[] }>('/api/admin/mounts'),
     ]);
     const mountById = new Map(mRes.data.mounts.map((m) => [m.id, m]));
     setRules(rRes.data.rules.map((r) => ({ ...r, mountName: r.mountId ? mountById.get(r.mountId)?.name : undefined })));
+    setTotal(rRes.data.pagination.total);
     setMounts(mRes.data.mounts);
   };
 
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize]);
 
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -103,8 +115,8 @@ export default function AdminPermissions() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{t('admin.permissions')} · {rules.length} 条</p>
-        <Button onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('admin.addRule')}</Button>
+        <p className="text-sm text-muted-foreground">{t('admin.permissions')} · {total} 条</p>
+        <Button onClick={() => { setShowCreate(true); setEditMode('gui'); setJsonError(null); setJsonText(''); }}><Plus className="h-4 w-4" /> {t('admin.addRule')}</Button>
       </div>
 
       <div className="space-y-2">
@@ -128,6 +140,16 @@ export default function AdminPermissions() {
         {rules.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">暂无权限规则</p>}
       </div>
 
+      {total > 0 && (
+        <Pagination
+          page={page}
+          total={total}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+        />
+      )}
+
       <Dialog
         open={showCreate}
         onClose={() => setShowCreate(false)}
@@ -139,45 +161,74 @@ export default function AdminPermissions() {
           </>
         }
       >
-        <div className="space-y-3">
+        <Tabs value={editMode} onValueChange={(v) => setEditMode(v as 'gui' | 'code')}>
+          <TabsList className="mb-3">
+            <TabsTrigger value="gui">
+              <span className="mr-1 text-base leading-none">◧</span> 图形化编辑
+            </TabsTrigger>
+            <TabsTrigger value="code">
+              <span className="mr-1 font-mono text-base leading-none">{'{}'}</span> 代码编辑
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="gui" className="mt-0 space-y-3">
           <div>
             <Label>{t('admin.rulePath')}</Label>
             <Input className="mt-1 font-mono" value={form.pathPattern as string} onChange={(e) => set('pathPattern', e.target.value)} placeholder="/public/**" />
           </div>
           <div>
             <Label>挂载点</Label>
-            <select value={form.mountId as string} onChange={(e) => set('mountId', e.target.value)} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-              <option value="">全部挂载（全局规则）</option>
-              {mounts.map((m) => (
-                <option key={m.id} value={m.id}>{m.name} · {m.mountPath}</option>
-              ))}
-            </select>
+            <Select
+              value={form.mountId as string}
+              onValueChange={(v) => set('mountId', v)}
+              placeholder="全部挂载（全局规则）"
+              className="mt-1"
+              options={[
+                { value: '', label: '全部挂载（全局规则）' },
+                ...mounts.map((m) => ({ value: m.id, label: `${m.name} · ${m.mountPath}` })),
+              ]}
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>{t('admin.ruleEffect')}</Label>
-              <select value={form.effect as string} onChange={(e) => set('effect', e.target.value)} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                <option value="allow">allow</option>
-                <option value="deny">deny</option>
-              </select>
+              <Select
+                value={form.effect as string}
+                onValueChange={(v) => set('effect', v)}
+                className="mt-1"
+                options={[
+                  { value: 'allow', label: 'allow' },
+                  { value: 'deny', label: 'deny' },
+                ]}
+              />
             </div>
             <div>
               <Label>主体</Label>
-              <select value={form.subject as string} onChange={(e) => set('subject', e.target.value)} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                <option value="role">角色</option>
-                <option value="user">用户 ID</option>
-                <option value="guest">访客</option>
-              </select>
+              <Select
+                value={form.subject as string}
+                onValueChange={(v) => set('subject', v)}
+                className="mt-1"
+                options={[
+                  { value: 'role', label: '角色' },
+                  { value: 'user', label: '用户 ID' },
+                  { value: 'guest', label: '访客' },
+                ]}
+              />
             </div>
           </div>
           {form.subject === 'role' && (
             <div>
               <Label>角色</Label>
-              <select value={form.role as string} onChange={(e) => set('role', e.target.value)} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                <option value="user">user</option>
-                <option value="guest">guest</option>
-                <option value="admin">admin</option>
-              </select>
+              <Select
+                value={form.role as string}
+                onValueChange={(v) => set('role', v)}
+                className="mt-1"
+                options={[
+                  { value: 'user', label: 'user' },
+                  { value: 'guest', label: 'guest' },
+                  { value: 'admin', label: 'admin' },
+                ]}
+              />
             </div>
           )}
           {form.subject === 'user' && (
@@ -191,7 +242,7 @@ export default function AdminPermissions() {
             <div className="mt-1 flex flex-wrap gap-3">
               {ALL_PERMS.map((p) => (
                 <label key={p} className="flex items-center gap-1.5 text-sm">
-                  <input type="checkbox" checked={((form.permissions as string[]) ?? []).includes(p)} onChange={() => togglePerm(p)} />
+                  <Checkbox checked={((form.permissions as string[]) ?? []).includes(p)} onChange={() => togglePerm(p)} label={p} />
                   {p}
                 </label>
               ))}
@@ -213,7 +264,43 @@ export default function AdminPermissions() {
               <Input type="password" className="mt-1" value={(form.password as string) ?? ''} onChange={(e) => set('password', e.target.value)} />
             </div>
           )}
-        </div>
+          </TabsContent>
+
+          <TabsContent value="code" className="mt-0">
+            <div>
+              <Label>权限配置 JSON</Label>
+              <textarea
+                value={jsonText}
+                onChange={(e) => {
+                  const text = e.target.value;
+                  setJsonText(text);
+                  try {
+                    const parsed = JSON.parse(text);
+                    setJsonError(null);
+                    // 同步回 GUI 表单
+                    if (parsed.pathPattern !== undefined) set('pathPattern', String(parsed.pathPattern));
+                    if (parsed.effect !== undefined) set('effect', String(parsed.effect));
+                    if (parsed.mountId !== undefined) set('mountId', String(parsed.mountId));
+                    if (parsed.subject !== undefined) set('subject', String(parsed.subject));
+                    if (parsed.role !== undefined) set('role', String(parsed.role));
+                    if (parsed.userId !== undefined) set('userId', String(parsed.userId));
+                    if (parsed.priority !== undefined) set('priority', String(parsed.priority));
+                    if (parsed.requirePassword !== undefined) set('requirePassword', Boolean(parsed.requirePassword));
+                    if (Array.isArray(parsed.permissions)) setForm((f) => ({ ...f, permissions: parsed.permissions }));
+                  } catch {
+                    setJsonError('JSON 格式错误');
+                  }
+                }}
+                className="h-64 w-full rounded-md border border-input bg-background p-3 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                placeholder='{"pathPattern": "/public/**", "effect": "allow", "permissions": ["read", "download"]}'
+              />
+              {jsonError && <p className="mt-2 text-sm text-destructive">{jsonError}</p>}
+              <p className="mt-2 text-xs text-muted-foreground">
+                在代码模式下编辑 JSON 将同步更新图形化表单，保存时以图形化表单为准。
+              </p>
+            </div>
+          </TabsContent>
+        </Tabs>
       </Dialog>
     </div>
   );

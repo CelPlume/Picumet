@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ScrollText } from 'lucide-react';
 import { Card, Badge } from '@/components/ui/core';
+import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime, formatBytes } from '@/lib/utils';
 
@@ -30,10 +31,17 @@ const ACTION_COLOR: Record<string, string> = {
 export default function AdminLogs() {
   const { t } = useTranslation();
   const [logs, setLogs] = useState<LogRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   useEffect(() => {
-    void apiFetch<{ logs: LogRow[] }>('/api/admin/logs?limit=100').then((res) => setLogs(res.data.logs));
-  }, []);
+    void apiFetch<{ logs: LogRow[]; pagination: { total: number } }>(`/api/admin/logs?page=${page}&limit=${pageSize}`)
+      .then((res) => {
+        setLogs(res.data.logs);
+        setTotal(res.data.pagination.total);
+      });
+  }, [page, pageSize]);
 
   return (
     <div className="space-y-2">
@@ -51,6 +59,16 @@ export default function AdminLogs() {
         </Card>
       ))}
       {logs.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">暂无日志</p>}
+
+      {total > 0 && (
+        <Pagination
+          page={page}
+          total={total}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+        />
+      )}
     </div>
   );
 }

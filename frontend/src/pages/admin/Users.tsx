@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Pencil, Trash2 } from 'lucide-react';
 import { Card, Button, Input, Badge, Dialog, Label, Switch } from '@/components/ui/core';
+import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
+import { Pagination } from '@/components/ui/pagination';
 import { apiFetch, ApiError } from '@/lib/api';
 import { formatBytes, formatDate } from '@/lib/utils';
 import type { Quota, User } from '@shared/types';
@@ -17,6 +19,7 @@ export default function AdminUsers() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<UserRow | null>(null);
   const [role, setRole] = useState('user');
@@ -25,7 +28,7 @@ export default function AdminUsers() {
   const [maxFiles, setMaxFiles] = useState('10000');
 
   const load = async () => {
-    const q = new URLSearchParams({ page: String(page), limit: '20' });
+    const q = new URLSearchParams({ page: String(page), limit: String(pageSize) });
     if (search) q.set('search', search);
     const res = await apiFetch<{ users: UserRow[]; pagination: { total: number } }>(`/api/admin/users?${q}`);
     setUsers(res.data.users);
@@ -35,7 +38,7 @@ export default function AdminUsers() {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search]);
+  }, [page, pageSize, search]);
 
   const save = async () => {
     if (!editing) return;
@@ -131,11 +134,13 @@ export default function AdminUsers() {
         </table>
       </Card>
 
-      <div className="flex items-center justify-end gap-2 text-sm">
-        <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>上一页</Button>
-        <span className="text-muted-foreground">{page}</span>
-        <Button variant="outline" size="sm" disabled={page * 20 >= total} onClick={() => setPage((p) => p + 1)}>下一页</Button>
-      </div>
+      <Pagination
+        page={page}
+        total={total}
+        pageSize={pageSize}
+        onPageChange={setPage}
+        onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+      />
 
       <Dialog
         open={!!editing}
@@ -152,19 +157,29 @@ export default function AdminUsers() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>{t('admin.userRole')}</Label>
-              <select value={role} onChange={(e) => setRole(e.target.value)} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                <option value="admin">{t('admin.admin')}</option>
-                <option value="user">{t('admin.user')}</option>
-                <option value="guest">{t('admin.guest')}</option>
-              </select>
+              <Select
+                value={role}
+                onValueChange={setRole}
+                className="mt-1"
+                options={[
+                  { value: 'admin', label: t('admin.admin') },
+                  { value: 'user', label: t('admin.user') },
+                  { value: 'guest', label: t('admin.guest') },
+                ]}
+              />
             </div>
             <div>
               <Label>{t('admin.userStatus')}</Label>
-              <select value={status} onChange={(e) => setStatus(e.target.value)} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                <option value="active">{t('admin.active')}</option>
-                <option value="disabled">{t('admin.disabled')}</option>
-                <option value="banned">{t('admin.banned')}</option>
-              </select>
+              <Select
+                value={status}
+                onValueChange={setStatus}
+                className="mt-1"
+                options={[
+                  { value: 'active', label: t('admin.active') },
+                  { value: 'disabled', label: t('admin.disabled') },
+                  { value: 'banned', label: t('admin.banned') },
+                ]}
+              />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
