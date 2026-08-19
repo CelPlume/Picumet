@@ -1,4 +1,4 @@
-// 上传服务 Zod schemas（spec_refactored.md §上传服务）
+// 上传服务 Zod schemas（docs/ARCHITECTURE_CN.md §上传服务）
 import { z } from 'zod';
 
 // 初始化上传会话（单文件 / 分片）

@@ -1,4 +1,4 @@
-// 共享 Zod schemas：路径、文件名、分页、UUID、密码（spec_refactored.md §共享基础设施）
+// 共享 Zod schemas：路径、文件名、分页、UUID、密码（docs/ARCHITECTURE_CN.md §共享基础设施）
 import { z } from 'zod';
 
 // 路径验证：必须以 / 开头，长度限制

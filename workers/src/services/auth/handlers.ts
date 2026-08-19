@@ -119,7 +119,7 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
   );
 });
 
-// 邮箱验证（M-5：与 requirements-matrix 的 /api/auth/verify 命名对齐，提供兼容别名）
+// 邮箱验证（M-5：与 docs/API_CN.md 记录的 /api/auth/verify 命名对齐，提供兼容别名）
 const verifyEmailHandler = async (c: Parameters<typeof ok>[0]) => {
   const db = getDb(c);
   const token = c.req.query('token');

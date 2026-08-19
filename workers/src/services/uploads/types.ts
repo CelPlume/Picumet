@@ -1,4 +1,4 @@
-// 上传服务类型（spec_refactored.md §上传服务）
+// 上传服务类型（docs/ARCHITECTURE_CN.md §上传服务）
 import type { UploadSession, UploadSessionStatus } from '@shared/types';
 import type { InitUploadRequest } from './schemas';
 

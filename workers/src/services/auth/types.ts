@@ -1,4 +1,4 @@
-// 认证服务类型（spec_refactored.md §认证服务）
+// 认证服务类型（docs/ARCHITECTURE_CN.md §认证服务）
 import type { Role } from '@shared/types';
 import type { RegisterRequest, LoginRequest } from './schemas';
 

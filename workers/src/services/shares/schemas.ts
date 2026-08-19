@@ -1,4 +1,4 @@
-// 分享服务 Zod schemas（spec_refactored.md §分享服务）
+// 分享服务 Zod schemas（docs/ARCHITECTURE_CN.md §分享服务）
 import { z } from 'zod';
 
 // 创建分享链接

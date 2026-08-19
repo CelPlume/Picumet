@@ -1,4 +1,4 @@
-// 权限判定服务：实现 spec.md 的核心权限算法
+// 权限判定服务：实现 docs/ARCHITECTURE_CN.md 的核心权限算法
 import type {
   Principal,
   Mount,

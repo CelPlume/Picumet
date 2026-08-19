@@ -1,4 +1,4 @@
-// 文件服务 Zod schemas（spec_refactored.md §文件管理服务）
+// 文件服务 Zod schemas（docs/ARCHITECTURE_CN.md §文件管理服务）
 import { z } from 'zod';
 
 // 更新元数据 / 重命名

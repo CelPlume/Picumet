@@ -1,4 +1,4 @@
-// 认证服务 Zod schemas（spec_refactored.md §认证服务）
+// 认证服务 Zod schemas（docs/ARCHITECTURE_CN.md §认证服务）
 import { z } from 'zod';
 
 export const RegisterSchema = z.object({

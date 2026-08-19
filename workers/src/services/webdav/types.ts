@@ -1,4 +1,4 @@
-// WebDAV 服务类型（spec_refactored.md §WebDAV服务）
+// WebDAV 服务类型（docs/ARCHITECTURE_CN.md §WebDAV服务）
 
 /** WebDAV 资源（PROPFIND 响应项） */
 export interface WebDAVResource {
