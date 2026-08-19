@@ -38,7 +38,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       className={cn(
-        'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-colors',
+        'button-press inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50',
         btnVariants[variant],
         btnSizes[size],
@@ -170,25 +170,53 @@ export function Progress({ value, className }: { value: number; className?: stri
 }
 
 // ============ Switch ============
-export function Switch({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  loading,
+  size = 'default',
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  loading?: boolean;
+  size?: 'sm' | 'default' | 'lg';
+}) {
+  const sizes = {
+    sm: { container: 'h-4 w-7', thumb: 'h-3 w-3', translate: 'translate-x-[14px]' },
+    default: { container: 'h-5 w-9', thumb: 'h-4 w-4', translate: 'translate-x-[18px]' },
+    lg: { container: 'h-6 w-11', thumb: 'h-5 w-5', translate: 'translate-x-[22px]' },
+  };
+  const s = sizes[size];
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
-      disabled={disabled}
+      disabled={disabled || loading}
       onClick={() => onChange(!checked)}
       className={cn(
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+        'relative inline-flex shrink-0 items-center rounded-full transition-colors',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        'disabled:cursor-not-allowed disabled:opacity-50',
+        s.container,
         checked ? 'bg-primary' : 'bg-input'
       )}
     >
       <span
         className={cn(
-          'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
-          checked ? 'translate-x-[18px]' : 'translate-x-[2px]'
+          'inline-block transform rounded-full bg-white shadow-sm transition-transform',
+          s.thumb,
+          checked ? s.translate : 'translate-x-[2px]'
         )}
-      />
+      >
+        {loading && (
+          <span className="flex h-full w-full items-center justify-center">
+            <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
+          </span>
+        )}
+      </span>
     </button>
   );
 }

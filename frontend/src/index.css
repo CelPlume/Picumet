@@ -22,6 +22,15 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
+
+    /* 动画时长 */
+    --duration-fast: 150ms;
+    --duration-base: 300ms;
+    --duration-slow: 500ms;
+
+    /* 缓动函数 */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in: cubic-bezier(0.32, 0, 0.67, 0);
   }
 
   .dark {
@@ -78,4 +87,152 @@
 .dropzone-active {
   outline: 2px dashed hsl(var(--primary));
   outline-offset: -2px;
+}
+
+/* ============ 动画系统 ============ */
+@keyframes dialog-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialog-content-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-from-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slide-in-from-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slide-in-from-top {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes slide-in-from-bottom {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-dialog-overlay {
+  animation: dialog-overlay-in var(--duration-base) var(--ease-out);
+}
+
+.animate-dialog-content {
+  animation: dialog-content-in var(--duration-base) var(--ease-out);
+}
+
+.animate-dropdown {
+  animation: dropdown-in var(--duration-fast) var(--ease-out);
+}
+
+.animate-fade-in {
+  animation: fade-in var(--duration-base) var(--ease-out);
+}
+
+.animate-scale-in {
+  animation: scale-in var(--duration-base) var(--ease-out);
+}
+
+.animate-slide-in-from-right {
+  animation: slide-in-from-right var(--duration-base) var(--ease-out);
+}
+
+.animate-slide-in-from-left {
+  animation: slide-in-from-left var(--duration-base) var(--ease-out);
+}
+
+.animate-slide-in-from-top {
+  animation: slide-in-from-top var(--duration-base) var(--ease-out);
+}
+
+.animate-slide-in-from-bottom {
+  animation: slide-in-from-bottom var(--duration-base) var(--ease-out);
+}
+
+/* 卡片悬停 */
+.card-hover {
+  transition: box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+.card-hover:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+/* 按钮按压 */
+.button-press:active {
+  transform: scale(0.98);
+  transition: transform 100ms ease-out;
+}
+
+/* 网格背景 */
+.grid-pattern {
+  background-image: linear-gradient(to right, rgb(0 0 0 / 0.05) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgb(0 0 0 / 0.05) 1px, transparent 1px);
+  background-size: 4rem 4rem;
+}
+
+.dark .grid-pattern {
+  background-image: linear-gradient(to right, rgb(255 255 255 / 0.03) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgb(255 255 255 / 0.03) 1px, transparent 1px);
+}
+
+.radial-mask {
+  mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, #000 70%, transparent 110%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, #000 70%, transparent 110%);
+}
+
+/* 页面过渡 */
+.page-enter {
+  animation: fade-in var(--duration-base) var(--ease-out);
+}
+
+/* ============ 降级方案 ============ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@supports not (backdrop-filter: blur(4px)) {
+  .backdrop-blur-sm {
+    background-color: rgba(0, 0, 0, 0.75);
+  }
 }

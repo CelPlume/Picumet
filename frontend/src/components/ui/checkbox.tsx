@@ -1,0 +1,85 @@
+// 复选框组件（shadcn 风格）
+import { Check, Minus } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+export function Checkbox({
+  checked,
+  onChange,
+  indeterminate = false,
+  disabled = false,
+  className,
+  label,
+  id,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  indeterminate?: boolean;
+  disabled?: boolean;
+  className?: string;
+  label?: string;
+  id?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={indeterminate ? 'mixed' : checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        onChange(!checked);
+      }}
+      className={cn(
+        'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border border-primary transition-all',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        'disabled:cursor-not-allowed disabled:opacity-50',
+        checked || indeterminate
+          ? 'bg-primary text-primary-foreground'
+          : 'bg-background hover:bg-accent',
+        className
+      )}
+      id={id}
+    >
+      {indeterminate ? (
+        <Minus className="h-3 w-3" />
+      ) : checked ? (
+        <Check className="h-3 w-3" strokeWidth={3} />
+      ) : null}
+    </button>
+  );
+}
+
+export function CheckboxWithLabel({
+  checked,
+  onChange,
+  label,
+  description,
+  disabled,
+  className,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={cn('flex items-start gap-2', className)}>
+      <Checkbox checked={checked} onChange={onChange} disabled={disabled} label={label} />
+      <div className="grid gap-0.5 leading-none">
+        <span
+          className={cn(
+            'cursor-pointer select-none text-sm font-medium',
+            disabled && 'cursor-not-allowed opacity-50'
+          )}
+          onClick={() => !disabled && onChange(!checked)}
+        >
+          {label}
+        </span>
+        {description && <p className="text-xs text-muted-foreground">{description}</p>}
+      </div>
+    </div>
+  );
+}

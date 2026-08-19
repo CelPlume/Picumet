@@ -37,11 +37,11 @@ export function Dialog({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <div className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="animate-dialog-overlay absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div
         className={cn(
-          'relative z-10 w-full rounded-lg border bg-card p-5 shadow-xl',
+          'animate-scale-in relative z-10 w-full rounded-xl border bg-card p-5 shadow-2xl',
           width
         )}
       >
