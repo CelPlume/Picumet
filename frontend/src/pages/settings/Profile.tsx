@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Badge, Progress } from '@/components/ui/core';
+import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/stores/auth';
@@ -60,7 +61,7 @@ export default function ProfilePage() {
   const q = data.quota;
 
   return (
-    <div className="max-w-xl space-y-4">
+    <div className="max-w-2xl space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>{t('settings.profile')}</CardTitle>
@@ -92,26 +93,16 @@ export default function ProfilePage() {
             <Input className="mt-1" value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://..." />
           </div>
           <div>
-            <Label>{t('settings.email')}</Label>
-            <div className="mt-1 flex items-center gap-2">
-              <Input readOnly value={data.profile.email} className="bg-muted/50" />
-              {data.profile.emailVerified ? (
-                <Badge variant="success">{t('settings.verified')}</Badge>
-              ) : (
-                <Badge variant="warning">{t('settings.notVerified')}</Badge>
-              )}
-            </div>
-          </div>
-          <div>
             <Label>{t('settings.language')}</Label>
-            <select
+            <Select
               value={locale}
-              onChange={(e) => setLocaleState(e.target.value)}
-              className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="zh-CN">中文</option>
-              <option value="en-US">English</option>
-            </select>
+              onValueChange={setLocaleState}
+              className="mt-1"
+              options={[
+                { value: 'zh-CN', label: '中文' },
+                { value: 'en-US', label: 'English' },
+              ]}
+            />
           </div>
           <div>
             <Label>{t('settings.defaultPath')}</Label>

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Copy, Trash2, Check } from 'lucide-react';
 import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch } from '@/components/ui/core';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { timeAgo } from '@/lib/utils';
@@ -158,7 +159,7 @@ export default function ApiKeysPage() {
             <div className="mt-1 flex gap-3">
               {['read', 'write', 'delete'].map((p) => (
                 <label key={p} className="flex items-center gap-1.5 text-sm">
-                  <input type="checkbox" checked={permissions.includes(p)} onChange={() => togglePerm(p)} />
+                  <Checkbox checked={permissions.includes(p)} onChange={() => togglePerm(p)} label={p} />
                   {p}
                 </label>
               ))}
@@ -169,7 +170,7 @@ export default function ApiKeysPage() {
             <div className="mt-1 flex gap-3">
               {['webdav', 'api'].map((p) => (
                 <label key={p} className="flex items-center gap-1.5 text-sm">
-                  <input type="checkbox" checked={protocols.includes(p)} onChange={() => toggleProto(p)} />
+                  <Checkbox checked={protocols.includes(p)} onChange={() => toggleProto(p)} label={p === 'webdav' ? t('settings.webdav') : t('settings.customApi')} />
                   {p === 'webdav' ? t('settings.webdav') : t('settings.customApi')}
                 </label>
               ))}
