@@ -39,10 +39,6 @@ hljs.registerLanguage('yaml', yaml);
 hljs.registerLanguage('xml', xml);
 hljs.registerLanguage('bash', bash);
 
-function resolveUrl(file: FileListItem): string {
-  return `/api/files/${file.id}/download`;
-}
-
 export function PreviewModal({
   file,
   onClose,
@@ -58,6 +54,7 @@ export function PreviewModal({
   const verify = useVerifyPassword();
   const [password, setPassword] = useState('');
   const [verifiedUrl, setVerifiedUrl] = useState<string | null>(null);
+  const [contentUrl, setContentUrl] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [content, setContent] = useState<string | null>(null);
@@ -67,16 +64,30 @@ export function PreviewModal({
 
   useEffect(() => {
     setVerifiedUrl(null);
+    setContentUrl(null);
     setPassword('');
     setZoom(1);
     setRotation(0);
     setContent(null);
   }, [file?.id]);
 
-  const url = useMemo(() => {
-    if (file?.hasPassword && !verifiedUrl) return null;
-    return verifiedUrl ?? (file ? resolveUrl(file) : null);
-  }, [file, verifiedUrl]);
+  // 无密码文件：解析真实下载 URL（download 端点返回 {url}，需先取网关地址）
+  useEffect(() => {
+    if (!file || file.hasPassword) return;
+    let cancelled = false;
+    apiFetch<{ url: string }>(`/api/files/${file.id}/download`)
+      .then((res) => {
+        if (!cancelled) setContentUrl(res.data.url);
+      })
+      .catch(() => {
+        if (!cancelled) setContentUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [file?.id]);
+
+  const url = useMemo(() => verifiedUrl ?? contentUrl, [verifiedUrl, contentUrl]);
 
   // 代码文件加载纯文本（先 HTML 转义再高亮，双重防注入）
   useEffect(() => {
@@ -128,22 +139,23 @@ export function PreviewModal({
             {verify.isError && <p className="mt-2 text-sm text-destructive">{t('err.invalidPassword')}</p>}
           </div>
         ) : isImage(file.name) ? (
-          <div className="flex flex-col items-center">
+          <div className="relative flex h-full w-full items-center justify-center">
             <img
               src={url ?? ''}
               alt={file.name}
               className="max-h-[52vh] max-w-full object-contain transition-transform"
               style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
             />
-            <div className="mt-3 flex items-center gap-1 rounded-md bg-background p-1 shadow">
-              <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}>
+            {/* 控件固定于底部且置于图片之上，避免被放大后的图片遮挡 */}
+            <div className="absolute bottom-2 left-1/2 z-20 -translate-x-1/2 flex items-center gap-1 rounded-md bg-background/95 p-1 shadow backdrop-blur">
+              <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))} aria-label="缩小">
                 <ZoomOut className="h-4 w-4" />
               </Button>
               <span className="w-12 text-center text-xs">{Math.round(zoom * 100)}%</span>
-              <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.min(3, z + 0.1))}>
+              <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.min(3, z + 0.1))} aria-label="放大">
                 <ZoomIn className="h-4 w-4" />
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setRotation((r) => (r + 90) % 360)}>
+              <Button variant="ghost" size="sm" onClick={() => setRotation((r) => (r + 90) % 360)} aria-label="旋转">
                 <RotateCw className="h-4 w-4" />
               </Button>
             </div>
