@@ -34,7 +34,7 @@ export const enUS = {
   },
   nav: {
     files: 'Files',
-    shares: 'My Shares',
+    shares: 'Shares',
     settings: 'Settings',
     admin: 'Admin',
     home: 'Home',

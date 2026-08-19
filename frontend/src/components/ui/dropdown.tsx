@@ -40,7 +40,8 @@ export function Dropdown({
       {open && (
         <div
           className={cn(
-            'animate-dropdown absolute z-50 mt-1 min-w-[160px] rounded-md border bg-card p-1 shadow-lg',
+            'animate-dropdown absolute z-50 mt-1 min-w-[160px] max-w-xs sm:max-w-sm max-w-[calc(100vw-2rem)] rounded-md border p-1 shadow-lg',
+            'bg-card/95 backdrop-blur-md backdrop-saturate-150',
             align === 'end' ? 'right-0' : 'left-0'
           )}
           onClick={(e) => e.stopPropagation()}

@@ -4,20 +4,127 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Upload, FolderPlus, LayoutGrid, List as ListIcon, ChevronRight, ArrowDown, ArrowUp,
-  Folder, Search, CheckSquare,
+  Folder, Search, CheckSquare, ChevronDown, ArrowRightLeft, X, Check,
 } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
-import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner } from '@/components/ui/core';
+import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner, Switch } from '@/components/ui/core';
 import { Select } from '@/components/ui/select';
 import { Drawer } from '@/components/ui/drawer';
+import { Dropdown, DropdownItem } from '@/components/ui/dropdown';
 import { toast } from '@/components/ui/toast';
 import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks } from '@/components/files/data';
 import { FileCard, FileRow, BulkActionsBar, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
 import { UploadModal } from '@/components/files/UploadModal';
 import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
+import FileIcon from '@/components/files/FileIcon';
 import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode } from '@/lib/utils';
 import type { FileListItem } from '@shared/types';
+
+// ============ 复制链接弹窗（含图片/视频时选择格式与签名） ============
+function CopyLinksDialog({
+  files,
+  onClose,
+  copyLinks,
+}: {
+  files: FileListItem[];
+  onClose: () => void;
+  copyLinks: ReturnType<typeof useCopyLinks>;
+}) {
+  const [format, setFormat] = useState<'direct' | 'html' | 'markdown'>('direct');
+  const [signed, setSigned] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const doCopy = async () => {
+    setLoading(true);
+    try {
+      const links = await Promise.all(
+        files.map(async (f) => {
+          const res = await copyLinks.mutateAsync({ id: f.id, signed, expiresIn: signed ? 3600 : undefined });
+          if (format === 'html') return res.formats.html;
+          if (format === 'markdown') return res.formats.markdown;
+          return res.formats.direct.startsWith('http')
+            ? res.formats.direct
+            : window.location.origin + res.formats.direct;
+        })
+      );
+      await navigator.clipboard.writeText(links.join('\n'));
+      setCopied(true);
+      toast('success', signed ? `已复制 ${links.length} 个签名链接` : `已复制 ${links.length} 个链接`);
+    } catch {
+      toast('error', '复制链接失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatOptions = [
+    { value: 'direct' as const, label: '直链', desc: '直接下载链接' },
+    { value: 'html' as const, label: 'HTML 代码', desc: '<img src="...">' },
+    { value: 'markdown' as const, label: 'Markdown 代码', desc: '![name](url)' },
+  ];
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="复制链接"
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>{copied ? '关闭' : '取消'}</Button>
+          <Button onClick={() => void doCopy()} loading={loading}>{copied ? '已复制 ✓' : '复制'}</Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <div className="flex flex-wrap gap-1.5">
+          {files.map((f) => (
+            <span key={f.id} className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs">
+              <FileIcon name={f.name} type="file" className="h-3.5 w-3.5" iconEmoji={f.iconEmoji} />
+              <span className="max-w-[160px] truncate">{f.name}</span>
+            </span>
+          ))}
+        </div>
+        <div className="space-y-1.5">
+          {formatOptions.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => {
+                setFormat(o.value);
+                setCopied(false);
+              }}
+              className={cn(
+                'flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors',
+                format === o.value ? 'border-primary bg-primary/5' : 'hover:bg-accent'
+              )}
+            >
+              <span>
+                <span className="block font-medium">{o.label}</span>
+                <span className="block text-xs text-muted-foreground">{o.desc}</span>
+              </span>
+              {format === o.value && <Check className="h-4 w-4 text-primary" />}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center justify-between rounded-md border px-3 py-2">
+          <div>
+            <p className="text-sm font-medium">签名链接</p>
+            <p className="text-xs text-muted-foreground">带时效的签名 URL（有效期 1 小时）</p>
+          </div>
+          <Switch
+            checked={signed}
+            onChange={(v) => {
+              setSigned(v);
+              setCopied(false);
+            }}
+          />
+        </div>
+      </div>
+    </Dialog>
+  );
+}
 
 export default function Files() {
   const { t } = useTranslation();
@@ -48,6 +155,18 @@ export default function Files() {
   const [bulkDelete, setBulkDelete] = useState(false);
   const [bulkMove, setBulkMove] = useState(false);
   const [bulkMoveTarget, setBulkMoveTarget] = useState('');
+  const [copyDialog, setCopyDialog] = useState<{ files: FileListItem[] } | null>(null);
+  // 手机端检测：用于门控手机属性抽屉（避免 sm+ 下隐藏抽屉仍锁住页面滚动）
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 639px)');
+    const onChange = () => setIsMobile(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   useEffect(() => setPath(routePath), [routePath]);
   useEffect(() => localStorage.setItem('picumet:view', view), [view]);
@@ -86,6 +205,8 @@ export default function Files() {
   const openItem = useCallback(
     (f: FileListItem) => {
       if (f.type === 'folder') {
+        clearSelection();
+        setMultiSelect(false);
         navigate(`/files${f.path === '/' ? '' : f.path}`);
       } else if (isImage(f.name) || isVideo(f.name) || isAudio(f.name) || isCode(f.name)) {
         setPreviewFile(f);
@@ -113,12 +234,26 @@ export default function Files() {
   }, []);
 
   const doCopyLink = useCallback(
-    async (f: FileListItem) => {
+    async (f: FileListItem, format: 'direct' | 'html' | 'markdown' = 'direct', signed = false) => {
+      // 含图片/视频 → 打开格式选择弹窗；否则直接复制直链
+      if (isImage(f.name) || isVideo(f.name)) {
+        setCopyDialog({ files: [f] });
+        return;
+      }
       try {
-        const res = await copyLinks.mutateAsync(f.id);
-        const direct = res.formats.direct.startsWith('http') ? res.formats.direct : window.location.origin + res.formats.direct;
-        await navigator.clipboard.writeText(direct);
-        toast('success', '链接已复制');
+        const res = await copyLinks.mutateAsync({ id: f.id, signed, expiresIn: signed ? 3600 : undefined });
+        let text: string;
+        if (format === 'html') {
+          text = res.formats.html;
+        } else if (format === 'markdown') {
+          text = res.formats.markdown;
+        } else {
+          text = res.formats.direct.startsWith('http')
+            ? res.formats.direct
+            : window.location.origin + res.formats.direct;
+        }
+        await navigator.clipboard.writeText(text);
+        toast('success', signed ? '签名链接已复制（有效期 1 小时）' : '链接已复制');
       } catch {
         toast('error', '复制链接失败');
       }
@@ -272,9 +407,50 @@ export default function Files() {
                 </Button>
               ) : (
                 <>
-                  <Button variant="outline" size="sm" onClick={() => setSelected(new Set(items.map((f) => f.id)))}>
-                    全选
-                  </Button>
+                  <Dropdown
+                    trigger={
+                      <Button variant="outline" size="sm">
+                        <CheckSquare className="h-4 w-4" /> <span className="hidden sm:inline">批量选择</span>
+                        <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                      </Button>
+                    }
+                  >
+                    {(close) => (
+                      <>
+                        <DropdownItem
+                          icon={<CheckSquare className="h-4 w-4" />}
+                          onClick={() => {
+                            setSelected(new Set(items.map((f) => f.id)));
+                            close();
+                          }}
+                        >
+                          全选
+                        </DropdownItem>
+                        <DropdownItem
+                          icon={<ArrowRightLeft className="h-4 w-4" />}
+                          onClick={() => {
+                            const next = new Set<string>();
+                            items.forEach((f) => {
+                              if (!selected.has(f.id)) next.add(f.id);
+                            });
+                            setSelected(next);
+                            close();
+                          }}
+                        >
+                          反选
+                        </DropdownItem>
+                        <DropdownItem
+                          icon={<X className="h-4 w-4" />}
+                          onClick={() => {
+                            clearSelection();
+                            close();
+                          }}
+                        >
+                          清空选择
+                        </DropdownItem>
+                      </>
+                    )}
+                  </Dropdown>
                   <Button
                     variant="outline"
                     size="sm"
@@ -359,6 +535,8 @@ export default function Files() {
                   onSingleClick={handleFileClick}
                   handlers={handlers}
                   multiSelect={multiSelect}
+                  sort={sort}
+                  order={order}
                 />
               ))}
             </div>
@@ -387,25 +565,81 @@ export default function Files() {
                 onClear={clearSelection}
                 onMove={() => setBulkMove(true)}
                 onDelete={() => setBulkDelete(true)}
+                onDownload={() => {
+                  items
+                    .filter((f) => selected.has(f.id) && f.type !== 'folder')
+                    .forEach((file) => void downloadFile(file));
+                }}
+                onCopyLink={() => {
+                  const files = items.filter((f) => selected.has(f.id) && f.type !== 'folder');
+                  if (files.length === 0) return;
+                  if (files.some((f) => isImage(f.name) || isVideo(f.name))) {
+                    setCopyDialog({ files });
+                    return;
+                  }
+                  void (async () => {
+                    try {
+                      const links = await Promise.all(
+                        files.map(async (f) => {
+                          const res = await copyLinks.mutateAsync({ id: f.id });
+                          const direct = res.formats.direct.startsWith('http')
+                            ? res.formats.direct
+                            : window.location.origin + res.formats.direct;
+                          return direct;
+                        })
+                      );
+                      await navigator.clipboard.writeText(links.join('\n'));
+                      toast('success', `已复制 ${links.length} 个链接`);
+                    } catch {
+                      toast('error', '复制链接失败');
+                    }
+                  })();
+                }}
+                onShare={
+                  selected.size === 1
+                    ? () => {
+                        const [id] = selected;
+                        const file = items.find((f) => f.id === id);
+                        if (file) navigate(`/shares?create=${file.id}`);
+                      }
+                    : undefined
+                }
+                onRename={
+                  selected.size === 1
+                    ? () => {
+                        const [id] = selected;
+                        const file = items.find((f) => f.id === id);
+                        if (file) {
+                          setRenameTarget(file);
+                          setRenameValue(file.name);
+                        }
+                      }
+                    : undefined
+                }
+                onProperties={
+                  selected.size === 1
+                    ? () => {
+                        const [id] = selected;
+                        const file = items.find((f) => f.id === id);
+                        if (file) setPropsFile(file);
+                      }
+                    : undefined
+                }
               />
             </div>
           )}
         </div>
 
-        {/* 宽屏：固定属性侧栏（xl+） - 始终渲染 */}
-        <aside className="hidden xl:block w-80 shrink-0 overflow-hidden border-l bg-muted/20">
-          {propsFile ? (
+        {/* 属性侧栏 - 平板/桌面始终紧贴右侧，仅在有文件时显示（手机用右侧抽屉避免压垮内容） */}
+        {propsFile && (
+          <aside className="hidden sm:block w-72 shrink-0 border-l bg-card sticky top-16 self-start h-[calc(100vh-5rem)] overflow-y-auto scrollbar-thin">
             <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
-          ) : (
-            <div className="flex h-full min-h-[16rem] items-center justify-center p-4 text-sm text-muted-foreground">
-              选择文件查看属性
-            </div>
-          )}
-        </aside>
+          </aside>
+        )}
       </div>
 
-      {/* 窄屏：属性抽屉（<xl） */}
-      <Drawer open={!!propsFile} onClose={() => setPropsFile(null)} side="right" className="xl:hidden">
+      {/* 手机（<sm）：右侧抽屉 */}
+      <Drawer open={!!propsFile && isMobile} onClose={() => setPropsFile(null)} side="right" className="sm:hidden">
         <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
       </Drawer>
 
@@ -414,6 +648,11 @@ export default function Files() {
         <UploadModal open={showUpload} onClose={() => setShowUpload(false)} targetPath={path} onDone={() => setShowUpload(false)} />
       )}
       <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} onDownload={downloadFile} onCopyLink={doCopyLink} />
+
+      {/* 复制链接弹窗（含图片/视频时） */}
+      {copyDialog && (
+        <CopyLinksDialog files={copyDialog.files} onClose={() => setCopyDialog(null)} copyLinks={copyLinks} />
+      )}
 
       {/* 新建文件夹 */}
       <Dialog

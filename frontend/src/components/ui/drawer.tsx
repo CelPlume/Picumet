@@ -57,7 +57,7 @@ export function Drawer({
   return (
     <div className={cn('fixed inset-0 z-50', className)}>
       {/* Backdrop */}
-      <div className="animate-dialog-overlay absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="animate-dialog-overlay absolute inset-0 bg-black/60 backdrop-blur-md" onClick={onClose} />
 
       {/* Panel */}
       <div

@@ -3,6 +3,7 @@ import { useEffect, type ReactNode } from 'react';
 import { X, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from './core';
+import { useTheme } from '@/stores/theme';
 
 export function Dialog({
   open,
@@ -21,6 +22,7 @@ export function Dialog({
   footer?: ReactNode;
   width?: string;
 }) {
+  const enableBlur = useTheme((s) => s.enableBlur);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -38,10 +40,11 @@ export function Dialog({
 
   return (
     <div className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="animate-dialog-overlay absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="animate-dialog-overlay absolute inset-0 bg-black/60 backdrop-blur-md" onClick={onClose} />
       <div
         className={cn(
-          'animate-scale-in relative z-10 w-full rounded-xl border bg-card p-5 shadow-2xl',
+          'animate-scale-in relative z-10 w-full rounded-xl border p-5 shadow-2xl',
+          enableBlur ? 'bg-card/90 backdrop-blur-xl backdrop-saturate-150' : 'bg-card',
           width
         )}
       >

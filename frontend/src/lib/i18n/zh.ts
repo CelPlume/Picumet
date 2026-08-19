@@ -34,9 +34,9 @@ export const zhCN = {
   },
   nav: {
     files: '文件',
-    shares: '我的分享',
+    shares: '分享',
     settings: '设置',
-    admin: '管理控制台',
+    admin: '管理',
     home: '首页',
   },
   landing: {
