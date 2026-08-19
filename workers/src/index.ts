@@ -18,6 +18,7 @@ import { webdavRoutes } from './services/webdav/handlers';
 import { freeModeRoutes } from './services/free-mode/handlers';
 import { gatewayRoutes } from './services/shares/gateway';
 import { publicRoutes } from './services/public/handlers';
+import { pathPublicRoutes } from './services/files/path-serve';
 import { ensureSeed } from './seed';
 import { runScheduledTasks } from './services/cleanup';
 import { ok, fail } from './shared/response';
@@ -80,6 +81,10 @@ app.route('/api', protectedApi);
 // 根路径健康检查
 app.get('/', (c) => c.json({ service: 'picumet-api', status: 'ok' }));
 app.get('/api', (c) => ok(c, { service: 'picumet-api', status: 'ok' }));
+
+// 公开路径文件服务（最后注册，避免遮蔽 /api、/webdav 等路由）
+app.use('/*', optionalAuthMiddleware);
+app.route('/', pathPublicRoutes);
 
 // 全局错误处理
 app.onError(errorHandler);

@@ -101,10 +101,15 @@ filesRoutes.post('/folder', async (c) => {
 
   await requirePermission(c, mount, targetPath, 'write');
 
-  const existing = await FileRepo.getFileAtPath(db, mount.id, targetPath, name);
-  if (existing) throw new ApiError(409, 'ALREADY_EXISTS', '同名文件或文件夹已存在');
-
   const folderPath = targetPath === '/' ? `/${name}` : `${targetPath}/${name}`;
+
+  // 重复检测：文件行 path=父目录；文件夹行 path=自身全路径 → 两处都要查
+  const existingFile = await FileRepo.getFileAtPath(db, mount.id, targetPath, name);
+  const existingFolder = await FileRepo.getFileAtPath(db, mount.id, folderPath, name);
+  if (existingFile || existingFolder) {
+    throw new ApiError(409, 'ALREADY_EXISTS', '同名文件或文件夹已存在');
+  }
+
   const objectKey = objectKeyFromPath(mount.mountPath, '', folderPath);
   const folder = await FileRepo.createFile(db, {
     mountId: mount.id,
@@ -251,17 +256,17 @@ filesRoutes.get('/:id/download', async (c) => {
   return ok(c, { url, expiresAt: Date.now() + 900 * 1000 });
 });
 
-// ============ 复制链接（多种格式） ============
+// ============ 复制链接（多种格式，支持签名） ============
 filesRoutes.get('/:id/copy-links', async (c) => {
   const { file, mount, db } = await resolveFile(c);
   await requirePermission(c, mount, file.path, 'download', file.ownerId);
   const provider = await providerFor(c, mount.id);
-  const accessMode = decideAccessMode(file, provider, false);
 
-  let baseUrl: string;
-  if (accessMode === 'public_cdn') {
-    baseUrl = provider.getPublicUrl(file.objectKey) as string;
-  } else {
+  const q = c.req.query();
+  const signed = q.signed === 'true';
+  const expiresIn = Math.min(Math.max(parseInt(q.expiresIn ?? '3600', 10) || 3600, 60), 604800);
+
+  const gatewayUrl = async () => {
     const token = await createDownloadToken(db, {
       fileId: file.id,
       mountId: file.mountId,
@@ -271,7 +276,21 @@ filesRoutes.get('/:id/copy-links', async (c) => {
       size: file.size,
       passwordVerified: false,
     });
-    baseUrl = buildGatewayUrl(c, token);
+    return buildGatewayUrl(c, token);
+  };
+
+  // 公开直链：{origin}{虚拟路径}（文件 path 已含挂载点前缀，如 /drive/text/x.txt）
+  const baseOrigin = c.env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
+  const fullVirtualPath = file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`;
+  const publicUrl = `${baseOrigin}${fullVirtualPath}`;
+
+  let baseUrl: string;
+  if (signed) {
+    // 签名直链：优先 provider 预签名 URL，否则回退网关 token
+    const presigned = await provider.getDownloadUrl(file.objectKey, expiresIn);
+    baseUrl = presigned ?? (await gatewayUrl());
+  } else {
+    baseUrl = publicUrl;
   }
 
   const direct = baseUrl;
@@ -282,8 +301,9 @@ filesRoutes.get('/:id/copy-links', async (c) => {
   void db;
   return ok(c, {
     formats: { direct, html, markdown, bbcode },
-    accessMode,
+    accessMode: signed ? 'signed' : 'public_path',
     needsPassword: !!file.accessPassword,
+    expiresIn: signed ? expiresIn : undefined,
   });
 });
 

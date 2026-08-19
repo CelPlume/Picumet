@@ -72,10 +72,10 @@ describe('文件全流程', () => {
     expect(gwRes.status).toBe(200);
     expect(await gwRes.text()).toBe('Hello Picumet!\n');
 
-    // 复制链接
+    // 复制链接（直链为公开路径 URL）
     const linkRes = await request(ctx, `/api/files/${uploaded.file.id}/copy-links`, { cookie: authCookie });
     const linkData = await json(linkRes);
-    expect(linkData.data.formats.direct).toContain('/api/gateway/download/');
+    expect(linkData.data.formats.direct).toContain('/hello.txt');
     expect(linkData.data.formats.markdown).toContain('![hello.txt](');
   });
 
