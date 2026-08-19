@@ -20,6 +20,7 @@ export function ThemeToggle() {
   const currentIcon = THEME_OPTIONS.find((o) => o.value === theme)?.icon ?? (dark ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />);
   return (
     <Dropdown
+      align="end"
       trigger={
         <Button variant="ghost" size="icon" title="主题" aria-label="切换主题">
           {currentIcon}
@@ -55,6 +56,7 @@ export function LanguageSwitcher() {
   const current = i18n.language?.startsWith('zh') ? '中文' : 'English';
   return (
     <Dropdown
+      align="end"
       trigger={
         <Button variant="ghost" size="icon" title="语言" aria-label="切换语言">
           <Languages className="h-4 w-4" />
@@ -99,6 +101,7 @@ export function UserMenu() {
   const display = user.displayName || user.username;
   return (
     <Dropdown
+      align="end"
       triggerClass="flex items-center"
       trigger={
         <div className="flex items-center gap-2 rounded-full p-1 pr-2 hover:bg-accent">
@@ -109,7 +112,9 @@ export function UserMenu() {
     >
       {(close) => (
         <>
-          <DropdownLabel>{user.email}</DropdownLabel>
+          <DropdownLabel>
+            <span className="block max-w-[200px] truncate">{user.email}</span>
+          </DropdownLabel>
           <DropdownSeparator />
           <DropdownItem onClick={() => { close(); window.location.href = '/files'; }}>
             <User className="h-4 w-4" /> {t('nav.files')}

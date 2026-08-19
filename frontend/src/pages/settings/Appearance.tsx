@@ -104,6 +104,25 @@ export default function AppearancePage() {
               ))}
             </div>
           </div>
+
+          <div>
+            <Label>文件夹显示</Label>
+            <div className="mt-1.5 flex gap-2">
+              {(['icon', 'contents'] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => theme.set({ folderPreview: v })}
+                  className={cn(
+                    'rounded-md border px-3 py-1.5 text-sm font-medium transition-colors',
+                    theme.folderPreview === v ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
+                  )}
+                >
+                  {v === 'icon' ? '文件夹图标' : '显示内部文件预览'}
+                </button>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -118,7 +137,6 @@ export default function AppearancePage() {
             options={[
               { value: 'none', label: t('settings.backgroundNone') },
               { value: 'image', label: t('settings.backgroundImage') },
-              { value: 'color', label: t('settings.backgroundColor') },
             ]}
           />
 
@@ -141,25 +159,6 @@ export default function AppearancePage() {
                 <ImageIcon className="h-3.5 w-3.5" />
                 支持 JPG/PNG/WebP，最大 2MB，图片将保存在浏览器本地存储中。
               </p>
-            </div>
-          )}
-
-          {theme.backgroundType === 'color' && (
-            <div>
-              <Label>{t('settings.backgroundColor')}</Label>
-              <div className="mt-1 flex items-center gap-2">
-                <input
-                  type="color"
-                  value={theme.backgroundColor ?? '#0f172a'}
-                  onChange={(e) => theme.set({ backgroundColor: e.target.value })}
-                  className="h-9 w-12 cursor-pointer rounded border"
-                />
-                <Input
-                  value={theme.backgroundColor ?? ''}
-                  onChange={(e) => theme.set({ backgroundColor: e.target.value })}
-                  placeholder="#0f172a"
-                />
-              </div>
             </div>
           )}
 

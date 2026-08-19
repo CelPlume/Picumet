@@ -18,10 +18,10 @@ export default function AdminLayout() {
     { to: '/admin/settings', icon: <Settings className="h-4 w-4" />, label: t('admin.settings') },
   ];
   return (
-    <AppShell activeNav="settings">
+    <AppShell activeNav="admin">
       <h1 className="mb-4 text-xl font-semibold">{t('admin.title')}</h1>
-      <div className="flex flex-col gap-6 md:flex-row">
-        <nav className="flex w-full shrink-0 flex-col gap-1 md:w-44">
+      <div className="flex flex-col gap-6 md:flex-row md:items-start">
+        <nav className="flex w-full shrink-0 flex-col gap-1 md:w-44 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto md:scrollbar-thin md:pr-1">
           {items.map((it) => (
             <NavLink
               key={it.to}
@@ -39,7 +39,7 @@ export default function AdminLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto md:scrollbar-thin">
           <Outlet />
         </div>
       </div>

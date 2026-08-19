@@ -12,7 +12,7 @@ import { AnnouncementBanner } from './AnnouncementBanner';
 import { Drawer } from '@/components/ui/drawer';
 import { useState } from 'react';
 
-export function AppShell({ children, activeNav }: { children: ReactNode; activeNav?: 'files' | 'shares' | 'settings' }) {
+export function AppShell({ children, activeNav }: { children: ReactNode; activeNav?: 'files' | 'shares' | 'settings' | 'admin' }) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const location = useLocation();
@@ -71,7 +71,12 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
             {user?.role === 'admin' && (
               <Link
                 to="/admin"
-                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                className={cn(
+                  'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                  activeNav === 'admin' || location.pathname.startsWith('/admin')
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                )}
               >
                 <ShieldCheck className="h-4 w-4" />
                 {t('nav.admin')}
