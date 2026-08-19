@@ -1,15 +1,16 @@
 // 我的分享列表 + 创建分享
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';
-import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink, X } from 'lucide-react';
+import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink, X, LayoutGrid, List as ListIcon } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button, Input, Label, EmptyState, Badge, Dialog, Card, Switch } from '@/components/ui/core';
 import { Select } from '@/components/ui/select';
+import { Pagination } from '@/components/ui/pagination';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
-import { formatDateTime, formatBytes, timeAgo } from '@/lib/utils';
+import { formatDateTime, formatBytes, timeAgo, cn } from '@/lib/utils';
 import FileIcon from '@/components/files/FileIcon';
 import type { FileListItem } from '@shared/types';
 
@@ -43,6 +44,10 @@ export default function MyShares() {
   const [created, setCreated] = useState<{ id: string; url: string; qrcode: string } | null>(null);
   const [myFiles, setMyFiles] = useState<FileListItem[]>([]);
   const [qrDialog, setQrDialog] = useState<{ share: ShareItem; url: string; dataUrl: string } | null>(null);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
 
   const showQr = async (s: ShareItem) => {
     const url = `${window.location.origin}/share/${s.id}`;
@@ -50,20 +55,23 @@ export default function MyShares() {
     setQrDialog({ share: s, url, dataUrl });
   };
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
-      const res = await apiFetch<{ items: ShareItem[] }>('/api/shares');
+      const res = await apiFetch<{ items: ShareItem[]; pagination: { total: number } }>(
+        `/api/shares?page=${page}&limit=${pageSize}`
+      );
       setShares(res.data.items);
+      setTotal(res.data.pagination.total);
     } catch {
       /* ignore */
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, pageSize]);
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
 
   useEffect(() => {
     const createId = params.get('create');
@@ -126,11 +134,39 @@ export default function MyShares() {
 
   return (
     <AppShell activeNav="shares">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">{t('share.title')}</h1>
-        <Button onClick={() => { setShowCreate(true); void loadMyFiles(); }}>
-          <Share2 className="h-4 w-4" /> {t('share.create')}
-        </Button>
+        <div className="flex items-center gap-2">
+          {shares.length > 0 && (
+            <div className="flex rounded-md border">
+              <button
+                onClick={() => setViewMode('grid')}
+                className={cn(
+                  'rounded-l-md px-2.5 py-1.5 transition-colors',
+                  viewMode === 'grid' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60'
+                )}
+                title="卡片视图"
+                aria-label="卡片视图"
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => setViewMode('list')}
+                className={cn(
+                  'rounded-r-md px-2.5 py-1.5 transition-colors',
+                  viewMode === 'list' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60'
+                )}
+                title="列表视图"
+                aria-label="列表视图"
+              >
+                <ListIcon className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+          <Button onClick={() => { setShowCreate(true); void loadMyFiles(); }}>
+            <Share2 className="h-4 w-4" /> {t('share.create')}
+          </Button>
+        </div>
       </div>
 
       {loading ? (
@@ -146,52 +182,101 @@ export default function MyShares() {
           }
         />
       ) : (
-        <div className="space-y-3">
-          {shares.map((s) => (
-            <Card key={s.id} className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                  <FileIcon name={s.file?.name ?? ''} type={s.file?.type === 'folder' ? 'folder' : 'file'} className="h-5 w-5 text-muted-foreground" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{s.title ?? s.file?.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {s.file ? `${formatBytes(s.file.size)} · ` : ''}
-                    {s.status === 'expired' ? t('share.expired') : s.status === 'revoked' ? t('share.revoked') : t('share.link')}
-                    {s.expiresAt ? ` · ${t('share.expiresAt')}: ${formatDateTime(s.expiresAt)}` : ` · ${t('share.never')}`}
+        <>
+          {viewMode === 'grid' ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+              {shares.map((s) => (
+                <Card key={s.id} className="group flex flex-col p-4 transition-shadow hover:shadow-lg">
+                  <div className="mb-3 flex h-16 items-center justify-center">
+                    <FileIcon
+                      name={s.file?.name ?? ''}
+                      type={s.file?.type === 'folder' ? 'folder' : 'file'}
+                      className="h-14 w-14"
+                      iconEmoji={s.file?.iconEmoji}
+                    />
+                  </div>
+                  <p className="mb-2 truncate text-center text-sm font-medium" title={s.title ?? s.file?.name}>
+                    {s.title ?? s.file?.name}
                   </p>
+                  <div className="mb-3 flex items-center justify-center gap-2">
+                    <Badge variant={s.status === 'active' ? 'success' : 'secondary'} className="text-xs">
+                      {s.status}
+                    </Badge>
+                    {s.file?.hasPassword && <Lock className="h-3 w-3 text-muted-foreground" />}
+                  </div>
+                  <div className="mb-3 space-y-1 text-center text-xs text-muted-foreground">
+                    {s.file && <p>{formatBytes(s.file.size)}</p>}
+                    <p className="truncate">
+                      {s.expiresAt ? `过期: ${formatDateTime(s.expiresAt)}` : '永久有效'}
+                    </p>
+                    <p>
+                      查看 {s.viewCount} 次
+                      {s.maxDownloads ? ` · 下载 ${s.downloadCount}/${s.maxDownloads}` : ''}
+                    </p>
+                  </div>
+                  <div className="mt-auto flex items-center justify-center gap-1 border-t pt-3">
+                    <button onClick={() => void showQr(s)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title={t('share.qrcode')}>
+                      <QrCode className="h-4 w-4" />
+                    </button>
+                    <a href={`/share/${s.id}`} target="_blank" rel="noreferrer" className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title="打开">
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                    <button onClick={() => copyLink(`/share/${s.id}`)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title="复制链接">
+                      <Link2 className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => revoke(s.id)} className="rounded-md p-1.5 text-destructive transition-colors hover:bg-destructive/10" title="撤销">
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {shares.map((s) => (
+                <div
+                  key={s.id}
+                  className="group grid grid-cols-[auto_1fr_90px_120px_auto] items-center gap-3 rounded-md border border-transparent bg-card px-3 py-2.5 text-sm transition-colors hover:border-border hover:bg-accent/50"
+                >
+                  <FileIcon name={s.file?.name ?? ''} type={s.file?.type === 'folder' ? 'folder' : 'file'} className="h-5 w-5 shrink-0" iconEmoji={s.file?.iconEmoji} />
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{s.title ?? s.file?.name}</p>
+                    {s.file?.hasPassword && <Lock className="ml-1 inline h-3 w-3 text-muted-foreground" />}
+                  </div>
+                  <span className="truncate text-xs text-muted-foreground">{s.file ? formatBytes(s.file.size) : '-'}</span>
+                  <span className="hidden truncate text-xs text-muted-foreground sm:block">{timeAgo(s.createdAt)}</span>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Badge variant={s.status === 'active' ? 'success' : 'secondary'} className="text-xs">{s.status}</Badge>
+                    <button onClick={() => void showQr(s)} className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent" title={t('share.qrcode')}>
+                      <QrCode className="h-4 w-4" />
+                    </button>
+                    <a href={`/share/${s.id}`} target="_blank" rel="noreferrer" className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent" title="打开">
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                    <button onClick={() => copyLink(`/share/${s.id}`)} className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent">
+                      <Link2 className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => revoke(s.id)} className="rounded p-1 text-destructive opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive/10">
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Badge variant={s.status === 'active' ? 'success' : 'secondary'}>{s.status}</Badge>
-                  <button onClick={() => void showQr(s)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title={t('share.qrcode')}>
-                    <QrCode className="h-4 w-4" />
-                  </button>
-                  <a href={`/share/${s.id}`} target="_blank" rel="noreferrer" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="打开">
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
-                  <button onClick={() => copyLink(`/share/${s.id}`)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent">
-                    <Link2 className="h-4 w-4" />
-                  </button>
-                  <button onClick={() => revoke(s.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-              {s.file?.hasPassword || s.maxDownloads ? (
-                <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
-                  {s.file?.hasPassword && (
-                    <span className="flex items-center gap-1"><Lock className="h-3 w-3" /> 密码</span>
-                  )}
-                  {s.maxDownloads ? (
-                    <span>{t('share.downloads').replace('{{used}}', String(s.downloadCount)).replace('{{max}}', String(s.maxDownloads))}</span>
-                  ) : (
-                    <span>{t('share.viewCount')}: {s.viewCount}</span>
-                  )}
-                </div>
-              ) : null}
-            </Card>
-          ))}
-        </div>
+              ))}
+            </div>
+          )}
+
+          <Pagination
+            page={page}
+            total={total}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(s) => {
+              setPageSize(s);
+              setPage(1);
+            }}
+            className="mt-4 border-t pt-3"
+          />
+        </>
       )}
 
       {/* 创建分享 */}
@@ -213,7 +298,7 @@ export default function MyShares() {
               const pre = myFiles.find((f) => f.id === createFileId);
               return pre ? (
                 <div className="mt-1 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
-                  <FileIcon name={pre.name} type="file" className="h-5 w-5 text-muted-foreground" />
+                  <FileIcon name={pre.name} type="file" className="h-5 w-5" iconEmoji={pre.iconEmoji} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium">{pre.name}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">{formatBytes(pre.size)}</span>
                 </div>
