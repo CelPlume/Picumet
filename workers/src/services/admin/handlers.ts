@@ -11,6 +11,8 @@ import { ApiError } from '../../shared/errors';
 import { toFileListItem } from '../../db/repos/files';
 import { parseJson } from '../../db';
 import { UserUpdateSchema, SettingsSchema, AnnouncementSchema } from './schemas';
+import { sendMail, type SmtpConfig } from '../../utils/smtp';
+import { z } from 'zod';
 
 export const adminRoutes = new Hono<AppBindings>();
 
@@ -201,6 +203,14 @@ adminRoutes.get('/settings', async (c) => {
     turnstileSiteKey: get('turnstile_site_key'),
     rateLimitEnabled: get('rate_limit_enabled') ?? true,
     rateLimitRequestsPerMinute: Number(get('rate_limit_requests_per_minute') ?? 50),
+    smtpHost: get('smtp_host') ?? '',
+    smtpPort: Number(get('smtp_port') ?? 587),
+    smtpSecure: get('smtp_secure') ?? true,
+    smtpUser: get('smtp_user') ?? '',
+    smtpPassword: get('smtp_password') ? '******' : '',
+    smtpFromName: get('smtp_from_name') ?? 'Picumet',
+    smtpFromEmail: get('smtp_from_email') ?? '',
+    emailEnabled: get('email_enabled') ?? false,
   });
 });
 
@@ -220,12 +230,57 @@ adminRoutes.patch('/settings', async (c) => {
     turnstileSiteKey: 'turnstile_site_key',
     rateLimitEnabled: 'rate_limit_enabled',
     rateLimitRequestsPerMinute: 'rate_limit_requests_per_minute',
+    smtpHost: 'smtp_host',
+    smtpPort: 'smtp_port',
+    smtpSecure: 'smtp_secure',
+    smtpUser: 'smtp_user',
+    smtpPassword: 'smtp_password',
+    smtpFromName: 'smtp_from_name',
+    smtpFromEmail: 'smtp_from_email',
+    emailEnabled: 'email_enabled',
   };
   for (const [k, v] of Object.entries(parsed.data)) {
     if (v === undefined) continue;
+    // 占位符/空值表示保持原密码配置，不覆盖
+    if (k === 'smtpPassword' && (v === '******' || v === '')) continue;
     await SettingsRepo.set(db, map[k] ?? k, v);
   }
   return ok(c, { message: '已保存' });
+});
+
+// ============ SMTP 测试邮件 ============
+adminRoutes.post('/settings/test-email', async (c) => {
+  const db = getDb(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = z.object({ to: z.string().email() }).safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('收件邮箱无效');
+  const raw = await SettingsRepo.getAll(db);
+  const get = (key: string) => {
+    const v = raw[key];
+    if (v === undefined || v === 'null') return undefined;
+    try {
+      return parseJson<unknown>(v, v);
+    } catch {
+      return v;
+    }
+  };
+  const host = (get('smtp_host') as string) || c.env.SMTP_HOST;
+  if (!host) throw ApiError.badRequest('邮件服务未配置');
+  const config: SmtpConfig = {
+    host,
+    port: Number(get('smtp_port') ?? 587),
+    user: (get('smtp_user') as string) || c.env.SMTP_USER,
+    pass: (get('smtp_password') as string) || c.env.SMTP_PASS,
+    from: (get('smtp_from_email') as string) || c.env.SMTP_FROM || '',
+  };
+  if (!config.from) throw ApiError.badRequest('发件邮箱未配置');
+  try {
+    await sendMail(config, parsed.data.to, 'Picumet 测试邮件', '<p>这是一封测试邮件</p>');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new ApiError(500, 'MAIL_ERROR', `邮件发送失败：${message}`);
+  }
+  return ok(c, { message: '测试邮件已发送' });
 });
 
 // ============ 公告 ============

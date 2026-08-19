@@ -22,6 +22,14 @@ export const SettingsSchema = z.object({
   turnstileSiteKey: z.string().max(1000).nullable().optional(),
   rateLimitEnabled: z.boolean().optional(),
   rateLimitRequestsPerMinute: z.number().int().min(1).max(10000).optional(),
+  smtpHost: z.string().max(300).optional(),
+  smtpPort: z.number().int().min(1).max(65535).optional(),
+  smtpSecure: z.boolean().optional(),
+  smtpUser: z.string().max(300).optional(),
+  smtpPassword: z.string().nullable().optional(),
+  smtpFromName: z.string().max(200).optional(),
+  smtpFromEmail: z.string().email().nullable().optional(),
+  emailEnabled: z.boolean().optional(),
 });
 
 // 公告

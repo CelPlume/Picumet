@@ -1,12 +1,13 @@
 // 用户设置路由：个人资料、外观、修改密码
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { UserRepo, QuotaRepo } from '../../db';
+import { UserRepo, QuotaRepo, SettingsRepo, num, str, parseJson } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
-import { verifyPassword, hashPassword } from '../../utils/crypto';
-import { ProfileSchema, PasswordSchema as ChangePasswordSchema } from './schemas';
+import { verifyPassword, hashPassword, uuid } from '../../utils/crypto';
+import { sendMail } from '../../utils/smtp';
+import { ProfileSchema, PasswordSchema as ChangePasswordSchema, SendOtpSchema, VerifyOtpSchema } from './schemas';
 
 export const userRoutes = new Hono<AppBindings>();
 
@@ -72,4 +73,100 @@ userRoutes.put('/me/password', async (c) => {
   // 审计 H-05：改密后旧 JWT 立即失效，需重新登录
   await UserRepo.bumpSessionVersion(db, userId);
   return ok(c, { message: '密码已修改，请重新登录' });
+});
+
+// ============ OTP 邮箱验证 ============
+
+userRoutes.post('/me/email/send-otp', async (c) => {
+  const db = getDb(c);
+  const userId = c.get('userId');
+  const body = await c.req.json().catch(() => null);
+  const parsed = SendOtpSchema.safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('邮箱格式无效');
+  const email = parsed.data.email;
+
+  const existing = await UserRepo.getUserByEmail(db, email);
+  if (existing && existing.id !== userId) throw ApiError.badRequest('该邮箱已被使用');
+
+  const raw = await SettingsRepo.getAll(db);
+  const get = (key: string) => {
+    const v = raw[key];
+    if (v === undefined || v === 'null') return undefined;
+    try {
+      return parseJson<unknown>(v, v);
+    } catch {
+      return v;
+    }
+  };
+  const emailEnabled = String(get('email_enabled') ?? 'false');
+  const host = String(get('smtp_host') ?? '') || c.env.SMTP_HOST;
+  if (emailEnabled !== 'true' || !host) {
+    throw ApiError.badRequest('邮件服务未启用，请联系管理员');
+  }
+
+  // 6 位数字验证码
+  const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+  const now = Date.now();
+  const expiresAt = now + 5 * 60 * 1000;
+
+  // 删除旧的待验证 token，写入新 token
+  await db.run(`DELETE FROM email_tokens WHERE user_id = ? AND email = ? AND purpose = 'verify'`, [userId, email]);
+  await db.run(
+    `INSERT INTO email_tokens (id, user_id, email, code, purpose, expires_at, attempts, created_at)
+     VALUES (?, ?, ?, ?, 'verify', ?, 0, ?)`,
+    [uuid(), userId, email, code, expiresAt, now]
+  );
+
+  const fromEmail = String(get('smtp_from_email') ?? '') || c.env.SMTP_FROM || '';
+  const fromName = String(get('smtp_from_name') ?? 'Picumet');
+  try {
+    await sendMail(
+      {
+        host,
+        port: Number(get('smtp_port') ?? 587),
+        user: String(get('smtp_user') ?? '') || c.env.SMTP_USER,
+        pass: String(get('smtp_password') ?? '') || c.env.SMTP_PASS,
+        from: fromEmail ? `${fromName} <${fromEmail}>` : fromEmail,
+      },
+      email,
+      'Picumet 邮箱验证码',
+      `<p>您的邮箱验证码是：<strong>${code}</strong></p><p>验证码 5 分钟内有效，请勿泄露给他人。</p>`
+    );
+  } catch {
+    // 发信失败：清理 token，避免残留
+    await db.run(`DELETE FROM email_tokens WHERE user_id = ? AND email = ? AND purpose = 'verify'`, [userId, email]);
+    throw new ApiError(500, 'MAIL_ERROR', '验证码发送失败');
+  }
+  return ok(c, { success: true, expiresIn: 300 });
+});
+
+userRoutes.post('/me/email/verify-otp', async (c) => {
+  const db = getDb(c);
+  const userId = c.get('userId');
+  const body = await c.req.json().catch(() => null);
+  const parsed = VerifyOtpSchema.safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('验证码格式无效');
+  const { email, code } = parsed.data;
+
+  const row = await db.first(
+    `SELECT id, code, attempts, expires_at FROM email_tokens
+     WHERE user_id = ? AND email = ? AND purpose = 'verify'
+     ORDER BY created_at DESC LIMIT 1`,
+    [userId, email]
+  );
+  if (!row || num(row.expires_at) <= Date.now()) {
+    if (row) await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
+    throw ApiError.badRequest('验证码无效或已过期');
+  }
+  if (num(row.attempts) >= 5) {
+    await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
+    throw ApiError.badRequest('错误次数过多，请重新发送');
+  }
+  if (str(row.code) !== code) {
+    await db.run(`UPDATE email_tokens SET attempts = attempts + 1 WHERE id = ?`, [row.id]);
+    throw ApiError.badRequest('验证码错误');
+  }
+  await UserRepo.updateUser(db, userId, { email, email_verified: 1 });
+  await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
+  return ok(c, { success: true });
 });

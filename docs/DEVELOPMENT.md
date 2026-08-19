@@ -191,6 +191,50 @@ bun run build           # 构建
 
 写对象后 DB 提交失败 → 释放预留 + 尽力删对象（失败记孤儿）；删除时对象清理失败也记孤儿。用 `FileRepo.createFileTx` 事务提交元数据 + 配额 + 日志。
 
+### SMTP 邮件功能实施计划（前端管理页 + 后端配置持久化）
+
+> 现状：后端 `workers/src/utils/smtp.ts` 已有 `sendMail(config, to, subject, html)` 与 `hasSmtp(env)`，验证邮箱 / 重置密码已接邮件。但 SMTP 配置**仅通过环境变量注入**（`SMTP_HOST/PORT/USER/PASS/FROM`），**无管理员 UI、无持久化配置、无测试发送**。以下为实施方案（供后续实现）：
+
+#### 后端（`workers/src/`）
+
+1. **新增配置持久化**：迁移 `0004_add_email_settings.sql`
+   ```sql
+   CREATE TABLE IF NOT EXISTS email_settings (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     smtp_host TEXT, smtp_port INTEGER DEFAULT 587,
+     smtp_user TEXT, smtp_password TEXT,
+     smtp_from TEXT, smtp_from_name TEXT,
+     smtp_tls INTEGER DEFAULT 1, smtp_enabled INTEGER DEFAULT 0,
+     updated_at INTEGER
+   );
+   ```
+   - `SMTP_PASSWORD` 存入前用 `ENCRYPTION_KEY` 做 AES-GCM 加密（复用 `utils/crypto.ts` 现有加密能力，参考 M-4 派生方案）。
+
+2. **新增服务 `services/admin/email.ts`**（或并入 `admin/handlers.ts`）：
+   - `GET /api/admin/settings/email` → 返回脱敏配置（密码不返回原文，返回 `hasPassword: boolean`）
+   - `PUT /api/admin/settings/email` → 校验 + 保存（`EmailSettingsSchema`：host/port/user/password?/from/fromName/tls/enabled，用 zod）
+   - `POST /api/admin/settings/email/test` → `{ to }` 用保存的配置 `sendMail` 发测试邮件，返回成功/失败与错误信息
+   - 读取优先级：`email_settings` 表 > 环境变量 `SMTP_*` > 未配置
+
+3. **改造 `hasSmtp/sendMail`**：新增 `resolveSmtp(env, db)` 合并表配置与环境变量；`sendMail` 增加 TLS 开关（`smtp_tls` 为 1 用 465 隐式 TLS，0 用 587 STARTTLS，现有实现需补充 STARTTLS 握手）。
+
+4. **测试**：`email-settings.test.ts` 覆盖 schema 校验、密码加密存储不回显、测试发送 mock。
+
+#### 前端（`frontend/src/`）
+
+5. **新增页面 `admin/Email.tsx`**（路由 `/admin/email`，AdminLayout 加「邮件配置」项，图标 `Mail`）：
+   - 表单字段：SMTP 服务器、端口、用户名、密码（留空则保留旧值）、发件人邮箱、发件人名称、启用 TLS/SSL Switch、启用邮件服务 Switch
+   - 「保存配置」按钮 → `PUT /api/admin/settings/email`
+   - 「发送测试邮件」卡片：输入测试邮箱 → `POST /api/admin/settings/email/test`，成功/失败 toast
+   - 宽度 `max-w-2xl`（与设置页统一）
+
+6. **用户邮箱**：`/settings/security` 已含「邮箱管理」卡片（`/api/users/me` 读邮箱 + `/api/users/me/email` 修改）。SMTP 启用后，改邮箱/重置密码走真实邮件。
+
+#### 验证
+
+7. 本地 `.dev.vars` 配置 SMTP → 注册触发验证邮件 → 管理页测试发送成功；未配置 → 测试发送返回明确错误。
+
+
 ### wrangler dev 热重载不可靠
 
 改文件后建议重启 wrangler dev 进程（或 `rm -rf .wrangler` + 重跑迁移）加载干净构建。

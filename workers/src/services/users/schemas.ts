@@ -16,5 +16,18 @@ export const PasswordSchema = z.object({
   newPassword: z.string().min(8).max(128),
 });
 
+// 发送邮箱验证码
+export const SendOtpSchema = z.object({
+  email: z.string().email(),
+});
+
+// 验证邮箱验证码
+export const VerifyOtpSchema = z.object({
+  email: z.string().email(),
+  code: z.string().regex(/^\d{6}$/, '验证码必须为 6 位数字'),
+});
+
 export type ProfileRequest = z.infer<typeof ProfileSchema>;
 export type PasswordRequest = z.infer<typeof PasswordSchema>;
+export type SendOtpRequest = z.infer<typeof SendOtpSchema>;
+export type VerifyOtpRequest = z.infer<typeof VerifyOtpSchema>;
