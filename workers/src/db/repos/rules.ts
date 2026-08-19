@@ -34,9 +34,17 @@ export const RuleRepo = {
     const row = await db.first('SELECT * FROM path_rules WHERE id = ?', [id]);
     return row ? mapPathRule(row) : null;
   },
-  async listRules(db: Db): Promise<PathRule[]> {
-    const rows = await db.all('SELECT * FROM path_rules WHERE status = \'active\' ORDER BY priority DESC, created_at DESC');
-    return rows.map(mapPathRule);
+  async listRules(db: Db, opts?: { page?: number; limit?: number }): Promise<{ rows: PathRule[]; total: number }> {
+    const page = Math.max(1, opts?.page ?? 1);
+    const limit = Math.min(100, Math.max(1, opts?.limit ?? 20));
+    const offset = (page - 1) * limit;
+    const countRow = await db.first(`SELECT COUNT(*) AS c FROM path_rules WHERE status = 'active'`);
+    const total = num(countRow?.c);
+    const rows = await db.all(
+      `SELECT * FROM path_rules WHERE status = 'active' ORDER BY priority DESC, created_at DESC LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+    return { rows: rows.map(mapPathRule), total };
   },
   async updateRule(db: Db, id: string, fields: Record<string, unknown>): Promise<void> {
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);

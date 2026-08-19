@@ -189,8 +189,14 @@ adminStorageRoutes.delete('/mounts/:id', async (c) => {
 // ============ 权限规则 ============
 adminStorageRoutes.get('/rules', async (c) => {
   const db = getDb(c);
-  const rules = await RuleRepo.listRules(db);
-  return ok(c, { rules: rules.map((r) => ({ ...r, passwordHash: r.passwordHash ? '***' : undefined })) });
+  const q = c.req.query();
+  const page = Math.max(1, Number(q.page ?? 1) || 1);
+  const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+  const { rows, total } = await RuleRepo.listRules(db, { page, limit });
+  return ok(c, {
+    rules: rows.map((r) => ({ ...r, passwordHash: r.passwordHash ? '***' : undefined })),
+    pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
+  });
 });
 
 adminStorageRoutes.post('/rules', async (c) => {
