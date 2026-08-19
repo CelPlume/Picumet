@@ -2,12 +2,15 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink } from 'lucide-react';
+import QRCode from 'qrcode';
+import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink, X } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button, Input, Label, EmptyState, Badge, Dialog, Card, Switch } from '@/components/ui/core';
+import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { formatDateTime, formatBytes, timeAgo } from '@/lib/utils';
+import FileIcon from '@/components/files/FileIcon';
 import type { FileListItem } from '@shared/types';
 
 interface ShareItem {
@@ -39,6 +42,13 @@ export default function MyShares() {
   const [allowPreview, setAllowPreview] = useState(true);
   const [created, setCreated] = useState<{ id: string; url: string; qrcode: string } | null>(null);
   const [myFiles, setMyFiles] = useState<FileListItem[]>([]);
+  const [qrDialog, setQrDialog] = useState<{ share: ShareItem; url: string; dataUrl: string } | null>(null);
+
+  const showQr = async (s: ShareItem) => {
+    const url = `${window.location.origin}/share/${s.id}`;
+    const dataUrl = await QRCode.toDataURL(url, { width: 240, margin: 2 }).catch(() => '');
+    setQrDialog({ share: s, url, dataUrl });
+  };
 
   const load = async () => {
     try {
@@ -60,12 +70,13 @@ export default function MyShares() {
     if (createId) {
       setCreateFileId(createId);
       setShowCreate(true);
+      void loadMyFiles();
     }
   }, [params]);
 
   const loadMyFiles = async () => {
     try {
-      const res = await apiFetch<{ items: FileListItem[] }>('/api/files?path=/&limit=200');
+      const res = await apiFetch<{ items: FileListItem[] }>('/api/files?path=/&limit=500');
       setMyFiles(res.data.items.filter((i) => i.type === 'file'));
     } catch {
       /* ignore */
@@ -89,6 +100,10 @@ export default function MyShares() {
       setCreated(res.data.share);
       setShowCreate(false);
       await load();
+      // 后端不返回二维码，客户端生成
+      const url = res.data.share.url.startsWith('http') ? res.data.share.url : window.location.origin + res.data.share.url;
+      const dataUrl = await QRCode.toDataURL(url, { width: 240, margin: 2 }).catch(() => '');
+      setCreated((c) => (c ? { ...c, qrcode: dataUrl } : c));
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : '创建失败');
     }
@@ -135,8 +150,8 @@ export default function MyShares() {
           {shares.map((s) => (
             <Card key={s.id} className="p-4">
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-xl">
-                  {s.file?.type === 'folder' ? '📁' : s.file?.iconEmoji ?? '📄'}
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                  <FileIcon name={s.file?.name ?? ''} type={s.file?.type === 'folder' ? 'folder' : 'file'} className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{s.title ?? s.file?.name}</p>
@@ -148,6 +163,9 @@ export default function MyShares() {
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <Badge variant={s.status === 'active' ? 'success' : 'secondary'}>{s.status}</Badge>
+                  <button onClick={() => void showQr(s)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title={t('share.qrcode')}>
+                    <QrCode className="h-4 w-4" />
+                  </button>
                   <a href={`/share/${s.id}`} target="_blank" rel="noreferrer" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="打开">
                     <ExternalLink className="h-4 w-4" />
                   </a>
@@ -190,17 +208,25 @@ export default function MyShares() {
       >
         <div className="space-y-4">
           <div>
-            <Label>选择文件</Label>
-            <select
-              value={createFileId}
-              onChange={(e) => setCreateFileId(e.target.value)}
-              className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="">请选择文件...</option>
-              {myFiles.map((f) => (
-                <option key={f.id} value={f.id}>{f.name}</option>
-              ))}
-            </select>
+            <Label>分享文件</Label>
+            {(() => {
+              const pre = myFiles.find((f) => f.id === createFileId);
+              return pre ? (
+                <div className="mt-1 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
+                  <FileIcon name={pre.name} type="file" className="h-5 w-5 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{pre.name}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{formatBytes(pre.size)}</span>
+                </div>
+              ) : (
+                <Select
+                  value={createFileId}
+                  onValueChange={setCreateFileId}
+                  placeholder="请选择文件..."
+                  className="mt-1"
+                  options={myFiles.map((f) => ({ value: f.id, label: f.name }))}
+                />
+              );
+            })()}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -209,13 +235,18 @@ export default function MyShares() {
             </div>
             <div>
               <Label>{t('share.expiresIn')}</Label>
-              <select value={expiresIn} onChange={(e) => setExpiresIn(Number(e.target.value))} className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                <option value={0}>{t('share.forever')}</option>
-                <option value={3600}>{t('share.hours1')}</option>
-                <option value={86400}>{t('share.hours24')}</option>
-                <option value={604800}>{t('share.days7')}</option>
-                <option value={2592000}>{t('share.days30')}</option>
-              </select>
+              <Select
+                value={String(expiresIn)}
+                onValueChange={(v) => setExpiresIn(Number(v))}
+                className="mt-1"
+                options={[
+                  { value: '0', label: t('share.forever') },
+                  { value: '3600', label: t('share.hours1') },
+                  { value: '86400', label: t('share.hours24') },
+                  { value: '604800', label: t('share.days7') },
+                  { value: '2592000', label: t('share.days30') },
+                ]}
+              />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -260,6 +291,37 @@ export default function MyShares() {
                 </a>
               </div>
             </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* 查看分享二维码 */}
+      <Dialog
+        open={!!qrDialog}
+        onClose={() => setQrDialog(null)}
+        title={`${t('share.qrcode')} · ${qrDialog?.share.title ?? qrDialog?.share.file?.name ?? ''}`}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setQrDialog(null)}>{t('common.close')}</Button>
+          </>
+        }
+      >
+        {qrDialog && (
+          <div className="flex flex-col items-center gap-4 py-2">
+            {qrDialog.dataUrl ? (
+              <img src={qrDialog.dataUrl} alt="QR" className="h-48 w-48 rounded-md border-8 border-background" />
+            ) : (
+              <p className="text-sm text-muted-foreground">二维码生成失败</p>
+            )}
+            <div className="flex w-full items-center gap-2">
+              <Input readOnly value={qrDialog.url} className="flex-1 font-mono text-xs" />
+              <Button size="sm" variant="outline" onClick={() => void copyLink(qrDialog.url)}>
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <p className="text-center text-xs text-muted-foreground">
+              使用手机扫描二维码即可打开分享链接
+            </p>
           </div>
         )}
       </Dialog>
