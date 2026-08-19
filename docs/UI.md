@@ -1,237 +1,329 @@
-# Picumet 页面设计
+<div align="center">
 
-> 由 spec.md「前端页面」章节与 `frontend/src/App.tsx`（实际路由）整合而成。
+<img src="../assets/logo.svg" alt="Picumet Logo" width="128" />
 
-## 页面路由
+# Picumet frontend guide
+
+**Multi-cloud object storage with fine-grained access control**
+
+English | [中文](UI_CN.md)
+
+</div>
+
+The Picumet frontend is a React single-page application that delivers the file manager, share pages, user settings, and admin console for a multi-cloud object storage platform. This guide documents the page structure, responsive layout, theming, accessibility, and interactions of the interface.
+
+## Before you begin
+
+- Node.js 22 or later with [bun](https://bun.sh/) 1.3 or later installed.
+- A running backend. See [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions.
+- Basic familiarity with React, TypeScript, and Tailwind CSS.
+
+To start the development server:
+
+1. Change into the `frontend/` directory.
+2. Run `bun install` to install dependencies.
+3. Run `bun run dev` to start Vite.
+
+The development server serves the app at the URL that Vite prints, usually `http://localhost:5173`.
+
+## Overview
+
+The frontend lives in the `frontend/` directory and talks to the Workers API over HTTP. It uses these tools:
+
+- React 18 with `react-router-dom` for routing.
+- Vite for building and hot reload.
+- TypeScript for type safety, with shared types imported from `shared/types.ts`.
+- Tailwind CSS for styling.
+- i18next for Chinese and English localization.
+- TanStack Query for server state, caching, and mutations.
+
+Every page loads lazily with `React.lazy` and `Suspense`, so the initial bundle stays small.
+
+## Page routes
+
+The router in `frontend/src/App.tsx` defines the routes below. Unauthenticated users who open a protected route land on `/login` with a `redirect` query parameter; after sign-in, the app sends them back. Admin routes check the signed-in user's role and show a permission message when the role is not `admin`.
 
 ```mermaid
 flowchart LR
-    USER["用户"] -->|未登录| public_
-    USER -->|已登录| auth_
-    USER -->|管理员| admin_
+    USER["User"] -->|Signed out| PUBLIC
+    USER -->|Signed in| AUTH
+    USER -->|Admin| ADMIN
 
-    subgraph public_["公开路由"]
+    subgraph PUBLIC["Public routes"]
         direction TB
-        R1["/ · 落地页"]
-        R2["/login · 登录"]
-        R3["/register · 注册"]
-        R4["/reset-password · 重置密码"]
-        R5["/free-mode · 自由模式"]
-        R6["/share/:id · 分享页"]
-        R7["/i/:id · 图床短链"]
+        R1["/ Landing"]
+        R2["/login Sign in"]
+        R3["/register Sign up"]
+        R4["/reset-password Reset password"]
+        R5["/free-mode Free mode"]
+        R6["/share/:id Share page"]
+        R7["/i/:id Image short link"]
     end
 
-    subgraph auth_["认证路由（RequireAuth）"]
+    subgraph AUTH["Authenticated routes"]
         direction TB
-        R8["/files · 文件管理器"]
-        R9["/shares · 我的分享"]
-        R10["/settings/profile · 个人资料"]
-        R11["/settings/security · 安全设置"]
-        R12["/settings/api-keys · API 密钥"]
-        R13["/settings/appearance · 外观设置"]
+        R8["/files File manager"]
+        R9["/shares My shares"]
+        R10["/settings/profile Profile"]
+        R11["/settings/security Security"]
+        R12["/settings/api-keys API keys"]
+        R13["/settings/appearance Appearance"]
     end
 
-    subgraph admin_["管理员路由（RequireAdmin）"]
+    subgraph ADMIN["Admin routes"]
         direction TB
-        R14["/admin · 仪表板"]
-        R15["/admin/users · 用户管理"]
-        R16["/admin/storage · 存储配置"]
-        R17["/admin/mounts · 挂载点"]
-        R18["/admin/permissions · 权限规则"]
-        R19["/admin/shares · 分享管理"]
-        R20["/admin/files · 全部文件"]
-        R21["/admin/logs · 访问日志"]
-        R22["/admin/settings · 系统设置"]
+        R14["/admin Dashboard"]
+        R15["/admin/users Users"]
+        R16["/admin/storage Storage"]
+        R17["/admin/permissions Permission rules"]
+        R18["/admin/shares Shares"]
+        R19["/admin/files All files"]
+        R20["/admin/logs Access logs"]
+        R21["/admin/settings System settings"]
     end
 ```
 
-## 页面清单
+### Page map
 
-| 页面 | 路径 | 访问 | 组件 |
-|---|---|---|---|
-| 落地页 | `/` | 公开 | `Landing` |
-| 登录 | `/login` | 公开 | `Login` |
-| 注册 | `/register` | 公开 | `Register` |
-| 重置密码 | `/reset-password` | 公开 | `ResetPassword` |
-| 自由模式 | `/free-mode` | 公开 | `FreeMode` |
-| 分享页 | `/share/:id` `/i/:id` | 公开 | `SharePage` |
-| 文件管理器 | `/files` | 认证 | `Files` |
-| 我的分享 | `/shares` | 认证 | `MyShares` |
-| 设置（布局） | `/settings/*` | 认证 | `SettingsLayout` |
-| 个人资料 | `/settings/profile` | 认证 | `Profile` |
-| 安全设置 | `/settings/security` | 认证 | `Security` |
-| API 密钥 | `/settings/api-keys` | 认证 | `ApiKeys` |
-| 外观设置 | `/settings/appearance` | 认证 | `Appearance` |
-| 管理后台（布局） | `/admin` | 管理员 | `AdminLayout` |
-| 仪表板 | `/admin` | 管理员 | `Dashboard` |
-| 用户管理 | `/admin/users` | 管理员 | `Users` |
-| 存储配置 | `/admin/storage` | 管理员 | `Storage` |
-| 挂载点管理 | `/admin/mounts` | 管理员 | `Mounts` |
-| 权限规则 | `/admin/permissions` | 管理员 | `Permissions` |
-| 分享管理 | `/admin/shares` | 管理员 | `Shares` |
-| 全部文件 | `/admin/files` | 管理员 | `Files` |
-| 访问日志 | `/admin/logs` | 管理员 | `Logs` |
-| 系统设置 | `/admin/settings` | 管理员 | `Settings` |
+| Page | Path | Access | Component |
+| :--- | :--- | :--- | :--- |
+| Landing | `/` | Public | `Landing` |
+| Sign in | `/login` | Public | `Login` |
+| Sign up | `/register` | Public | `Register` |
+| Reset password | `/reset-password` | Public | `ResetPassword` |
+| Free mode | `/free-mode` | Public | `FreeMode` |
+| Share page | `/share/:id` `/i/:id` | Public | `SharePage` |
+| File manager | `/files` `/files/*` | Signed in | `Files` |
+| My shares | `/shares` | Signed in | `MyShares` |
+| Settings layout | `/settings/*` | Signed in | `SettingsLayout` |
+| Profile | `/settings/profile` | Signed in | `Profile` |
+| Security | `/settings/security` | Signed in | `Security` |
+| API keys | `/settings/api-keys` | Signed in | `ApiKeys` |
+| Appearance | `/settings/appearance` | Signed in | `Appearance` |
+| Admin layout | `/admin` | Admin | `AdminLayout` |
+| Dashboard | `/admin` | Admin | `Dashboard` |
+| Users | `/admin/users` | Admin | `Users` |
+| Storage | `/admin/storage` | Admin | `Storage` |
+| Mount points | `/admin/mounts` | Admin | Redirects to `/admin/storage?tab=mounts` |
+| Permission rules | `/admin/permissions` | Admin | `Permissions` |
+| Shares | `/admin/shares` | Admin | `Shares` |
+| All files | `/admin/files` | Admin | `Files` |
+| Access logs | `/admin/logs` | Admin | `Logs` |
+| System settings | `/admin/settings` | Admin | `Settings` |
 
----
+## Layout
 
-## 1. 落地页
+### App shell
 
-**路径**: `/` · **访问**: 公开
+The `AppShell` component wraps the signed-in pages and provides the common chrome:
 
-布局：
-```
-┌─────────────────────────────────────────┐
-│ [Logo] Picumet      [功能] [定价] [登录]│
-├─────────────────────────────────────────┤
-│          Picumet                        │
-│     多云对象存储管理平台                │
-│   统一管理你的云端文件和图床            │
-│     [开始使用 →] [GitHub]               │
-├─────────────────────────────────────────┤
-│  特性展示（2×3 卡片）                   │
-│  🔐细粒度权限 · 📦多云支持 · 🚀边缘加速 │
-│  🔗分享链接 · 🎨自定义外观 · 🌐国际化    │
-├─────────────────────────────────────────┤
-│  立即开始 · 免费开源，部署到 Cloudflare │
-│  [查看文档] [开始部署]                  │
-└─────────────────────────────────────────┘
+- A sticky top bar with the logo, site title, primary navigation, and a right cluster for the theme toggle, language switcher, and user menu.
+- An announcement banner below the top bar.
+- A centered content area with a maximum width of `1400px`.
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ [☰] [Logo] [Files] [Shares] [Settings] [Admin]  [◐] [中] [@]│
+├─────────────────────────────────────────────────────────────┤
+│   Announcement banner                                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│                    Main content area                        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**关键组件**: `HeroSection`、`FeatureGrid`、`CTASection`、`Footer`。
+On screens narrower than `768px`, the top bar hides the navigation and shows a hamburger button. The button opens a left-side `Drawer` with the same links.
 
-## 2. 登录 / 注册
+### File manager workspace
 
-**路径**: `/login` `/register` · **访问**: 公开
+The file manager (`/files`) arranges content into three regions:
 
-- 登录表单：用户名 + 密码 + 忘记密码链接
-- 注册表单额外字段：邮箱、邀请码（可选）、Turnstile（可选）
-- 未登录访问 `/files` → 重定向 `/login?redirect=/files`
-
-**验收**:
-- 正确凭据 → 设置 Cookie 并跳转 `redirect` 或 `/files`
-- 注册 → 发送验证邮件（开发环境自动验证）
-
-## 3. 文件管理器
-
-**路径**: `/files` 或 `/files/*` · **访问**: 认证用户
-
-桌面布局：
-```
-┌───────────────────────────────────────────────────────────┐
-│ [Logo] [面包屑]                [搜索] [@用户] [⚙️]        │
-├──────┬────────────────────────────────────────┬───────────┤
-│      │ Toolbar [↑上传][+新建][视图▾][排序▾]   │ 属性面板  │
-│ 📁   ├────────────────────────────────────────┤ 文件名    │
-│ 全部 │  文件卡片网格                          │ 类型      │
-│ 图片 │  ┌────┐ ┌────┐ ┌────┐ ┌────┐         │ 大小      │
-│ 视频 │  │📁文档│ │📁视频│ │🖼️bg│ │📄readme│ │ 修改时间  │
-│ 音乐 │  └────┘ └────┘ └────┘ └────┘         │ 颜色/封面 │
-│ 文档 │                                         │ 密码/URL  │
-│ 收藏 │                                         │ 位置      │
-│ 分享 │                                         │ 手动[↑↓]  │
-└──────┴────────────────────────────────────────┴───────────┘
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Breadcrumb                       [↑ Upload] [+ New] [☑] [▦] │
+│ [Search] [Sort ▾] [Order]                                    │
+├────────────┬──────────────────────────────────────┬──────────┤
+│            │  File cards / file list              │          │
+│  Sidebar   │  ┌────┐ ┌────┐ ┌────┐ ┌────┐        │ Props    │
+│  Folders   │  │ ▤  │ │ ▤  │ │ 🖼 │ │ 📄 │        │ panel    │
+│  Types     │  └────┘ └────┘ └────┘ └────┘        │          │
+│  Favorites │                                        │          │
+│            │  [Bulk actions bar · sticky bottom]   │          │
+└────────────┴──────────────────────────────────────┴──────────┘
 ```
 
-移动端：侧边栏折叠为汉堡菜单（Drawer）、属性面板改底部 Sheet、卡片 2 列、工具栏浮动按钮。
+- **Breadcrumb**: shows the current folder path; each segment navigates to that folder.
+- **Toolbar**: contains **Upload**, **New folder**, **Select** and batch-select, plus the grid/list view toggle.
+- **Search and sort**: filter by name and sort by name, time, or size, ascending or descending.
+- **Content**: renders a responsive card grid or a list of rows.
+- **Properties panel**: opens on the right when you select a file or choose **Properties** from a menu.
+- **Bulk actions bar**: sticks to the bottom of the viewport while you select any item.
 
-**核心交互**:
-- **选择**: 单击选中、Ctrl/Cmd+单击多选、Shift+单击范围、Ctrl/Cmd+A 全选
-- **拖拽**: 拖到文件夹移动、拖到侧边栏移动、拖到上传区上传、拖拽排序（manual）
-- **双击**: 文件夹进入、图片预览、视频/音频播放、其他下载
-- **右键菜单**: 打开/下载/重命名/移动/复制链接/分享/设置密码/删除/属性
-- **批量操作栏**: 已选 N 项 [移动] [删除] [取消选择]
+### Share pages
 
-**关键组件**: `FileExplorer`、`Sidebar`、`Toolbar`、`FileGrid`、`FileList`、`FileItem`、`PropertiesPanel`、`BulkActionsBar`、`ContextMenu`、`UploadDropzone`。
+**Public share page.** The route `/share/:id` renders one shared item, and `/i/:id` serves the image short link. Password-protected shares show a password gate before the content loads. After verification, the page shows the title, creator, size, expiry, and view-count badges, plus download, copy-link, and QR actions. The QR code renders locally with the `qrcode` library. The image short link renders the image directly, without the surrounding card.
 
-## 4. 上传弹窗
+**Share list.** The route `/shares` lists the links you created. A view toggle switches between a responsive card grid and a row list. Each card shows the file icon, title, status badge, size, expiry, view count, and download count, with quick actions for QR code, open, copy link, and revoke. The list paginates with a configurable page size, 20 by default.
 
-**触发**: 点击上传按钮 / 拖拽文件
+### Settings and admin pages
 
-- 拖拽区 + 选择文件/文件夹
-- 目标路径选择器（默认 `/uploads/`）
-- 并发上传（3 线程）
-- 大文件自动分片（>100MB）
-- 每个任务进度条 + 暂停/取消
-- 已完成/失败分组列表
-- 暂停全部/清空列表/完成
+The settings layout (`/settings/*`) shows a vertical nav with **Profile**, **Security**, **API keys**, and **Appearance**. The admin layout (`/admin`) uses two columns: a vertical nav on the left and the page content on the right. The nav stacks above the content on mobile. Admin pages include the dashboard with stat cards, user management, storage configuration, permission rules, share management, all files, access logs, and system settings.
 
-**关键组件**: `UploadModal`、`UploadDropzone`、`UploadQueue`、`UploadItem`、`PathSelector`。
+### Public pages
 
-## 5. 文件预览器
+The sign-in (`/login`), sign-up (`/register`), and reset-password (`/reset-password`) pages share a centered card layout. Sign-up collects username, password, email, and an optional invite code, and it can enforce Cloudflare Turnstile when the site enables it. After a successful sign-in, the app navigates to the `redirect` target, or to `/files` when no target exists. The free-mode page (`/free-mode`) lets visitors connect their own R2, S3, or Oracle bucket with temporary credentials; the credentials stay in server memory for the session.
 
-- **图片**: 缩放（滚轮/手势）、旋转 90°、左右切换同目录、下载原图
-- **视频/音频**: 播放/暂停、进度拖动、音量、倍速（0.5x~2x）、画中画、全屏
-- **代码**: 语法高亮（highlight.js 纯文本 + 预转义，安全）、行号、复制、下载；**不渲染 HTML/Markdown**
+### Top bar components
 
-## 6. 分享页面
+| Component | Location | Purpose |
+| :--- | :--- | :--- |
+| `Logo` | Top-left | Brand mark; uses the site logo and title from site settings. |
+| `ThemeToggle` | Top-right | Switches between light, dark, and system theme. |
+| `LanguageSwitcher` | Top-right | Toggles Chinese and English. |
+| `UserMenu` | Top-right | Shows the display name; links to settings and sign out. |
+| `AnnouncementBanner` | Below top bar | Shows site announcements that admins publish. |
 
-**路径**: `/share/:id` 或 `/i/:id` · **访问**: 公开
+## Responsive design
 
-需要密码时：
-```
-┌─────────────────────────────────┐
-│  [Logo] Picumet                 │
-│    🔒 此分享需要密码            │
-│    标题 / 分享者 / [密码] [查看]│
-└─────────────────────────────────┘
-```
+The interface uses three viewport ranges:
 
-验证成功后：
-```
-┌─────────────────────────────────────┐
-│  📄 文件名                          │
-│  大小 · 分享者 · 过期时间 · 访问次数 │
-│  [浏览量 badge][访问上限 badge]     │
-│   (文件预览：图片/视频/文本)        │
-│  [⬇ 下载] [🔗 复制链接] [📱 二维码] │
-└─────────────────────────────────────┘
-```
+| Breakpoint | Width | Layout behavior |
+| :--- | :--- | :--- |
+| Mobile | Below `640px` | Sidebar and navigation collapse into drawers; card grid shows 2 columns; the properties panel opens as a right drawer. |
+| Tablet | `768px`–`1024px` | Navigation stays in the top bar; card grid shows 3–4 columns. |
+| Desktop | `1024px` and above | Card grid shows 5 columns; the properties panel sticks to the right edge. |
 
-**功能**: 密码验证、图片直出预览、下载、复制多格式链接、**本地二维码**（前端 `qrcode` 库生成 data URL）。
+Design decisions:
 
-**验收**:
-- 有密码分享 → 显示密码输入页
-- 正确密码 → 显示预览 + 下载
-- 已过期 → 显示"分享已过期"
+- **Sidebar to drawer**: the primary navigation lives in the top bar on tablet and desktop. On mobile, the hamburger button opens a left drawer.
+- **Properties panel**: on `sm` and wider the panel renders as a fixed right column that stays visible while you scroll. On mobile it renders inside a right-side `Drawer`. A `matchMedia('(max-width: 639px)')` gate (`isMobile`) keeps the drawer open only on phones, so the hidden desktop column never locks page scrolling on larger screens.
+- **Card grid**: the grid uses `grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5`, so columns grow with the viewport.
+- **Bulk actions bar**: a scan across widths from `350px` to `1080px` confirms the bar stays visible without overlapping content or causing horizontal scroll. Buttons show icons only on narrow screens and add labels from `1024px` upward.
+- **Tables and badges**: secondary table columns hide below `sm` (`hidden sm:block`). Badges use `whitespace-nowrap` and a shrink-safe layout so rows stay aligned on narrow screens; permission-rule cards wrap the whole group instead of misaligning.
 
-## 7. 用户设置
+## Theming
 
-**侧边栏**: 个人资料 / 安全设置 / API 密钥 / 外观设置
+The theme store in `frontend/src/stores/theme.ts` persists appearance in `localStorage` and applies CSS variables on `document.documentElement`.
 
-- **个人资料**: 头像、显示名称、邮箱（已验证标识）、默认路径、语言（中文/English）
-- **安全设置**: 修改密码（旧密码 + 新密码）
-- **API 密钥**: 列表（名称、keyId、协议、最后使用）+ 创建/撤销
-  - 创建弹窗: 名称、协议（WebDAV/自定义 API）、上传路径模板、权限、IP 白名单、有效期
-  - 成功显示: ⚠️ 密钥仅显示一次 + Key ID/Secret + WebDAV/API 配置 JSON 复制
-- **外观设置**: 主题（浅色/深色/跟随系统）、强调色、模糊效果、自定义背景（图片/URL/纯色）——存 localStorage
+### Theme mode
 
-## 8. 管理员后台
+Users pick **light**, **dark**, or **system**. In system mode the app follows `prefers-color-scheme` and reacts to live changes. Dark mode toggles a `dark` class on the root element.
 
-**导航**: 仪表板 / 用户管理 / 存储配置 / 挂载点管理 / 权限规则 / 分享管理 / 全部文件 / 访问日志 / 系统设置
+### Accent color
 
-- **仪表板**: 概览统计卡片（用户/文件/存储/请求）+ 存储使用 + 近期活动
-- **用户管理**: 表格（角色 badge、状态 badge、配额）+ 编辑弹窗 + 分页
-- **存储配置**: Provider 卡片列表（状态 badge、region、bucket）+ 创建/测试/编辑/删除
-- **挂载点管理**: 挂载列表（mountPath、provider、sortBy badge、priority）+ 增删改
-- **权限规则**: 规则卡片（路径、主体、权限 badges、allow/deny badge）+ 可视化创建/编辑
-- **分享管理**: 全局分享列表 + 撤销
-- **全部文件**: 文件列表 + 分页
-- **访问日志**: 日志卡片（action badge、path、userId、IP、bytes、时间）
-- **系统设置**: 分组表单（站点信息、注册/访客开关、Turnstile、限流）
+Users pick an accent color from presets or with a color picker. The app converts the hex value to an HSL triple and writes it to the `--primary` and `--ring` CSS variables. Tailwind consumes these as `hsl(var(--primary))`. The app computes a foreground color with the YIQ formula, so text and icons stay readable on light or dark accents.
 
-## 9. 响应式设计
+### Blur and background
 
-- **断点**: 桌面 ≥1024 / 平板 768~1024 / 手机 <768
-- 侧边栏折叠为 Drawer、属性面板变 Sheet、卡片网格 2 列、表格列 `hidden md:block` 隐藏次要列
-- Badge 组件 `whitespace-nowrap shrink-0`，权限规则卡片 `flex-wrap` 整组换行（窄屏不错位）
+- **Blur**: the **Enable blur** switch sets `--enable-blur`; dialogs, dropdowns, and the top bar use it for `backdrop-filter`.
+- **Background image**: users upload an image up to `2MB` (JPG, PNG, or WebP) or leave no background. The image stores as a base64 data URL in `localStorage`. A solid-color background option no longer exists.
 
----
+### File icons and folder display
 
-## 相关文档
+| Setting | Options | Effect |
+| :--- | :--- | :--- |
+| File icon style | `iconify` or `emoji` | Switches icon rendering between Iconify glyphs and emoji. |
+| Folder display | `icon` or `contents` | Shows a plain folder icon or a 2x2 preview of the folder's first four items. |
+| Custom emoji | Per file | A per-file emoji set in the properties panel overrides the icon. |
 
-- [系统架构](ARCHITECTURE.md)
-- [API 设计](API.md)
-- [开发指南](DEVELOPMENT.md)
-- [部署指南](DEPLOYMENT.md)
-- [技术规格（完整版）](../spec.md)
+## Accessibility
+
+The interface follows standard web accessibility practices:
+
+- **Semantic structure**: pages use `header`, `nav`, `main`, and `footer` landmarks; forms use `<label>`, `<input>`, and `<button>`.
+- **Labels**: every field has a visible label; icon-only buttons provide `aria-label`, such as the grid/list view toggle and the menu button.
+- **Focus**: interactive elements receive a visible focus ring; the tab order follows the DOM order.
+- **Contrast**: body text meets WCAG contrast guidance, and the YIQ-based accent foreground keeps interactive text readable.
+- **Alt text**: meaningful images carry descriptive `alt`; the logo and decorative glyphs use `alt=""` or an aria label where appropriate.
+- **Reduced motion**: interface animations are short and subtle; the bulk actions bar uses a small slide-in animation.
+
+## Interaction
+
+### Selecting files
+
+Click a card or row to select one item. Hold **Ctrl**/**Cmd** or **Shift** while clicking to extend the selection. The **Select** toolbar button enters multi-select mode, where the menu offers **Select all**, **Invert selection**, and **Clear selection**. Checkboxes appear on every card while in multi-select mode or when you hover.
+
+### Opening files
+
+Double-click an item to open it:
+
+- Folders navigate into their contents.
+- Images, videos, audio, and code open in the preview modal.
+- Other files start a download.
+
+### Previewing files
+
+The preview modal handles media types:
+
+- **Images**: zoom from `50%` to `300%`, rotate by `90°`, and download the original. Controls stay pinned to the bottom, so the zoomed image cannot cover them.
+- **Video and audio**: a native player with playback, seek, volume, and full-screen controls.
+- **Code**: syntax highlighting with highlight.js; the app HTML-escapes the source before highlighting, so it never renders raw HTML or Markdown.
+- **Password-protected files**: the modal asks for a password before loading the content.
+
+### Context menus and hover actions
+
+Right-click a file to select it and open the properties panel. Hovering a card or row reveals a checkbox and a three-dot menu at the top-right corner. The menu provides open, download, copy link, share, rename, move, set password, properties, and delete.
+
+### Uploading files
+
+The upload dialog opens from the toolbar or an empty state. You can drag files onto the drop zone or select them with the file picker. The dialog shows the target folder and queues each file with a progress bar. Uploads run up to three at a time through a session-based flow: the app requests an upload session, sends the object either directly with a presigned URL or through the Worker proxy, then completes the session. Failed tasks show an error and a retry button.
+
+### Dragging files
+
+Drag files onto the upload dialog's drop zone to add them to the queue. You can also drag files between folders to move them; verification notes remain tracked in the progress document.
+
+### Copying links
+
+The copy-link flow handles single files and multi-select batches:
+
+- **Single file**: copying a non-media file copies the direct link immediately. Copying an image or video opens the copy-link dialog.
+- **Batch**: the bulk action bar copies all selected files; if the selection contains an image or video, the app opens the copy-link dialog.
+- **Dialog**: shows the selected files as chips, a format picker with **Direct link**, **HTML code**, and **Markdown code**, and a **Signed link** switch. Signed links expire after one hour. The app joins the generated links with newlines and writes them to the clipboard.
+
+### Folder previews
+
+With folder display set to `contents`, each folder card shows a 2x2 grid of its first four items, ordered by the current sort. Folders and files show icons, images show thumbnails, and videos show a canvas-captured frame. An empty folder falls back to the folder icon.
+
+### Video thumbnails
+
+The card renders video thumbnails entirely in the browser. A hidden `<video>` element seeks to about `20%` of the duration, draws the frame to a `<canvas>`, and exports it as a JPEG data URL. If decoding or CORS fails, the card falls back to a file icon.
+
+### Image previews
+
+Image cards fetch a preview URL and render the image inline. The app caches the URL per file, and it remembers failed URLs, so the same broken URL does not cause repeated requests.
+
+### Bulk actions
+
+The bulk actions bar appears as soon as you select at least one item. It offers download, share (single selection only), copy link, move, rename (single selection only), delete, and properties (single selection only), plus a **Clear selection** button.
+
+## Performance
+
+- **Route-level lazy loading**: every page loads with `React.lazy` and `Suspense`, so the browser fetches page code only when the route opens.
+- **Server state caching**: TanStack Query caches file listings and mutation state, which avoids redundant requests.
+- **Image URL cache**: preview URLs resolve once per file and reuse from an in-memory map.
+- **Client-side thumbnails**: video cards generate thumbnails locally with canvas, so they do not consume server bandwidth or storage.
+- **Lazy-loaded images**: folder-preview thumbnails load with `loading="lazy"`.
+
+## Checklist
+
+Use this list when reviewing a UI change:
+
+- [ ] Every interactive element has a visible focus indicator.
+- [ ] Icon-only buttons have `aria-label` text.
+- [ ] Meaningful images have descriptive `alt`; decorative images use `alt=""`.
+- [ ] Forms label every field and use the correct input types.
+- [ ] The layout reflows at `640px`, `768px`, and `1024px` without horizontal scroll.
+- [ ] Hover-only actions also work with keyboard and touch input.
+- [ ] The bulk actions bar stays visible from `350px` to `1080px`.
+- [ ] New pages lazy-load through the router.
+- [ ] Theme changes persist to `localStorage` and respect the system preference.
+
+## What's next
+
+- [Architecture guide](ARCHITECTURE.md) for backend services and shared types.
+- [API reference](API.md) for the HTTP endpoints the UI calls.
+- [Development guide](DEVELOPMENT.md) for local setup, tests, and conventions.
+- [Deployment guide](DEPLOYMENT.md) for shipping to Cloudflare.
+- [Progress report](PROGRESS.md) for the implementation status and roadmap.
+- [Project overview](../README.md)

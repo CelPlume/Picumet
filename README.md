@@ -1,105 +1,160 @@
-# Picumet — 多云对象存储管理平台
+<div align="center">
 
-统一管理你的云端文件和图床：细粒度权限控制、分享链接、PicGo/PicList 接入，部署在 Cloudflare 边缘网络。
+<img src="assets/logo.svg" alt="Picumet Logo" width="128" />
 
-## 技术栈
+# Picumet
 
-- **前端**：React 18 + Vite + TypeScript + Tailwind CSS（shadcn 风格 UI）+ React Router 6 + TanStack Query 5 + Zustand + i18next（中/英）
-- **后端**：Cloudflare Workers + Hono 4 + D1 (SQLite) + KV + R2
-- **存储协议**：S3 兼容（R2 / AWS S3 / Oracle Cloud），本地开发走 R2 绑定
-- **测试**：Vitest（权限真值表 57 / 文件状态机 / 配额 / 安全回归 / API 集成 / S3 预签名 / 故障注入，后端 122 项 + 前端 7 项）
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020.svg)](https://workers.cloudflare.com/)
+[![Hono](https://img.shields.io/badge/Hono-4-E36002.svg)](https://hono.dev/)
+[![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6.svg)](https://www.typescriptlang.org/)
+[![Vite](https://img.shields.io/badge/Vite-5-646CFF.svg)](https://vitejs.dev/)
+[![D1](https://img.shields.io/badge/D1-SQLite-9E4CFF.svg)](https://developers.cloudflare.com/d1/)
+[![R2](https://img.shields.io/badge/R2-S3%20Compatible-0B7ECF.svg)](https://developers.cloudflare.com/r2/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 
-## 快速开始（本地开发）
+**Multi-cloud object storage with fine-grained access control**
 
-前置要求：Node 22+、bun 1.3+（本项目统一使用 bun 作为包管理器，`packageManager: bun@1.3.14`）。
+English | [中文](README_CN.md)
 
-```bash
-# 1. 安装依赖
-cd workers && bun install
-cd ../frontend && bun install
+</div>
 
-# 2. 配置环境变量
-cp workers/.dev.vars.example workers/.dev.vars
+Picumet is a multi-cloud object storage management platform. It gives you a unified file manager and fine-grained access control over your cloud files, with share links and PicGo/PicList integration, all running on the Cloudflare edge network.
 
-# 3. 终端 1：启动 Workers API（端口 8787，首次启动后执行迁移）
-cd workers
-bun run dev
-# 在另一个终端执行迁移（首次）：
-bunx wrangler d1 execute picumet-db --local --file=migrations/0001_initial.sql
+## Before you begin
 
-# 4. 终端 2：启动前端（端口 5173，代理 /api → 8787）
-cd frontend
-bun run dev
+- Node.js 22 or later.
+- [bun](https://bun.sh/) 1.3 or later. This project uses bun as the package manager.
+- A Cloudflare account if you plan to deploy to production.
+
+## Set up for local development
+
+1. Install the backend dependencies.
+
+   ```sh
+   cd workers
+   bun install
+   ```
+
+2. Install the frontend dependencies.
+
+   ```sh
+   cd ../frontend
+   bun install
+   ```
+
+3. Configure the environment variables.
+
+   ```sh
+   cp workers/.dev.vars.example workers/.dev.vars
+   ```
+
+4. Start the Workers API. The API listens on port 8787.
+
+   ```sh
+   cd workers
+   bun run dev
+   ```
+
+5. Initialize the database on the first run.
+
+   ```sh
+   bunx wrangler d1 execute picumet-db --local --file=migrations/0001_initial.sql
+   ```
+
+6. Start the frontend. The dev server listens on port 5173 and proxies `/api` to port 8787.
+
+   ```sh
+   cd frontend
+   bun run dev
+   ```
+
+Open `http://localhost:5173` for the app and `http://localhost:8787` for the API.
+
+Seed accounts (development only):
+
+| Role | Email | Password |
+| :--- | :--- | :--- |
+| Admin | `admin` | `admin123456` |
+| Demo user | `demo` | `demo123456` |
+
+In production, inject the admin password through `ADMIN_PASSWORD` with at least 12 characters. The build ships no fixed default credentials.
+
+## Run the tests
+
+```sh
+cd workers && bun run test            # backend: 127 tests
+cd workers && bun run typecheck       # backend type check
+cd frontend && bun run test           # frontend: 7 tests
+cd frontend && bun run test:coverage  # frontend coverage gate, security-critical modules >= 80%
+cd frontend && bun run typecheck      # frontend type check
+cd frontend && bun run build          # frontend build
 ```
 
-访问：
-- 前端：http://localhost:5173
-- API：http://localhost:8787
+CI runs `bun install`, typecheck, tests, and the coverage gate on every push or PR to `main`. It never deploys automatically. Deploy with `wrangler deploy` or through the Cloudflare side.
 
-内置账号（**仅开发种子**）：
-- 管理员：`admin` / `admin123456`
-- 演示用户：`demo` / `demo123456`
-> 生产环境通过 `ADMIN_PASSWORD` 注入管理员密码（≥12 位强密码），无固定默认凭据（审计 H-02）。
+## Feature overview
 
-## 测试
+| Area | Highlights |
+| :--- | :--- |
+| Auth | Register, login (HttpOnly cookie + JWT), email verification, password reset. |
+| Permissions | Admin/user/guest roles, path-level ACLs, file and path passwords. |
+| Files | Card/list views, upload (single and multipart), resume, hard delete, rename, move (Saga), batch operations, search, sort. |
+| Previews | Image zoom/rotate, video/audio players, code highlighting (highlight.js, pre-escaped). File cards render video thumbnails and folder previews. |
+| Copy links | Multi-file dialog with direct/HTML/Markdown/BBCode formats, direct public path or signed URLs. |
+| Shares | Password, expiry, download limits, public page, QR code. |
+| Appearance | Light/dark/system themes, accent color with dynamic foreground, blur, background image/URL, folder preview switch, custom file emoji. |
+| API keys | `pk_x.sk_y` opaque tokens (hash only), IP allowlist, WebDAV Basic auth, PicGo upload at `/api/upload`. |
+| Admin | Dashboard, users, quotas, storage sources, mounts, rules, shares, files, logs, settings. |
+| Free mode | Temporary sessions with user-provided storage credentials (AES-256-GCM in KV, short TTL). |
+| Security | CSP, CSRF tokens, rate limiting (fail closed), path traversal protection, dangerous file blocking, SSRF checks, SQL parameterization, atomic download tokens. |
 
-```bash
-cd workers && bun run test            # 后端 127 项（权限真值表、上传状态机、配额、安全回归、API 集成、WebDAV、S3 预签名、故障注入）
-cd workers && bun run typecheck       # 后端类型检查
-cd frontend && bun run test           # 前端 7 项（XSS 转义、注册页交互）
-cd frontend && bun run test:coverage  # 前端覆盖率门禁（安全关键模块 ≥80%）
-cd frontend && bun run typecheck      # 前端类型检查
+## Architecture principles
+
+Organize code by business domain, not by technical layer.
+
+- Backend business code lives in `workers/src/services/<domain>/`. Each service is self-contained with `handlers.ts`, `schemas.ts`, `types.ts`, domain logic, and a `README.md`. The `index.ts` file only assembles routes and middleware.
+- Every service depends on the Permissions service for authorization and the Storage service for object access. Avoid circular dependencies.
+- Middleware (`auth`, `csrf`, `rate-limit`), the data layer (`db/repos/`), utilities (`utils/`), and shared contracts (`shared/`) are thin infrastructure layers. They carry no business logic.
+- The frontend follows the same rule. `pages/` holds one page per route, and page sub-features live in `components/files/` and `components/layout/`. The `components/ui/` folder holds reusable UI primitives only.
+
+See the [architecture guide](docs/ARCHITECTURE.md) for the full design, and the [implementation progress](docs/PROGRESS.md) for scope and status.
+
+## Project structure
+
+```
+picumet/
+├── assets/logo.svg          # Brand mark
+├── frontend/                # React app (Vite + TypeScript + Tailwind)
+│   └── src/
+│       ├── pages/           # One page per route
+│       ├── components/      # files/ · layout/ · ui/
+│       ├── lib/             # api · utils · i18n
+│       └── stores/          # theme · auth · site
+├── workers/                 # Cloudflare Workers API (Hono + D1/KV/R2)
+│   └── src/
+│       ├── services/        # auth · files · uploads · shares · storage · webdav · ...
+│       ├── middleware/      # auth · csrf · rate-limit · global
+│       ├── db/repos/        # D1 data access
+│       ├── utils/           # path · crypto · ssrf · smtp
+│       └── shared/          # schemas · types · errors · response
+├── shared/                  # Shared types between frontend and backend
+└── docs/                    # Documentation
 ```
 
-CI：`.github/workflows/ci.yml` 在 push/PR 到 main 时执行 bun install → typecheck → test → 构建/覆盖率门禁（不自动部署）。部署统一用 `wrangler deploy`（或 Cloudflare 侧自动部署）。
+## Documentation
 
-## 主要功能
+| Guide | Contents |
+| :--- | :--- |
+| [Architecture](docs/ARCHITECTURE.md) | Services, data model, security design. |
+| [API reference](docs/API.md) | Auth, endpoints, errors. |
+| [Frontend guide](docs/UI.md) | Routes, layout, responsive design, accessibility. |
+| [Development guide](docs/DEVELOPMENT.md) | Local setup, testing, coding conventions. |
+| [Deployment guide](docs/DEPLOYMENT.md) | Cloudflare deployment, CI, secrets. |
+| [Implementation progress](docs/PROGRESS.md) | Scope, status, audit closure. |
 
-- 认证：注册（`/register`）/ 登录（HttpOnly Cookie + JWT）/ 邮箱验证 / 密码找回（`/reset-password`）
-- 权限：三级角色（admin/user/guest）+ 路径级 ACL（真值表按 spec 覆盖）+ 文件/路径密码保护
-- 文件：列表（卡片/列表视图）、上传（单文件 + 分片 + 幂等 + 断点续传）、下载（网关代理 + 防伪造 HEAD 校验）、重命名、移动（Saga）、硬删除、批量操作、搜索、排序
-- 预览：图片（缩放/旋转）、视频、音频、代码高亮（highlight.js 纯文本 + 预转义，安全）
-- 分享：创建（密码/过期/次数限制）、公开页、二维码、复制多格式链接
-- API 密钥：`pk_x.sk_y` 不透明令牌（仅存哈希）、IP 白名单、WebDAV Basic 认证、PicGo 自定义上传 `/api/upload`
-- 管理员：仪表板、用户/配额管理、存储源（R2/S3/Oracle）、挂载点、权限规则、分享/文件/日志、系统设置与公告
-- 自由模式：用户自带对象存储凭据的临时会话（凭据 AES-256-GCM 加密写入 KV + 短 TTL，无明文落盘）
-- 安全：CSP、CSRF Token、速率限制（认证接口 fail-closed）、路径遍历防护、危险文件类型拦截、SSRF 端点校验、SQL 参数化、下载令牌原子消费
+## What's next
 
-## 目录结构
-
-```mermaid
-flowchart LR
-    subgraph picumet["picumet/"]
-        FRONTEND["frontend/ · React 前端（Vite + TS + Tailwind）"]
-        WORKERS["workers/ · Cloudflare Workers API（Hono + D1/KV/R2）"]
-        WV_SERVICES["services/ · auth · permissions · files · uploads<br/>shares · storage · webdav · free-mode<br/>admin · users · keys · public"]
-        WV_SHARED["shared/ · schemas / types / errors / response"]
-        WV_MW["middleware/ · auth / csrf / rate-limit / global"]
-        WV_DB["db/ · repos/（D1 + node:sqlite 双后端）"]
-        WV_UTILS["utils/ · path / crypto / ssrf / smtp"]
-        WV_MIG["migrations/ · D1 迁移"]
-        WV_TESTS["tests/ · Vitest"]
-        ROOT_SHARED["shared/ · 前后端共享类型"]
-        DOCS["docs/ · 架构 / API / 页面 / 开发 / 部署"]
-        SPEC["spec.md · spec_refactored.md · requirements-matrix.md"]
-    end
-
-    WORKERS --> WV_SERVICES
-    WV_SERVICES --> WV_SHARED
-    WV_SERVICES --> WV_MW
-    WV_SERVICES --> WV_DB
-    WV_SERVICES --> WV_UTILS
-    WV_SERVICES --> WV_MIG
-    WV_SERVICES --> WV_TESTS
-    WV_SERVICES --> ROOT_SHARED
-```
-
-## 文档
-
-- [系统架构](docs/ARCHITECTURE.md) — 服务化架构、服务明细、数据模型、安全设计
-- [API 设计](docs/API.md) — 认证方式、统一响应、全部端点
-- [页面设计](docs/UI.md) — 页面路由、布局、交互
-- [开发指南](docs/DEVELOPMENT.md) — 本地开发、测试、代码规范、常见坑点
-- [部署指南](docs/DEPLOYMENT.md) — Cloudflare 部署、CI、Secrets、成本
-- [技术规格](spec.md)
-- [需求追踪矩阵](requirements-matrix.md)
+- Read the [architecture guide](docs/ARCHITECTURE.md) to understand the service design.
+- Set up a local environment with the steps above.
+- Review the [implementation progress](docs/PROGRESS.md) for planned work such as the Oracle provider and path-variable DSL.

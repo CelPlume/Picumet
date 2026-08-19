@@ -1,249 +1,302 @@
-# Picumet 开发指南
+<div align="center">
 
-> 本地开发、环境准备、测试、代码规范与常见坑点。
-> 由 README「快速开始」、spec.md「开发路线图」与仓库实测整理而成。
+<img src="../assets/logo.svg" alt="Picumet Logo" width="128" />
 
-## 环境要求
+# Development guide
 
-| 工具 | 版本 | 说明 |
-|---|---|---|
-| Node.js | ≥22 | 运行时 |
-| bun | 1.3.14 | **统一包管理器**（`packageManager: bun@1.3.14`，勿用 npm） |
-| wrangler | ≥4.0 | Cloudflare Workers 本地开发 |
+**Multi-cloud object storage with fine-grained access control**
+
+English | [中文](DEVELOPMENT_CN.md)
+
+</div>
+
+This guide covers local development for Picumet: environment setup, tests, code conventions, and the pitfalls that tend to trip up contributors. It assumes you have a working clone of the repository and focuses on the `workers/` and `frontend/` directories.
+
+## Before you begin
+
+Install the following tools before you start.
+
+| Tool | Version | Purpose |
+| :--- | :--- | :--- |
+| Node.js | 22 or later | JavaScript runtime for build tooling |
+| bun | 1.3 or later | Package manager for both `workers/` and `frontend/` (`packageManager: bun@1.3.14`) |
+| wrangler | 4 or later | Cloudflare Workers CLI for local API development |
+
+Install bun before you continue:
 
 ```bash
-# 安装 bun
 curl -fsSL https://bun.sh/install | bash
 ```
 
-## 目录结构
+The project uses bun as the single package manager. Do not mix npm, pnpm, or yarn lockfiles into the repository.
 
-```mermaid
-flowchart LR
-    subgraph picumet["picumet/"]
-        subgraph frontend_["frontend/ · React 前端"]
-            FRONTEND["Vite + TS + Tailwind"]
-            FE_PAGES["pages/ · Files / MyShares / SharePage<br/>settings / admin"]
-            FE_COMP["components/ · shadcn + 业务组件"]
-            FE_LIB["lib/ · api / utils / i18n"]
-        end
+## Set up a local environment
 
-        subgraph workers_["workers/ · Cloudflare Workers API"]
-            WV_SERVICES["services/ · auth · permissions · files<br/>uploads · shares · storage · webdav<br/>free-mode · admin · users · keys · public"]
-            WV_SHARED["shared/ · schemas / types / errors / response"]
-            WV_MW["middleware/ · auth / csrf / rate-limit / global"]
-            WV_DB["db/ · repos/ · D1 + node:sqlite 双后端"]
-            WV_UTILS["utils/ · path / crypto / ssrf / smtp"]
-            WV_INDEX["index.ts · 路由组装"]
-            WV_MIG["migrations/ · 0001 / 0002 / 0003"]
-            WV_TESTS["tests/ · Vitest"]
-        end
+### Install dependencies
 
-        ROOT_SHARED["shared/ · 前后端共享类型（@shared/*）"]
-        DOCS["docs/ · 架构 / API / 页面 / 开发 / 部署"]
-    end
-
-    FRONTEND --> FE_PAGES
-    FRONTEND --> FE_COMP
-    FRONTEND --> FE_LIB
-    WV_SERVICES --> WV_SHARED
-    WV_SERVICES --> WV_MW
-    WV_SERVICES --> WV_DB
-    WV_SERVICES --> WV_UTILS
-    WV_SERVICES --> WV_INDEX
-    WV_SERVICES --> WV_MIG
-    WV_SERVICES --> WV_TESTS
-    WV_SERVICES --> ROOT_SHARED
-```
-
-## 本地开发
-
-### 1. 安装依赖
+Open two terminals. In the first, install the API dependencies; in the second, install the frontend dependencies.
 
 ```bash
 cd workers && bun install
 cd ../frontend && bun install
 ```
 
-### 2. 配置环境变量
+### Configure environment variables
+
+Copy the example file and edit the values that matter for local development:
 
 ```bash
 cp workers/.dev.vars.example workers/.dev.vars
-# 编辑 .dev.vars 填写 JWT_SECRET、ENCRYPTION_KEY 等
 ```
 
-### 3. 初始化数据库
+Set at least `JWT_SECRET` and `ENCRYPTION_KEY` to unique values. The file includes development defaults for the other settings, such as SMTP, Turnstile, and the initial administrator credentials.
+
+### Apply database migrations
+
+Run the migrations against the local D1 database:
 
 ```bash
 cd workers
-bunx wrangler d1 execute picumet-db --local --file=migrations/0001_initial.sql
-# 如有后续迁移：
-bunx wrangler d1 execute picumet-db --local --file=migrations/0002_add_parts_and_download_tokens.sql
-bunx wrangler d1 execute picumet-db --local --file=migrations/0003_mount_id_and_session_version.sql
+bunx wrangler d1 migrations apply picumet-db --local
 ```
 
-> **注意**：迁移名称以 `NNNN_description.sql` 命名（如 `0001_initial.sql`）。
+This command applies every pending migration in `workers/migrations/` in order. Name new migration files `NNNN_description.sql` so the apply order stays deterministic.
 
-### 4. 启动开发服务器
+### Start the API
+
+Start the Workers API from the `workers/` directory:
 
 ```bash
-# 终端 1: Workers API（端口 8787）
 cd workers && bun run dev
+```
 
-# 终端 2: 前端（端口 5173，Vite 代理 /api/* → 8787）
+The API listens on `http://localhost:8787`.
+
+### Start the frontend
+
+Start the frontend dev server from the `frontend/` directory in the second terminal:
+
+```bash
 cd frontend && bun run dev
 ```
 
-访问：
-- 前端：http://localhost:5173
-- API：http://localhost:8787
+The frontend listens on `http://localhost:5173`. Vite proxies `/api/*` and `/webdav/*` requests to `http://localhost:8787`, so you do not need CORS configuration locally.
 
-### 内置账号（开发种子）
+### Verify the setup
 
-| 角色 | 用户名 | 密码 |
-|---|---|---|
-| 管理员 | `admin` | `admin123456` |
-| 演示用户 | `demo` | `demo123456` |
+Open the following URLs:
 
-> 种子数据由 `workers/src/seed.ts` 在首次启动（KV `seed:done` 未设置）时创建默认管理员、演示用户、R2 绑定 Provider + 根挂载、演示文件夹。
-> - 开发环境默认管理员 `admin/admin123456`、演示用户 `demo/demo123456`（可用 `ADMIN_PASSWORD`/`DEMO_PASSWORD` 覆盖）。
-> - **生产环境**必须通过 `ADMIN_PASSWORD` 注入强密码（≥12 位含字母数字），未配置则不创建管理员（fail-closed，业务 API 返回 503 直到初始化完成，仅 `/api/public/health/*` 放行）。
+- Frontend: `http://localhost:5173`
+- API: `http://localhost:8787`
 
-## 测试
+On first startup, `workers/src/seed.ts` creates the default administrator, a demo user, the default R2 provider with a root mount, and a demo folder. The seed runs once, guarded by the `seed:done` KV key.
 
-### 后端（workers）
+The development seed accounts are:
+
+| Role | Username | Password |
+| :--- | :--- | :--- |
+| Administrator | `admin` | `admin123456` |
+| Demo user | `demo` | `demo123456` |
+
+Override the development passwords with `ADMIN_PASSWORD` and `DEMO_PASSWORD` in `.dev.vars`. In production, supply a strong `ADMIN_PASSWORD`. Without one, the seed skips the administrator and the business API returns `503` until initialization completes.
+
+## Run tests and type checks
+
+Run these commands from each package root.
+
+| Task | Command | Directory |
+| :--- | :--- | :--- |
+| Backend tests | `bun run test` | `workers/` |
+| Backend type check | `bun run typecheck` | `workers/` |
+| Frontend tests | `bun run test` | `frontend/` |
+| Frontend coverage gate | `bun run test:coverage` | `frontend/` |
+| Frontend type check | `bun run typecheck` | `frontend/` |
+| Frontend build | `bun run build` | `frontend/` |
+
+The backend suite contains 127 test cases and runs against in-memory `node:sqlite` mocks for D1, KV, and R2 (see `tests/helpers.ts`), so it does not require `workerd`. The frontend suite contains 7 test cases plus a coverage gate that focuses on the security-critical modules `src/lib/escape.ts` and `src/pages/Register.tsx` (80% lines, 60% functions, 40% branches).
+
+Continuous integration runs `.github/workflows/ci.yml` on push and pull requests to `main`. The `workers` job runs install, type check, and tests; the `frontend` job adds the coverage gate and a production build. CI never deploys; deploy with `wrangler deploy` manually.
+
+## Code conventions
+
+Follow these conventions so the codebase stays consistent.
+
+### Naming
+
+- Files: `kebab-case`
+- React components: `PascalCase`
+- Functions and variables: `camelCase`
+- Constants: `UPPER_SNAKE_CASE`
+- Types and interfaces: `PascalCase`
+
+### Import order
+
+Order imports as follows: external libraries first, then Cloudflare bindings, then project-internal modules, and type-only imports last.
+
+### TypeScript
+
+- Keep `strict` mode enabled.
+- Avoid `any`; if you must use it, add a comment that explains why.
+- Add an explicit return type to every function.
+- Run `bun run typecheck` in both packages after you change types.
+
+## Testing requirements
+
+Cover the following modules whenever you change them.
+
+### Permission decision algorithm
+
+The permission algorithm in `services/permissions/check.ts` decides access with a priority order: administrator privilege, mount boundary, user root path, API-key permission scope, path rules, owner fallback, and default deny. Tests must lock in path segment boundaries: `/users/alice` must never match `/users/alice2`. Add cases for rule priority, wildcard patterns, and default deny.
+
+### File state machine
+
+Upload sessions transition through `pending → uploading → verifying → completed`, with `failed`, `expired`, and `aborted` terminal states. Multipart uploads add `parts_uploaded` and `completing`. Cover resume, abort, and the completion check that verifies part coverage and the final HEAD size.
+
+### Quota atomicity
+
+Quota updates must be atomic. Test that concurrent uploads never exceed the configured limit and that delete and abort paths release reservations exactly once. Use the atomic `UPDATE` form instead of a read-modify-write sequence.
+
+### Security regression
+
+Re-run the security regression suite after any change to authentication, uploads, or storage: free-mode credential handling, WebDAV auth, SSRF checks, encryption, rate limiting fail-closed behavior, and one-time download token consumption.
+
+## Commit convention
+
+Use Conventional Commits: `type(scope): subject`. Add the body with multiple `-m` flags, each flag one bullet point.
 
 ```bash
-cd workers
-bun run test            # Vitest 全套（122 项）
-bun run typecheck       # tsc --noEmit
+git commit -m "feat(upload): add multipart upload support for large files" \
+  -m "- Implement the multipart session API and the resume contract" \
+  -m "- Record part ETags server-side for completion verification"
 ```
-
-测试覆盖：权限真值表（57）、文件操作状态机、上传/分片/断点续传、配额、安全回归（free-mode/WebDAV/SSRF/加密/限流 fail-closed）、故障注入（D1 一致性）、API 集成、S3 预签名。
-
-> 后端测试使用 `node:sqlite`（`tests/helpers.ts` 内存 D1/KV/R2 模拟），不依赖 workerd。
-
-### 前端（frontend）
 
 ```bash
-cd frontend
-bun run test            # Vitest（7 项）
-bun run test:coverage   # 覆盖率门禁（安全关键模块 ≥80%）
-bun run typecheck       # tsc --noEmit
-bun run build           # 构建
+git commit -m "fix(permission): fix a path boundary bypass in rule matching" \
+  -m "- Replace startsWith with isPathWithinBoundary" \
+  -m "- Add boundary tests for /users/alice and /users/alice2"
 ```
 
-### CI
+The examples above use English; commit messages in Chinese are equally welcome. Use these types and scopes.
 
-`.github/workflows/ci.yml` 在 push/PR 到 main 时执行：
-- **workers**: bun install → typecheck → test
-- **frontend**: bun install → typecheck → test → test:coverage → build
+| Type | Meaning |
+| :--- | :--- |
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `docs` | Documentation only |
+| `style` | Formatting, no behavior change |
+| `refactor` | Code change with no behavior change |
+| `perf` | Performance improvement |
+| `test` | Test additions or changes |
+| `chore` | Maintenance |
 
-纯质量门禁，**不自动部署**。
+| Scope | Area |
+| :--- | :--- |
+| `auth` | Authentication and sessions |
+| `permission` | Permission algorithm and rules |
+| `storage` | Storage providers |
+| `upload` | Upload and multipart flows |
+| `download` | Download gateway and tokens |
+| `ui` | Frontend components and pages |
+| `api` | API routes and schemas |
+| `db` | Migrations and repos |
 
-## 代码规范
+## Quality gates checklist
 
-- TypeScript strict mode，禁止 `any`（除非注释说明），函数必须有返回类型
-- 命名：文件名 kebab-case、组件 PascalCase、函数/变量 camelCase、常量 UPPER_SNAKE_CASE、类型/接口 PascalCase
-- 导入顺序：外部库 → Cloudflare 绑定 → 项目内部 → 类型导入
-- 提交规范：Conventional Commits（`<type>(<scope>): <subject>` + 多 `-m` 无序列表说明）
-  - 示例：`feat(upload): add multipart upload support for large files` + `- Implement ...`
+Review each change against this checklist before you push.
 
-## 新增 API 的步骤
+### Functionality
 
-1. 在对应 `services/<domain>/handlers.ts` 添加路由（或新建服务目录）
-2. 在 `services/<domain>/schemas.ts` 定义 Zod schema，handler 内 `safeParse`
-3. 需要时在 `services/<domain>/types.ts` 导出类型
-4. 更新 `src/index.ts` 路由组装（`app.route(...)`）
-5. 更新 `docs/API.md` 端点一览与详细章节
-6. 补充测试并运行 `bun run test` + `bun run typecheck`
+- The feature works end to end through the actual UI or API.
+- Edge cases and error paths behave as documented.
 
-## 新增数据库迁移
+### Code quality
 
-1. 新建 `workers/migrations/NNNN_description.sql`
-2. 本地执行：`bunx wrangler d1 execute picumet-db --local --file=migrations/NNNN_*.sql`
-3. 更新 `docs/ARCHITECTURE.md` 数据模型章节
-4. 迁移治理：禁止在迁移中直接删除数据（先标记废弃）；加索引需含性能测试
+- TypeScript `strict` passes; no undocumented `any`.
+- Naming and import order follow the conventions above.
+- No dead code, leftover debug logging, or commented-out blocks.
 
-## 常见坑点
+### Tests
 
-### 权限系统
+- New behavior has tests that would fail on a plausible regression.
+- `bun run test` and `bun run typecheck` pass in both packages.
 
-❌ 用 `startsWith` 判断路径边界（`/users/alice` 可访问 `/users/alice2`）
-✅ 用 `isPathWithinBoundary`（路径段判断）
+### Security
 
-### 文件删除
+- Permission checks run on the canonical, normalized path.
+- Object storage keys and credentials never reach the client or logs.
+- Fail-closed paths stay closed: rate limits, free-mode, SSRF.
 
-❌ 先删对象存储再删元数据（元数据删除失败则对象丢失）
-✅ 先删元数据（事务），对象异步清理（失败记 `orphan_objects` 对账）
+### Performance
 
-### 配额更新
+- Database writes use atomic statements; no read-modify-write on quota.
+- Avoid unnecessary allocations or copies in hot request paths.
 
-❌ 非原子读改写（`getQuota` → `updateQuota`）
-✅ 数据库原子操作（`UPDATE ... SET used_storage = used_storage + ?`）
+### Documentation
 
-### 路径规范化
+- Update `docs/API.md` when you add or change an endpoint.
+- Update this guide and `docs/ARCHITECTURE.md` when conventions or structure change.
 
-❌ 未规范化路径（`/users/../admin/secrets` 绕过权限）
-✅ `normalizePath`（`'/' + path.split('/').filter(Boolean).join('/')`）
+## Common pitfalls
 
-### 对象存储一致性（审计 H-5）
+### Use `isPathWithinBoundary`, not `startsWith`
 
-写对象后 DB 提交失败 → 释放预留 + 尽力删对象（失败记孤儿）；删除时对象清理失败也记孤儿。用 `FileRepo.createFileTx` 事务提交元数据 + 配额 + 日志。
+`startsWith` compares string prefixes and lets `/users/alice` match `/users/alice2`. The helper `isPathWithinBoundary` in `utils/path.ts` compares path segments instead.
 
-### SMTP 邮件功能实施计划（前端管理页 + 后端配置持久化）
+### Delete metadata first, then clean objects
 
-> 现状：后端 `workers/src/utils/smtp.ts` 已有 `sendMail(config, to, subject, html)` 与 `hasSmtp(env)`，验证邮箱 / 重置密码已接邮件。但 SMTP 配置**仅通过环境变量注入**（`SMTP_HOST/PORT/USER/PASS/FROM`），**无管理员 UI、无持久化配置、无测试发送**。以下为实施方案（供后续实现）：
+Delete the database metadata inside a transaction first. Clean the object storage asynchronously afterwards. Record any cleanup failures in `orphan_objects` for reconciliation. Deleting the object first risks losing it when the metadata delete fails.
 
-#### 后端（`workers/src/`）
+### Update quota atomically
 
-1. **新增配置持久化**：迁移 `0004_add_email_settings.sql`
-   ```sql
-   CREATE TABLE IF NOT EXISTS email_settings (
-     id INTEGER PRIMARY KEY CHECK (id = 1),
-     smtp_host TEXT, smtp_port INTEGER DEFAULT 587,
-     smtp_user TEXT, smtp_password TEXT,
-     smtp_from TEXT, smtp_from_name TEXT,
-     smtp_tls INTEGER DEFAULT 1, smtp_enabled INTEGER DEFAULT 0,
-     updated_at INTEGER
-   );
-   ```
-   - `SMTP_PASSWORD` 存入前用 `ENCRYPTION_KEY` 做 AES-GCM 加密（复用 `utils/crypto.ts` 现有加密能力，参考 M-4 派生方案）。
+Do not read the quota, modify it, and write it back. Concurrency makes that sequence racy. Use a single `UPDATE user_quotas SET used_storage = used_storage + ? ...` statement.
 
-2. **新增服务 `services/admin/email.ts`**（或并入 `admin/handlers.ts`）：
-   - `GET /api/admin/settings/email` → 返回脱敏配置（密码不返回原文，返回 `hasPassword: boolean`）
-   - `PUT /api/admin/settings/email` → 校验 + 保存（`EmailSettingsSchema`：host/port/user/password?/from/fromName/tls/enabled，用 zod）
-   - `POST /api/admin/settings/email/test` → `{ to }` 用保存的配置 `sendMail` 发测试邮件，返回成功/失败与错误信息
-   - 读取优先级：`email_settings` 表 > 环境变量 `SMTP_*` > 未配置
+### Normalize paths before authorization
 
-3. **改造 `hasSmtp/sendMail`**：新增 `resolveSmtp(env, db)` 合并表配置与环境变量；`sendMail` 增加 TLS 开关（`smtp_tls` 为 1 用 465 隐式 TLS，0 用 587 STARTTLS，现有实现需补充 STARTTLS 握手）。
+Call `normalizePath` on every incoming path before permission checks, so that `/users/../admin/secrets` resolves to `/admin/secrets` and cannot bypass rules.
 
-4. **测试**：`email-settings.test.ts` 覆盖 schema 校验、密码加密存储不回显、测试发送 mock。
+### Restart `wrangler dev` after edits
 
-#### 前端（`frontend/src/`）
+Hot reload is unreliable for the Workers API. After you change workers source, restart the process; to be safe, remove `.wrangler` and re-apply migrations to start from a clean state.
 
-5. **新增页面 `admin/Email.tsx`**（路由 `/admin/email`，AdminLayout 加「邮件配置」项，图标 `Mail`）：
-   - 表单字段：SMTP 服务器、端口、用户名、密码（留空则保留旧值）、发件人邮箱、发件人名称、启用 TLS/SSL Switch、启用邮件服务 Switch
-   - 「保存配置」按钮 → `PUT /api/admin/settings/email`
-   - 「发送测试邮件」卡片：输入测试邮箱 → `POST /api/admin/settings/email/test`，成功/失败 toast
-   - 宽度 `max-w-2xl`（与设置页统一）
+## Development roadmap
 
-6. **用户邮箱**：`/settings/security` 已含「邮箱管理」卡片（`/api/users/me` 读邮箱 + `/api/users/me/email` 修改）。SMTP 启用后，改邮箱/重置密码走真实邮件。
+The codebase builds in dependency order. Each phase depends on the previous one, and each phase is complete when its acceptance criteria pass.
 
-#### 验证
+| Phase | Focus | Depends on |
+| :--- | :--- | :--- |
+| 0 | Environment setup | — |
+| 1 | Authentication | 0 |
+| 2 | Permission system | 1 |
+| 3 | R2 object storage | 2 |
+| 4 | Basic file management | 3 |
+| 5 | Quota management | 4 |
+| 6 | Move and rename | 5 |
+| 7 | Password protection and shares | 6 |
+| 8 | API keys and WebDAV | 7 |
+| 9 | Advanced UI | 8 |
+| 10 | Themes and i18n | 9 |
+| 11 | Admin features | 10 |
+| 12 | Security hardening | 11 |
+| 13 | Multipart upload | 12 |
+| 14 | Extra storage sources | 13 |
+| 15 | Free mode | 14 |
+| 16 | Testing and deployment | 15 |
 
-7. 本地 `.dev.vars` 配置 SMTP → 注册触发验证邮件 → 管理页测试发送成功；未配置 → 测试发送返回明确错误。
+Milestones along this order:
 
+- **M1** (phase 4): a usable file management system
+- **M2** (phase 8): complete API and sharing features
+- **M3** (phase 11): multi-user production system
+- **M4** (phase 15): full-featured release
+- **M5** (phase 16): public release
 
-### wrangler dev 热重载不可靠
+Each phase ends when its acceptance criteria pass. Use this ordering as a guide for planning work on the remaining features.
 
-改文件后建议重启 wrangler dev 进程（或 `rm -rf .wrangler` + 重跑迁移）加载干净构建。
+## What's next
 
-## 相关文档
-
-- [系统架构](ARCHITECTURE.md)
-- [API 设计](API.md)
-- [页面设计](UI.md)
-- [部署指南](DEPLOYMENT.md)
-- [技术规格（完整版）](../spec.md)
-- [需求追踪矩阵](../requirements-matrix.md)
+- [System architecture](ARCHITECTURE.md)
+- [API reference](API.md)
+- [Frontend design](UI.md)
+- [Deployment guide](DEPLOYMENT.md)
+- [Project readme](../README.md)
+- [Progress notes](PROGRESS.md)

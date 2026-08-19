@@ -1,418 +1,473 @@
-# Picumet 系统架构
+<div align="center">
 
-> 服务化架构（Service-Oriented Architecture, Plan A）。
-> 按业务领域拆分，而非技术层次。每个服务自包含：handlers + schemas + types + 领域逻辑 + 文档。
-> 本文档由各服务 README 与源码整合而成；源码始终是最终事实。
+<img src="../assets/logo.svg" alt="Picumet Logo" width="128" />
 
-## 架构总览
+# Picumet architecture
+
+**Multi-cloud object storage with fine-grained access control**
+
+English | [中文](ARCHITECTURE_CN.md)
+
+</div>
+
+## Overview
+
+Picumet is a multi-cloud object storage management platform that runs entirely on Cloudflare. A React single-page application served by Cloudflare Pages talks to a Hono API on Cloudflare Workers. The API stores relational metadata in D1, caches short-lived state in KV, and keeps objects in R2 or any S3-compatible provider such as AWS S3 or Oracle Cloud.
+
+The backend follows a service-oriented layout: code is split by business domain, not by technical layer. Each service owns its handlers, validation schemas, types, and domain logic. A central permissions service evaluates every request against path rules, and a storage service hides object operations behind one interface. This design keeps cross-service edges explicit and avoids cyclic dependencies.
+
+This document covers the component topology, service dependencies, key design decisions, the data model, provider support, and the security model. The source code in `workers/src/` and `frontend/src/` remains the authoritative reference.
+
+## Before you begin
+
+- Familiarity with Cloudflare Workers, D1, KV, and R2 bindings.
+- Basic understanding of the S3 protocol and presigned URLs.
+- Working knowledge of TypeScript, React, and the Hono framework.
+
+## Architecture diagram
 
 ```mermaid
 flowchart LR
-    subgraph workers_src["workers/src/"]
-        subgraph services["services/ · 核心业务服务"]
-            direction TB
-            AUTH["auth · 认证"]
-            PERM["permissions · 权限判定"]
-            FILES["files · 文件管理"]
-            UPLOADS["uploads · 上传"]
-            SHARES["shares · 分享"]
-            STORAGE["storage · 存储抽象"]
-            WEBDAV["webdav · WebDAV"]
-            FREEMODE["free-mode · 自由模式"]
-            ADMIN["admin · 管理"]
-            USERS["users · 用户设置"]
-            KEYS["keys · API 密钥"]
-            PUBLIC["public · 公开"]
-            CLEANUP["cleanup.ts · 定时任务"]
-        end
-
-        subgraph shared_["shared/ · 共享代码"]
-            direction TB
-            SCHEMAS["schemas.ts · 公共 Zod"]
-            TYPES_["types.ts · 公共类型"]
-            ERRORS["errors.ts · 统一错误"]
-            RESPONSE["response.ts · 统一响应"]
-        end
-
-        subgraph middleware_["middleware/ · 中间件"]
-            direction TB
-            MWAUTH["auth.ts"]
-            MWCSRF["csrf.ts"]
-            MWRL["rate-limit.ts"]
-            MWFM["free-mode.ts"]
-            MWGLOBAL["global.ts"]
-        end
-
-        subgraph db_["db/ · 数据访问层"]
-            direction TB
-            REPOS["repos/ · users/storage/files/rules/system"]
-            DBIDX["index.ts"]
-        end
-
-        subgraph utils_["utils/ · 工具"]
-            direction TB
-            UPATH["path.ts"]
-            UCRYPTO["crypto.ts"]
-            USSREF["ssrf.ts"]
-            USMTP["smtp.ts"]
-        end
-
-        INDEX["index.ts · 路由组装"]
-        SEED["seed.ts · 种子数据"]
-    end
-
-    INDEX --> services
-    services --> shared_
-    services --> middleware_
-    services --> db_
-    services --> utils_
-    CLEANUP --> db_
+    User[User] --> Pages["Cloudflare Pages (React frontend)"]
+    User --> API["Cloudflare Workers (Hono API)"]
+    API --> D1[("D1 metadata database")]
+    API --> KV[("KV store")]
+    API --> R2[("R2 object storage")]
+    API --> S3[("S3-compatible providers")]
 ```
 
-## 服务间依赖关系
+The service dependency graph shows how business domains relate:
 
 ```mermaid
 flowchart LR
-    Auth[认证服务] --> Files[文件服务]
-    Files --> Perm[权限服务]
-    Upload[上传服务] --> Perm
-    Upload --> Storage[存储服务]
-    Shares[分享服务] --> Perm
+    Auth[Auth service] --> Files[Files service]
+    Files --> Perm[Permissions service]
+    Uploads[Uploads service] --> Perm
+    Uploads --> Storage[Storage service]
+    Shares[Shares service] --> Perm
     Shares --> Storage
     Files --> Storage
-    Perm --> DB[(D1)]
-    Storage --> R2[(R2)]
-    Storage --> S3[(S3 / Oracle)]
+    WebDAV[WebDAV service] --> Files
+    WebDAV --> Perm
+    FreeMode[Free-mode service] --> Storage
+    Admin[Admin service] --> Perm
+    Perm --> D1[("D1")]
+    Storage --> R2[("R2")]
+    Storage --> S3[("S3 / Oracle")]
 ```
 
-**依赖规则**:
-- 所有服务依赖 **Permissions Service**（权限检查）
-- 所有文件操作依赖 **Storage Service**（存储抽象）
-- **Auth Service** 独立，仅被其他服务调用
-- 避免循环依赖
+## Architecture components
 
-## 服务标准结构
+| Component | Purpose |
+| :--- | :--- |
+| Cloudflare Pages | Serves the React single-page application and its static assets. |
+| Cloudflare Workers | Hosts the Hono API that implements all business logic. |
+| D1 | Stores relational metadata: users, mounts, files, rules, sessions, shares, quotas, and logs. |
+| KV | Caches short-lived state: CSRF tokens, rate-limit counters, and free-mode credential sessions. |
+| R2 | Stores objects for the primary provider through the Workers binding. |
+| S3-compatible providers | Stores objects for AWS S3 and Oracle Cloud through the S3 protocol. |
+| Hono + Zod | Provides the HTTP framework and runtime validation for every API request. |
+| React + TanStack Query | Renders the UI and manages server state, caching, and mutations. |
+| `services/` | Business-domain modules: auth, permissions, files, uploads, shares, storage, webdav, and more. |
+| `middleware/` | Cross-cutting concerns: authentication, CSRF, rate limiting, security headers, and the free-mode guard. |
+| `db/` | Data access layer with a unified `Db` interface over D1 and `node:sqlite`. |
+| `shared/` | Common types, Zod schemas, errors, and the uniform response envelope. |
+| `utils/` | Path, crypto, SSRF, SMTP, and base64 helpers. |
 
-每个服务目录包含：
+## Service dependencies
 
-```
-services/<service-name>/
-├── handlers.ts         // API handlers（业务逻辑）
-├── schemas.ts          // Zod 验证 schemas
-├── types.ts            // TypeScript 类型定义
-├── <domain>.ts         // 领域特定逻辑
-└── README.md           // 服务文档
-```
+The dependency graph above follows three rules:
 
-**类型安全**：所有 API 输入通过 Zod 验证（`@hono/zod-validator` 或 `safeParse`）。
+- Every service that touches file data depends on the Permissions service.
+- Every service that touches object bytes depends on the Storage service.
+- The Auth service is a leaf: other services call it, and it depends on no other service.
 
----
+The layout avoids cyclic dependencies. `index.ts` only assembles routes and middleware; it contains no business logic. Public routes mount before the catch-all path server, which serves file objects at `GET /*`.
 
-## 服务明细
+## Design decisions
 
-### Auth Service（认证服务）
+| Decision | Chosen | Alternative | Reason |
+| :--- | :--- | :--- | :--- |
+| Code organization | Service-oriented by business domain | Layered by technical tier | Each domain stays self-contained and testable; cross-domain edges stay explicit and cyclic dependencies stay impossible. |
+| Compute platform | Cloudflare Workers + Pages | Other edge runtimes or self-hosted servers | The Workers bindings (D1, R2, KV) remove operational overhead; the free tier fits the target scale; a single runtime avoids building a portable platform layer. |
+| Database backend | D1 in production, `node:sqlite` in tests | External PostgreSQL or Supabase | D1 gives zero-config relational storage with low latency; the `Db` abstraction lets the test suite run on `node:sqlite` without network access. |
+| Delete order | Delete metadata first, then objects | Delete object and metadata together | Metadata deletion happens in one atomic D1 transaction; object deletion runs best-effort after commit and records failures as orphan objects for reconciliation. |
+| Recycle bin | None: hard delete with confirmation | Trash or quarantine with a retention period | S3-compatible providers lack a portable trash; a recycle bin would need tombstone logic and deferred reclamation for little benefit at this scale. |
+| Path boundary | Segment-based boundary check | String prefix match | `isPathWithinBoundary` requires the boundary plus `/`, which prevents prefix attacks such as `/users/alice2` matching `/users/alice`. |
+| Storage protocol | One S3-protocol credential model | Native SDK per provider | R2, AWS S3, and Oracle all speak S3, so one model covers them; rejecting non-S3 providers (OSS, COS) avoids parallel driver maintenance. |
+| Download authorization | One-time tokens consumed atomically in D1 | Long-lived signed URLs | `DELETE ... RETURNING` consumes each token exactly once, so concurrent requests cannot reuse it; counting at the gateway gives exact download numbers. |
 
-**职责范围**：用户注册、登录、登出、JWT 令牌生成与验证、会话管理、邮箱验证、密码重置。
+## Service details
 
-**目录结构**：
+Every service directory follows the same shape: `handlers.ts` for API handlers, `schemas.ts` for Zod validation, `types.ts` for TypeScript types, and optional domain files. All API input passes through Zod validation.
+
+### Auth service
+
+**Responsibilities**: user registration, login, logout, JWT issuance and verification, session management, email verification, and password reset.
+
 ```
 services/auth/
-├── handlers.ts    // 登录、注册、登出 handlers
-├── schemas.ts     // RegisterSchema / LoginSchema
-└── types.ts       // JwtPayload、请求类型
+├── handlers.ts    // login, register, logout handlers
+├── schemas.ts     // RegisterSchema, LoginSchema
+└── types.ts       // JwtPayload and request types
 ```
 
-**API**：
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| POST | `/api/auth/register` | Creates a user account. |
+| POST | `/api/auth/login` | Authenticates the user and sets an HttpOnly JWT cookie. |
+| POST | `/api/auth/logout` | Clears the session. |
+| GET | `/api/auth/me` | Returns the current user. |
+| GET | `/api/auth/csrf-token` | Issues a CSRF token. |
+| GET | `/api/auth/verify-email`, `/api/auth/verify` | Verifies an email address (aliases). |
+| POST | `/api/auth/forgot-password` | Starts password recovery. |
+| POST | `/api/auth/reset-password` | Resets the password. |
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/auth/register` | 注册 |
-| POST | `/api/auth/login` | 登录（Set-Cookie HttpOnly JWT） |
-| POST | `/api/auth/logout` | 登出 |
-| GET | `/api/auth/me` | 当前用户信息 |
-| GET | `/api/auth/csrf-token` | 获取 CSRF Token |
-| GET | `/api/auth/verify-email` `/api/auth/verify` | 邮箱验证（别名） |
-| POST | `/api/auth/forgot-password` | 找回密码 |
-| POST | `/api/auth/reset-password` | 重置密码 |
+**Dependencies**: `middleware/auth.ts`, `middleware/rate-limit.ts`, `middleware/csrf.ts`, `utils/crypto.ts`, `utils/smtp.ts`, and the user, quota, settings, and log repositories.
 
-**依赖**：`middleware/auth.ts`（getDb/getClientIp）、`middleware/rate-limit.ts`、`middleware/csrf.ts`、`utils/crypto.ts`（JWT/bcrypt）、`utils/smtp.ts`、`db`（UserRepo/QuotaRepo/SettingsRepo/LogRepo）。
+### Permissions service
 
-### Permissions Service（权限服务）
+**Responsibilities**: the core `checkPermission` algorithm, path-rule query and matching, principal construction, and permission enforcement.
 
-**职责范围**：核心权限判定算法（`checkPermission`）、路径规则查询与匹配、主体（Principal）构造、权限校验。
-
-**目录结构**：
 ```
 services/permissions/
-├── check.ts       // ⭐ 核心权限判定算法 + 规则排序 + 规则加载
-├── principal.ts   // 从 Hono Context 构造 Principal、requirePermission/can
-└── types.ts       // 权限相关类型
+├── check.ts       // core algorithm, rule ordering, rule loading
+├── principal.ts   // builds Principal from the Hono context, requirePermission, can
+└── types.ts       // permission types
 ```
 
-**核心算法优先级**：
-1. 管理员特权
-2. 挂载边界检查
-3. 用户根路径限制
-4. API 密钥权限范围（交集语义：密钥配置权限 ∩ 路径规则权限）
-5. 路径规则（主体特异度 > 路径特异度 > 显式优先级 > effect）
-6. 文件所有者权限回退
-7. 默认拒绝
+The evaluation order runs from highest to lowest priority:
 
-**关键安全边界**：
-- `isPathWithinBoundary`：路径段判断而非 `startsWith`，防止 `/users/alice` 访问 `/users/alice2`
-- API 密钥无规则 → 拒绝（无默认放行）
+1. Admin override.
+2. Mount boundary check.
+3. User root-path limit.
+4. API-key permission scope, applied as the intersection of key permissions and rule permissions.
+5. Path rules, ordered by subject specificity, path specificity, explicit priority, then effect.
+6. Owner-permission fallback.
+7. Default deny.
 
-**依赖**：`utils/path.ts`（isPathWithinBoundary/normalizePath/pathMatches）、`db`（RuleRepo）、`shared/errors.ts`。
+Two security boundaries matter:
 
-### Files Service（文件管理服务）
+- `isPathWithinBoundary` compares path segments rather than using `startsWith`.
+- An API key with no matching rule receives a deny; the system never defaults to allow.
 
-**职责范围**：文件/文件夹列表、创建文件夹、文件详情、元数据更新（重命名）、删除、移动（Saga）、批量操作、密码验证、下载链接。
+**Dependencies**: `utils/path.ts`, the rule repository, and `shared/errors.ts`.
 
-**目录结构**：
+### Files service
+
+**Responsibilities**: file and folder listing, folder creation, file details, metadata updates (rename), delete, move (Saga), batch operations, password verification, download links, copy links in multiple formats, and public path serving at `GET /*`.
+
 ```
 services/files/
-├── handlers.ts    // 列表、文件夹、详情、更新、密码验证、下载链接
-├── operations.ts  // 删除、移动、批量操作、任务状态
-├── move.ts        // 移动 Saga（复制→校验→原子切换→异步清理源）
-├── schemas.ts     // Update/CreateFolder/Move/Batch/VerifyPassword
+├── handlers.ts    // list, folder, detail, update, password verify, download link, copy links
+├── operations.ts  // delete, move, batch operations, job status
+├── move.ts        // move Saga (copy, verify, atomic switch, async source cleanup)
+├── path-serve.ts  // public path serving at {origin}{virtual path}
+├── schemas.ts     // Update, CreateFolder, Move, Batch, VerifyPassword
 └── types.ts
 ```
 
-**移动 Saga（审计 H-4）**：`moveWithSaga`：校验权限/冲突/循环 → 建任务 → 复制+校验 → 原子切换元数据 → 异步清理源对象。主文件 API 与 WebDAV MOVE 统一走此服务。
+Copy links: `GET /api/files/:id/copy-links` returns `formats: { direct, html, markdown, bbcode }`. The `direct` value defaults to `{origin}{virtual path}`, a public direct link that `path-serve.ts` serves. Pass `?signed=true&expiresIn={seconds}` to request a provider presigned URL, with the gateway token as the fallback.
 
-**依赖**：`permissions/principal.ts`（requirePermission）、`storage/providers.ts`（getProvider）、`shares/tokens.ts`（下载令牌）、`db`（FileRepo/MountRepo/ProviderRepo/LogRepo/JobRepo）。
+Public path serving: `GET /*` streams an object by its virtual path. A public mount serves directly without login; a private mount requires an authenticated user with download permission; a password-protected file returns `403`.
 
-### Uploads Service（上传服务）
+Move Saga: `moveWithSaga` validates permissions, conflicts, and cycles, creates a job, copies and verifies the object, switches the metadata atomically, and cleans up the source asynchronously. The main file API and WebDAV `MOVE` share this path.
 
-**职责范围**：上传会话管理、单文件直传、分片上传、Worker 代理上传、配额预留/释放、完成校验（HEAD 防伪造）、幂等性保证。兼容 PicGo/PicList 上传。
+**Dependencies**: `permissions/principal.ts`, `storage/providers.ts`, `shares/tokens.ts`, and the file, mount, provider, log, and job repositories.
 
-**目录结构**：
+### Uploads service
+
+**Responsibilities**: upload session management, single-file direct upload, multipart upload, Worker-proxied upload, quota reservation and release, completion verification (a HEAD check against spoofing), and idempotency. The service stays compatible with PicGo and PicList.
+
 ```
 services/uploads/
-├── handlers.ts    // 上传会话、代理上传、分片、完成、中止
-├── compat.ts      // PicGo 兼容上传（Bearer API Key / multipart）
+├── handlers.ts    // session, proxy upload, multipart, complete, abort
+├── compat.ts      // PicGo-compatible upload (Bearer API key / multipart)
 ├── schemas.ts     // InitUploadSchema
 └── types.ts
 ```
 
-**状态机**：
-- 单文件：`pending → uploading → verifying → completed`（含 failed/expired/aborted）
-- 分片：`pending → uploading → parts_uploaded → completing → completed`
+State machines:
 
-**依赖**：`permissions/principal.ts`、`storage/providers.ts`、`db`（SessionRepo/QuotaRepo/FileRepo/MountRepo/ReconciliationRepo）、`utils/path.ts`、`utils/crypto.ts`。
+- Single file: `pending → uploading → verifying → completed`, with `failed`, `expired`, and `aborted` as terminal states.
+- Multipart: `pending → uploading → parts_uploaded → completing → completed`.
 
-### Shares Service（分享服务）
+**Dependencies**: `permissions/principal.ts`, `storage/providers.ts`, the session, quota, file, mount, and reconciliation repositories, `utils/path.ts`, and `utils/crypto.ts`.
 
-**职责范围**：分享链接创建/列表/撤销、公开访问、密码验证、下载令牌（D1 原子消费）、分享访问日志、下载网关。
+### Shares service
 
-**目录结构**：
+**Responsibilities**: share link creation, listing, and revocation; public access; password verification; download tokens consumed atomically in D1; share access logs; and the download gateway.
+
 ```
 services/shares/
-├── handlers.ts    // 创建、列表、公开信息、下载、预览、撤销
-├── gateway.ts     // /api/gateway/download/:token 流式代理
-├── tokens.ts      // 下载令牌（D1 原子消费）
+├── handlers.ts    // create, list, public info, download, preview, revoke
+├── gateway.ts     // /api/gateway/download/:token streaming proxy
+├── tokens.ts      // download tokens (atomic D1 consumption)
 ├── schemas.ts     // CreateShareSchema
 └── types.ts
 ```
 
-**下载令牌（审计：D1 原子消费）**：`consumeDownloadToken` 用 `DELETE ... RETURNING` 单条原子消费，一次性令牌不可被并发重复使用。
+Download tokens: `consumeDownloadToken` uses `DELETE ... RETURNING` for a single atomic consumption, so concurrent requests cannot reuse a one-time token.
 
-**依赖**：`permissions/principal.ts`、`storage/providers.ts`、`db`（ShareRepo/FileRepo/MountRepo/ProviderRepo/LogRepo）、`utils/crypto.ts`（bcrypt/random）。
+**Dependencies**: `permissions/principal.ts`, `storage/providers.ts`, the share, file, mount, provider, and log repositories, and `utils/crypto.ts`.
 
-### Storage Service（存储服务）
+### Storage service
 
-**职责范围**：存储提供商抽象层（R2 绑定 / S3 协议）、对象操作（HEAD/GET/PUT/DELETE/COPY/List）、分片上传、预签名 URL、连通性测试、多 Provider 切换。
+**Responsibilities**: the storage-provider abstraction (R2 binding or S3 protocol), object operations (HEAD, GET, PUT, DELETE, COPY, List), multipart upload, presigned URLs, connectivity tests, and switching across providers.
 
-**目录结构**：
 ```
 services/storage/
-├── providers.ts   // Provider 工厂（getProvider/getProviderForMount）
-├── r2.ts          // R2BindingProvider（基于 env.R2 绑定）
-├── s3.ts          // S3Provider（R2 S3 API / AWS S3 / Oracle）
-└── types.ts       // StorageProviderInterface 抽象接口
+├── providers.ts   // provider factory (getProvider, getProviderForMount)
+├── r2.ts          // R2BindingProvider based on the env.R2 binding
+├── s3.ts          // S3Provider (R2 S3 API, AWS S3, Oracle)
+└── types.ts       // StorageProviderInterface
 ```
 
-**Provider 选择**：
-- `type=r2` 且无 endpoint → `R2BindingProvider`（本地/生产 R2 绑定）
-- 其余 → `S3Provider`（S3 协议客户端）
+Provider selection:
 
-**依赖**：`db`（ProviderRepo/MountRepo）、`utils/crypto.ts`（decryptSecret）。
+- A provider with `type=r2` and no endpoint uses `R2BindingProvider` (the local or production R2 binding).
+- Everything else uses `S3Provider`, an S3-protocol client.
 
-### WebDAV Service（WebDAV 服务）
+**Dependencies**: the provider and mount repositories and `utils/crypto.ts` for secret decryption.
 
-**职责范围**：WebDAV 协议实现（兼容 PicGo/PicList）：PROPFIND、GET/HEAD、PUT、DELETE、MKCOL、MOVE、OPTIONS。Basic 认证（API 密钥）。
+### WebDAV service
 
-**目录结构**：
+**Responsibilities**: the WebDAV protocol for PicGo and PicList compatibility, including PROPFIND, GET/HEAD, PUT, DELETE, MKCOL, MOVE, and OPTIONS, with Basic authentication using API keys.
+
 ```
 services/webdav/
-├── handlers.ts    // WebDAV 方法 handlers
-└── types.ts       // WebDAVResource / PropfindRequest
+├── handlers.ts    // WebDAV method handlers
+└── types.ts       // WebDAVResource, PropfindRequest
 ```
 
-**安全要点（审计 H-3/H-4）**：
-- 全部方法接入 `permissions/principal.ts` 统一路径级权限服务（PROPFIND read / PUT write / DELETE delete）
-- MOVE 复用 `files/move.ts` 移动 Saga，不直接改 file_metadata
-- 写目标必须位于密钥上传根目录内（`assertWithinUploadRoot`）
-- XML href 统一转义（`escapeXml`，防注入/破坏 XML）
-- Basic 认证：`base64(keyId:secret)`
+Security notes:
 
-**依赖**：`middleware/auth.ts`（apiKeyAuthMiddleware）、`permissions/principal.ts`、`storage/providers.ts`、`files/move.ts`、`utils/path.ts`、`utils/crypto.ts`。
+- Every method runs through `permissions/principal.ts` for path-level authorization (PROPFIND read, PUT write, DELETE delete).
+- `MOVE` reuses the `files/move.ts` Saga instead of editing `file_metadata` directly.
+- Write targets must stay inside the key's upload root (`assertWithinUploadRoot`).
+- XML hrefs pass through `escapeXml` to prevent injection and malformed XML.
+- Basic auth uses `base64(keyId:secret)`.
 
-### Free-Mode Service（自由模式服务）
+**Dependencies**: `middleware/auth.ts` (API key auth), `permissions/principal.ts`, `storage/providers.ts`, `files/move.ts`, `utils/path.ts`, and `utils/crypto.ts`.
 
-**职责范围**：用户自带对象存储凭据的临时会话（凭据加密写入 KV，短 TTL 自动清理）、文件列表、上传、删除、退出。
+### Free-mode service
 
-**目录结构**：
+**Responsibilities**: temporary sessions with user-supplied object-storage credentials, file listing, upload, delete, and logout. The service encrypts credentials, writes them to KV with a short TTL, and cleans them up automatically.
+
 ```
 services/free-mode/
-├── handlers.ts    // init/files/upload/object/logout
+├── handlers.ts    // init, files, upload, object, logout
 ├── schemas.ts     // FreeModeInitSchema
 └── types.ts
 ```
 
-**安全要点（审计 H-1/H-2/M-1/M-2）**：
-- 中间件 `middleware/free-mode.ts`：Origin + Sec-Fetch-Site 跨站防护、会话级 CSRF、IP+用户双层 fail-closed 限流
-- 路径/文件名边界校验（拒绝 `..`/`~`/控制字符/反斜杠，`isPathWithinBoundary`）
-- endpoint SSRF 校验（`validateEndpoint`）
-- 凭据 AES-GCM 加密后写入 KV，不返回 auth_token（仅 fm_token sid）
+Security notes:
 
-**依赖**：`middleware/free-mode.ts`、`storage/providers.ts`（S3Provider）、`utils/crypto.ts`、`utils/ssrf.ts`、`utils/path.ts`。
+- `middleware/free-mode.ts` enforces cross-site protections (Origin and Sec-Fetch-Site), session-level CSRF, and fail-closed IP-plus-user rate limiting.
+- Path and file-name checks reject `..`, `~`, control characters, and backslashes.
+- `validateEndpoint` runs SSRF checks on the supplied endpoint.
+- Credentials use AES-GCM encryption in KV; the API never returns `auth_token`, only the `fm_token` session id.
 
-### Admin Service（管理服务）
+**Dependencies**: `middleware/free-mode.ts`, `storage/providers.ts`, `utils/crypto.ts`, `utils/ssrf.ts`, and `utils/path.ts`.
 
-**职责范围**：仪表板/统计、用户管理、全局分享、全部文件、访问日志、系统设置、公告、存储提供商、挂载点、权限规则。
+### Admin service
 
-**目录结构**：
+**Responsibilities**: dashboard and statistics, user management, global shares, all files, access logs, system settings, announcements, storage providers, mount points, and permission rules.
+
 ```
 services/admin/
-├── handlers.ts          // 仪表板、用户、分享、文件、日志、设置、公告
-├── storage.ts           // 存储提供商、挂载点、权限规则
-├── schemas.ts           // UserUpdate/Settings/Announcement
-├── storage-schemas.ts   // Provider/Mount/Rule
+├── handlers.ts          // dashboard, users, shares, files, logs, settings, announcements
+├── storage.ts           // storage providers, mount points, permission rules
+├── schemas.ts           // UserUpdate, Settings, Announcement
+├── storage-schemas.ts   // Provider, Mount, Rule
 └── types.ts
 ```
 
-**依赖**：`db`（UserRepo/ShareRepo/LogRepo/SettingsRepo/AnnouncementRepo/ProviderRepo/MountRepo/RuleRepo）、`storage/providers.ts`、`utils/ssrf.ts`（validateEndpoint）。
+**Dependencies**: the user, share, log, settings, announcement, provider, mount, and rule repositories, `storage/providers.ts`, and `utils/ssrf.ts`.
 
-### Users Service（用户设置服务）
+### Users service
 
-**职责范围**：个人资料、外观偏好、默认路径、修改密码。
+**Responsibilities**: profile, appearance preferences, default path, and password change.
 
-**目录结构**：
 ```
 services/users/
-├── handlers.ts    // /me/settings GET/PUT、/me/password PUT
-├── schemas.ts     // ProfileSchema / PasswordSchema
+├── handlers.ts    // /me/settings GET/PUT, /me/password PUT
+├── schemas.ts     // ProfileSchema, PasswordSchema
 └── types.ts
 ```
 
-**依赖**：`db`（UserRepo/QuotaRepo）、`utils/crypto.ts`（verify/hashPassword）。
+**Dependencies**: the user and quota repositories and `utils/crypto.ts`.
 
-### Keys Service（API 密钥服务）
+### Keys service
 
-**职责范围**：API 密钥创建（仅显示一次）、列表、撤销、权限规则查询。
+**Responsibilities**: API key creation (the secret shows once), listing, revocation, and permission-rule queries.
 
-**目录结构**：
 ```
 services/keys/
-├── handlers.ts    // POST/GET/DELETE /api/keys、GET /api/keys/rules
+├── handlers.ts    // POST/GET/DELETE /api/keys, GET /api/keys/rules
 ├── schemas.ts     // CreateKeySchema
 └── types.ts
 ```
 
-**安全要点（审计 M-3）**：
-- `uploadPath` 规范化（拒绝 `..`/`~` 逃逸），作为密钥上传根边界
-- 密钥 token 仅创建时显示一次；落库存 `sha256Hex` 哈希
+Security notes:
 
-**依赖**：`db`（ApiKeyRepo/RuleRepo）、`utils/crypto.ts`、`utils/path.ts`。
+- `uploadPath` normalization rejects `..` and `~` escapes and uses the result as the key's upload root boundary.
+- The key token displays once at creation; the store keeps a `sha256Hex` hash.
 
-### Public Service（公开服务）
+**Dependencies**: the API key and rule repositories, `utils/crypto.ts`, and `utils/path.ts`.
 
-**职责范围**：站点设置、公告、健康检查（无需认证）。
+### Public service
 
-**目录结构**：
+**Responsibilities**: site settings, announcements, and health checks without authentication.
+
 ```
 services/public/
-├── handlers.ts    // GET /api/public/settings、/announcements、/health
+├── handlers.ts    // GET /api/public/settings, /announcements, /health
 └── types.ts
 ```
 
-**依赖**：`db`（SettingsRepo/AnnouncementRepo）。
+**Dependencies**: the settings and announcement repositories.
 
-### Cleanup（定时任务）
+### Cleanup tasks
 
-**职责范围**：过期配额释放、移动源对象清理、过期分享标记、配额对账。
+**Responsibilities**: expired quota release, move-source cleanup, expired share marking, and quota reconciliation, run by a scheduled task.
 
-- `releaseExpiredReservations`：释放过期上传会话的配额预留
-- `cleanupOldObjects`：清理移动后遗留的源对象（source_cleanup_pending）
-- `expireDueShares`：标记过期分享
-- `reconcileQuotas`：配额对账（纠正 used_storage / used_files）
+- `releaseExpiredReservations` releases quota reservations held by expired upload sessions.
+- `cleanupOldObjects` deletes source objects left by moves (`source_cleanup_pending` flag).
+- `expireDueShares` marks shares as expired.
+- `reconcileQuotas` corrects the `used_storage` and `used_files` counters.
+- `runScheduledTasks` runs all four tasks and returns a per-task count.
 
----
+**Dependencies**: the session, share, file, mount, provider, and quota repositories and `storage/providers.ts`.
 
-## 共享基础设施
+## Shared infrastructure
 
-### shared/schemas.ts
+Cross-service code lives in four places:
 
-公共 Zod schemas：
+- `shared/schemas.ts` provides common Zod schemas: `PathSchema`, `FileNameSchema`, `PaginationSchema`, `UUIDSchema`, and `PasswordSchema`.
+- `shared/types.ts` defines `Principal`, `Mount`, `FileMetadata`, `Conditions`, the `Env` runtime bindings, and the Hono context variables.
+- `shared/errors.ts` defines `ApiError` with static constructors: `badRequest`, `unauthorized`, `forbidden`, `notFound`, `conflict`, `tooManyRequests`, and `internal`.
+- `shared/response.ts` provides the `ok` and `error` helpers that shape the `{ success, data | error, timestamp }` envelope.
 
-```typescript
-export const PathSchema = z.string().regex(/^\//).max(2048);
-export const FileNameSchema = z.string().min(1).max(255).regex(/^[^<>:"|?*\x00-\x1F]+$/);
-export const PaginationSchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(1000).default(100) });
-export const UUIDSchema = z.string().uuid();
-export const PasswordSchema = z.string().min(1).max(128);
-```
+The middleware layer handles cross-cutting concerns:
 
-### shared/errors.ts
+| Middleware | Purpose |
+| :--- | :--- |
+| `middleware/auth.ts` | `authMiddleware`, `optionalAuthMiddleware`, `apiKeyAuthMiddleware`, and `adminMiddleware`; also exposes `getDb` and `getClientIp`. |
+| `middleware/csrf.ts` | Validates the CSRF token for cookie-authenticated write operations. |
+| `middleware/rate-limit.ts` | Applies KV fixed-window rate limiting. |
+| `middleware/free-mode.ts` | Enforces free-mode cross-site, CSRF, and rate-limit guards. |
+| `middleware/global.ts` | Initializes the request context, CORS, and security headers. |
 
-```typescript
-export class ApiError extends Error {
-  constructor(public statusCode: number, public code: string, public message: string, public details?: unknown)
-  static badRequest / unauthorized / forbidden / notFound / conflict / tooManyRequests / internal
-}
-```
+The `db/` directory is the single data-access layer. The `Db` class wraps either a D1 backend (production on Workers) or a `node:sqlite` backend (local tests), so business code does not know which one runs. Domain repositories live under `db/repos/`: users, quotas, providers, mounts, files, sessions, jobs, rules, API keys, shares, logs, settings, announcements, and reconciliation.
 
-### shared/response.ts
+The `utils/` directory holds `path.ts` (normalization, boundary checks, pattern matching), `crypto.ts` (JWT, bcrypt, AES-GCM), `ssrf.ts` (endpoint validation), `smtp.ts`, and `base64.ts`.
 
-```typescript
-export function ok<T>(c, data, message?, status = 200)  // { success: true, data, message?, timestamp }
-export function fail(c, err)                             // { success: false, error: { code, message, details? }, timestamp }
-```
+## Data model
 
----
+D1 stores the following core tables:
 
-## 数据模型
+| Table | Purpose |
+| :--- | :--- |
+| `users` | User accounts, roles, status, default path, and locale preferences. |
+| `user_quotas` | Used and reserved storage, file counts, and limits. |
+| `storage_providers` | S3-protocol provider configuration with encrypted credentials. |
+| `mounts` | Maps a provider to a virtual path with sorting preferences. |
+| `file_metadata` | Files and folders: object key, path, size, etag, owner, and custom attributes. |
+| `upload_sessions` | Tracks upload progress, parts, and reserved quota. |
+| `operation_jobs` | Asynchronous move, copy, and delete jobs. |
+| `path_rules` | Permission rules scoped to a mount. |
+| `api_keys` | API keys with permissions, protocols, and upload root. |
+| `shares` | Share links with password, expiry, and access limits. |
+| `download_tokens` | One-time download tokens consumed atomically. |
+| `access_logs` | Audit log of upload, download, delete, share, and verify actions. |
+| `system_settings` | Key-value site settings. |
+| `announcements` | Site announcements and per-user dismissal records. |
+| `reconciliation_reports` | Reports from object-to-database reconciliation. |
+| `orphan_objects` | Objects whose deletion failed, pending retry. |
 
-核心表：`users`、`mounts`、`providers`（storage_providers）、`file_metadata`、`path_rules`、`upload_sessions`、`share_links`、`api_keys`、`user_quotas`、`access_logs`、`operation_jobs`、`orphan_objects`、`system_settings`、`announcements`。
+Migrations live in `workers/migrations/`:
 
-完整 Schema 见 `spec.md`「数据模型」章节与 `workers/migrations/`（`0001` 初始、`0002` 分片/下载令牌、`0003` 挂载隔离 + 会话撤销）。
+- `0001_initial.sql` creates the base schema.
+- `0002_add_parts_and_download_tokens.sql` adds multipart parts and the `download_tokens` table.
+- `0003_mount_id_and_session_version.sql` adds mount isolation and session revocation fields.
+- `0004_smtp_and_otp.sql` adds SMTP and one-time password (OTP) email verification.
 
-## 安全设计要点
+## Glossary
 
-- **JWT** 存 HttpOnly Cookie（`SameSite=Strict`），禁止 localStorage
-- **会话撤销**（审计 H-05）：`users.session_version` 写入 JWT；登出、改密、重置密码、管理员禁用账户时递增，旧 JWT 立即失效
-- **挂载隔离**（审计 H-01）：`path_rules.mount_id` 绑定规则到挂载点（NULL = 全局）；权限查询按挂载过滤，同路径不同挂载规则互不影响
-- **初始凭据**（审计 H-02）：生产 `ADMIN_PASSWORD` 必填（≥12 位强密码），未配置 fail-closed 不创建管理员；无硬编码默认凭据
-- **CSRF**：写操作需 `X-CSRF-Token`（KV 校验）；API Key 认证豁免
-- **限流**：KV 固定窗口（best-effort，审计 M-01），认证/敏感写接口 fail-closed
-- **路径遍历**：`normalizePath` + `isPathWithinBoundary`（路径段判断）
-- **SSRF**：`validateEndpoint`（scheme/端口白名单 + IPv4/IPv6 私网保留段）；部署需 egress 白名单配合（审计 M-04）
-- **对象投毒**：完成上传强制 HEAD 校验（ETag + Size）
-- **XSS**：文件名严格校验、React 自动转义、highlight.js 预转义
-- **SQL 注入**：全参数化查询
-- **下载令牌**：D1 原子消费（一次性）
-- **分享下载计数**（审计 H-04）：签发下载令牌不计数，仅在网关消费令牌时计数一次；超限 410
-- **分享密码**（审计 M-02）：POST `/api/shares/:id/verify` 种短期授权 cookie，密码不入 URL
-- **大文件内存**（审计 H-03）：compat/WebDAV/自由模式流式转发请求体，消除整包入内存
-- **初始化**（审计 M-06）：`/api/public/health/live` + `/ready` 就绪探针；生产未初始化业务 API 返回 503
-- **CSP**：`script-src 'self' https://challenges.cloudflare.com`（无 unsafe-inline）
+| Term | Definition |
+| :--- | :--- |
+| Principal | The entity that performs an action: a user, a role, or an API key. |
+| Mount | Maps a storage provider to a virtual path such as `/` or `/backup`. |
+| Provider | A storage provider such as R2, AWS S3, or Oracle Cloud. |
+| Path Rule | A permission policy for a specific path pattern, scoped to a mount. |
+| Object Key | The actual storage path of an object inside the provider bucket. |
+| Canonical Path | The normalized virtual path after standardization. |
+| Upload Session | Tracks upload state and the reserved quota for one upload. |
+| Quota Reserved | Storage locked at upload start to guarantee the quota fits. |
+| Idempotency Key | A client-generated identifier that prevents duplicate operations. |
+| Download Token | A short-lived token that authorizes one download. |
+| Share Link | A short link that exposes a file to public or password-protected access. |
 
-## 相关文档
+## Provider capability matrix
 
-- [API 设计](API.md)
-- [页面设计](UI.md)
-- [开发指南](DEVELOPMENT.md)
-- [部署指南](DEPLOYMENT.md)
-- [技术规格（完整版）](../spec.md)
-- [需求追踪矩阵](../requirements-matrix.md)
+Supported providers:
+
+| Provider | Status | Protocol | Notes |
+| :--- | :--- | :--- | :--- |
+| Cloudflare R2 | Supported | S3 | Free tier of 10 GB per month plus 1 million class-A operations; no egress fees. |
+| AWS S3 | Supported | S3 | Standard S3 protocol. |
+| Oracle Cloud | Supported | S3 | S3-compatible API; custom domains need a CDN such as CloudFront. |
+| Alibaba Cloud OSS | Not supported | OSS | Protocol incompatible. |
+| Tencent Cloud COS | Not supported | COS | Protocol incompatible. |
+
+Capability matrix:
+
+| Capability | R2 | S3 | Oracle |
+| :--- | :--- | :--- | :--- |
+| List objects | Yes | Yes | Yes |
+| Head object | Yes | Yes | Yes |
+| Get object | Yes | Yes | Yes |
+| Range get | Yes | Yes | Yes |
+| Put object | Yes | Yes | Yes |
+| Multipart upload | Yes | Yes | Yes |
+| Abort multipart | Yes | Yes | Yes |
+| Copy object | Yes | Yes | Yes |
+| Delete object | Yes | Yes | Yes |
+| Presigned URL | Yes | Yes | Yes |
+| Public URL | Yes | Yes | Yes |
+| Custom domain | Yes | Yes | Yes (via CDN) |
+| Checksum (MD5) | Yes | Yes | Yes |
+
+Credential model: all providers share one S3-protocol configuration instead of a per-provider discriminated union. The config holds `type`, `name`, `endpoint`, `region`, `bucket`, `accessKeyId`, and `secretAccessKey`, plus optional `publicDomain`, `uploadDomain`, and `pathPrefix`. The store encrypts credentials with AES-GCM and decrypts them only when the provider client needs them. A provider with `type=r2` and no endpoint uses the Workers R2 binding directly.
+
+## Security design
+
+The security model applies defense in depth across the request lifecycle:
+
+- **Authentication**: JWT lives in an HttpOnly cookie with `SameSite=Strict`; the client never stores it in `localStorage`.
+- **Session revocation**: `users.session_version` feeds into the JWT. Logout, password change, password reset, and admin account disabling bump the version, which invalidates older JWTs immediately.
+- **Mount isolation**: `path_rules.mount_id` scopes each rule to a mount (`NULL` means global); permission queries filter by mount so identical paths on different mounts never interfere.
+- **Initial credentials**: production requires an `ADMIN_PASSWORD` of at least 12 characters; without it, the system fails closed and creates no admin. No hardcoded default credentials exist.
+- **CSRF**: write operations require an `X-CSRF-Token` verified against KV; API-key authentication bypasses this check.
+- **Rate limiting**: KV fixed-window counters with fail-closed behavior on authentication and sensitive write endpoints.
+- **Path traversal**: `normalizePath` plus `isPathWithinBoundary` compare path segments.
+- **SSRF**: `validateEndpoint` enforces scheme and port allowlists and blocks private IPv4/IPv6 ranges; deployment should pair it with an egress allowlist.
+- **Object poisoning**: completing an upload forces a HEAD check that verifies ETag and size.
+- **XSS**: strict file-name validation, React auto-escaping, and pre-escaped highlighting for code previews.
+- **SQL injection**: every query uses parameterized statements.
+- **Download tokens**: D1 consumes each token atomically, so concurrent requests cannot reuse a one-time token.
+- **Share download counting**: issuing a token does not count; the gateway counts once when it consumes the token and returns `410` over the limit.
+- **Share passwords**: `POST /api/shares/:id/verify` sets a short-lived authorization cookie; the password never appears in a URL.
+- **Large-file memory**: PicGo-compatible upload, WebDAV, and free-mode paths stream request bodies instead of buffering them.
+- **Readiness**: `/api/public/health/live` and `/ready` probes gate the API; before initialization, business endpoints return `503`.
+- **CSP**: `script-src 'self' https://challenges.cloudflare.com` with no `unsafe-inline`.
+
+## What's next
+
+- [API design](API.md) for endpoint and error details.
+- [UI design](UI.md) for the frontend pages and components.
+- [Development guide](DEVELOPMENT.md) for local setup and testing.
+- [Deployment guide](DEPLOYMENT.md) for Workers and Pages deployment.
+- [Project overview](../README.md) for the feature set and roadmap.
+- [Progress tracker](PROGRESS.md) for the current implementation status.

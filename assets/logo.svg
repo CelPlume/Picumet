@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Picumet">
+  <defs>
+    <linearGradient id="pg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <!-- 多层云：代表多云对象存储 -->
+  <g fill="url(#pg)">
+    <!-- 后层云 -->
+    <path d="M28 86c-9 0-16-7-16-16s7-16 16-16c2 0 4 .3 5.6 1 1.8-11 11.4-19 23-19 12 0 22 8.5 23.6 19.6A16 16 0 0 1 96 84H28v2z" opacity="0.35"/>
+    <!-- 中层云 -->
+    <path d="M46 94c-8 0-14-6-14-14s6-14 14-14c1.7 0 3.3.3 4.8.8C52 58 59 52 68 52c9.5 0 17.4 7.4 17.9 16.7A12.5 12.5 0 0 1 96 92H46v2z" opacity="0.6"/>
+    <!-- 前层云 -->
+    <path d="M60 100c-6.5 0-11.5-5-11.5-11.5S53.5 77 60 77c1.4 0 2.7.3 3.9.7 1.5-7.5 8-13 16-13 8 0 14.6 6.2 15 14.2A10 10 0 0 1 94 100H60z"/>
+  </g>
+</svg>

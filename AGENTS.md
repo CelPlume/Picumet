@@ -61,9 +61,22 @@ flowchart LR
     SRC --> WRANGLER
 ```
 
-> 项目入口：[README](README.md)、[技术规格](spec.md)、[需求矩阵](requirements-matrix.md)、[系统架构](docs/ARCHITECTURE.md)。
+> 项目入口：[README](README_CN.md)、[系统架构](docs/ARCHITECTURE_CN.md)、[API](docs/API_CN.md)、[页面](docs/UI_CN.md)、[开发](docs/DEVELOPMENT_CN.md)、[部署](docs/DEPLOYMENT_CN.md)、[进度](docs/PROGRESS.md)。
 >
 > **强制规则**：执行任何代码、迁移、测试、发布或文档变更前，必须阅读并遵守本工作协议。质量门槛、安全约束、性能基线、迁移治理和提交规范均属于本工作协议的一部分。
+
+---
+
+## Architecture Principles（架构原则）
+
+**按业务领域拆分，而非技术层次**（完整设计见 [docs/ARCHITECTURE_CN.md](docs/ARCHITECTURE_CN.md)）。
+
+- 后端业务代码按领域组织在 `workers/src/services/<domain>/`，每个服务自包含：`handlers.ts`（业务逻辑/路由）、`schemas.ts`（Zod 校验）、`types.ts`（类型）、`<domain>.ts`（领域逻辑）、`README.md`（服务文档）。
+- `workers/src/index.ts` 只做路由与中间件装配，不承载业务。
+- 跨领域基础设施是薄层，不承载业务：`middleware/`（auth/csrf/rate-limit/global）、`db/repos/`（数据访问）、`utils/`（path/crypto/ssrf/smtp）、`shared/`（公共契约）。
+- 依赖规则：所有服务依赖 **Permissions Service**（权限判定）与 **Storage Service**（存储抽象）；**Auth Service** 独立；避免循环依赖。
+- 前端同样按业务域组织：`pages/` 每路由一页，页面内子功能内聚到 `components/files/`（预览/属性/上传/文件图标）与 `components/layout/`；`components/ui/` 仅放可复用 UI 原语，`lib/`、`stores/` 为共享层。页面不得按交互流程堆成技术性单体（如把导航/选择/批量/上传/预览/属性逻辑全塞进一个页面组件）。
+- 新增功能：先判定归属业务域 → 在该域内扩展；禁止新建跨域散落的 `routes/`、`providers/`、`handlers.ts` 等按技术层次堆叠的目录。
 
 ---
 
@@ -316,8 +329,8 @@ git commit \
 ### 代码合并前检查清单
 
 **功能完整性**：
-- [ ] 功能按照 [spec.md](spec.md) 实现
-- [ ] 需求在 [requirements-matrix.md](requirements-matrix.md) 中标记为 ✅ Included
+- [ ] 功能按照 [docs/ARCHITECTURE_CN.md](docs/ARCHITECTURE_CN.md) 与 [docs/PROGRESS.md](docs/PROGRESS.md) 记录的范围实现
+- [ ] 需求在 [docs/PROGRESS.md](docs/PROGRESS.md) 中标记为 Done 或 In progress
 - [ ] 所有边界情况已处理（空路径、特殊字符、超大文件等）
 
 **代码质量**：
@@ -344,7 +357,7 @@ git commit \
 
 **文档更新**：
 - [ ] README 已更新（如有 API 变更）
-- [ ] spec.md 已同步（如有架构变更）
+- [ ] docs/ 已同步（如有架构变更）
 - [ ] 代码注释清晰（复杂逻辑必须注释）
 
 ---
@@ -583,14 +596,13 @@ const canonicalPath = normalizePath(req.query.path);
 ## Contact & Resources（联系与资源）
 
 **文档**：
-- [系统架构](docs/ARCHITECTURE.md) — 服务化架构、服务明细、数据模型、安全设计
-- [API 设计](docs/API.md) — 认证方式、统一响应、全部端点
-- [页面设计](docs/UI.md) — 页面路由、布局、交互
-- [开发指南](docs/DEVELOPMENT.md) — 本地开发、测试、代码规范、常见坑点
-- [部署指南](docs/DEPLOYMENT.md) — Cloudflare 部署、CI、Secrets、成本
-- [完整技术规格](spec.md)
-- [服务化重构规格](spec_refactored.md)
-- [需求追踪矩阵](requirements-matrix.md)
+- [README（英文）](../README.md) / [README（中文）](../README_CN.md)
+- [系统架构（中文）](docs/ARCHITECTURE_CN.md) — 服务化架构、服务明细、数据模型、安全设计
+- [API 参考（中文）](docs/API_CN.md) — 认证方式、统一响应、全部端点
+- [前端指南（中文）](docs/UI_CN.md) — 页面路由、布局、交互、响应式
+- [开发指南（中文）](docs/DEVELOPMENT_CN.md) — 本地开发、测试、代码规范、常见坑点
+- [部署指南（中文）](docs/DEPLOYMENT_CN.md) — Cloudflare 部署、CI、Secrets、成本
+- [实施进度](docs/PROGRESS.md) — 需求范围、进度、审计闭环
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 - [Hono 框架文档](https://hono.dev/)
 
@@ -601,5 +613,6 @@ const canonicalPath = normalizePath(req.query.path);
 - 为什么只做 Cloudflare？统一部署栈，避免多云复杂性（AWS S3/Oracle 仅作为存储后端）
 
 **变更历史**：
-- 2026-08-18：初始版本，基于 spec.md v2.0 和 requirements-matrix.md
+- 2026-08-18：初始版本，需求范围与设计决策来自产品评审
 - 2026-08-18：服务化重构（Plan A），新增 docs/ 文档体系（架构/API/页面/开发/部署）
+- 2026-08-19：文档整合至 README + docs/（中英双语、谷歌文档风格），移除 spec 类源文档引用，新增 docs/PROGRESS.md 记录进度
