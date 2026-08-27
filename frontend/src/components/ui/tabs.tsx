@@ -1,5 +1,5 @@
-// Tabs 选项卡组件
-import { createContext, useContext, type ReactNode } from 'react';
+// Tabs 选项卡组件（滑动指示器：active 触发项带背景滑块，CSS transform 过渡）
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 const TabsContext = createContext<{
@@ -20,14 +20,37 @@ export function Tabs({
 }) {
   return (
     <TabsContext.Provider value={{ value, onValueChange }}>
-      <div className={className}>{children}</div>
+      <div className={cn('w-full gap-4', className)}>{children}</div>
     </TabsContext.Provider>
   );
 }
 
 export function TabsList({ children, className }: { children: ReactNode; className?: string }) {
+  const ctx = useContext(TabsContext);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [ind, setInd] = useState({ left: 0, width: 0 });
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || !ctx) return;
+    const active = list.querySelector<HTMLElement>(`[data-tab-value="${CSS.escape(ctx.value)}"]`);
+    if (active) setInd({ left: active.offsetLeft, width: active.offsetWidth });
+  }, [ctx?.value, children]);
+
   return (
-    <div className={cn('inline-flex h-9 items-center rounded-lg bg-muted p-1 text-muted-foreground', className)}>
+    <div
+      ref={listRef}
+      role="tablist"
+      className={cn(
+        'no-scrollbar relative inline-flex h-9 w-fit items-center gap-1 overflow-x-auto rounded-lg bg-muted p-1 text-muted-foreground',
+        className
+      )}
+    >
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-y-1 rounded-lg bg-background shadow-sm ring-1 ring-border transition-all duration-300 ease-out"
+        style={{ left: ind.left, width: ind.width }}
+      />
       {children}
     </div>
   );
@@ -50,11 +73,14 @@ export function TabsTrigger({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={isActive}
+      data-tab-value={value}
       onClick={() => ctx.onValueChange(value)}
       className={cn(
-        'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium transition-all',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        isActive ? 'bg-background text-foreground shadow' : 'hover:bg-background/50',
+        'relative z-10 inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent px-3.5 text-sm font-medium transition-all outline-none',
+        'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
+        isActive ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground dark:text-muted-foreground dark:hover:text-foreground',
         className
       )}
     >
@@ -77,5 +103,5 @@ export function TabsContent({
 
   if (ctx.value !== value) return null;
 
-  return <div className={cn('mt-4', className)}>{children}</div>;
+  return <div className={cn('animate-fade-in mt-4', className)}>{children}</div>;
 }

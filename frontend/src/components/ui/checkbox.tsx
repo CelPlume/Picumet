@@ -31,11 +31,11 @@ export function Checkbox({
         onChange(!checked);
       }}
       className={cn(
-        'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border border-primary transition-all',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        'inline-flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-input shadow-sm transition-[color,box-shadow]',
+        'focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
         'disabled:cursor-not-allowed disabled:opacity-50',
         checked || indeterminate
-          ? 'bg-primary text-primary-foreground'
+          ? 'border-primary bg-primary text-primary-foreground'
           : 'bg-background hover:bg-accent',
         className
       )}

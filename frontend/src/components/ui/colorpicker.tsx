@@ -77,7 +77,7 @@ export function ColorPicker({
                 style={{ background: c }}
                 aria-label={c}
               >
-                {value.toLowerCase() === c.toLowerCase() && <Check className="h-4 w-4 text-white drop-shadow" />}
+                {value.toLowerCase() === c.toLowerCase() && <Check className="h-4 w-4 text-white mix-blend-difference drop-shadow" />}
               </button>
             ))}
           </div>

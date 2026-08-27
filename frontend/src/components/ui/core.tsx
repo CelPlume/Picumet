@@ -15,11 +15,11 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const btnVariants: Record<ButtonVariant, string> = {
-  default: 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm',
+  default: 'bg-primary text-primary-foreground hover:bg-primary/90',
   secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
   outline: 'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
   ghost: 'hover:bg-accent hover:text-accent-foreground',
-  destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-sm',
+  destructive: 'bg-destructive text-white hover:bg-destructive/90',
   link: 'text-primary underline-offset-4 hover:underline',
 };
 
@@ -38,8 +38,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       className={cn(
-        'button-press inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50',
+        'button-press inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all outline-none',
+        'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50',
+        '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*=\'size-\'])]:size-4',
         btnVariants[variant],
         btnSizes[size],
         className
@@ -61,8 +62,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input({ c
     <input
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors',
-        'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+        'h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-[color,box-shadow] outline-none selection:bg-primary selection:text-primary-foreground',
+        'file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground',
+        'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30',
+        'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
         className
       )}
       {...props}
@@ -99,14 +102,14 @@ export function Label({ className, children, htmlFor }: { className?: string; ch
 // ============ Card ============
 export function Card({ className, children, onClick }: { className?: string; children: ReactNode; onClick?: () => void }) {
   return (
-    <div onClick={onClick} className={cn('rounded-lg border bg-card text-card-foreground shadow-sm', className)}>
+    <div onClick={onClick} className={cn('flex flex-col gap-4 rounded-xl border bg-card py-5 text-card-foreground shadow-sm', className)}>
       {children}
     </div>
   );
 }
 
 export function CardHeader({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn('flex flex-col space-y-1.5 p-4', className)}>{children}</div>;
+  return <div data-slot="card-header" className={cn('flex flex-col gap-1.5 px-5', className)}>{children}</div>;
 }
 
 export function CardTitle({ className, children }: { className?: string; children: ReactNode }) {
@@ -118,7 +121,7 @@ export function CardDescription({ className, children }: { className?: string; c
 }
 
 export function CardContent({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn('p-4 pt-0', className)}>{children}</div>;
+  return <div data-slot="card-content" className={cn('px-5', className)}>{children}</div>;
 }
 
 // ============ Badge ============
@@ -127,13 +130,13 @@ export function Badge({ className, variant = 'default', children }: { className?
   const variants: Record<BadgeVariant, string> = {
     default: 'bg-primary text-primary-foreground',
     secondary: 'bg-secondary text-secondary-foreground',
-    destructive: 'bg-destructive text-destructive-foreground',
-    outline: 'border border-input text-foreground',
+    destructive: 'bg-destructive text-white',
+    outline: 'border-border text-foreground',
     success: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
     warning: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
   };
   return (
-    <span className={cn('inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium', variants[variant], className)}>
+    <span className={cn('inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-[color,box-shadow]', variants[variant], className)}>
       {children}
     </span>
   );
@@ -184,9 +187,9 @@ export function Switch({
   size?: 'sm' | 'default' | 'lg';
 }) {
   const sizes = {
-    sm: { container: 'h-4 w-7', thumb: 'h-3 w-3', translate: 'translate-x-[14px]' },
-    default: { container: 'h-5 w-9', thumb: 'h-4 w-4', translate: 'translate-x-[18px]' },
-    lg: { container: 'h-6 w-11', thumb: 'h-5 w-5', translate: 'translate-x-[22px]' },
+    sm: { container: 'h-3.5 w-6', thumb: 'size-3', translate: 'translate-x-[calc(100%-2px)]' },
+    default: { container: 'h-[1.15rem] w-8', thumb: 'size-4', translate: 'translate-x-[calc(100%-2px)]' },
+    lg: { container: 'h-6 w-11', thumb: 'size-5', translate: 'translate-x-[calc(100%-2px)]' },
   };
   const s = sizes[size];
   return (
@@ -197,18 +200,18 @@ export function Switch({
       disabled={disabled || loading}
       onClick={() => onChange(!checked)}
       className={cn(
-        'relative inline-flex shrink-0 items-center rounded-full transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        'relative inline-flex shrink-0 items-center rounded-full border border-transparent shadow-sm transition-all outline-none',
+        'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
         'disabled:cursor-not-allowed disabled:opacity-50',
         s.container,
-        checked ? 'bg-primary' : 'bg-input'
+        checked ? 'bg-primary' : 'bg-input dark:bg-input/80'
       )}
     >
       <span
         className={cn(
-          'inline-block transform rounded-full bg-white shadow-sm transition-transform',
+          'pointer-events-none block rounded-full bg-background ring-0 transition-transform',
           s.thumb,
-          checked ? s.translate : 'translate-x-[2px]'
+          checked ? s.translate : 'translate-x-0.5'
         )}
       >
         {loading && (

@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTheme } from '@/stores/theme';
 
 export interface SelectOption {
   value: string;
@@ -26,6 +27,7 @@ export function Select({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const enableBlur = useTheme((s) => s.enableBlur);
 
   useEffect(() => {
     if (!open) return;
@@ -50,10 +52,10 @@ export function Select({
         onClick={() => !disabled && setOpen(!open)}
         disabled={disabled}
         className={cn(
-          'flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          'disabled:cursor-not-allowed disabled:opacity-50',
-          open && 'ring-2 ring-ring'
+          'flex h-9 w-full items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-[color,box-shadow] outline-none',
+          'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
+          'disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30',
+          open && 'border-ring ring-[3px] ring-ring/50'
         )}
       >
         <span className={cn('truncate', !selected && 'text-muted-foreground')}>
@@ -63,7 +65,7 @@ export function Select({
       </button>
 
       {open && (
-        <div className="animate-dropdown absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-popover bg-card p-1 shadow-lg">
+        <div className={cn('animate-dropdown absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border p-1 text-popover-foreground shadow-md', enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover')}>
           {options.map((opt) => (
             <button
               key={opt.value}
@@ -74,8 +76,8 @@ export function Select({
                 setOpen(false);
               }}
               className={cn(
-                'flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm outline-none transition-colors',
-                'hover:bg-accent hover:text-accent-foreground',
+                'relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-none select-none',
+                'focus:bg-accent focus:text-accent-foreground',
                 'disabled:pointer-events-none disabled:opacity-50',
                 value === opt.value && 'bg-accent text-accent-foreground'
               )}

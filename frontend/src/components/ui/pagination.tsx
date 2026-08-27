@@ -1,7 +1,7 @@
-// 分页组件（HeroUI 风格：页码 + 省略号 + 上一页/下一页 + 每页条数）
-import { ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
+// 分页组件（交互式：页码跳转 + 每页条数均可点击填写）
+import { useState } from 'react';
+import { ChevronLeft, ChevronRight, MoreHorizontal, CornerDownLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Select } from './select';
 
 function buildPages(current: number, total: number): (number | '...')[] {
   if (total <= 7) {
@@ -36,18 +36,74 @@ export function Pagination({
 }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const items = buildPages(page, pages);
+  const [editingSize, setEditingSize] = useState(false);
+  const [sizeValue, setSizeValue] = useState(String(pageSize));
+  const [editingJump, setEditingJump] = useState(false);
+  const [jumpValue, setJumpValue] = useState(String(page));
+
+  const commitSize = () => {
+    const n = parseInt(sizeValue, 10);
+    if (!isNaN(n) && n >= 1) {
+      onPageSizeChange?.(n);
+      onPageChange(1);
+      setSizeValue(String(n));
+    } else {
+      setSizeValue(String(pageSize));
+    }
+    setEditingSize(false);
+  };
+
+  const commitJump = () => {
+    const n = parseInt(jumpValue, 10);
+    if (!isNaN(n)) {
+      onPageChange(Math.max(1, Math.min(pages, n)));
+      setJumpValue(String(Math.max(1, Math.min(pages, n))));
+    } else {
+      setJumpValue(String(page));
+    }
+    setEditingJump(false);
+  };
 
   return (
     <div className={cn('flex flex-wrap items-center justify-center gap-1.5 py-2', className)}>
       {onPageSizeChange && (
-        <div className="mr-3 flex items-center gap-1.5 text-sm text-muted-foreground">
+        <div className="mr-2 flex items-center gap-1.5 text-sm text-muted-foreground">
           每页
-          <Select
-            value={String(pageSize)}
-            onValueChange={(v) => onPageSizeChange(Number(v))}
-            className="w-[84px]"
-            options={pageSizeOptions.map((s) => ({ value: String(s), label: `${s} 条` }))}
-          />
+          {editingSize ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                commitSize();
+              }}
+              className="flex items-center gap-1"
+            >
+              <input
+                autoFocus
+                value={sizeValue}
+                onChange={(e) => setSizeValue(e.target.value.replace(/\D/g, ''))}
+                onBlur={commitSize}
+                onKeyDown={(e) => e.key === 'Escape' && setEditingSize(false)}
+                inputMode="numeric"
+                className="h-7 w-14 rounded-md border bg-background px-1.5 text-center text-xs tabular-nums outline-none ring-1 ring-ring focus-visible:ring-2"
+                aria-label="每页条数"
+              />
+              <button type="submit" className="rounded-md p-1 text-muted-foreground hover:bg-accent" aria-label="确定">
+                <CornerDownLeft className="h-3.5 w-3.5" />
+              </button>
+            </form>
+          ) : (
+            <button
+              onClick={() => {
+                setSizeValue(String(pageSize));
+                setEditingSize(true);
+              }}
+              className="cursor-pointer rounded-md px-2 py-0.5 font-medium tabular-nums text-foreground transition-colors hover:bg-secondary/60"
+              title="点击修改每页条数"
+            >
+              {pageSize}
+            </button>
+          )}
+          条
         </div>
       )}
 
@@ -90,9 +146,45 @@ export function Pagination({
         <ChevronRight className="h-4 w-4" />
       </button>
 
-      <span className="ml-3 text-sm text-muted-foreground">
-        共 {total} 条
-      </span>
+      {/* 跳页：点击页码可填写 */}
+      <div className="ml-2 flex items-center gap-1.5 text-sm text-muted-foreground">
+        {editingJump ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              commitJump();
+            }}
+            className="flex items-center gap-1"
+          >
+            <input
+              autoFocus
+              value={jumpValue}
+              onChange={(e) => setJumpValue(e.target.value.replace(/\D/g, ''))}
+              onBlur={commitJump}
+              onKeyDown={(e) => e.key === 'Escape' && setEditingJump(false)}
+              inputMode="numeric"
+              className="h-7 w-12 rounded-md border bg-background px-1.5 text-center text-xs tabular-nums outline-none ring-1 ring-ring focus-visible:ring-2"
+              aria-label="跳转到页"
+            />
+            <button type="submit" className="rounded-md px-1.5 py-0.5 text-xs font-bold uppercase tracking-tighter text-primary hover:bg-accent" aria-label="GO">
+              GO
+            </button>
+          </form>
+        ) : (
+          <button
+            onClick={() => {
+              setJumpValue(String(page));
+              setEditingJump(true);
+            }}
+            className="flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 transition-colors hover:bg-secondary/60"
+            title="点击输入页码"
+          >
+            <span className="font-semibold tabular-nums text-foreground">{page}</span>
+            <span className="text-xs font-medium uppercase tracking-wider">/ {pages} 页</span>
+          </button>
+        )}
+        <span className="text-sm text-muted-foreground">共 {total} 条</span>
+      </div>
     </div>
   );
 }

@@ -36,15 +36,27 @@ export function Dialog({
     };
   }, [open, onClose]);
 
-  if (!open) return null;
-
   return (
-    <div className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="animate-dialog-overlay absolute inset-0 bg-black/60 backdrop-blur-md" onClick={onClose} />
+    // 常驻挂载，仿 HeadlessUI/优雅过渡：遮罩 opacity 淡入淡出 + 面板 opacity/transform（桌面缩放、移动上滑）同步进行
+    <div
+      className={cn(
+        'fixed inset-0 z-50 flex items-center justify-center p-4 transition-opacity duration-300 ease-out',
+        open ? 'opacity-100' : 'pointer-events-none opacity-0'
+      )}
+      aria-hidden={!open}
+    >
       <div
         className={cn(
-          'animate-scale-in relative z-10 w-full rounded-xl border p-5 shadow-2xl',
-          enableBlur ? 'bg-card/90 backdrop-blur-xl backdrop-saturate-150' : 'bg-card',
+          'absolute inset-0 bg-black/50 transition-opacity duration-300 ease-out',
+          enableBlur && 'backdrop-blur-sm',
+          open ? 'opacity-100' : 'opacity-0'
+        )}
+        onClick={onClose}
+      />
+      <div
+        className={cn(
+          'relative z-10 w-full rounded-lg border bg-background p-6 shadow-lg transition-[opacity,transform] duration-300 ease-out sm:max-w-lg',
+          open ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-4 scale-95 opacity-0',
           width
         )}
       >
@@ -57,8 +69,9 @@ export function Dialog({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="mt-4">{children}</div>
-        {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
+        {/* children 仅打开时挂载：避免隐藏弹窗内的 autoFocus 在应用启动时抢焦点 */}
+        <div className="mt-4">{open ? children : null}</div>
+        {open && footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
       </div>
     </div>
   );

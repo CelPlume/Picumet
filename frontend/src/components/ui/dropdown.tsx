@@ -1,7 +1,11 @@
 // 下拉菜单（点击展开，支持分组与菜单项）
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+// 内容通过 Portal 渲染到 document.body：脱离 header 等带 backdrop-filter 的祖先
+// （嵌套 backdrop-filter 会建立 backdrop root，使子元素模糊失效），确保模糊统一生效。
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTheme } from '@/stores/theme';
 import { Button } from './core';
 
 export function Dropdown({
@@ -16,39 +20,65 @@ export function Dropdown({
   triggerClass?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const portalRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; right?: number } | null>(null);
+  const enableBlur = useTheme((s) => s.enableBlur);
+
+  // 展开时测量触发器位置（Portal 用 fixed 定位）
+  useLayoutEffect(() => {
+    if (!open) return;
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (r) {
+      // start：菜单左缘对齐触发器左缘；end：菜单右缘对齐触发器右缘
+      setPos(
+        align === 'end'
+          ? { left: r.right - 240, top: r.bottom + 4, right: window.innerWidth - r.right }
+          : { left: r.left, top: r.bottom + 4 }
+      );
+    }
+  }, [open, align]);
 
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t) || portalRef.current?.contains(t)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onScroll = () => setOpen(false);
     document.addEventListener('mousedown', onClick);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onScroll);
     return () => {
       document.removeEventListener('mousedown', onClick);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onScroll);
     };
   }, [open]);
 
   return (
-    <div ref={ref} className="relative inline-block">
+    <div ref={wrapRef} className="relative inline-block">
       <div onClick={() => setOpen((v) => !v)} className={cn('cursor-pointer', triggerClass)}>
         {trigger}
       </div>
-      {open && (
-        <div
-          className={cn(
-            'animate-dropdown absolute z-50 mt-1 min-w-[160px] max-w-xs sm:max-w-sm max-w-[calc(100vw-2rem)] rounded-md border p-1 shadow-lg',
-            'bg-card/95 backdrop-blur-md backdrop-saturate-150',
-            align === 'end' ? 'right-0' : 'left-0'
-          )}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {typeof children === 'function' ? children(() => setOpen(false)) : children}
-        </div>
-      )}
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={portalRef}
+            className={cn(
+              'animate-dropdown fixed z-[100] mt-1 max-h-[calc(100vh-4rem)] min-w-[8rem] overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md',
+              enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover'
+            )}
+            style={{ left: pos.right ? undefined : pos.left, right: pos.right, top: pos.top }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {typeof children === 'function' ? children(() => setOpen(false)) : children}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
@@ -85,11 +115,11 @@ export function DropdownItem({
 }
 
 export function DropdownSeparator() {
-  return <div className="my-1 h-px bg-border" />;
+  return <div className="-mx-1 my-1 h-px bg-muted" />;
 }
 
 export function DropdownLabel({ children }: { children: ReactNode }) {
-  return <div className="px-2 py-1 text-xs font-medium text-muted-foreground">{children}</div>;
+  return <div className="px-2 py-1.5 text-sm font-medium text-muted-foreground">{children}</div>;
 }
 
 export { ChevronDown, Button };
