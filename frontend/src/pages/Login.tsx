@@ -83,37 +83,54 @@ export default function Login() {
 
       <div className="flex flex-1 items-center justify-center px-4 pb-16">
         <div className="w-full max-w-sm">
-          <div className="mb-6 flex justify-center">
-            <Logo size={36} />
+          <div className="mb-8 text-center">
+            <div className="flex justify-center"><Logo size={44} /></div>
+            <h3 className="mt-4 text-balance text-center text-lg font-semibold text-foreground">{t('login.title')}</h3>
+            <p className="mt-1 text-pretty text-center text-sm text-muted-foreground">{t('login.subtitle')}</p>
           </div>
-          <h1 className="mb-6 text-center text-xl font-semibold">{t('common.login')}</h1>
 
-          <div className="space-y-4">
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submit();
+            }}
+          >
             <div>
-              <Label>{t('login.username')}</Label>
-              <Input className="mt-1.5" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" autoFocus />
+              <Label className="text-sm font-medium text-foreground">{t('login.username')}</Label>
+              <Input className="mt-2" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" autoFocus />
             </div>
             <div>
-              <Label>{t('login.password')}</Label>
-              <Input className="mt-1.5" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" onKeyDown={(e) => e.key === 'Enter' && submit()} />
-            </div>
-
-            <div className="flex justify-end">
-              <button className="text-xs text-primary hover:underline" onClick={() => setShowReset(true)}>
-                {t('login.forgot')}
-              </button>
+              <Label className="text-sm font-medium text-foreground">{t('login.password')}</Label>
+              <Input className="mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
             </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}
 
-            <Button className="w-full" size="lg" onClick={submit} loading={loading}>
+            <Button className="mt-4 w-full py-2 font-medium" size="lg" type="submit" loading={loading}>
               {t('common.login')}
             </Button>
+          </form>
 
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <Link to="/register" className="text-primary hover:underline">{t('login.registerNow')}</Link>
-              <Link to="/free-mode" className="text-primary hover:underline">{t('login.freeMode')}</Link>
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-border" />
             </div>
+            <div className="relative flex justify-center">
+              <span className="bg-background px-2 text-xs uppercase tracking-wider text-muted-foreground">{t('common.or')}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Link to="/register" className="block">
+              <Button variant="outline" className="w-full py-2 font-medium">{t('login.registerNow')}</Button>
+            </Link>
+            <Link to="/free-mode" className="block">
+              <Button variant="outline" className="w-full py-2 font-medium">{t('login.freeMode')}</Button>
+            </Link>
+            <Button variant="ghost" className="col-span-2 w-full py-2 text-sm text-muted-foreground" onClick={() => setShowReset(true)}>
+              {t('login.resetPassword')}
+            </Button>
           </div>
         </div>
       </div>

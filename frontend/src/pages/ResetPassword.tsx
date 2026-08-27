@@ -56,31 +56,41 @@ export default function ResetPassword() {
 
       <div className="flex flex-1 items-center justify-center px-4 pb-16">
         <div className="w-full max-w-sm">
-          <div className="mb-6 flex justify-center">
-            <Logo size={36} />
+          <div className="mb-8 text-center">
+            <div className="flex justify-center"><Logo size={44} /></div>
+            <h3 className="mt-4 text-balance text-center text-lg font-semibold text-foreground">{t('login.resetPassword')}</h3>
+            <p className="mt-1 text-pretty text-center text-sm text-muted-foreground">{t('login.subtitle')}</p>
           </div>
-          <h1 className="mb-6 text-center text-xl font-semibold">{t('login.resetPassword')}</h1>
 
-          <div className="space-y-4">
+          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); submit(); }}>
             <div>
-              <Label>{t('login.newPassword')}</Label>
-              <Input className="mt-1.5" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoFocus />
+              <Label className="text-sm font-medium text-foreground">{t('login.newPassword')}</Label>
+              <Input className="mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoFocus />
             </div>
             <div>
-              <Label>{t('login.confirmPassword')}</Label>
-              <Input className="mt-1.5" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="••••••••" onKeyDown={(e) => e.key === 'Enter' && submit()} />
+              <Label className="text-sm font-medium text-foreground">{t('login.confirmPassword')}</Label>
+              <Input className="mt-2" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="••••••••" />
             </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}
 
-            <Button className="w-full" size="lg" onClick={submit} loading={loading}>
+            <Button className="mt-4 w-full py-2 font-medium" size="lg" type="submit" loading={loading}>
               {t('login.submitReset')}
             </Button>
+          </form>
 
-            <p className="text-center text-sm text-muted-foreground">
-              <Link to="/login" className="text-primary hover:underline">{t('common.login')}</Link>
-            </p>
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-border" />
+            </div>
+            <div className="relative flex justify-center">
+              <span className="bg-background px-2 text-xs uppercase tracking-wider text-muted-foreground">{t('common.or')}</span>
+            </div>
           </div>
+
+          <Link to="/login" className="block">
+            <Button variant="outline" className="w-full py-2 font-medium">{t('common.login')}</Button>
+          </Link>
         </div>
       </div>
     </div>
