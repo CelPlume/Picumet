@@ -2,13 +2,14 @@
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import { UserRepo, QuotaRepo, SettingsRepo, LogRepo } from '../../db';
+import { z } from 'zod';
 import { hashPassword, verifyPassword, signJwt, verifyJwt, randomString } from '../../utils/crypto';
 import { ApiError } from '../../shared/errors';
 import { ok, fail } from '../../shared/response';
 import { getDb, getClientIp } from '../../middleware/auth';
 import { authRateLimitMiddleware } from '../../middleware/rate-limit';
 import { issueCsrfToken } from '../../middleware/csrf';
-import { hasSmtp, sendMail } from '../../utils/smtp';
+import { hasSmtp, sendMail, resolveSmtpConfig } from '../../utils/smtp';
 import { RegisterSchema, LoginSchema, ForgotPasswordSchema, ResetPasswordSchema } from './schemas';
 
 const AUTH_COOKIE = 'auth_token';
@@ -46,6 +47,29 @@ async function setAuthCookie(c: Parameters<typeof ok>[0], user: { id: string; us
 
 export const authRoutes = new Hono<AppBindings>();
 
+// 注册邮箱验证码发送
+authRoutes.post('/register/send-otp', authRateLimitMiddleware, async (c) => {
+  const db = getDb(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = z.object({ email: z.string().email() }).safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('邮箱格式无效');
+  const email = parsed.data.email.toLowerCase();
+  const existing = await UserRepo.getUserByEmail(db, email);
+  if (existing) throw new ApiError(409, 'ALREADY_EXISTS', '邮箱已被注册');
+  const raw = await SettingsRepo.getAll(db);
+  const smtp = await resolveSmtpConfig(raw, c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
+  if (!smtp) throw ApiError.badRequest('邮件服务未配置，请联系管理员');
+  const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+  await c.env.KV.put(`email:otp:register:${email}`, code, { expirationTtl: 300 });
+  await sendMail(
+    { ...smtp, from: smtp.from || 'Picumet <noreply@example.com>' },
+    email,
+    'Picumet 注册验证码',
+    `<p>您的注册验证码是：<strong>${code}</strong></p><p>验证码 5 分钟内有效，请勿泄露给他人。</p>`
+  );
+  return ok(c, { success: true, expiresIn: 300 });
+});
+
 authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
   const db = getDb(c);
   const body = await c.req.json().catch(() => null);
@@ -54,7 +78,17 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
   if (!parsed.success) {
     throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '注册信息无效', parsed.error.flatten());
   }
-  const { username, password, email } = parsed.data;
+  const { username, password, email, emailCode } = parsed.data;
+
+  // 注册邮箱 OTP 校验：站点开启邮箱验证时必需
+  const reqVerify = (await SettingsRepo.get(db, 'require_email_verification')) ?? 'false';
+  if (reqVerify !== 'false') {
+    const stored = await c.env.KV.get(`email:otp:register:${email.toLowerCase()}`);
+    if (!stored || stored !== emailCode) {
+      throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
+    }
+    await c.env.KV.delete(`email:otp:register:${email.toLowerCase()}`);
+  }
 
   const allowReg = (await SettingsRepo.get(db, 'allow_registration')) ?? 'true';
   if (allowReg === 'false') {
@@ -80,18 +114,15 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
     const token = randomString(40);
     await c.env.KV.put(`email:verify:${token}`, user.id, { expirationTtl: 24 * 3600 });
     const url = `${c.env.APP_BASE_URL}/api/auth/verify-email?token=${token}`;
-    await sendMail(
-      {
-        host: c.env.SMTP_HOST as string,
-        port: Number(c.env.SMTP_PORT ?? 587),
-        user: c.env.SMTP_USER as string,
-        pass: c.env.SMTP_PASS as string,
-        from: (c.env.SMTP_FROM as string) ?? 'Picumet <noreply@example.com>',
-      },
-      user.email,
-      'Picumet 邮箱验证',
-      `<p>你好 ${user.username}，</p><p>请点击以下链接完成邮箱验证（24 小时内有效）：</p><p><a href="${url}">${url}</a></p>`
-    );
+    const smtp = await resolveSmtpConfig(await SettingsRepo.getAll(db), c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
+    if (smtp) {
+      await sendMail(
+        { ...smtp, from: smtp.from || 'Picumet <noreply@example.com>' },
+        user.email,
+        'Picumet 邮箱验证',
+        `<p>你好 ${user.username}，</p><p>请点击以下链接完成邮箱验证（24 小时内有效）：</p><p><a href="${url}">${url}</a></p>`
+      );
+    }
   } else if (needsVerify && (c.env.ENVIRONMENT as string) !== 'production') {
     // 开发环境无 SMTP：直接自动验证
     await UserRepo.updateUser(db, user.id, { email_verified: 1 });
@@ -233,15 +264,10 @@ authRoutes.post('/forgot-password', authRateLimitMiddleware, async (c) => {
   const token = randomString(40);
   await c.env.KV.put(`pwd:reset:${token}`, user.id, { expirationTtl: 15 * 60 });
   const url = `${c.env.APP_BASE_URL}/reset-password?token=${token}`;
-  if (hasSmtp(c.env)) {
+  const smtp = await resolveSmtpConfig(await SettingsRepo.getAll(db), c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
+  if (smtp) {
     await sendMail(
-      {
-        host: c.env.SMTP_HOST as string,
-        port: Number(c.env.SMTP_PORT ?? 587),
-        user: c.env.SMTP_USER as string,
-        pass: c.env.SMTP_PASS as string,
-        from: (c.env.SMTP_FROM as string) ?? 'Picumet <noreply@example.com>',
-      },
+      { ...smtp, from: smtp.from || 'Picumet <noreply@example.com>' },
       user.email,
       'Picumet 密码重置',
       `<p>你好 ${user.username}，</p><p>请点击以下链接重置密码（15 分钟内有效）：</p><p><a href="${url}">${url}</a></p>`

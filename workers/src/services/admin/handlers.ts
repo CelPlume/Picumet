@@ -11,7 +11,8 @@ import { ApiError } from '../../shared/errors';
 import { toFileListItem } from '../../db/repos/files';
 import { parseJson } from '../../db';
 import { UserUpdateSchema, SettingsSchema, AnnouncementSchema } from './schemas';
-import { sendMail, type SmtpConfig } from '../../utils/smtp';
+import { sendMail, type SmtpConfig, resolveSmtpConfig } from '../../utils/smtp';
+import { encryptSecret } from '../../utils/crypto';
 import { z } from 'zod';
 
 export const adminRoutes = new Hono<AppBindings>();
@@ -243,6 +244,12 @@ adminRoutes.patch('/settings', async (c) => {
     if (v === undefined) continue;
     // 占位符/空值表示保持原密码配置，不覆盖
     if (k === 'smtpPassword' && (v === '******' || v === '')) continue;
+    // SMTP 密码加密落库（AES-256-GCM，enc: 前缀标记）
+    if (k === 'smtpPassword' && typeof v === 'string' && c.env.ENCRYPTION_KEY) {
+      const encrypted = await encryptSecret(v, c.env.ENCRYPTION_KEY);
+      await SettingsRepo.set(db, 'smtp_password', `enc:${encrypted}`);
+      continue;
+    }
     await SettingsRepo.set(db, map[k] ?? k, v);
   }
   return ok(c, { message: '已保存' });
@@ -264,15 +271,8 @@ adminRoutes.post('/settings/test-email', async (c) => {
       return v;
     }
   };
-  const host = (get('smtp_host') as string) || c.env.SMTP_HOST;
-  if (!host) throw ApiError.badRequest('邮件服务未配置');
-  const config: SmtpConfig = {
-    host,
-    port: Number(get('smtp_port') ?? 587),
-    user: (get('smtp_user') as string) || c.env.SMTP_USER,
-    pass: (get('smtp_password') as string) || c.env.SMTP_PASS,
-    from: (get('smtp_from_email') as string) || c.env.SMTP_FROM || '',
-  };
+  const config = await resolveSmtpConfig(raw, c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
+  if (!config?.host) throw ApiError.badRequest('邮件服务未配置');
   if (!config.from) throw ApiError.badRequest('发件邮箱未配置');
   try {
     await sendMail(config, parsed.data.to, 'Picumet 测试邮件', '<p>这是一封测试邮件</p>');

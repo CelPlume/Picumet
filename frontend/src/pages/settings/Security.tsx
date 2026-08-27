@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Mail, ShieldCheck } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Badge } from '@/components/ui/core';
+import { InputOTP } from '@/components/ui/input-otp';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 
@@ -133,16 +134,8 @@ export default function SecurityPage() {
               </Button>
             </div>
             {otpSent && (
-              <div className="mt-2 flex gap-2">
-                <Input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={verificationCode}
-                  onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
-                  placeholder="6 位验证码"
-                  className="flex-1"
-                />
+              <div className="mt-2 flex flex-col gap-2">
+                <InputOTP value={verificationCode} onChange={setVerificationCode} />
                 <Button onClick={verifyOtp} loading={verifying} variant="outline">
                   验证邮箱
                 </Button>

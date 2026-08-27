@@ -113,3 +113,34 @@ export async function sendMail(config: SmtpConfig, to: string, subject: string, 
     }
   }
 }
+
+
+// 解析 SMTP 配置：优先使用管理员在系统设置中配置的（密码经 enc: 前缀加密存储），回退环境变量
+export async function resolveSmtpConfig(
+  raw: Record<string, unknown>,
+  env: { SMTP_HOST?: string; SMTP_PORT?: string; SMTP_USER?: string; SMTP_PASS?: string; SMTP_FROM?: string; ENCRYPTION_KEY: string }
+): Promise<SmtpConfig | null> {
+  const get = (key: string) => {
+    const v = raw[key];
+    if (v === undefined || v === null || v === 'null') return undefined;
+    return String(v);
+  };
+  const host = get('smtp_host') || env.SMTP_HOST;
+  if (!host) return null;
+  let pass = get('smtp_password') || env.SMTP_PASS || '';
+  if (pass.startsWith('enc:') && env.ENCRYPTION_KEY) {
+    try {
+      const { decryptSecret } = await import('./crypto');
+      pass = await decryptSecret(pass.slice(4), env.ENCRYPTION_KEY);
+    } catch {
+      return null;
+    }
+  }
+  return {
+    host,
+    port: Number(get('smtp_port') ?? env.SMTP_PORT ?? 587),
+    user: get('smtp_user') || env.SMTP_USER || '',
+    pass,
+    from: get('smtp_from_email') || env.SMTP_FROM || '',
+  };
+}

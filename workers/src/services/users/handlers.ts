@@ -6,7 +6,7 @@ import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { verifyPassword, hashPassword, uuid } from '../../utils/crypto';
-import { sendMail } from '../../utils/smtp';
+import { sendMail, resolveSmtpConfig } from '../../utils/smtp';
 import { ProfileSchema, PasswordSchema as ChangePasswordSchema, SendOtpSchema, VerifyOtpSchema } from './schemas';
 
 export const userRoutes = new Hono<AppBindings>();
@@ -120,12 +120,13 @@ userRoutes.post('/me/email/send-otp', async (c) => {
   const fromEmail = String(get('smtp_from_email') ?? '') || c.env.SMTP_FROM || '';
   const fromName = String(get('smtp_from_name') ?? 'Picumet');
   try {
+    const smtpConfig = await resolveSmtpConfig(raw as Record<string, unknown>, c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
     await sendMail(
       {
-        host,
-        port: Number(get('smtp_port') ?? 587),
-        user: String(get('smtp_user') ?? '') || c.env.SMTP_USER,
-        pass: String(get('smtp_password') ?? '') || c.env.SMTP_PASS,
+        host: smtpConfig?.host ?? host,
+        port: smtpConfig?.port ?? Number(get('smtp_port') ?? 587),
+        user: smtpConfig?.user ?? (String(get('smtp_user') ?? '') || c.env.SMTP_USER),
+        pass: smtpConfig?.pass ?? (String(get('smtp_password') ?? '') || c.env.SMTP_PASS),
         from: fromEmail ? `${fromName} <${fromEmail}>` : fromEmail,
       },
       email,

@@ -7,6 +7,7 @@ export const RegisterSchema = z.object({
   email: z.string().email(),
   inviteCode: z.string().optional(),
   turnstileToken: z.string().optional(),
+  emailCode: z.string().regex(/^\d{6}$/, '验证码为 6 位数字').optional(),
 });
 
 export const LoginSchema = z.object({
