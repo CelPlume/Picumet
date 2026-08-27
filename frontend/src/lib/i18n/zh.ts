@@ -4,6 +4,7 @@ export const zhCN = {
     appName: 'Picumet',
     loading: '加载中...',
     save: '保存',
+    or: '或',
     cancel: '取消',
     confirm: '确认',
     delete: '删除',

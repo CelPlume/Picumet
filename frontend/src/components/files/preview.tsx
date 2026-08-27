@@ -8,6 +8,8 @@ import { toast } from '@/components/ui/toast';
 import { isImage, isVideo, isAudio, isCode } from '@/lib/utils';
 import { apiFetch } from '@/lib/api';
 import { useVerifyPassword } from './data';
+import { VideoPreview } from './video-player';
+import { CodeSkeleton } from '@/components/ui/skeleton';
 import { escapeHtml } from '@/lib/escape';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -161,7 +163,7 @@ export function PreviewModal({
             </div>
           </div>
         ) : isVideo(file.name) ? (
-          <video ref={videoRef} src={url ?? ''} controls autoPlay className="max-h-[56vh] max-w-full rounded" />
+          <VideoPreview src={url ?? ''} onError={() => { setVerifiedUrl(null); toast('error', t('err.network')); }} />
         ) : isAudio(file.name) ? (
           <div className="w-full max-w-md p-6 text-center">
             <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-primary/10 text-4xl">🎵</div>
@@ -169,7 +171,7 @@ export function PreviewModal({
           </div>
         ) : isCode(file.name) ? (
           loadingContent ? (
-            <Spinner />
+            <CodeSkeleton />
           ) : (
             <pre className="h-full w-full overflow-auto p-4 text-sm scrollbar-thin">
               <code className={`language-${codeLang}`} dangerouslySetInnerHTML={{ __html: content ?? '' }} />

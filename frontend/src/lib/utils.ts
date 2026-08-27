@@ -89,19 +89,20 @@ export function fileIconEmoji(name: string, type: string): string {
   return '📄';
 }
 
+// 类型图标统一强调色（用户自定义色不受影响）
 export function fileIconColor(name: string, type: string): string {
-  if (type === 'folder') return 'text-sky-500';
+  if (type === 'folder') return 'text-primary';
   const ext = fileExt(name);
-  if (IMAGE_EXT.includes(ext)) return 'text-emerald-500';
-  if (VIDEO_EXT.includes(ext)) return 'text-rose-500';
-  if (AUDIO_EXT.includes(ext)) return 'text-purple-500';
-  if (['.pdf'].includes(ext)) return 'text-red-600';
-  if (['.doc', '.docx'].includes(ext)) return 'text-blue-600';
-  if (['.xls', '.xlsx', '.csv'].includes(ext)) return 'text-green-600';
-  if (['.ppt', '.pptx'].includes(ext)) return 'text-orange-500';
-  if (['.zip', '.tar', '.gz', '.rar', '.7z'].includes(ext)) return 'text-amber-600';
-  if (['.txt', '.log', '.text'].includes(ext)) return 'text-sky-600';
-  if (CODE_EXT.includes(ext)) return 'text-slate-600';
+  if (IMAGE_EXT.includes(ext)) return 'text-primary';
+  if (VIDEO_EXT.includes(ext)) return 'text-primary';
+  if (AUDIO_EXT.includes(ext)) return 'text-primary';
+  if (['.pdf'].includes(ext)) return 'text-primary';
+  if (['.doc', '.docx'].includes(ext)) return 'text-primary';
+  if (['.xls', '.xlsx', '.csv'].includes(ext)) return 'text-primary';
+  if (['.ppt', '.pptx'].includes(ext)) return 'text-primary';
+  if (['.zip', '.tar', '.gz', '.rar', '.7z'].includes(ext)) return 'text-primary';
+  if (['.txt', '.log', '.text'].includes(ext)) return 'text-primary';
+  if (CODE_EXT.includes(ext)) return 'text-primary';
   return 'text-muted-foreground';
 }
 

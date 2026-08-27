@@ -1,19 +1,23 @@
 // 文件管理器主页面
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Upload, FolderPlus, LayoutGrid, List as ListIcon, ChevronRight, ArrowDown, ArrowUp,
-  Folder, Search, CheckSquare, ChevronDown, ArrowRightLeft, X, Check,
+  Folder, Search, CheckSquare, ChevronDown, ArrowRightLeft, X, Check, MoreHorizontal,
 } from 'lucide-react';
-import { AppShell } from '@/components/layout/AppShell';
+import { FileGridSkeleton, FileListSkeleton } from '@/components/ui/skeleton';
+import { useLassoSelect } from '@/components/files/lasso';
+import { useTheme } from '@/stores/theme';
+import { FileTree } from '@/components/files/FileTree';
 import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner, Switch } from '@/components/ui/core';
+import { AppShell } from '@/components/layout/AppShell';
 import { Select } from '@/components/ui/select';
 import { Drawer } from '@/components/ui/drawer';
 import { Dropdown, DropdownItem } from '@/components/ui/dropdown';
 import { toast } from '@/components/ui/toast';
 import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks } from '@/components/files/data';
-import { FileCard, FileRow, BulkActionsBar, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
+import { FileCard, FileRow, BulkActionsBar, FileRowMenuItems, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
 import { UploadModal } from '@/components/files/UploadModal';
 import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
@@ -143,6 +147,12 @@ export default function Files() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [multiSelect, setMultiSelect] = useState(false);
+  const enableBlur = useTheme((s) => s.enableBlur);
+  const contentRef = useRef<HTMLDivElement>(null);
+  // 主列容器即拖拽面：空白处(含网格四周)均可起拖；网格跳过卡片，列表允许从行起拖
+  const lasso = useLassoSelect(contentRef, setSelected, {
+    skipSelector: '[data-file-card], button, a, input, textarea, [role="checkbox"], [role="menuitem"]',
+  });
   const [showUpload, setShowUpload] = useState(false);
   const [previewFile, setPreviewFile] = useState<FileListItem | null>(null);
   const [propsFile, setPropsFile] = useState<FileListItem | null>(null);
@@ -156,6 +166,36 @@ export default function Files() {
   const [bulkMove, setBulkMove] = useState(false);
   const [bulkMoveTarget, setBulkMoveTarget] = useState('');
   const [copyDialog, setCopyDialog] = useState<{ files: FileListItem[] } | null>(null);
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number; file: FileListItem } | null>(null);
+  // 切换目录时关闭右键菜单并清空选择（批量操作栏随之消失）
+  useEffect(() => {
+    setMenuPos(null);
+    setSelected(new Set());
+    setMultiSelect(false);
+  }, [path]);
+
+  // 开启非批量弹窗（上传/新建/重命名/删除/移动/属性/预览/复制链接）时清空选择
+  useEffect(() => {
+    if (showUpload || newFolder || renameTarget || deleteTarget || moveTarget || propsFile || previewFile || copyDialog) {
+      setSelected(new Set());
+      setMultiSelect(false);
+      setMenuPos(null);
+    }
+  }, [showUpload, newFolder, renameTarget, deleteTarget, moveTarget, propsFile, previewFile, copyDialog]);
+
+  // 点击主列之外（文件树/页边距/顶栏等空白处）清空选择
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (contentRef.current?.contains(t)) return;
+      if (t.closest('[role="dialog"], [role="menu"], .animate-dropdown, aside, button, a, input, textarea')) return;
+      setSelected(new Set());
+      setMultiSelect(false);
+      setMenuPos(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
   // 手机端检测：用于门控手机属性抽屉（避免 sm+ 下隐藏抽屉仍锁住页面滚动）
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches
@@ -291,8 +331,19 @@ export default function Files() {
 
   const contextMenu = (e: React.MouseEvent, f: FileListItem) => {
     e.preventDefault();
-    toggleSelect(f.id);
-    setPropsFile(f);
+    // 右键多选（可开关）：开启时未选中项累积加入；关闭时仅选中该项
+    if (!selected.has(f.id)) {
+      if (useTheme.getState().rightClickMultiSelect) {
+        setSelected((prev) => new Set(prev).add(f.id));
+      } else {
+        setSelected(new Set([f.id]));
+      }
+    }
+    if (useTheme.getState().rightClickAction === 'menu') {
+      setMenuPos({ x: e.clientX, y: e.clientY, file: f });
+    } else {
+      setPropsFile(f);
+    }
   };
 
   const doDelete = async () => {
@@ -373,26 +424,106 @@ export default function Files() {
 
   return (
     <AppShell activeNav="files">
-      <div className="flex items-start gap-4">
+      <div className="flex items-start">
+        {/* 左侧文件树（桌面）：贴左，与内容间距归文件区 */}
+        <div className="hidden w-56 shrink-0 pl-2 pr-1 lg:block">
+          <FileTree currentPath={path} onNavigate={(p) => navigate(`/files${p === '/' ? '' : p}`)} />
+        </div>
         {/* 主区域 */}
-        <div className="min-w-0 flex-1">
+        <div
+          ref={contentRef}
+          onPointerDown={lasso.onPointerDown}
+          onPointerMove={lasso.onPointerMove}
+          onPointerUp={lasso.onPointerUp}
+          onPointerCancel={lasso.onPointerCancel}
+          onClickCapture={lasso.onClickCapture}
+          onClick={(e) => {
+            // 点击空白处：清空选择（批量栏随之消失）、关闭右键菜单
+            const t = e.target as HTMLElement;
+            if (t.closest('[data-file-id], button, a, input, textarea, [role="menu"], .animate-dropdown, .lasso-box')) return;
+            setSelected(new Set());
+            setMultiSelect(false);
+            setMenuPos(null);
+          }}
+          className={cn('min-w-0 flex-1 px-3', lasso.rect && 'lasso-hint')}
+        >
           {/* 面包屑 + 工具栏 */}
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <div className="flex min-w-0 flex-1 items-center overflow-hidden text-sm">
-              {breadcrumb.map((c, i) => (
-                <span key={c.path} className="flex items-center">
-                  {i > 0 && <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-                  <button
-                    onClick={() => navigate(`/files${c.path === '/' ? '' : c.path}`)}
-                    className={cn(
-                      'truncate rounded px-1.5 py-0.5 hover:bg-accent',
-                      i === breadcrumb.length - 1 ? 'font-medium' : 'text-muted-foreground'
-                    )}
-                  >
-                    {c.name}
-                  </button>
-                </span>
-              ))}
+            <div className="flex min-w-0 flex-1 items-center text-sm">
+              {(() => {
+                // 长路径折叠：超过 4 段时，中间段收进省略号下拉
+                const MAX = 4;
+                if (breadcrumb.length <= MAX) {
+                  return breadcrumb.map((c, i) => (
+                    <span key={c.path} className="flex items-center">
+                      {i > 0 && <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                      <button
+                        onClick={() => navigate(`/files${c.path === '/' ? '' : c.path}`)}
+                        className={cn(
+                          'truncate rounded px-1.5 py-0.5 hover:bg-accent',
+                          i === breadcrumb.length - 1 ? 'font-medium' : 'text-muted-foreground'
+                        )}
+                      >
+                        {c.name}
+                      </button>
+                    </span>
+                  ));
+                }
+                const first = breadcrumb[0];
+                const last = breadcrumb.slice(-2);
+                const hidden = breadcrumb.slice(1, -2);
+                const renderCrumb = (c: (typeof breadcrumb)[number], isLast: boolean) => (
+                  <span key={c.path} className="flex items-center">
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                    <button
+                      onClick={() => navigate(`/files${c.path === '/' ? '' : c.path}`)}
+                      className={cn(
+                        'truncate rounded px-1.5 py-0.5 hover:bg-accent',
+                        isLast ? 'font-medium' : 'text-muted-foreground'
+                      )}
+                    >
+                      {c.name}
+                    </button>
+                  </span>
+                );
+                return (
+                  <>
+                    <span className="flex items-center">
+                      <button
+                        onClick={() => navigate(`/files${first.path === '/' ? '' : first.path}`)}
+                        className="truncate rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent"
+                      >
+                        {first.name}
+                      </button>
+                    </span>
+                    <Dropdown
+                      align="start"
+                      trigger={
+                        <span className="flex cursor-pointer items-center rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent" aria-label="展开路径">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </span>
+                      }
+                    >
+                      {(close) => (
+                        <>
+                          {hidden.map((c) => (
+                            <DropdownItem
+                              key={c.path}
+                              onClick={() => {
+                                close();
+                                navigate(`/files${c.path === '/' ? '' : c.path}`);
+                              }}
+                            >
+                              {c.name}
+                            </DropdownItem>
+                          ))}
+                        </>
+                      )}
+                    </Dropdown>
+                    {last.map((c, i) => renderCrumb(c, i === last.length - 1))}
+                  </>
+                );
+              })()}
             </div>
             <div className="flex items-center gap-1.5">
               <Button variant="outline" size="sm" onClick={() => setShowUpload(true)}>
@@ -506,10 +637,9 @@ export default function Files() {
               {order === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
             </button>
           </div>
-
           {/* 内容 */}
           {isLoading ? (
-            <div className="flex justify-center py-20"><Spinner className="h-8 w-8" /></div>
+            view === 'grid' ? <FileGridSkeleton /> : <FileListSkeleton />
           ) : error ? (
             <EmptyState title="加载失败" description={(error as Error).message} />
           ) : items.length === 0 ? (
@@ -559,7 +689,7 @@ export default function Files() {
           )}
 
           {selected.size > 0 && (
-            <div className="sticky bottom-4 mt-4">
+            <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
               <BulkActionsBar
                 count={selected.size}
                 onClear={clearSelection}
@@ -632,7 +762,7 @@ export default function Files() {
 
         {/* 属性侧栏 - 平板/桌面始终紧贴右侧，仅在有文件时显示（手机用右侧抽屉避免压垮内容） */}
         {propsFile && (
-          <aside className="hidden sm:block w-72 shrink-0 border-l bg-card sticky top-16 self-start h-[calc(100vh-5rem)] overflow-y-auto scrollbar-thin">
+          <aside className="hidden sm:block w-72 shrink-0 border-l bg-card pl-3 pr-1 sticky top-20 self-start h-[calc(100vh-6rem)] overflow-y-auto scrollbar-thin">
             <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
           </aside>
         )}
@@ -755,6 +885,28 @@ export default function Files() {
         message={`确定要删除选中的 ${selected.size} 项吗？此操作无法撤销。`}
         loading={batchDelete.isPending}
       />
+      {lasso.rect && (
+        <div
+          className="lasso-box"
+          style={{
+            left: lasso.rect.left,
+            top: lasso.rect.top,
+            width: lasso.rect.width,
+            height: lasso.rect.height,
+          }}
+        />
+      )}
+      {menuPos && (
+        <div
+          className={cn(
+            'animate-dropdown fixed z-50 w-48 overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md',
+            enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover'
+          )}
+          style={{ left: menuPos.x, top: menuPos.y }}
+        >
+          <FileRowMenuItems f={menuPos.file} handlers={handlers} onClose={() => setMenuPos(null)} />
+        </div>
+      )}
     </AppShell>
   );
 }

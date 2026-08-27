@@ -4,6 +4,7 @@ export const enUS = {
     appName: 'Picumet',
     loading: 'Loading...',
     save: 'Save',
+    or: 'or',
     cancel: 'Cancel',
     confirm: 'Confirm',
     delete: 'Delete',

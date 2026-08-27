@@ -6,6 +6,7 @@ import { cn, formatBytes, formatDate, isImage, isVideo, isAudio, isCode } from '
 import { Dropdown, DropdownItem, DropdownSeparator, DropdownLabel } from '@/components/ui/dropdown';
 import { Badge, Button } from '@/components/ui/core';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Tooltip } from '@/components/ui/tooltip';
 import { useTheme } from '@/stores/theme';
 import { useFilePreviewUrl, useFolderPreviewFiles } from './data';
 import FileIcon from './FileIcon';
@@ -63,9 +64,11 @@ export function FileCard({
         if (onSingleClick) onSingleClick(e, f);
         else onSelect();
       }}
+      data-file-id={f.id}
+      data-file-card=""
       className={cn(
         'group relative cursor-pointer rounded-lg border p-3 transition-all duration-150 hover:shadow-md',
-        selected ? 'border-primary bg-primary/5' : 'border-border bg-card'
+        selected ? 'lasso-item-selected' : 'border-border bg-card'
       )}
       style={f.customColor ? { borderColor: f.customColor } : undefined}
     >
@@ -74,7 +77,7 @@ export function FileCard({
         <Checkbox
           checked={selected}
           onChange={onSelect}
-          className={cn('transition-opacity', multiSelect || selected || hovering ? 'opacity-100' : 'opacity-0')}
+          className={cn('lasso-item-dot transition-opacity', multiSelect || selected || hovering ? 'opacity-100' : 'opacity-0')}
           label={f.name}
         />
       </div>
@@ -241,16 +244,18 @@ export function FileRow({
         if (onSingleClick) onSingleClick(e, f);
         else onSelect();
       }}
+      data-file-id={f.id}
+      data-file-row=""
       className={cn(
         'group grid cursor-pointer grid-cols-[auto_1fr_100px_130px_auto] items-center gap-3 rounded-md border px-3 py-2 text-sm transition-colors',
-        selected ? 'border-primary bg-primary/5' : 'border-transparent hover:bg-accent'
+        selected ? 'lasso-item-selected' : 'border-transparent hover:bg-accent'
       )}
     >
       {/* 复选框列 */}
       <Checkbox
         checked={selected}
         onChange={onSelect}
-        className={cn('transition-opacity', multiSelect || selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}
+        className={cn('lasso-item-dot transition-opacity', multiSelect || selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}
         label={f.name}
       />
 
@@ -296,18 +301,10 @@ export function FileRow({
 }
 
 // ============ 行内菜单 ============
-export function FileRowMenu({ f, handlers }: { f: FileListItem; handlers?: FileActionHandlers }) {
+export function FileRowMenuItems({ f, handlers, onClose }: { f: FileListItem; handlers?: FileActionHandlers; onClose?: () => void }) {
   const isFolder = f.type === 'folder';
+  const close = onClose ?? (() => {});
   return (
-    <Dropdown
-      align="end"
-      trigger={
-        <button className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
-          <MoreVertical className="h-4 w-4" />
-        </button>
-      }
-    >
-      {(close) => (
         <>
           {handlers?.onOpen && (
             <DropdownItem icon={<Eye className="h-4 w-4" />} onClick={() => { handlers.onOpen!(f); close(); }}>
@@ -357,8 +354,6 @@ export function FileRowMenu({ f, handlers }: { f: FileListItem; handlers?: FileA
             </DropdownItem>
           )}
         </>
-      )}
-    </Dropdown>
   );
 }
 
@@ -397,47 +392,58 @@ export function BulkActionsBar({
   ].filter((a) => a.show);
 
   return (
-    <div className="animate-slide-in-from-bottom grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1 rounded-lg border bg-card px-3 py-2 text-sm shadow-xl sm:gap-2">
-      <div />
+    <div className="animate-slide-in-from-bottom inline-flex items-center gap-1 rounded-lg border bg-card px-2 py-1.5 text-sm shadow-xl sm:gap-1.5">
+      <Badge variant="secondary" className="shrink-0 whitespace-nowrap">
+        <span className="sm:hidden">{count}</span>
+        <span className="hidden sm:inline">已选 {count} 项</span>
+      </Badge>
+      <div className="mx-1 hidden h-4 w-px bg-border sm:block" />
 
-      <div className="flex items-center justify-center gap-1 sm:gap-2">
-        <Badge variant="secondary" className="shrink-0 whitespace-nowrap">
-          <span className="sm:hidden">{count}</span>
-          <span className="hidden sm:inline">已选 {count} 项</span>
-        </Badge>
-        <div className="mx-1 hidden h-4 w-px bg-border sm:block" />
-
-        {actions.map((action) => {
-          const Icon = action.icon;
-          return (
+      {actions.map((action) => {
+        const Icon = action.icon;
+        return (
+          <Tooltip key={action.key} content={action.label} side="top">
             <Button
-              key={action.key}
               variant={action.danger ? 'destructive' : 'ghost'}
-              size="sm"
+              size="icon"
               onClick={action.onClick}
-              title={action.label}
-              className="h-8 w-7 px-0 sm:w-auto sm:px-3"
+              className="h-8 w-8 rounded-md"
+              aria-label={action.label}
             >
-              <Icon className="h-4 w-4 shrink-0" />
-              <span className="hidden min-[1024px]:inline">{action.label}</span>
+              <Icon className="h-4 w-4" />
             </Button>
-          );
-        })}
-      </div>
+          </Tooltip>
+        );
+      })}
 
-      <div className="flex items-center justify-end">
+      <Tooltip content="取消选择" side="top">
         <Button
           variant="ghost"
-          size="sm"
+          size="icon"
           onClick={onClear}
-          title="取消选择"
-          className="h-8 w-7 px-0 sm:w-auto sm:px-3"
+          className="h-8 w-8 rounded-md"
+          aria-label="取消选择"
         >
-          <X className="h-4 w-4 shrink-0" />
-          <span className="hidden min-[1024px]:inline">取消选择</span>
+          <X className="h-4 w-4" />
         </Button>
-      </div>
+      </Tooltip>
     </div>
+  );
+}
+
+// 卡片三点菜单：Dropdown 包裹同一套动作项
+export function FileRowMenu({ f, handlers }: { f: FileListItem; handlers?: FileActionHandlers }) {
+  return (
+    <Dropdown
+      align="end"
+      trigger={
+        <button className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      }
+    >
+      {(close) => <FileRowMenuItems f={f} handlers={handlers} onClose={close} />}
+    </Dropdown>
   );
 }
 
