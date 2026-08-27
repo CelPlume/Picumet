@@ -216,8 +216,19 @@ Users pick an accent color from presets or with a color picker. The app converts
 
 ### Blur and background
 
-- **Blur**: the **Enable blur** switch sets `--enable-blur`; dialogs, dropdowns, and the top bar use it for `backdrop-filter`.
+- **Blur**: the **Enable blur** switch sets `--enable-blur`. When enabled, floating surfaces use a unified translucent treatment: `bg-popover/80` with `backdrop-blur-xl` plus `saturate(1.5)` (large radius, low strength). When disabled, the same surfaces render fully opaque `bg-popover`.
+- **Unified surfaces**: the following components share the same surface classes from `frontend/src/components/ui/` — dropdown menus, the context (right-click) menu, select popovers, toasts, and dialogs. The dialog overlay carries the backdrop blur (`bg-black/50 backdrop-blur-sm`), so darkening and blurring happen together during the open animation; the dialog body keeps a plain `bg-background`.
 - **Background image**: users upload an image up to `2MB` (JPG, PNG, or WebP) or leave no background. The image stores as a base64 data URL in `localStorage`. A solid-color background option no longer exists.
+
+### Tabs and sliding indicator
+
+`frontend/src/components/ui/tabs.tsx` implements the shadcn default variant without external primitives:
+
+- The tab list is a `bg-muted` pill container; the active trigger is a raised `bg-background` pill with a subtle shadow.
+- A measured indicator (`useEffect` + `offsetLeft`/`offsetWidth`) slides behind the active trigger with a 300 ms `ease-out` transition. Because the measurement runs after paint, the indicator animates from the previous position in both directions.
+- `TabsContent` fades in with the shared fade animation. Usage examples: the admin storage tab (providers/mounts) and the permissions editor (GUI/code).
+
+The top navigation bar (`AppShell`) uses the same measured-indicator technique for its active item. Its position is cached in a module-level variable, so the indicator survives AppShell remounts during route changes and keeps animating both left-to-right and right-to-left.
 
 ### File icons and folder display
 

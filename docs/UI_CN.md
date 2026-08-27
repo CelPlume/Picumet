@@ -216,7 +216,19 @@ flowchart LR
 
 ### 模糊与背景
 
-- **模糊**：**启用模糊** 开关控制 `--enable-blur`，弹窗、下拉菜单和顶栏据此决定是否加 `backdrop-filter`。
+- **模糊**：**启用模糊** 开关控制 `--enable-blur`。启用时，所有浮层统一使用半透明表面：`bg-popover/80` + `backdrop-blur-xl` + `saturate(1.5)`（大半径、低强度）；关闭时同一批组件退化为不透明 `bg-popover`。
+- **统一表面**：以下组件共享同一套表面类（`frontend/src/components/ui/`）：下拉菜单、右键（上下文）菜单、Select 弹层、Toast 与弹窗。弹窗的模糊由遮罩承载（`bg-black/50 backdrop-blur-sm`），打开动画中压暗与模糊同步进行，弹窗体保持纯 `bg-background`。
+- **背景图片**：用户可上传不超过 `2MB` 的图片（JPG/PNG/WebP）或不用背景，图片以 base64 data URL 存于 `localStorage`；纯色背景选项已移除。
+
+### Tabs 与滑动指示器
+
+`frontend/src/components/ui/tabs.tsx` 无外部依赖实现 shadcn 默认变体：
+
+- 选项卡列表为 `bg-muted` 药丸容器，激活项为凸起的 `bg-background` 药丸并带轻微阴影。
+- 指示器在 `useEffect` 中测量激活项（`offsetLeft`/`offsetWidth`）后，以 300ms `ease-out` 滑到目标位置；由于测量发生在绘制之后，指示器会从上一位置向两个方向平滑过渡。
+- `TabsContent` 使用共享淡入动画。使用示例：管理端存储（提供商/挂载）、权限编辑器（GUI/代码）。
+
+顶栏导航（`AppShell`）采用同款测量指示器；其位置缓存在模块级变量中，路由切换时 AppShell 重挂载也不会让指示器跳回原点，左右两个方向都能平滑动画。
 - **背景图片**：用户可以上传不超过 `2MB` 的图片（JPG、PNG、WebP），也可以不设置背景。图片以 base64 存在 `localStorage`。纯色背景选项已经移除。
 
 ### 文件图标与文件夹显示
