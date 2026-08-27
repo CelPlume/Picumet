@@ -11,6 +11,8 @@ export interface AppearanceSettings {
   backgroundColor?: string;
   fileIcons: 'iconify' | 'emoji';
   folderPreview: 'icon' | 'contents';
+  rightClickAction: 'properties' | 'menu';
+  rightClickMultiSelect: boolean;
 }
 
 const DEFAULT: AppearanceSettings = {
@@ -20,6 +22,8 @@ const DEFAULT: AppearanceSettings = {
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
+  rightClickAction: 'properties',
+  rightClickMultiSelect: false,
 };
 
 function load(): AppearanceSettings {

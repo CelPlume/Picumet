@@ -10,7 +10,11 @@ import { Logo } from './Logo';
 import { ThemeToggle, LanguageSwitcher, UserMenu } from './widgets';
 import { AnnouncementBanner } from './AnnouncementBanner';
 import { Drawer } from '@/components/ui/drawer';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+// 指示器位置跨 AppShell 重挂载持久化：页面各自包裹 AppShell，导航切换时组件重挂载，
+// 若直接初始化 {0,0} 会导致指示器先跳回起点。保留上一次位置作为 transition 起点。
+let lastNavInd = { left: 0, width: 0 };
 
 export function AppShell({ children, activeNav }: { children: ReactNode; activeNav?: 'files' | 'shares' | 'settings' | 'admin' }) {
   const { t } = useTranslation();
@@ -18,16 +22,31 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
   const location = useLocation();
   const freeMode = useAuth((s) => s.freeMode);
   const site = useSite();
+  useEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const key = location.pathname.startsWith('/admin') ? 'admin' : location.pathname.startsWith('/shares') ? 'shares' : location.pathname.startsWith('/settings') ? 'settings' : 'files';
+    const active = nav.querySelector<HTMLElement>(`[data-nav-key="${key}"]`);
+    if (!active) return;
+    const target = { left: active.offsetLeft, width: active.offsetWidth };
+    lastNavInd = target;
+    // rAF：等浏览器绘制旧位置后再应用新位置，transition 才能从旧值平滑过渡（双向）
+    const raf = requestAnimationFrame(() => setNavInd(target));
+    return () => cancelAnimationFrame(raf);
+  }, [location.pathname]);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const navRef = useRef<HTMLElement>(null);
+  const [navInd, setNavInd] = useState(lastNavInd);
 
   const navItem = (key: 'files' | 'shares' | 'settings', to: string, icon: ReactNode, label: string) => (
     <Link
       to={to}
+      data-nav-key={key}
       className={cn(
-        'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+        'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
         activeNav === key || location.pathname.startsWith(to)
-          ? 'bg-accent text-accent-foreground'
-          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+          ? 'font-medium text-primary'
+          : 'text-muted-foreground hover:text-foreground'
       )}
     >
       {icon}
@@ -64,18 +83,25 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
               </span>
             )}
           </div>
-          <nav className="hidden items-center gap-1 md:flex">
+          <nav ref={navRef} className="relative hidden items-center gap-1 rounded-lg p-1 md:flex">
+            <span
+              data-nav-indicator
+              aria-hidden
+              className="pointer-events-none absolute inset-y-1 rounded-md bg-primary/10 transition-all duration-300 ease-out"
+              style={{ left: navInd.left, width: navInd.width }}
+            />
             {navItem('files', '/files', <FolderOpen className="h-4 w-4" />, t('nav.files'))}
             {navItem('shares', '/shares', <Share2 className="h-4 w-4" />, t('nav.shares'))}
             {navItem('settings', '/settings/profile', <Settings className="h-4 w-4" />, t('nav.settings'))}
             {user?.role === 'admin' && (
               <Link
                 to="/admin"
+                data-nav-key="admin"
                 className={cn(
-                  'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                  'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                   activeNav === 'admin' || location.pathname.startsWith('/admin')
-                    ? 'bg-accent text-accent-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                    ? 'font-medium text-primary'
+                    : 'text-muted-foreground hover:text-foreground'
                 )}
               >
                 <ShieldCheck className="h-4 w-4" />

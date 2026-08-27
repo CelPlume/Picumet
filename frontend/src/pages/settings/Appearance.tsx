@@ -3,8 +3,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Upload, X, Image as ImageIcon } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, Input, Label, Switch, Button } from '@/components/ui/core';
-import { RadioGroup } from '@/components/ui/radio';
 import { ColorPicker } from '@/components/ui/colorpicker';
+import { RadioGroup } from '@/components/ui/radio-group';
 import { useTheme } from '@/stores/theme';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
@@ -67,60 +67,70 @@ export default function AppearancePage() {
         <CardContent className="space-y-4">
           <RadioGroup
             value={theme.theme}
-            onValueChange={(v) => theme.set({ theme: v as 'light' | 'dark' | 'system' })}
+            onChange={(v) => theme.set({ theme: v as 'light' | 'dark' | 'system' })}
             options={themeOptions}
           />
 
-          <div>
-            <Label>{t('settings.accentColor')}</Label>
-            <div className="mt-1.5">
-              <ColorPicker value={theme.accentColor} onChange={(c) => theme.set({ accentColor: c })} presets={COLORS} />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between">
+          <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <p className="text-sm font-medium">{t('settings.enableBlur')}</p>
-              <p className="text-xs text-muted-foreground">为弹窗、下拉菜单启用背景模糊</p>
+              <Label>{t('settings.accentColor')}</Label>
+              <div className="mt-1.5">
+                <ColorPicker value={theme.accentColor} onChange={(c) => theme.set({ accentColor: c })} presets={COLORS} />
+              </div>
             </div>
-            <Switch checked={theme.enableBlur} onChange={(v) => theme.set({ enableBlur: v })} />
+
+            <div className="flex items-center justify-between rounded-lg border px-3">
+              <div>
+                <p className="text-sm font-medium">{t('settings.enableBlur')}</p>
+                <p className="text-xs text-muted-foreground">弹窗/菜单/提示背景模糊</p>
+              </div>
+              <Switch checked={theme.enableBlur} onChange={(v) => theme.set({ enableBlur: v })} />
+            </div>
+
+            <div>
+              <Label>文件图标风格</Label>
+              <RadioGroup
+                value={theme.fileIcons}
+                onChange={(v) => theme.set({ fileIcons: v as 'iconify' | 'emoji' })}
+                options={[
+                  { value: 'iconify', label: 'Iconify 图标', description: '线性图标，统一描边' },
+                  { value: 'emoji', label: 'Emoji', description: '彩色表情符号' },
+                ]}
+                className="mt-1.5"
+              />
+            </div>
+
+            <div>
+              <Label>文件夹显示</Label>
+              <RadioGroup
+                value={theme.folderPreview}
+                onChange={(v) => theme.set({ folderPreview: v as 'icon' | 'contents' })}
+                options={[
+                  { value: 'icon', label: '文件夹图标', description: '仅显示文件夹图标' },
+                  { value: 'contents', label: '显示内部文件预览', description: '按当前排序展示前四项' },
+                ]}
+                className="mt-1.5"
+              />
+            </div>
           </div>
 
           <div>
-            <Label>文件图标风格</Label>
-            <div className="mt-1.5 flex gap-2">
-              {(['iconify', 'emoji'] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => theme.set({ fileIcons: v })}
-                  className={cn(
-                    'rounded-md border px-3 py-1.5 text-sm font-medium transition-colors',
-                    theme.fileIcons === v ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
-                  )}
-                >
-                  {v === 'iconify' ? 'Iconify 图标' : 'Emoji'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <Label>文件夹显示</Label>
-            <div className="mt-1.5 flex gap-2">
-              {(['icon', 'contents'] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => theme.set({ folderPreview: v })}
-                  className={cn(
-                    'rounded-md border px-3 py-1.5 text-sm font-medium transition-colors',
-                    theme.folderPreview === v ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
-                  )}
-                >
-                  {v === 'icon' ? '文件夹图标' : '显示内部文件预览'}
-                </button>
-              ))}
+            <Label>右键单击行为</Label>
+            <RadioGroup
+              value={theme.rightClickAction}
+              onChange={(v) => theme.set({ rightClickAction: v as 'properties' | 'menu' })}
+              options={[
+                { value: 'properties', label: '打开属性面板', description: '直接查看文件属性' },
+                { value: 'menu', label: '打开上下文菜单', description: '弹出操作菜单' },
+              ]}
+              className="mt-1.5"
+            />
+            <div className="mt-2 flex items-center justify-between rounded-lg border px-3 py-2.5">
+              <div>
+                <p className="text-sm font-medium">右键多选文件</p>
+                <p className="text-xs text-muted-foreground">右键未选中文件时累积加入选择集</p>
+              </div>
+              <Switch checked={theme.rightClickMultiSelect} onChange={(v) => theme.set({ rightClickMultiSelect: v })} />
             </div>
           </div>
         </CardContent>
@@ -133,7 +143,7 @@ export default function AppearancePage() {
         <CardContent className="space-y-4">
           <RadioGroup
             value={theme.backgroundType}
-            onValueChange={(v) => theme.set({ backgroundType: v as 'none' | 'image' | 'color' })}
+            onChange={(v) => theme.set({ backgroundType: v as 'none' | 'image' | 'color' })}
             options={[
               { value: 'none', label: t('settings.backgroundNone') },
               { value: 'image', label: t('settings.backgroundImage') },
