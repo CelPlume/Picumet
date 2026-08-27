@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Copy, Trash2, Check } from 'lucide-react';
 import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch } from '@/components/ui/core';
+import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -101,7 +102,7 @@ export default function ApiKeysPage() {
       </div>
 
       {loading ? (
-        <p className="py-10 text-center text-muted-foreground">{t('common.loading')}</p>
+        <FormCardSkeleton />
       ) : keys.length === 0 ? (
         <EmptyState
           title={t('settings.noKeys')}

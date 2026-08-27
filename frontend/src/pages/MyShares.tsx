@@ -7,6 +7,7 @@ import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink, X, L
 import { AppShell } from '@/components/layout/AppShell';
 import { Button, Input, Label, EmptyState, Badge, Dialog, Card, Switch } from '@/components/ui/core';
 import { Select } from '@/components/ui/select';
+import { ShareGridSkeleton } from '@/components/ui/skeleton';
 import { Pagination } from '@/components/ui/pagination';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -170,7 +171,7 @@ export default function MyShares() {
       </div>
 
       {loading ? (
-        <div className="py-16 text-center text-muted-foreground">{t('common.loading')}</div>
+        <ShareGridSkeleton />
       ) : shares.length === 0 ? (
         <EmptyState
           title={t('share.noShares')}

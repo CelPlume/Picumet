@@ -6,6 +6,7 @@ import QRCode from 'qrcode';
 import { Download, Link2, Lock, Share2, Eye, QrCode } from 'lucide-react';
 import { Logo } from '@/components/layout/Logo';
 import { Button, Input, Badge } from '@/components/ui/core';
+import { SharePageSkeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { formatBytes, formatDateTime } from '@/lib/utils';
@@ -119,7 +120,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
 
       <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center px-4 py-10">
         {loading ? (
-          <p className="py-20 text-muted-foreground">{t('common.loading')}</p>
+          <SharePageSkeleton />
         ) : error ? (
           <div className="py-16 text-center">
             <div className="mb-3 text-5xl">⛔</div>

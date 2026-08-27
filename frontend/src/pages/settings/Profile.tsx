@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Badge, Progress } from '@/components/ui/core';
+import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch } from '@/lib/api';
@@ -56,7 +57,7 @@ export default function ProfilePage() {
     }
   };
 
-  if (!data) return <div className="py-16 text-center text-muted-foreground">{t('common.loading')}</div>;
+  if (!data) return <FormCardSkeleton />;
 
   const q = data.quota;
 

@@ -2,7 +2,7 @@
 import { Routes, Route, Navigate, Outlet, useLocation, Link } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FullPageSpinner } from '@/components/ui/core';
+import { AppSkeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useAuth } from '@/stores/auth';
 import { useSite } from '@/stores/site';
@@ -37,7 +37,7 @@ function RequireAuth() {
   useEffect(() => {
     void useAuth.getState().fetchMe();
   }, []);
-  if (loading) return <FullPageSpinner />;
+  if (loading) return <AppSkeleton />;
   if (!user) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />;
   return <Outlet />;
 }
@@ -86,7 +86,7 @@ export default function App() {
 
   void user;
   return (
-    <Suspense fallback={<FullPageSpinner />}>
+    <Suspense fallback={<AppSkeleton />}>
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
