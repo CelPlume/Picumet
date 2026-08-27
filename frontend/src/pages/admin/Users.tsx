@@ -1,12 +1,14 @@
 // 管理员：用户管理
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Pencil, Trash2 } from 'lucide-react';
 import { Card, Button, Input, Badge, Dialog, Label, Switch } from '@/components/ui/core';
+import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch, ApiError } from '@/lib/api';
+import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
 import { formatBytes, formatDate } from '@/lib/utils';
 import type { Quota, User } from '@shared/types';
 
@@ -17,10 +19,13 @@ interface UserRow extends User {
 export default function AdminUsers() {
   const { t } = useTranslation();
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<string | null>('createdAt');
+  const [order, setOrder] = useState<SortOrder>('desc');
   const [editing, setEditing] = useState<UserRow | null>(null);
   const [role, setRole] = useState('user');
   const [status, setStatus] = useState('active');
@@ -28,11 +33,13 @@ export default function AdminUsers() {
   const [maxFiles, setMaxFiles] = useState('10000');
 
   const load = async () => {
+    setLoading(true);
     const q = new URLSearchParams({ page: String(page), limit: String(pageSize) });
     if (search) q.set('search', search);
     const res = await apiFetch<{ users: UserRow[]; pagination: { total: number } }>(`/api/admin/users?${q}`);
     setUsers(res.data.users);
     setTotal(res.data.pagination.total);
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -74,8 +81,13 @@ export default function AdminUsers() {
     setMaxFiles(String(u.quota?.maxFiles ?? 10000));
   };
 
+  const sortedRows = useMemo(() => {
+    if (!sort) return users;
+    return sortByKey(users, sort as keyof UserRow, order);
+  }, [users, sort, order]);
+
   return (
-    <div className="space-y-4">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">共 {total} 个用户</p>
         <div className="relative w-64">
@@ -84,20 +96,23 @@ export default function AdminUsers() {
         </div>
       </div>
 
-      <Card className="overflow-x-auto">
+      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+        {loading ? (
+          <TableSkeleton rows={8} cols={6} />
+        ) : (
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2 font-medium">用户</th>
-              <th className="px-4 py-2 font-medium">{t('admin.userRole')}</th>
-              <th className="px-4 py-2 font-medium">{t('admin.userStatus')}</th>
-              <th className="px-4 py-2 font-medium">{t('admin.quota')}</th>
-              <th className="px-4 py-2 font-medium">注册时间</th>
-              <th className="px-4 py-2 font-medium">{t('common.actions')}</th>
+              <th className="px-4 py-2 text-left"><SortableHeader title="用户" sortKey="username" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2 text-left"><SortableHeader title={t('admin.userRole')} sortKey="role" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2 text-left"><SortableHeader title={t('admin.userStatus')} sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2 text-left"><SortableHeader title={t('admin.quota')} sortKey="usedStorage" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2 text-left"><SortableHeader title="注册时间" sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2 text-left">{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
-            {users.map((u) => (
+            {sortedRows.map((u) => (
               <tr key={u.id} className="border-b hover:bg-accent/50">
                 <td className="px-4 py-2">
                   <p className="font-medium">{u.displayName || u.username}</p>
@@ -132,8 +147,10 @@ export default function AdminUsers() {
             ))}
           </tbody>
         </table>
+        )}
       </Card>
 
+<div className="shrink-0 pt-2">
       <Pagination
         page={page}
         total={total}
@@ -141,6 +158,7 @@ export default function AdminUsers() {
         onPageChange={setPage}
         onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
       />
+</div>
 
       <Dialog
         open={!!editing}

@@ -1,14 +1,16 @@
 // 管理员：权限规则管理
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog, Switch } from '@/components/ui/core';
+import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from '@/components/ui/toast';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch, ApiError } from '@/lib/api';
+import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
 
 interface Rule {
   id: string;
@@ -37,6 +39,9 @@ const ALL_PERMS = ['read', 'write', 'update', 'delete', 'share', 'download'];
 export default function AdminPermissions() {
   const { t } = useTranslation();
   const [rules, setRules] = useState<Rule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sort, setSort] = useState<string | null>(null);
+  const [order, setOrder] = useState<SortOrder>('asc');
   const [mounts, setMounts] = useState<MountItem[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -55,6 +60,7 @@ export default function AdminPermissions() {
   });
 
   const load = async () => {
+    setLoading(true);
     const [rRes, mRes] = await Promise.all([
       apiFetch<{ rules: Rule[]; pagination: { total: number } }>(`/api/admin/rules?page=${page}&limit=${pageSize}`),
       apiFetch<{ mounts: MountItem[] }>('/api/admin/mounts'),
@@ -63,6 +69,7 @@ export default function AdminPermissions() {
     setRules(rRes.data.rules.map((r) => ({ ...r, mountName: r.mountId ? mountById.get(r.mountId)?.name : undefined })));
     setTotal(rRes.data.pagination.total);
     setMounts(mRes.data.mounts);
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -112,35 +119,60 @@ export default function AdminPermissions() {
 
   const subjectLabel = (r: Rule) =>
     r.userId ? `用户:${r.userId}` : r.apiKeyId ? `密钥:${r.apiKeyId}` : `角色:${r.role ?? r.apiKeyId ?? '-'}`;
+  const sortedRows = useMemo(() => {
+    if (!sort) return rules;
+    return sortByKey(rules, sort as keyof Rule, order);
+  }, [rules, sort, order]);
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{t('admin.permissions')} · {total} 条</p>
         <Button onClick={() => { setShowCreate(true); setEditMode('gui'); setJsonError(null); setJsonText(''); }}><Plus className="h-4 w-4" /> {t('admin.addRule')}</Button>
       </div>
 
-      <div className="space-y-2">
-        {rules.map((r) => (
-          <Card key={r.id} className="flex flex-wrap items-center gap-3 p-3">
-            <ShieldCheck className={`h-5 w-5 shrink-0 ${r.effect === 'allow' ? 'text-emerald-500' : 'text-destructive'}`} />
-            <div className="min-w-0 flex-1 basis-40">
-              <p className="font-mono text-sm"><code>{r.pathPattern}</code></p>
-              <p className="truncate text-xs text-muted-foreground">{subjectLabel(r)} · priority {r.priority}{r.mountId ? ` · ${r.mountName ?? r.mountId}` : ''}</p>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-              {r.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
-              {r.requirePassword && <Badge variant="warning">密码</Badge>}
-              <Badge variant={r.effect === 'allow' ? 'success' : 'destructive'}>{r.effect}</Badge>
-              <button onClick={() => del(r.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10">
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-          </Card>
-        ))}
-        {rules.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">暂无权限规则</p>}
-      </div>
+
+      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="px-4 py-2"><SortableHeader title="路径" sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">主体</th>
+              <th className="px-4 py-2">权限</th>
+              <th className="px-4 py-2"><SortableHeader title="优先级" sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title="效果" sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('common.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={6}><TableSkeleton rows={5} cols={4} /></td></tr>
+            ) : sortedRows.map((r) => (
+              <tr key={r.id} className="border-b last:border-0 hover:bg-accent/50">
+                <td className="px-4 py-2 font-mono text-sm"><code>{r.pathPattern}</code></td>
+                <td className="px-4 py-2 text-xs text-muted-foreground">{subjectLabel(r)}{r.mountId ? ` · ${r.mountName ?? r.mountId}` : ''}</td>
+                <td className="px-4 py-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {r.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
+                    {r.requirePassword && <Badge variant="warning">密码</Badge>}
+                  </div>
+                </td>
+                <td className="px-4 py-2 tabular-nums text-muted-foreground">{r.priority}</td>
+                <td className="px-4 py-2"><Badge variant={r.effect === 'allow' ? 'success' : 'destructive'}>{r.effect}</Badge></td>
+                <td className="px-4 py-2">
+                  <button onClick={() => del(r.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除">
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!loading && rules.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">暂无权限规则</p>}
+      </Card>
 
       {total > 0 && (
+  <div className="shrink-0 pt-2">
         <Pagination
           page={page}
           total={total}
@@ -148,6 +180,7 @@ export default function AdminPermissions() {
           onPageChange={setPage}
           onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
         />
+  </div>
       )}
 
       <Dialog

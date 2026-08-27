@@ -14,7 +14,7 @@ export default function AdminStorage() {
   const [tab, setTab] = useState<'providers' | 'mounts'>(initialTab);
 
   return (
-    <div className="space-y-4">
+    <div className="h-full space-y-4">
       <Tabs value={tab} onValueChange={(v) => setTab(v as 'providers' | 'mounts')}>
         <TabsList>
           <TabsTrigger value="providers">

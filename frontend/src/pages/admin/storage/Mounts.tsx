@@ -1,11 +1,13 @@
 // 管理员：挂载点配置
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FolderTree, Plus, Trash2, Pencil, Eye } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog } from '@/components/ui/core';
+import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
+import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
 
 interface MountItem {
   id: string;
@@ -29,6 +31,9 @@ interface Provider {
 export function StorageMounts() {
   const { t } = useTranslation();
   const [mounts, setMounts] = useState<MountItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sort, setSort] = useState<string | null>('mountPath');
+  const [order, setOrder] = useState<SortOrder>('asc');
   const [providers, setProviders] = useState<Provider[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState<Record<string, string>>({});
@@ -43,6 +48,7 @@ export function StorageMounts() {
     ]);
     setMounts(mRes.data.mounts);
     setProviders(pRes.data.providers);
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -101,37 +107,53 @@ export function StorageMounts() {
     }
   };
 
+  const sortedRows = useMemo(() => {
+    if (!sort) return mounts;
+    return sortByKey(mounts, sort as keyof MountItem, order);
+  }, [mounts, sort, order]);
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{t('admin.mounts')} · {mounts.length} 个</p>
         <Button onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('admin.addMount')}</Button>
       </div>
 
-      <div className="space-y-2">
-        {mounts.map((m) => (
-          <Card key={m.id} className="flex items-center gap-3 p-3">
-            <FolderTree className="h-5 w-5 shrink-0 text-primary" />
-            <div className="min-w-0 flex-1">
-              <p className="font-medium">
-                <code className="text-primary">{m.mountPath}</code>
-                <span className="ml-2 text-muted-foreground">{m.name}</span>
-              </p>
-              <p className="text-xs text-muted-foreground">{m.providerName} · {m.providerType} · priority {m.priority}</p>
-            </div>
-            <Badge variant="secondary">{m.sortBy} {m.sortOrder}</Badge>
-            <button onClick={() => setDetail(m)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" title="详情">
-              <Eye className="h-4 w-4" />
-            </button>
-            <button onClick={() => openEdit(m)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" title="编辑">
-              <Pencil className="h-4 w-4" />
-            </button>
-            <button onClick={() => del(m)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10">
-              <Trash2 className="h-4 w-4" />
-            </button>
-          </Card>
-        ))}
-      </div>
+
+      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="px-4 py-2"><SortableHeader title="挂载路径" sortKey="mountPath" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title="名称" sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">Provider</th>
+              <th className="px-4 py-2"><SortableHeader title="排序" sortKey="sortBy" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title="优先级" sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('common.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={6}><TableSkeleton rows={5} cols={4} /></td></tr>
+            ) : sortedRows.map((m) => (
+              <tr key={m.id} className="border-b last:border-0 hover:bg-accent/50">
+                <td className="px-4 py-2 font-mono text-primary"><code>{m.mountPath}</code></td>
+                <td className="px-4 py-2">{m.name}</td>
+                <td className="px-4 py-2 text-xs text-muted-foreground">{m.providerName} · {m.providerType}</td>
+                <td className="px-4 py-2"><Badge variant="secondary">{m.sortBy} {m.sortOrder}</Badge></td>
+                <td className="px-4 py-2 tabular-nums text-muted-foreground">{m.priority}</td>
+                <td className="px-4 py-2">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setDetail(m)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="详情"><Eye className="h-4 w-4" /></button>
+                    <button onClick={() => openEdit(m)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="编辑"><Pencil className="h-4 w-4" /></button>
+                    <button onClick={() => del(m)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除"><Trash2 className="h-4 w-4" /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
 
       <Dialog
         open={showCreate}

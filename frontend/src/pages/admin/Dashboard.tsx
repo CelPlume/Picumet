@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Users, Files, HardDrive, Activity } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/core';
+import { StatCardSkeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { formatBytes } from '@/lib/utils';
 import { useAuth } from '@/stores/auth';
@@ -33,7 +34,8 @@ export default function AdminDashboard() {
     : [];
 
   return (
-    <div className="space-y-6">
+    <div className="h-full space-y-6 overflow-y-auto pr-1 scrollbar-thin">
+      {!stats ? <StatCardSkeleton count={4} /> : (
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map((c) => (
           <Card key={c.label}>
@@ -48,6 +50,7 @@ export default function AdminDashboard() {
           </Card>
         ))}
       </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>

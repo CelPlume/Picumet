@@ -1,11 +1,13 @@
 // 管理员：存储提供商配置
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { HardDrive, Plus, Trash2, PlugZap, Pencil } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog } from '@/components/ui/core';
+import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
+import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
 
 interface Provider {
   id: string;
@@ -25,6 +27,9 @@ interface Provider {
 export function StorageProviders() {
   const { t } = useTranslation();
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sort, setSort] = useState<string | null>('name');
+  const [order, setOrder] = useState<SortOrder>('asc');
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState<string | null>(null);
@@ -34,6 +39,7 @@ export function StorageProviders() {
   const load = async () => {
     const res = await apiFetch<{ providers: Provider[] }>('/api/admin/storage/providers');
     setProviders(res.data.providers);
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -109,44 +115,55 @@ export function StorageProviders() {
 
   const typeLabel: Record<string, string> = { r2: 'R2', s3: 'S3', oracle: 'Oracle' };
 
+  const sortedRows = useMemo(() => {
+    if (!sort) return providers;
+    return sortByKey(providers, sort as keyof Provider, order);
+  }, [providers, sort, order]);
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{t('admin.storage')} · {providers.length} 个</p>
         <Button onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('admin.addProvider')}</Button>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        {providers.map((p) => (
-          <Card key={p.id} className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                <HardDrive className="h-5 w-5 text-primary" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">{p.name}</p>
-                <p className="truncate text-xs text-muted-foreground">{typeLabel[p.type]} · {p.bucket} · {p.endpoint || '(R2 绑定)'}</p>
-              </div>
-              <Badge variant={p.status === 'active' ? 'success' : 'warning'}>{p.status}</Badge>
-            </div>
-            <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-              <span>{t('admin.region')}: {p.region || '-'}</span>
-              <span>·</span>
-              <span>prefix: {p.pathPrefix || '/'}</span>
-              <div className="flex-1" />
-              <button onClick={() => test(p)} className="flex items-center gap-1 rounded-md px-2 py-1 text-muted-foreground hover:bg-accent">
-                <PlugZap className="h-3.5 w-3.5" /> {testing === p.id ? '...' : t('admin.testConnection')}
-              </button>
-              <button onClick={() => openEdit(p)} className="rounded-md p-1 text-muted-foreground hover:bg-accent" title="编辑">
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-              <button onClick={() => del(p)} className="rounded-md p-1 text-destructive hover:bg-destructive/10">
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </Card>
-        ))}
-      </div>
+
+      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="px-4 py-2"><SortableHeader title="名称" sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title="类型" sortKey="type" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">Bucket</th>
+              <th className="px-4 py-2"><SortableHeader title="区域" sortKey="region" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">前缀</th>
+              <th className="px-4 py-2"><SortableHeader title="状态" sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('common.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={7}><TableSkeleton rows={5} cols={5} /></td></tr>
+            ) : sortedRows.map((p) => (
+              <tr key={p.id} className="border-b last:border-0 hover:bg-accent/50">
+                <td className="px-4 py-2 font-medium">{p.name}</td>
+                <td className="px-4 py-2 text-xs text-muted-foreground">{typeLabel[p.type]}</td>
+                <td className="px-4 py-2 font-mono text-xs">{p.bucket}</td>
+                <td className="px-4 py-2 text-xs text-muted-foreground">{p.region || '-'}</td>
+                <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{p.pathPrefix || '/'}</td>
+                <td className="px-4 py-2"><Badge variant={p.status === 'active' ? 'success' : 'warning'}>{p.status}</Badge></td>
+                <td className="px-4 py-2">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => test(p)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title={t('admin.testConnection')}><PlugZap className="h-4 w-4" /></button>
+                    <button onClick={() => openEdit(p)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="编辑"><Pencil className="h-4 w-4" /></button>
+                    <button onClick={() => del(p)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除"><Trash2 className="h-4 w-4" /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
 
       <Dialog
         open={showCreate}

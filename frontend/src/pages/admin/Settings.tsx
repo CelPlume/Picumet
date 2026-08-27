@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Save, Plus, Trash2, Mail, Send } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Switch, Badge } from '@/components/ui/core';
+import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 
@@ -102,10 +103,10 @@ export default function AdminSettings() {
     }
   };
 
-  if (!settings) return <p className="py-10 text-center text-muted-foreground">{t('common.loading')}</p>;
+  if (!settings) return <FormCardSkeleton />;
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="h-full max-w-2xl space-y-4 overflow-y-auto pr-1 scrollbar-thin">
       <Card>
         <CardHeader>
           <CardTitle>{t('admin.settings')}</CardTitle>
