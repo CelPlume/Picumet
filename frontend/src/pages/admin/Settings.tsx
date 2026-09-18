@@ -106,7 +106,7 @@ export default function AdminSettings() {
   if (!settings) return <FormCardSkeleton />;
 
   return (
-    <div className="h-full max-w-2xl space-y-4 overflow-y-auto pr-1 scrollbar-thin">
+    <div className="grid h-full max-w-5xl items-start gap-4 overflow-y-auto pr-1 scrollbar-thin lg:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>{t('admin.settings')}</CardTitle>

@@ -59,7 +59,7 @@ export default function AppearancePage() {
   ];
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="grid max-w-5xl items-start gap-6 lg:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>{t('settings.theme')}</CardTitle>
