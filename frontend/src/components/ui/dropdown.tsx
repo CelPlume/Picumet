@@ -13,11 +13,13 @@ export function Dropdown({
   children,
   align = 'start',
   triggerClass,
+  contentClass,
 }: {
   trigger: ReactNode;
   children: ReactNode | ((close: () => void) => ReactNode);
   align?: 'start' | 'end';
   triggerClass?: string;
+  contentClass?: string;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -70,7 +72,8 @@ export function Dropdown({
             ref={portalRef}
             className={cn(
               'animate-dropdown fixed z-[100] mt-1 max-h-[calc(100vh-4rem)] min-w-[8rem] overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md',
-              enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover'
+              enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover',
+              contentClass
             )}
             style={{ left: pos.right ? undefined : pos.left, right: pos.right, top: pos.top }}
             onClick={(e) => e.stopPropagation()}

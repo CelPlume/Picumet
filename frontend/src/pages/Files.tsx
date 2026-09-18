@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Upload, FolderPlus, LayoutGrid, List as ListIcon, ChevronRight, ArrowDown, ArrowUp,
+  Upload, FolderPlus, LayoutGrid, List as ListIcon, ChevronRight,
   Folder, Search, CheckSquare, ChevronDown, ArrowRightLeft, X, Check, MoreHorizontal,
 } from 'lucide-react';
 import { FileGridSkeleton, FileListSkeleton } from '@/components/ui/skeleton';
@@ -12,9 +12,8 @@ import { useTheme } from '@/stores/theme';
 import { FileTree } from '@/components/files/FileTree';
 import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner, Switch } from '@/components/ui/core';
 import { AppShell } from '@/components/layout/AppShell';
-import { Select } from '@/components/ui/select';
 import { Drawer } from '@/components/ui/drawer';
-import { Dropdown, DropdownItem } from '@/components/ui/dropdown';
+import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
 import { toast } from '@/components/ui/toast';
 import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks } from '@/components/files/data';
 import { FileCard, FileRow, BulkActionsBar, FileRowMenuItems, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
@@ -24,6 +23,13 @@ import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
 import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode } from '@/lib/utils';
 import type { FileListItem } from '@shared/types';
+
+// 排序字段选项；升序/降序在同一下拉内切换（不再是独立按钮）
+const SORT_FIELDS = [
+  { value: 'name', label: '按名称' },
+  { value: 'time', label: '按时间' },
+  { value: 'size', label: '按大小' },
+] as const;
 
 // ============ 复制链接弹窗（含图片/视频时选择格式与签名） ============
 function CopyLinksDialog({
@@ -617,25 +623,59 @@ export default function Files() {
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <div className="relative min-w-[140px] max-w-sm flex-1">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className="pl-8" />
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className="pl-8 bg-background dark:bg-background" />
             </div>
-            <Select
-              value={sort ?? 'name'}
-              onValueChange={(v) => setSort(v === 'name' ? undefined : v)}
-              options={[
-                { value: 'name', label: '按名称' },
-                { value: 'time', label: '按时间' },
-                { value: 'size', label: '按大小' },
-              ]}
-              className="w-28"
-            />
-            <button
-              onClick={() => setOrder((o) => (o === 'asc' ? 'desc' : 'asc'))}
-              className="rounded-md border p-1.5 text-muted-foreground hover:bg-accent"
-              title={order === 'asc' ? '升序' : '降序'}
+            <Dropdown
+              align="start"
+              contentClass="min-w-36"
+              trigger={
+                <button
+                  type="button"
+                  aria-label="排序"
+                  className="flex h-9 w-36 items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none transition-colors hover:bg-accent/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                >
+                  <span className="truncate">{SORT_FIELDS.find((o) => o.value === (sort ?? 'name'))?.label}</span>
+                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </button>
+              }
             >
-              {order === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
-            </button>
+              {(close) => (
+                <>
+                  <DropdownLabel>排序方式</DropdownLabel>
+                  {SORT_FIELDS.map((o) => (
+                    <DropdownItem
+                      key={o.value}
+                      icon={(sort ?? 'name') === o.value ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
+                      onClick={() => {
+                        setSort(o.value === 'name' ? undefined : o.value);
+                        close();
+                      }}
+                    >
+                      {o.label}
+                    </DropdownItem>
+                  ))}
+                  <DropdownSeparator />
+                  <DropdownItem
+                    icon={order === 'asc' ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
+                    onClick={() => {
+                      setOrder('asc');
+                      close();
+                    }}
+                  >
+                    升序
+                  </DropdownItem>
+                  <DropdownItem
+                    icon={order === 'desc' ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
+                    onClick={() => {
+                      setOrder('desc');
+                      close();
+                    }}
+                  >
+                    降序
+                  </DropdownItem>
+                </>
+              )}
+            </Dropdown>
           </div>
           {/* 内容 */}
           {isLoading ? (
@@ -653,7 +693,7 @@ export default function Files() {
               }
             />
           ) : view === 'grid' ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            <div className="grid grid-cols-3 gap-3 md:grid-cols-4 lg:grid-cols-5">
               {items.map((f) => (
                 <FileCard
                   key={f.id}

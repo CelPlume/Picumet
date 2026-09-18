@@ -8,7 +8,7 @@ export function Skeleton({ className }: { className?: string }) {
 // ============ 文件卡片网格骨架 ============
 export function FileGridSkeleton({ count = 10 }: { count?: number }) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+    <div className="grid grid-cols-3 gap-3 md:grid-cols-4 lg:grid-cols-5">
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} className="rounded-lg border bg-card p-3">
           <Skeleton className="mb-3 h-16 w-16 rounded-md" />
@@ -39,12 +39,11 @@ export function FileListSkeleton({ count = 8 }: { count?: number }) {
 // ============ 分享卡片网格骨架 ============
 export function ShareGridSkeleton({ count = 8 }: { count?: number }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="rounded-lg border bg-card p-4">
-          <Skeleton className="mb-3 h-10 w-10 rounded-md" />
+        <div key={i} className="rounded-lg border bg-card p-3">
+          <Skeleton className="mb-2 h-8 w-8 rounded-md" />
           <Skeleton className="mb-2 h-4 w-2/3" />
-          <Skeleton className="mb-1 h-3 w-1/3" />
           <Skeleton className="h-3 w-1/2" />
         </div>
       ))}

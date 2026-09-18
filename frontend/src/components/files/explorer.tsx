@@ -247,7 +247,9 @@ export function FileRow({
       data-file-id={f.id}
       data-file-row=""
       className={cn(
-        'group grid cursor-pointer grid-cols-[auto_1fr_100px_130px_auto] items-center gap-3 rounded-md border px-3 py-2 text-sm transition-colors',
+        // 列顺序：复选框 | 名称(1fr 吸收全部余量) | 大小 | 日期(sm+) | 菜单
+        // 大小/日期列由 1fr 名称列推向右侧，位置不随菜单列内容变化，保证行间对齐
+        'group grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border px-3 py-2 text-sm transition-colors sm:grid-cols-[auto_minmax(0,1fr)_100px_130px_auto]',
         selected ? 'lasso-item-selected' : 'border-transparent hover:bg-accent'
       )}
     >
@@ -267,34 +269,12 @@ export function FileRow({
         )}
         <span className="truncate">{f.customTitle ?? f.name}</span>
         {f.hasPassword && !isFolder && <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+        {f.customColor && <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: f.customColor }} />}
       </div>
-      <span className="truncate text-muted-foreground">{isFolder ? '-' : formatBytes(f.size)}</span>
+      <span className="truncate text-right text-muted-foreground sm:text-right">{isFolder ? '-' : formatBytes(f.size)}</span>
       <span className="hidden truncate text-muted-foreground sm:block">{formatDate(f.updatedAt)}</span>
-      <div className="flex items-center justify-end gap-1">
-        {f.customColor && <span className="h-3 w-3 rounded-full" style={{ background: f.customColor }} />}
-        {handlers && !multiSelect && (
-          <>
-            {!isFolder && (
-              <button
-                onClick={(e) => { e.stopPropagation(); handlers.onDownload!(f); }}
-                className="rounded p-1.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent hover:text-foreground"
-                title="下载"
-              >
-                <Download className="h-4 w-4" />
-              </button>
-            )}
-            {handlers.onShare && (
-              <button
-                onClick={(e) => { e.stopPropagation(); handlers.onShare!(f); }}
-                className="rounded p-1.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent hover:text-foreground"
-                title="分享"
-              >
-                <Share2 className="h-4 w-4" />
-              </button>
-            )}
-            <FileRowMenu f={f} handlers={handlers} />
-          </>
-        )}
+      <div className="flex items-center justify-end">
+        {handlers && <FileRowMenu f={f} handlers={handlers} />}
       </div>
     </div>
   );
