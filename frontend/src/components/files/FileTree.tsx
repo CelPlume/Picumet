@@ -47,7 +47,8 @@ function TreeNode({
           className={cn('h-3.5 w-3.5 shrink-0 transition-transform', isOpen && 'rotate-90')}
           style={{ opacity: root || folders.length ? 1 : 0, display: root ? 'none' : undefined }}
         />
-        {isOpen ? <FolderOpen className="h-4 w-4 shrink-0" /> : <Folder className="h-4 w-4 shrink-0" />}
+        {/* 两种形态仅用于“已展开且非空”的文件夹：空文件夹保持收起形态 */}
+        {isOpen && folders.length > 0 ? <FolderOpen className="h-4 w-4 shrink-0" /> : <Folder className="h-4 w-4 shrink-0" />}
         <span className="min-w-0 flex-1 truncate">{name}</span>
       </button>
       {isOpen && folders.length > 0 && (
@@ -71,28 +72,24 @@ function TreeNode({
 }
 
 export function FileTree({ currentPath, onNavigate }: { currentPath: string; onNavigate: (p: string) => void }) {
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    // 根节点始终展开；若当前路径有父级，一并展开以便高亮
-    const parts = currentPath.split('/').filter(Boolean);
+  // 展开集合的构造：根 + currentPath 的全部祖先与自身
+  const expandSetFor = (p: string) => {
+    const parts = p.split('/').filter(Boolean);
     const set = new Set<string>(['/']);
     let acc = '';
-    for (const p of parts.slice(0, -1)) {
-      acc = `${acc}/${p}`;
+    for (const seg of parts) {
+      acc = `${acc}/${seg}`;
       set.add(acc);
     }
     return set;
-  });
+  };
 
-  // 切换目录时自动收起其它分支（只保留当前路径的祖先展开）
+  const [expanded, setExpanded] = useState<Set<string>>(() => expandSetFor(currentPath));
+
+  // 切换目录时自动收起其它分支：只保留当前路径及其祖先展开
+  // （含自身：点击树节点导航后该节点保持展开，空文件夹因无子级不呈现展开形态）
   useEffect(() => {
-    const parts = currentPath.split('/').filter(Boolean);
-    const set = new Set<string>(['/']);
-    let acc = '';
-    for (const p of parts.slice(0, -1)) {
-      acc = `${acc}/${p}`;
-      set.add(acc);
-    }
-    setExpanded(set);
+    setExpanded(expandSetFor(currentPath));
   }, [currentPath]);
 
   const toggle = (p: string) => {
