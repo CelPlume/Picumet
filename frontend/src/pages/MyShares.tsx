@@ -3,9 +3,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';
-import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink, X, LayoutGrid, List as ListIcon } from 'lucide-react';
+import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink, X, LayoutGrid, List as ListIcon, MoreVertical } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button, Input, Label, EmptyState, Badge, Dialog, Card, Switch } from '@/components/ui/core';
+import { Dropdown, DropdownItem, DropdownSeparator } from '@/components/ui/dropdown';
 import { Select } from '@/components/ui/select';
 import { ShareGridSkeleton } from '@/components/ui/skeleton';
 import { Pagination } from '@/components/ui/pagination';
@@ -133,6 +134,36 @@ export default function MyShares() {
     toast('success', '链接已复制');
   };
 
+  // 三点菜单：卡片与列表共用（二维码 / 打开 / 复制链接 / 撤销）
+  const shareMenu = (s: ShareItem) => (
+    <Dropdown
+      align="end"
+      trigger={
+        <button className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="分享操作" title="更多操作">
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      }
+    >
+      {(close) => (
+        <>
+          <DropdownItem icon={<QrCode className="h-4 w-4" />} onClick={() => { close(); void showQr(s); }}>
+            二维码
+          </DropdownItem>
+          <DropdownItem icon={<ExternalLink className="h-4 w-4" />} onClick={() => { close(); window.open(`/share/${s.id}`, '_blank', 'noreferrer'); }}>
+            打开
+          </DropdownItem>
+          <DropdownItem icon={<Link2 className="h-4 w-4" />} onClick={() => { close(); void copyLink(`/share/${s.id}`); }}>
+            复制链接
+          </DropdownItem>
+          <DropdownSeparator />
+          <DropdownItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); void revoke(s.id); }}>
+            撤销分享
+          </DropdownItem>
+        </>
+      )}
+    </Dropdown>
+  );
+
   return (
     <AppShell activeNav="shares">
       <div className="mb-4 flex items-center justify-between gap-2">
@@ -185,37 +216,36 @@ export default function MyShares() {
       ) : (
         <>
           {viewMode === 'grid' ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+            <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
               {shares.map((s) => (
-                <Card key={s.id} className="group flex flex-col p-4 transition-shadow hover:shadow-lg">
-                  <div className="mb-3 flex h-16 items-center justify-center">
+                <Card key={s.id} className="group flex flex-col gap-1.5 p-3 transition-shadow hover:shadow-lg">
+                  <div className="flex items-center gap-2">
                     <FileIcon
                       name={s.file?.name ?? ''}
                       type={s.file?.type === 'folder' ? 'folder' : 'file'}
-                      className="h-14 w-14"
+                      className="h-8 w-8 shrink-0"
                       iconEmoji={s.file?.iconEmoji}
                     />
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium" title={s.title ?? s.file?.name}>
+                      {s.title ?? s.file?.name}
+                      {s.file?.hasPassword && <Lock className="ml-1 inline h-3 w-3 text-muted-foreground" />}
+                    </p>
+                    {shareMenu(s)}
                   </div>
-                  <p className="mb-2 truncate text-center text-sm font-medium" title={s.title ?? s.file?.name}>
-                    {s.title ?? s.file?.name}
-                  </p>
-                  <div className="mb-3 flex items-center justify-center gap-2">
-                    <Badge variant={s.status === 'active' ? 'success' : 'secondary'} className="text-xs">
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Badge variant={s.status === 'active' ? 'success' : 'secondary'} className="shrink-0 text-xs">
                       {s.status}
                     </Badge>
-                    {s.file?.hasPassword && <Lock className="h-3 w-3 text-muted-foreground" />}
+                    <span className="truncate">{s.file ? formatBytes(s.file.size) : '-'}</span>
                   </div>
-                  <div className="mb-3 space-y-1 text-center text-xs text-muted-foreground">
-                    {s.file && <p>{formatBytes(s.file.size)}</p>}
-                    <p className="truncate">
-                      {s.expiresAt ? `过期: ${formatDateTime(s.expiresAt)}` : '永久有效'}
-                    </p>
-                    <p>
-                      查看 {s.viewCount} 次
-                      {s.maxDownloads ? ` · 下载 ${s.downloadCount}/${s.maxDownloads}` : ''}
-                    </p>
-                  </div>
-                  <div className="mt-auto flex items-center justify-center gap-1 border-t pt-3">
+                  <p
+                    className="truncate text-xs text-muted-foreground"
+                    title={s.expiresAt ? `过期: ${formatDateTime(s.expiresAt)}` : '永久有效'}
+                  >
+                    {s.expiresAt ? `${formatDateTime(s.expiresAt)} 过期` : '永久有效'} · 查看 {s.viewCount}
+                    {s.maxDownloads ? ` · 下载 ${s.downloadCount}/${s.maxDownloads}` : ''}
+                  </p>
+                  <div className="mt-auto hidden items-center justify-end gap-0.5 border-t pt-2 sm:flex">
                     <button onClick={() => void showQr(s)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title={t('share.qrcode')}>
                       <QrCode className="h-4 w-4" />
                     </button>
@@ -237,29 +267,20 @@ export default function MyShares() {
               {shares.map((s) => (
                 <div
                   key={s.id}
-                  className="group grid grid-cols-[auto_1fr_90px_120px_auto] items-center gap-3 rounded-md border border-transparent bg-card px-3 py-2.5 text-sm transition-colors hover:border-border hover:bg-accent/50"
+                  className="group grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border border-transparent bg-card px-3 py-2.5 text-sm transition-colors hover:border-border hover:bg-accent/50 sm:grid-cols-[auto_minmax(0,1fr)_90px_120px_auto]"
                 >
                   <FileIcon name={s.file?.name ?? ''} type={s.file?.type === 'folder' ? 'folder' : 'file'} className="h-5 w-5 shrink-0" iconEmoji={s.file?.iconEmoji} />
                   <div className="min-w-0">
-                    <p className="truncate font-medium">{s.title ?? s.file?.name}</p>
-                    {s.file?.hasPassword && <Lock className="ml-1 inline h-3 w-3 text-muted-foreground" />}
+                    <p className="truncate font-medium" title={s.title ?? s.file?.name}>
+                      {s.title ?? s.file?.name}
+                      {s.file?.hasPassword && <Lock className="ml-1 inline h-3 w-3 text-muted-foreground" />}
+                    </p>
                   </div>
-                  <span className="truncate text-xs text-muted-foreground">{s.file ? formatBytes(s.file.size) : '-'}</span>
+                  <span className="truncate text-right text-xs text-muted-foreground">{s.file ? formatBytes(s.file.size) : '-'}</span>
                   <span className="hidden truncate text-xs text-muted-foreground sm:block">{timeAgo(s.createdAt)}</span>
                   <div className="flex shrink-0 items-center gap-1">
-                    <Badge variant={s.status === 'active' ? 'success' : 'secondary'} className="text-xs">{s.status}</Badge>
-                    <button onClick={() => void showQr(s)} className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent" title={t('share.qrcode')}>
-                      <QrCode className="h-4 w-4" />
-                    </button>
-                    <a href={`/share/${s.id}`} target="_blank" rel="noreferrer" className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent" title="打开">
-                      <ExternalLink className="h-4 w-4" />
-                    </a>
-                    <button onClick={() => copyLink(`/share/${s.id}`)} className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent">
-                      <Link2 className="h-4 w-4" />
-                    </button>
-                    <button onClick={() => revoke(s.id)} className="rounded p-1 text-destructive opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive/10">
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    <Badge variant={s.status === 'active' ? 'success' : 'secondary'} className="w-[52px] justify-center text-xs">{s.status}</Badge>
+                    {shareMenu(s)}
                   </div>
                 </div>
               ))}
