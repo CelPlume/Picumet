@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode';
 import { Share2, Link2, QrCode, Trash2, Download, Lock, Copy, ExternalLink, X, LayoutGrid, List as ListIcon, MoreVertical } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
-import { Button, Input, Label, EmptyState, Badge, Dialog, Card, Switch } from '@/components/ui/core';
+import { Button, Input, Label, EmptyState, Badge, Dialog, Card, Switch, ConfirmDialog } from '@/components/ui/core';
 import { Dropdown, DropdownItem, DropdownSeparator } from '@/components/ui/dropdown';
 import { Select } from '@/components/ui/select';
 import { ShareGridSkeleton } from '@/components/ui/skeleton';
@@ -46,6 +46,7 @@ export default function MyShares() {
   const [created, setCreated] = useState<{ id: string; url: string; qrcode: string } | null>(null);
   const [myFiles, setMyFiles] = useState<FileListItem[]>([]);
   const [qrDialog, setQrDialog] = useState<{ share: ShareItem; url: string; dataUrl: string } | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<ShareItem | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -125,8 +126,9 @@ export default function MyShares() {
       toast('success', '已撤销');
       await load();
     } catch (err) {
-      toast('error', '操作失败');
+      toast('error', err instanceof ApiError ? err.message : '操作失败');
     }
+    setConfirmRevoke(null);
   };
 
   const copyLink = async (url: string) => {
@@ -156,7 +158,7 @@ export default function MyShares() {
             复制链接
           </DropdownItem>
           <DropdownSeparator />
-          <DropdownItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); void revoke(s.id); }}>
+          <DropdownItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); setConfirmRevoke(s); }}>
             撤销分享
           </DropdownItem>
         </>
@@ -218,7 +220,7 @@ export default function MyShares() {
           {viewMode === 'grid' ? (
             <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
               {shares.map((s) => (
-                <Card key={s.id} className="group flex flex-col gap-1.5 p-3 transition-shadow hover:shadow-lg">
+                <Card key={s.id} className="group glass-surface glass-blur flex flex-col gap-1.5 p-3 transition-colors hover:border-border hover:[background-image:linear-gradient(rgb(0_0_0/0.08))]">
                   <div className="flex items-center gap-2">
                     <FileIcon
                       name={s.file?.name ?? ''}
@@ -255,7 +257,7 @@ export default function MyShares() {
                     <button onClick={() => copyLink(`/share/${s.id}`)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title="复制链接">
                       <Link2 className="h-4 w-4" />
                     </button>
-                    <button onClick={() => revoke(s.id)} className="rounded-md p-1.5 text-destructive transition-colors hover:bg-destructive/10" title="撤销">
+                    <button onClick={() => setConfirmRevoke(s)} className="rounded-md p-1.5 text-destructive transition-colors hover:bg-destructive/10" title="撤销">
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
@@ -267,7 +269,7 @@ export default function MyShares() {
               {shares.map((s) => (
                 <div
                   key={s.id}
-                  className="group grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border border-transparent bg-card px-3 py-2.5 text-sm transition-colors hover:border-border hover:bg-accent/50 sm:grid-cols-[auto_minmax(0,1fr)_90px_120px_auto]"
+                  className="group grid grid-cols-[auto_minmax(0,1fr)_auto_auto] glass-surface glass-blur items-center gap-3 rounded-md border border-transparent px-3 py-2.5 text-sm transition-colors hover:border-border hover:[background-image:linear-gradient(rgb(0_0_0/0.08))] sm:grid-cols-[auto_minmax(0,1fr)_90px_120px_auto]"
                 >
                   <FileIcon name={s.file?.name ?? ''} type={s.file?.type === 'folder' ? 'folder' : 'file'} className="h-5 w-5 shrink-0" iconEmoji={s.file?.iconEmoji} />
                   <div className="min-w-0">
@@ -296,7 +298,7 @@ export default function MyShares() {
               setPageSize(s);
               setPage(1);
             }}
-            className="mt-4 border-t pt-3"
+            className="mt-4"
           />
         </>
       )}
@@ -432,6 +434,14 @@ export default function MyShares() {
           </div>
         )}
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmRevoke}
+        onClose={() => setConfirmRevoke(null)}
+        onConfirm={() => confirmRevoke && void revoke(confirmRevoke.id)}
+        title="撤销分享"
+        message={`确定撤销分享「${confirmRevoke?.title || confirmRevoke?.file?.name || confirmRevoke?.id}」？撤销后链接立即失效。`}
+      />
     </AppShell>
   );
 }
