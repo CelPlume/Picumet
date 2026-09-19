@@ -216,9 +216,9 @@ Users pick an accent color from presets or with a color picker. The app converts
 
 ### Blur and background
 
-- **Blur**: the **Enable blur** switch sets `--enable-blur`. When enabled, floating surfaces use a unified translucent treatment: `bg-popover/80` with `backdrop-blur-xl` plus `saturate(1.5)` (large radius, low strength). When disabled, the same surfaces render fully opaque `bg-popover`.
-- **Unified surfaces**: the following components share the same surface classes from `frontend/src/components/ui/` — dropdown menus, the context (right-click) menu, select popovers, toasts, and dialogs. The dialog overlay carries the backdrop blur (`bg-black/50 backdrop-blur-sm`), so darkening and blurring happen together during the open animation; the dialog body keeps a plain `bg-background`.
-- **Background image**: users upload an image up to `2MB` (JPG, PNG, or WebP) or leave no background. The image stores as a base64 data URL in `localStorage`. A solid-color background option no longer exists.
+- **Three blur levels**: the appearance settings' **Blur effect** slider sets `blurLevel = 'off' | 'default' | 'frosted'` (default `default`), written to the `--glass-alpha` and `--glass-blur` CSS variables; `off` adds a `.no-blur` class on the root element and disables every backdrop filter (overlay, file-item frosting, menus) for solid surfaces.
+- **Unified surfaces**: the following components share the same surface classes (`frontend/src/index.css` + `components/ui/`): the top bar, sidebar (file tree), dropdown menus, context menu, Select popovers, toasts, dialog bodies, file cards and rows, settings and admin panels, and skeletons. Never hardcode blur or opacity — consume `--glass-alpha` / `--glass-blur`.
+- **Background image**: users upload an image up to `2MB` (JPG, PNG, or WebP) or leave no background. The image stores as a base64 data URL in `localStorage`. With a wallpaper the default tier raises opacity (dark 0.92 / light 0.82) to keep WCAG AA. A solid-color background option no longer exists.
 
 ### Tabs and sliding indicator
 
@@ -237,6 +237,78 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 | File icon style | `iconify` or `emoji` | Switches icon rendering between Iconify glyphs and emoji. |
 | Folder display | `icon` or `contents` | Shows a plain folder icon or a 2x2 preview of the folder's first four items. |
 | Custom emoji | Per file | A per-file emoji set in the properties panel overrides the icon. |
+
+## Design system rules (mandatory, split by frontend module)
+
+> Distilled from past iterations and **verified against the current code** (the code is the source of truth; each section names its implementing files). Read before changing UI; update this section whenever the code changes.
+
+### `stores/theme.ts` + `index.css` — glass morphism and theming
+
+- Surfaces use `glass-surface` (cards/panels/sidebar/file items, `--card` base), `glass-surface-popover` (menus/popovers, `--popover` base) plus `glass-blur`; the dialog overlay uses `glass-overlay`. Intensity is gated by `blurLevel = 'off' | 'default' | 'frosted'` (default `default`), written to `--glass-alpha` / `--glass-blur`; `off` adds `.no-blur` on the root and disables every backdrop filter (overlay/file items/menus) for solid surfaces. Never hardcode blur or opacity.
+- With a wallpaper (root `has-bg-image`) the default tier raises opacity (dark 0.92 / light 0.82) to keep WCAG AA.
+- Accent: hex → HSL written to `--primary`/`--ring`, **no dark-mode lightness lift** (the black-as-default accent idea was abandoned); light mode keeps an AA darkening loop when white button text is below 4.5:1 (floor 35% lightness); the foreground comes from YIQ.
+
+### `components/ui/dropdown.tsx` + `select.tsx` — popup menus
+
+- Dropdown, Select **must `createPortal` to `document.body`** and reuse `DROPDOWN_MENU_CLASS` / `DROPDOWN_ITEM_CLASS` (inline rendering sits inside backdrop-filter ancestors, which breaks the glass blur). The context menu (`pages/Files.tsx`) portals too (z-[100]).
+- Native `<select>` is forbidden; `Select` aligns its menu with the trigger width; dismissal = outside click / Escape / resize / scroll.
+
+### `components/ui/toast.tsx` — toast (HeroUI v3 replica)
+
+- Newest on top; collapsed rear layers peek 12px below with a 0.05-per-layer scale, their height clamped to the front card, content hidden, **no shadow on non-front layers**; only collapsed rear wrappers are `overflow-hidden` (front/expanded wrappers must stay visible: the -top-1 close button and shadows would be square-clipped otherwise); at most 3 visible.
+- Cards size to content (RO measures offsetHeight — contentRect misses padding and clips); enter 350ms slide from above; exit 250ms: front slides up, non-front scales down 0.96 in place; default 4s auto-dismiss; hover expands the deck and pauses timers.
+- Closing goes through `markLeaving` — never `remove()` directly (the deck would collapse instantly).
+- Trigger via `toast('success'|'error'|'info', msg)`; success/failure operations must surface a toast — no silent success; a route change calls `clearAll()` (Toaster uses `useLocation` and must stay inside the Router).
+
+### `components/ui/dialog.tsx` — dialogs
+
+- Every modal/drawer shares the enter/exit animation state machine (`mounted/entered` + `EXIT_MS`); overlay darkening and blur animate together; scroll lock = `body overflow hidden` + `html { scrollbar-gutter: stable }` for zero layout shift; do not introduce another lock mechanism.
+- Untitled dialogs skip the header strip (close button pinned to the top right) to avoid a dead band.
+- Destructive actions must go through `ConfirmDialog` (HeroUI AlertDialog layout: icon + title row, description, right-aligned cancel + danger buttons, `max-w-sm`) plus a success/error toast; native `confirm()` is forbidden.
+
+### `index.css` `.item-surface` + `explorer.tsx` / `MyShares.tsx` — item three-state
+
+- rest = glass surface + transparent border; hover = **darkening** (an 8% black `background-image` overlay, not a translucent fill — translucency shows the wallpaper through); selected (`.item-surface-selected` / lasso `.lasso-item-selected`) = glass base with a `primary/0.14` gradient + `primary/0.55` border. File cards/rows and share cards/rows share the same effect.
+
+### `components/files/lasso.ts` + `pages/Files.tsx` — drag multi-select
+
+- The drag surface is the AppShell **root container** (`rowRef.closest('main').parentElement`, listeners forwarded through `lassoRef`, bound once): the banner strip, side margins, the space below the content and the whole row all start drags; item hit-testing only matches `[data-file-id]`; `skipSelector` skips buttons/inputs/checkboxes/card bodies; `setPointerCapture` only after a 4px move; `onClickCapture` suppresses the post-drag click.
+- The files page root gets a persistent `select-none` (added on mount, removed on unmount): a drag can trigger native text selection instantly, which cannot be undone afterwards.
+- Selection checkboxes = `Checkbox` (checked `border-primary bg-primary`) + the `.lasso-item-dot` scale feedback; a blank click / directory change / new dialog clears the selection and the bulk bar; sorting is a single dropdown (`SORT_FIELDS`, asc/desc are Check items inside the menu).
+
+### `components/files/FileTree.tsx` — file tree
+
+- `currentPath` and its ancestors auto-expand; switching directories collapses other branches; empty folders never render the expanded form.
+- Desktop `sticky top-20` + `h-[calc(100vh-6rem)]`, inner scroll `scrollbar-none`.
+
+### `components/files/preview.tsx` — preview
+
+- Dialog `w-[min(1400px,94vw)]`, media area `h-[min(72vh,780px)]`, responsive to the browser width.
+
+### `pages/MyShares.tsx` — shares
+
+- Compact cards; quick actions consolidated into the three-dot dropdown; list rows darken on hover like the files page.
+
+### `components/settings/BlurSlider.tsx` — discrete slider
+
+- The native range is `appearance:none` fully transparent (kills the accent-color native rendering) and only handles drag/keyboard; the fill bar, stop dots, thumb and labels are self-drawn and aligned to the knob center; the fill's right edge aligns with the knob center; label/track clicks, drag snapping, arrow keys + `aria-valuetext`; the description follows the level. Reuse this pattern for new discrete settings.
+
+### `components/ui/checkbox.tsx` — checkbox
+
+- Checked `border-primary bg-primary` (accent-colored); unchecked `bg-background/60 backdrop-blur-sm`.
+
+### `components/ui/skeleton.tsx` — skeletons
+
+- Containers always use `glass-surface glass-blur` + rounded borders.
+
+### `pages/settings/Appearance.tsx` — appearance
+
+- The accent row spans the full width (preset swatches + a trailing rainbow "custom" that opens the native picker); file icon style and folder display share one two-column row; the blur slider row has no border.
+
+### Layout and scrollbars (AppShell / settings / admin pages / `index.css`)
+
+- Settings/admin content uses `lg:grid-cols-2`; the admin system settings stack "system settings + announcements" in the left column with SMTP on the right.
+- Settings/admin sidebars are sticky with inner scroll; inner scroll areas use `scrollbar-none`, visible scrollbars use `scrollbar-thin` (8px, rounded, muted). Both are plain CSS classes and **do not support `md:` style variants** (`md:scrollbar-none` silently does nothing — a past bug source).
 
 ## Accessibility
 

@@ -314,6 +314,7 @@ flowchart LR
 ### 验收纪律
 
 UI 改动完成标准 = 无头浏览器逐界面截图自检 + claude-vision-skill 复核（先自查、后 vision）；对比度遵循 WCAG AA（正文 4.5:1）。
+推送前必须本地跑完 CI 等价检查（frontend：`typecheck` / `test` / `test:coverage` / `build`；workers：`typecheck` / `test`）并全绿——裸 `vitest run` 不含覆盖率门禁（80/40/60/80，聚焦 `escape.ts` + `Register.tsx`）。
 
 ## 无障碍
 

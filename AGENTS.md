@@ -341,6 +341,10 @@ git commit \
 
 **测试覆盖**：
 - [ ] 单元测试通过（`npm run test`）
+- [ ] **CI 等价检查本地全绿后才可推送**（对照 `.github/workflows/ci.yml`）：
+  - frontend：`bun run typecheck` → `bun run test` → `bun run test:coverage`（覆盖率门禁 80/40/60/80，聚焦 `src/lib/escape.ts` + `src/pages/Register.tsx`）→ `bun run build`（`tsc -b && vite build`）
+  - workers：`bun run typecheck` → `bun run test`
+  - ⚠️ `bunx vitest run` 绿 ≠ CI 绿：覆盖率门禁不含在裸测试里（Register.tsx 的 `sendOtp` 曾因漏测导致门禁红）
 - [ ] 关键路径有集成测试
 - [ ] 权限相关变更必须有权限测试
 
