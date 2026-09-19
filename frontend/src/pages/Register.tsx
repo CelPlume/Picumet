@@ -1,5 +1,5 @@
 // 注册页（独立路由 /register）
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
@@ -23,6 +23,9 @@ export default function Register() {
   const [otpSent, setOtpSent] = useState(false);
   const [otpSending, setOtpSending] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  // 倒计时定时器登记：组件卸载时清除，避免泄漏的定时器串扰后续用例
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => clearInterval(countdownTimerRef.current ?? undefined), []);
 
   const sendOtp = async () => {
     if (!email) return setError('请输入邮箱');
@@ -31,9 +34,10 @@ export default function Register() {
       await apiFetch('/api/auth/register/send-otp', { method: 'POST', body: { email } });
       setOtpSent(true);
       setCountdown(60);
-      const timer = setInterval(() => {
+      clearInterval(countdownTimerRef.current ?? undefined);
+      countdownTimerRef.current = setInterval(() => {
         setCountdown((c) => {
-          if (c <= 1) clearInterval(timer);
+          if (c <= 1) clearInterval(countdownTimerRef.current ?? undefined);
           return c - 1;
         });
       }, 1000);

@@ -13,8 +13,12 @@ vi.mock('react-i18next', () => ({
 vi.mock('@/lib/api', () => ({
   apiFetch: (...args: unknown[]) => apiFetch(...args),
   ApiError: class ApiError extends Error {
-    constructor(message: string) {
+    status: number;
+    code: string;
+    constructor(status: number, code: string, message: string) {
       super(message);
+      this.status = status;
+      this.code = code;
     }
   },
 }));
@@ -34,6 +38,7 @@ vi.mock('@/components/layout/widgets', () => ({
 }));
 
 import Register from './Register';
+import { ApiError } from '@/lib/api';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -91,5 +96,54 @@ describe('Register 页面', () => {
     await waitFor(() => {
       expect(navigate).not.toHaveBeenCalled();
     });
+  });
+
+  it('邮箱为空时点击发送验证码直接提示错误，不请求接口', async () => {
+    render(
+      <MemoryRouter>
+        <Register />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }));
+
+    expect(await screen.findByText('请输入邮箱')).toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it('发送验证码成功后进入倒计时并提示', async () => {
+    apiFetch.mockResolvedValueOnce({ message: 'ok' });
+    render(
+      <MemoryRouter>
+        <Register />
+      </MemoryRouter>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('you@example.com'), { target: { value: 'alice@test.local' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/api/auth/register/send-otp', {
+        method: 'POST',
+        body: { email: 'alice@test.local' },
+      });
+      // 倒计时启动后按钮切换为秒数并禁用（toast 文案不在测试挂载树内）
+      expect(screen.getByRole('button', { name: /60s/ })).toBeDisabled();
+    });
+  });
+
+  it('发送验证码失败时显示接口错误', async () => {
+    apiFetch.mockRejectedValueOnce(new ApiError(429, 'rate_limited', '发送过于频繁'));
+    render(
+      <MemoryRouter>
+        <Register />
+      </MemoryRouter>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('you@example.com'), { target: { value: 'alice@test.local' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }));
+
+    // 污染环境下（前序用例泄漏的倒计时定时器）错误段落在 ~1.1s 才渲染，放宽等待
+    expect(await screen.findByText('发送过于频繁', {}, { timeout: 3000 })).toBeInTheDocument();
   });
 });
