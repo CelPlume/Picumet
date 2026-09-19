@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Copy, Trash2, Check } from 'lucide-react';
-import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch } from '@/components/ui/core';
+import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
 import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
@@ -32,6 +32,7 @@ export default function ApiKeysPage() {
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedKey | null>(null);
   const [name, setName] = useState('');
   const [permissions, setPermissions] = useState<string[]>(['write']);
@@ -76,7 +77,6 @@ export default function ApiKeysPage() {
   };
 
   const revoke = async (id: string) => {
-    if (!confirm('确定撤销该密钥？')) return;
     try {
       await apiFetch(`/api/keys/${id}`, { method: 'DELETE' });
       toast('success', t('settings.keyRevoked'));
@@ -84,6 +84,7 @@ export default function ApiKeysPage() {
     } catch {
       toast('error', '操作失败');
     }
+    setConfirmRevoke(null);
   };
 
   const togglePerm = (p: string) =>
@@ -128,7 +129,7 @@ export default function ApiKeysPage() {
                 </div>
                 <div className="text-right text-xs text-muted-foreground">
                   <p>{t('settings.lastUsed')}: {k.lastUsedAt ? timeAgo(k.lastUsedAt) : t('settings.neverUsed')}</p>
-                  <button onClick={() => revoke(k.id)} className="mt-1 flex items-center gap-1 rounded-md px-2 py-1 text-destructive hover:bg-destructive/10">
+                  <button onClick={() => setConfirmRevoke(k.id)} className="mt-1 flex items-center gap-1 rounded-md px-2 py-1 text-destructive hover:bg-destructive/10">
                     <Trash2 className="h-3.5 w-3.5" /> {t('settings.revoke')}
                   </button>
                 </div>
@@ -233,6 +234,14 @@ Header: ${created.configs.bearer.header}`}
           </div>
         )}
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmRevoke}
+        onClose={() => setConfirmRevoke(null)}
+        onConfirm={() => confirmRevoke && void revoke(confirmRevoke)}
+        title="撤销密钥"
+        message="确定撤销该密钥？使用此密钥的客户端将立即失去访问权限，该操作不可恢复。"
+      />
     </div>
   );
 }

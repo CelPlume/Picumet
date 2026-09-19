@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Pencil, Trash2 } from 'lucide-react';
-import { Card, Button, Input, Badge, Dialog, Label, Switch } from '@/components/ui/core';
+import { Card, Button, Input, Badge, Dialog, Label, Switch, ConfirmDialog } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -31,6 +31,7 @@ export default function AdminUsers() {
   const [status, setStatus] = useState('active');
   const [maxStorage, setMaxStorage] = useState('10');
   const [maxFiles, setMaxFiles] = useState('10000');
+  const [confirmDelete, setConfirmDelete] = useState<UserRow | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -63,7 +64,6 @@ export default function AdminUsers() {
   };
 
   const del = async (u: UserRow) => {
-    if (!confirm(`确定删除用户 ${u.username}？其文件和配额将一并删除。`)) return;
     try {
       await apiFetch(`/api/admin/users/${u.id}`, { method: 'DELETE' });
       toast('success', '已删除');
@@ -71,6 +71,7 @@ export default function AdminUsers() {
     } catch (err) {
       toast('error', '删除失败');
     }
+    setConfirmDelete(null);
   };
 
   const openEdit = (u: UserRow) => {
@@ -138,7 +139,7 @@ export default function AdminUsers() {
                     <button onClick={() => openEdit(u)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
                       <Pencil className="h-4 w-4" />
                     </button>
-                    <button onClick={() => del(u)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10">
+                    <button onClick={() => setConfirmDelete(u)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10">
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
@@ -212,6 +213,14 @@ export default function AdminUsers() {
           </div>
         </div>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && void del(confirmDelete)}
+        title="删除用户"
+        message={`确定删除用户 ${confirmDelete?.username ?? ''}？其文件和配额将一并删除，该操作不可恢复。`}
+      />
     </div>
   );
 }

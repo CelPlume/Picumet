@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { HardDrive, Plus, Trash2, PlugZap, Pencil } from 'lucide-react';
-import { Card, Button, Input, Label, Badge, Dialog } from '@/components/ui/core';
+import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -35,6 +35,7 @@ export function StorageProviders() {
   const [testing, setTesting] = useState<string | null>(null);
   const [editing, setEditing] = useState<Provider | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [confirmDelete, setConfirmDelete] = useState<Provider | null>(null);
 
   const load = async () => {
     const res = await apiFetch<{ providers: Provider[] }>('/api/admin/storage/providers');
@@ -76,7 +77,6 @@ export function StorageProviders() {
   };
 
   const del = async (p: Provider) => {
-    if (!confirm(`确定删除存储 ${p.name}？`)) return;
     try {
       await apiFetch(`/api/admin/storage/providers/${p.id}`, { method: 'DELETE' });
       toast('success', '已删除');
@@ -84,6 +84,7 @@ export function StorageProviders() {
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : '删除失败');
     }
+    setConfirmDelete(null);
   };
 
   const openEdit = (p: Provider) => {
@@ -156,7 +157,7 @@ export function StorageProviders() {
                   <div className="flex items-center gap-1">
                     <button onClick={() => test(p)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title={t('admin.testConnection')}><PlugZap className="h-4 w-4" /></button>
                     <button onClick={() => openEdit(p)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="编辑"><Pencil className="h-4 w-4" /></button>
-                    <button onClick={() => del(p)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除"><Trash2 className="h-4 w-4" /></button>
+                    <button onClick={() => setConfirmDelete(p)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除"><Trash2 className="h-4 w-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -301,6 +302,14 @@ export function StorageProviders() {
           </div>
         </div>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && void del(confirmDelete)}
+        title="删除存储提供商"
+        message={`确定删除存储 ${confirmDelete?.name ?? ''}？挂载其上的配置将失效，该操作不可恢复。`}
+      />
     </div>
   );
 }

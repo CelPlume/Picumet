@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FolderTree, Plus, Trash2, Pencil, Eye } from 'lucide-react';
-import { Card, Button, Input, Label, Badge, Dialog } from '@/components/ui/core';
+import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -40,6 +40,7 @@ export function StorageMounts() {
   const [editing, setEditing] = useState<MountItem | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [detail, setDetail] = useState<MountItem | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<MountItem | null>(null);
 
   const load = async () => {
     const [mRes, pRes] = await Promise.all([
@@ -70,7 +71,6 @@ export function StorageMounts() {
   };
 
   const del = async (m: MountItem) => {
-    if (!confirm(`确定删除挂载点 ${m.mountPath}？`)) return;
     try {
       await apiFetch(`/api/admin/mounts/${m.id}`, { method: 'DELETE' });
       toast('success', '已删除');
@@ -78,6 +78,7 @@ export function StorageMounts() {
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : '删除失败');
     }
+    setConfirmDelete(null);
   };
 
   const openEdit = (m: MountItem) => {
@@ -146,7 +147,7 @@ export function StorageMounts() {
                   <div className="flex items-center gap-1">
                     <button onClick={() => setDetail(m)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="详情"><Eye className="h-4 w-4" /></button>
                     <button onClick={() => openEdit(m)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="编辑"><Pencil className="h-4 w-4" /></button>
-                    <button onClick={() => del(m)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除"><Trash2 className="h-4 w-4" /></button>
+                    <button onClick={() => setConfirmDelete(m)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除"><Trash2 className="h-4 w-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -314,6 +315,14 @@ export function StorageMounts() {
           </div>
         </div>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && void del(confirmDelete)}
+        title="删除挂载点"
+        message={`确定删除挂载点 ${confirmDelete?.mountPath ?? ''}？该操作不可恢复。`}
+      />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
-import { Card, Button, Input, Label, Badge, Dialog, Switch } from '@/components/ui/core';
+import { Card, Button, Input, Label, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -47,6 +47,7 @@ export default function AdminPermissions() {
   const [pageSize, setPageSize] = useState(20);
   const [total, setTotal] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<Rule | null>(null);
   const [editMode, setEditMode] = useState<'gui' | 'code'>('gui');
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
@@ -112,9 +113,14 @@ export default function AdminPermissions() {
   };
 
   const del = async (id: string) => {
-    await apiFetch(`/api/admin/rules/${id}`, { method: 'DELETE' });
-    toast('success', '已删除');
-    await load();
+    try {
+      await apiFetch(`/api/admin/rules/${id}`, { method: 'DELETE' });
+      toast('success', '已删除');
+      await load();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : '删除失败');
+    }
+    setConfirmDelete(null);
   };
 
   const subjectLabel = (r: Rule) =>
@@ -160,7 +166,7 @@ export default function AdminPermissions() {
                 <td className="px-4 py-2 tabular-nums text-muted-foreground">{r.priority}</td>
                 <td className="px-4 py-2"><Badge variant={r.effect === 'allow' ? 'success' : 'destructive'}>{r.effect}</Badge></td>
                 <td className="px-4 py-2">
-                  <button onClick={() => del(r.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除">
+                  <button onClick={() => setConfirmDelete(r)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除">
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </td>
@@ -335,6 +341,14 @@ export default function AdminPermissions() {
           </TabsContent>
         </Tabs>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && void del(confirmDelete.id)}
+        title="删除权限规则"
+        message={`确定删除规则 ${confirmDelete?.pathPattern ?? ''}？该操作不可恢复。`}
+      />
     </div>
   );
 }

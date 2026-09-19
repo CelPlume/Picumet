@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Trash2, Link2 } from 'lucide-react';
-import { Card, Badge } from '@/components/ui/core';
+import { Card, Badge, ConfirmDialog } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Pagination } from '@/components/ui/pagination';
 import { toast } from '@/components/ui/toast';
@@ -32,6 +32,7 @@ export default function AdminShares() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [confirmRevoke, setConfirmRevoke] = useState<ShareRow | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -47,9 +48,14 @@ export default function AdminShares() {
   }, [page, pageSize]);
 
   const revoke = async (id: string) => {
-    await apiFetch(`/api/admin/shares/${id}`, { method: 'DELETE' });
-    toast('success', '已撤销');
-    await load();
+    try {
+      await apiFetch(`/api/admin/shares/${id}`, { method: 'DELETE' });
+      toast('success', '已撤销');
+      await load();
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : '操作失败');
+    }
+    setConfirmRevoke(null);
   };
 
   const sortedRows = useMemo(() => {
@@ -90,7 +96,7 @@ export default function AdminShares() {
                 <td className="px-4 py-2 text-xs text-muted-foreground">{s.expiresAt ? formatDateTime(s.expiresAt) : '永久'}</td>
                 <td className="px-4 py-2"><Badge variant={s.status === 'active' ? 'success' : 'secondary'}>{s.status}</Badge></td>
                 <td className="px-4 py-2">
-                  <button onClick={() => revoke(s.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="撤销">
+                  <button onClick={() => setConfirmRevoke(s)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="撤销">
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </td>
@@ -112,6 +118,14 @@ export default function AdminShares() {
         />
   </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmRevoke}
+        onClose={() => setConfirmRevoke(null)}
+        onConfirm={() => confirmRevoke && void revoke(confirmRevoke.id)}
+        title="撤销分享"
+        message={`确定撤销分享「${confirmRevoke?.title ?? confirmRevoke?.file?.name ?? confirmRevoke?.id}」？撤销后链接立即失效。`}
+      />
     </div>
   );
 }
