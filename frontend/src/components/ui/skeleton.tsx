@@ -10,7 +10,7 @@ export function FileGridSkeleton({ count = 10 }: { count?: number }) {
   return (
     <div className="grid grid-cols-3 gap-3 md:grid-cols-4 lg:grid-cols-5">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="rounded-lg border bg-card p-3">
+        <div key={i} className="glass-surface glass-blur rounded-lg border p-3">
           <Skeleton className="mb-3 h-16 w-16 rounded-md" />
           <Skeleton className="mb-2 h-4 w-3/4" />
           <Skeleton className="h-3 w-1/2" />
@@ -25,7 +25,7 @@ export function FileListSkeleton({ count = 8 }: { count?: number }) {
   return (
     <div className="space-y-2">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 rounded-md border px-3 py-2">
+        <div key={i} className="glass-surface glass-blur flex items-center gap-3 rounded-md border px-3 py-2">
           <Skeleton className="h-8 w-8 rounded-md" />
           <Skeleton className="h-4 flex-1 max-w-[40%]" />
           <Skeleton className="h-3 w-16" />
@@ -41,7 +41,7 @@ export function ShareGridSkeleton({ count = 8 }: { count?: number }) {
   return (
     <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="rounded-lg border bg-card p-3">
+        <div key={i} className="glass-surface glass-blur rounded-lg border p-3">
           <Skeleton className="mb-2 h-8 w-8 rounded-md" />
           <Skeleton className="mb-2 h-4 w-2/3" />
           <Skeleton className="h-3 w-1/2" />
@@ -54,7 +54,7 @@ export function ShareGridSkeleton({ count = 8 }: { count?: number }) {
 // ============ 表单/详情卡片骨架 ============
 export function FormCardSkeleton({ rows = 4 }: { rows?: number }) {
   return (
-    <div className="rounded-lg border bg-card p-5">
+    <div className="glass-surface glass-blur rounded-lg border p-5">
       <Skeleton className="mb-4 h-5 w-1/3" />
       {Array.from({ length: rows }).map((_, i) => (
         <div key={i} className="mb-4 space-y-2">
@@ -71,7 +71,7 @@ export function TableSkeleton({ rows = 6, cols = 4 }: { rows?: number; cols?: nu
   return (
     <div className="space-y-2">
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex items-center gap-4 rounded-md border px-3 py-2.5">
+        <div key={i} className="glass-surface glass-blur flex items-center gap-4 rounded-md border px-3 py-2.5">
           {Array.from({ length: cols }).map((__, j) => (
             <Skeleton key={j} className={cn('h-4', j === 0 ? 'w-1/4' : 'flex-1')} />
           ))}
@@ -86,7 +86,7 @@ export function StatCardSkeleton({ count = 4 }: { count?: number }) {
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="rounded-lg border bg-card p-4">
+        <div key={i} className="glass-surface glass-blur rounded-lg border p-4">
           <Skeleton className="mb-3 h-4 w-1/2" />
           <Skeleton className="h-7 w-2/3" />
         </div>
@@ -99,7 +99,7 @@ export function StatCardSkeleton({ count = 4 }: { count?: number }) {
 export function AppSkeleton() {
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <div className="flex h-14 items-center justify-between border-b px-4">
+      <div className="glass-surface glass-blur flex h-14 items-center justify-between border-b px-4">
         <Skeleton className="h-6 w-28" />
         <Skeleton className="h-8 w-8 rounded-full" />
       </div>
@@ -130,7 +130,7 @@ export function CodeSkeleton() {
 export function SharePageSkeleton() {
   return (
     <div className="mx-auto max-w-2xl px-4 py-10">
-      <div className="rounded-lg border bg-card p-6">
+      <div className="glass-surface glass-blur rounded-lg border p-6">
         <div className="mb-4 flex items-center gap-4">
           <Skeleton className="h-14 w-14 rounded-md" />
           <div className="flex-1 space-y-2">
