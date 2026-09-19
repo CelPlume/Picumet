@@ -1,7 +1,10 @@
 // 抽屉组件（shadcn 风格）
-import { useEffect, type ReactNode } from 'react';
+// 进出动画统一收敛在本组件：进入=滑入关键帧+淡入，退出=整体淡出后延迟卸载
+import { useEffect, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+const EXIT_MS = 300;
 
 export function Drawer({
   open,
@@ -20,20 +23,44 @@ export function Drawer({
   title?: string;
   width?: string;
 }) {
+  const [mounted, setMounted] = useState(open);
+  const [entered, setEntered] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      let raf2 = 0;
+      const raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => setEntered(true));
+      });
+      return () => {
+        cancelAnimationFrame(raf1);
+        cancelAnimationFrame(raf2);
+      };
+    }
+    setEntered(false);
+    const timer = setTimeout(() => setMounted(false), EXIT_MS);
+    return () => clearTimeout(timer);
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKey);
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
-    };
+    return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  useEffect(() => {
+    if (!mounted) return;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [mounted]);
+
+  if (!mounted) return null;
 
   const sideStyles: Record<string, string> = {
     left: 'left-0 top-0 h-full',
@@ -55,14 +82,20 @@ export function Drawer({
       : 'h-[80vh] max-h-[80vh]';
 
   return (
-    <div className={cn('fixed inset-0 z-50', className)}>
-      {/* Backdrop */}
-      <div className="animate-dialog-overlay absolute inset-0 bg-black/60 backdrop-blur-md" onClick={onClose} />
+    <div
+      className={cn(
+        'fixed inset-0 z-50 transition-opacity duration-300 ease-out',
+        entered ? 'opacity-100' : 'opacity-0',
+        className
+      )}
+    >
+      {/* Backdrop：压暗与模糊同步 */}
+      <div className="glass-overlay animate-dialog-overlay absolute inset-0" onClick={onClose} />
 
       {/* Panel */}
       <div
         className={cn(
-          'fixed z-10 flex flex-col bg-background shadow-xl',
+          'glass-surface glass-blur fixed z-10 flex flex-col text-card-foreground shadow-xl',
           sideStyles[side],
           widthCls,
           sideAnim[side]
