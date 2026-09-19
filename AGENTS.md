@@ -474,6 +474,18 @@ wrangler deploy
 
 ---
 
+### 前端 UI 规则（强制）
+
+> 详细的设计系统规则（按前端模块拆分、逐条对照现有代码核实）见 [docs/UI_CN.md](docs/UI_CN.md)「设计系统规则」一节。改 UI 前必读；改代码必须同步更新该文档。
+
+- **玻璃拟态**：表面样式只消费 `--glass-alpha` / `--glass-blur` 三档门控（off/default/frosted），禁止硬编码模糊或透明度。
+- **弹出菜单**：Dropdown / Select / 右键菜单必须 Portal 到 body 并复用 `DROPDOWN_MENU_CLASS` / `DROPDOWN_ITEM_CLASS`；禁止原生 `<select>`。
+- **破坏性操作**：必须走 `ConfirmDialog` + success/error toast；禁止原生 `confirm()`。
+- **文件项三态**：rest 玻璃表面、hover 压暗叠加、selected 主色调；文件页与分享页统一。
+- **验收**：两种主题 × 三档模糊 × 有无壁纸逐界面截图核对（WCAG AA）。
+
+---
+
 ## Common Pitfalls（常见坑点）
 
 ### 权限系统
@@ -616,3 +628,4 @@ const canonicalPath = normalizePath(req.query.path);
 - 2026-08-18：初始版本，需求范围与设计决策来自产品评审
 - 2026-08-18：服务化重构（Plan A），新增 docs/ 文档体系（架构/API/页面/开发/部署）
 - 2026-08-19：文档整合至 README + docs/（中英双语、谷歌文档风格），移除 spec 类源文档引用，新增 docs/PROGRESS.md 记录进度
+- 2026-09-19：新增「前端 UI 规则」摘要并强制阅读 docs/UI_CN.md「设计系统规则」（按前端模块拆分、逐条对照现有代码核实）：玻璃三档门控、强调色运行时校准（移除深色提亮补偿）、弹出菜单 Portal 统一、Toast 复刻规范（堆叠/退场/路由清空）、ConfirmDialog 强制二次确认、文件项三态压暗法、拖拽多选整页触发面 + 页面禁选文本、滑块、文件树、骨架屏与滚动条约定

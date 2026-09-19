@@ -216,9 +216,9 @@ flowchart LR
 
 ### 模糊与背景
 
-- **模糊**：**启用模糊** 开关控制 `--enable-blur`。启用时，所有浮层统一使用半透明表面：`bg-popover/80` + `backdrop-blur-xl` + `saturate(1.5)`（大半径、低强度）；关闭时同一批组件退化为不透明 `bg-popover`。
-- **统一表面**：以下组件共享同一套表面类（`frontend/src/components/ui/`）：下拉菜单、右键（上下文）菜单、Select 弹层、Toast 与弹窗。弹窗的模糊由遮罩承载（`bg-black/50 backdrop-blur-sm`），打开动画中压暗与模糊同步进行，弹窗体保持纯 `bg-background`。
-- **背景图片**：用户可上传不超过 `2MB` 的图片（JPG/PNG/WebP）或不用背景，图片以 base64 data URL 存于 `localStorage`；纯色背景选项已移除。
+- **模糊三档**：外观设置的「模糊效果」滑块控制 `blurLevel = 'off' | 'default' | 'frosted'`（默认 default），写入 `--glass-alpha` 与 `--glass-blur` 两个 CSS 变量；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩、文件项磨砂底、菜单）失效为实底。
+- **统一表面**：以下组件共享同一套表面类（`frontend/src/index.css` + `components/ui/`）：导航栏、侧栏（文件树）、下拉菜单、右键菜单、Select 弹层、Toast、弹窗窗体、文件卡片与列表、设置和管理面板、骨架屏。禁止硬编码模糊/透明度，一律消费 `--glass-alpha` / `--glass-blur`。
+- **背景图片**：用户可上传不超过 `2MB` 的图片（JPG/PNG/WebP）或不用背景，图片以 base64 data URL 存于 `localStorage`；有壁纸时 default 档自动提高不透明度（深 0.92 / 浅 0.82）保证 WCAG AA。纯色背景选项已移除。
 
 ### Tabs 与滑动指示器
 
@@ -238,6 +238,82 @@ flowchart LR
 | 文件图标风格 | `iconify` 或 `emoji` | 切换 Iconify 图标和 emoji 两种渲染。 |
 | 文件夹显示 | `icon` 或 `contents` | 显示普通文件夹图标，或前 4 项的 2×2 预览网格。 |
 | 自定义 emoji | 按文件设置 | 属性面板里给单个文件设置的 emoji 会覆盖默认图标。 |
+
+## 设计系统规则（强制，按前端模块拆分）
+
+> 从历史迭代沉淀、**逐条对照现有代码核实**（以代码为准，每节标注实现文件）。改 UI 前必读；改代码必须同步改本节。
+
+### `stores/theme.ts` + `index.css` — 玻璃拟态与主题
+
+- 表面统一 `glass-surface`（卡片/面板/侧栏/文件项，--card 底）、`glass-surface-popover`（菜单/弹层，--popover 底）+ `glass-blur`；遮罩 `glass-overlay`。强度由 `blurLevel = 'off' | 'default' | 'frosted'`（默认 default）写入 `--glass-alpha` / `--glass-blur`；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩/文件项/菜单）失效为实底。禁止硬编码模糊/透明度。
+- 壁纸（根元素 `has-bg-image`）时 default 档自动提高不透明度（深 0.92 / 浅 0.82）保 WCAG AA。
+- 强调色：accent → HSL 写 `--primary`/`--ring`，**不做深色提亮补偿**（黑色默认方案已放弃）；浅色模式白色文字 <4.5:1 时压暗循环（最低 35%）；前景由 YIQ 决定。
+
+### `components/ui/dropdown.tsx` + `select.tsx` — 弹出菜单
+
+- Dropdown、Select **必须 `createPortal` 到 `document.body`** 并复用 `DROPDOWN_MENU_CLASS` / `DROPDOWN_ITEM_CLASS`（内联渲染会被 backdrop-filter 祖先破坏模糊）。右键菜单（`pages/Files.tsx`）同样 Portal（z-[100]）。
+- 禁止原生 `<select>`；`Select` 菜单与触发器等宽对齐；关闭时机 = 点击外部 / Escape / resize / 滚动。
+
+### `components/ui/toast.tsx` — Toast（HeroUI v3 复刻）
+
+- 最新在最上层；折叠态后方层下移 12px 露上沿 + 0.05 逐层缩小、高度压为最前层、内容隐藏、**非最前层无投影**；仅折叠态后方层 `overflow-hidden`（最前层/展开层必须 visible：关闭按钮 -top-1 与投影会被直角裁切）；最多可见 3 层。
+- 卡片高度内容自适应（RO 量 offsetHeight，勿用 contentRect——漏内边距会裁切）；进入 350ms 上方滑入；退出 250ms：最前层上滑、非最前层原地缩退 0.96；默认 4s；悬停展开全部并暂停倒计时。
+- 关闭走 `markLeaving` 退场，禁止直接 `remove()`（堆叠瞬间塌缩）。
+- `toast('success'|'error'|'info', msg)` 统一触发；成功/失败必须反馈，禁止静默成功；路由切换 `clearAll()` 逐条退场（Toaster 用 `useLocation`，必须在 Router 内）。
+
+### `components/ui/dialog.tsx` — 对话框
+
+- 全部弹窗/抽屉共用进出动画状态机（`mounted/entered` + `EXIT_MS`），遮罩压暗与模糊同步过渡；锁滚动 = `body overflow hidden` + `html { scrollbar-gutter: stable }`，开合零位移。
+- 无标题弹窗不渲染头部条（X 绝对定位右上角），避免空带。
+- 破坏性操作必须走 `ConfirmDialog`（HeroUI AlertDialog 排版：图标+标题一行、描述、Footer 右对齐取消+危险钮，`max-w-sm`）+ success/error toast；禁止原生 `confirm()`。
+
+### `index.css` `.item-surface` + `explorer.tsx` / `MyShares.tsx` — 文件项三态
+
+- rest = 玻璃表面 + 透明边框；hover = **压暗**（黑色 8% `background-image` 叠加，非半透明填充——半透明透壁纸）；selected（`.item-surface-selected` / 框选 `.lasso-item-selected`）= 玻璃底叠加 `primary/0.14` + `primary/0.55` 边框。文件页卡片/列表与分享页卡片/列表同一效果。
+
+### `components/files/lasso.ts` + `pages/Files.tsx` — 拖拽多选
+
+- 拖拽面 = AppShell **根容器**（`rowRef.closest('main').parentElement`，监听器经 `lassoRef` 转发、effect 只绑一次）：公告横幅条、页面四周留白、内容下方空白、整行内部全部可起拖；条目命中只认 `[data-file-id]`；`skipSelector` 跳过按钮/输入/复选框/卡片本体；移动超 4px 才 `setPointerCapture`；`onClickCapture` 抑制拖后 click。
+- 文件页根容器常驻 `select-none`（挂载即加、卸载移除）：拖拽起手即可能触发原生文本选择，无法事后阻止，必须整页禁选。
+- 选择复选框 = `Checkbox`（选中 `border-primary bg-primary`）+ `.lasso-item-dot` 缩放；点击空白/切换目录/开启弹窗即清空选择并收起批量栏；排序为单一下拉（`SORT_FIELDS`，升降序是菜单内 Check 项）。
+
+### `components/files/FileTree.tsx` — 文件树
+
+- `currentPath` 及祖先自动展开、切目录收起其它分支；空文件夹不呈现展开形态。
+- 桌面 `sticky top-20` + `h-[calc(100vh-6rem)]` 固定，内滚 `scrollbar-none`。
+
+### `components/files/preview.tsx` — 预览
+
+- 弹窗 `w-[min(1400px,94vw)]`、媒体区 `h-[min(72vh,780px)]`，随浏览器宽度自适应。
+
+### `pages/MyShares.tsx` — 分享
+
+- 卡片紧凑排版；快速操作整合三点下拉；列表行 hover 与文件页同一压暗效果。
+
+### `components/settings/BlurSlider.tsx` — 离散档位滑块
+
+- 原生 range `appearance:none` 全透明（消除 accent-color 原生渲染），仅承担拖拽/键盘；填充条/刻度点/滑块/标签自绘且与圆心对齐；填充最右对齐滑块圆心；点击标签/轨道/拖拽吸附/方向键 + `aria-valuetext`；档位描述随选中变化。新增离散档位设置复用此模式。
+
+### `components/ui/checkbox.tsx` — 复选框
+
+- 选中 `border-primary bg-primary`（符合强调色）；未选中 `bg-background/60 backdrop-blur-sm`。
+
+### `components/ui/skeleton.tsx` — 骨架屏
+
+- 容器一律 `glass-surface glass-blur` + 圆角边框。
+
+### `pages/settings/Appearance.tsx` — 外观设置
+
+- 强调色独立整行（预设色板 `ACCENT_PRESETS` + 末位彩虹自定义唤起原生取色器）；文件图标/文件夹显示同行两列；模糊滑块独立行无边框。
+
+### 布局与滚动条（AppShell / 设置 / 管理页 / `index.css`）
+
+- 设置/管理内容 `lg:grid-cols-2`；admin 系统设置左列堆叠"系统设置+公告"、右列 SMTP。
+- 设置/管理侧栏 sticky + 内滚；内滚区域 `scrollbar-none`，可见滚动条用 `scrollbar-thin`（8px 圆角 muted）。两者是普通 CSS 类，**不支持 `md:` 变体前缀**（写 `md:scrollbar-none` 无效，历史 bug 来源）。
+
+### 验收纪律
+
+UI 改动完成标准 = 无头浏览器逐界面截图自检 + claude-vision-skill 复核（先自查、后 vision）；对比度遵循 WCAG AA（正文 4.5:1）。
 
 ## 无障碍
 
