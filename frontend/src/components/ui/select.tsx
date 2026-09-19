@@ -1,8 +1,12 @@
 // Select 下拉选择器（shadcn 风格，替换原生 select）
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+// 菜单与 Dropdown 一样通过 Portal 渲染到 document.body 并复用统一菜单表面类：
+// 脱离弹窗/面板等 backdrop-filter 祖先（嵌套会建立 backdrop root 使模糊失效），
+// 任何场景（弹窗内、抽屉内、面板内）都与主页下拉菜单完全一致。
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useTheme } from '@/stores/theme';
+import { DROPDOWN_ITEM_CLASS, DROPDOWN_MENU_CLASS } from './dropdown';
 
 export interface SelectOption {
   value: string;
@@ -27,19 +31,32 @@ export function Select({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const enableBlur = useTheme((s) => s.enableBlur);
+  const portalRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
+
+  // 展开时测量触发器位置与宽度（Portal 用 fixed 定位，菜单与触发器等宽对齐）
+  useLayoutEffect(() => {
+    if (!open) return;
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setPos({ left: r.left, top: r.bottom + 4, width: r.width });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || portalRef.current?.contains(t)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onScroll = () => setOpen(false);
     document.addEventListener('mousedown', handler);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onScroll);
     return () => {
       document.removeEventListener('mousedown', handler);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onScroll);
     };
   }, [open]);
 
@@ -64,30 +81,39 @@ export function Select({
         <ChevronDown className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
 
-      {open && (
-        <div className={cn('animate-dropdown absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border p-1 text-popover-foreground shadow-md', enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover')}>
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              disabled={opt.disabled}
-              onClick={() => {
-                onValueChange(opt.value);
-                setOpen(false);
-              }}
-              className={cn(
-                'relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-none select-none',
-                'focus:bg-accent focus:text-accent-foreground',
-                'disabled:pointer-events-none disabled:opacity-50',
-                value === opt.value && 'bg-accent text-accent-foreground'
-              )}
-            >
-              <span className="truncate">{opt.label}</span>
-              {value === opt.value && <Check className="h-4 w-4 shrink-0 text-primary" />}
-            </button>
-          ))}
-        </div>
-      )}
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={portalRef}
+            className={cn(DROPDOWN_MENU_CLASS, 'mt-1')}
+            style={{ left: pos.left, top: pos.top, width: pos.width }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {options.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                disabled={opt.disabled}
+                onClick={() => {
+                  onValueChange(opt.value);
+                  setOpen(false);
+                }}
+                className={cn(
+                  DROPDOWN_ITEM_CLASS,
+                  'justify-between',
+                  'hover:bg-accent hover:text-accent-foreground',
+                  'disabled:pointer-events-none disabled:opacity-50',
+                  value === opt.value && 'bg-accent text-accent-foreground'
+                )}
+              >
+                <span className="truncate">{opt.label}</span>
+                {value === opt.value && <Check className="h-4 w-4 shrink-0 text-primary" />}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
@@ -95,44 +121,40 @@ export function Select({
 // ============ 组合式 API（兼容 shadcn 命名） ============
 const SelectContext = (() => null) as unknown as ReactNode;
 
-export function SelectTrigger({ children, className, ...rest }: { children: ReactNode; className?: string } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+export function SelectTrigger({ children, className, ...rest }: { children: React.ReactNode } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       type="button"
+      {...rest}
       className={cn(
-        'flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'flex h-9 w-full items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-[color,box-shadow] outline-none',
+        'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
+        'disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30',
         className
       )}
-      {...rest}
     >
       {children}
-      <ChevronDown className="h-4 w-4 opacity-50" />
+      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
     </button>
   );
 }
 
-export function SelectValue({ placeholder, children }: { placeholder?: string; children?: ReactNode }) {
+export function SelectValue({ placeholder, children }: { placeholder?: string; children?: React.ReactNode }) {
   return <span className={cn(!children && 'text-muted-foreground')}>{children ?? placeholder ?? '请选择'}</span>;
 }
 
-export function SelectContent({ children, className }: { children: ReactNode; className?: string }) {
+export function SelectContent({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn('animate-dropdown absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-card p-1 shadow-lg', className)}>
-      {children}
-    </div>
+    <div className={cn(DROPDOWN_MENU_CLASS, 'mt-1 min-w-[8rem]', className)}>{children}</div>
   );
 }
 
-export function SelectItem({ value, children, className }: { value: string; children: ReactNode; className?: string }) {
+export function SelectItem({ value, children, className }: { value: string; children: React.ReactNode; className?: string }) {
   void value;
   return (
     <button
       type="button"
-      className={cn(
-        'flex w-full items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent',
-        className
-      )}
+      className={cn(DROPDOWN_ITEM_CLASS, 'hover:bg-accent hover:text-accent-foreground', className)}
     >
       {children}
     </button>

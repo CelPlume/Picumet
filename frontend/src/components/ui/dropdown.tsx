@@ -1,12 +1,20 @@
 // 下拉菜单（点击展开，支持分组与菜单项）
-// 内容通过 Portal 渲染到 document.body：脱离 header 等带 backdrop-filter 的祖先
+// 内容通过 Portal 渲染到 document.body：脱离 header/弹窗等带 backdrop-filter 的祖先
 // （嵌套 backdrop-filter 会建立 backdrop root，使子元素模糊失效），确保模糊统一生效。
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useTheme } from '@/stores/theme';
 import { Button } from './core';
+
+/** 统一弹出菜单表面类：Dropdown/Select/一切弹出菜单必须复用（Portal 到 body），
+    保证任何场景下玻璃质感、圆角、层级完全一致 */
+export const DROPDOWN_MENU_CLASS =
+  'glass-surface-popover glass-blur animate-dropdown fixed z-[100] max-h-[calc(100vh-4rem)] overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md';
+
+/** 统一菜单项基础类：与 DROPDOWN_MENU_CLASS 配套复用 */
+export const DROPDOWN_ITEM_CLASS =
+  'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors';
 
 export function Dropdown({
   trigger,
@@ -25,7 +33,6 @@ export function Dropdown({
   const wrapRef = useRef<HTMLDivElement>(null);
   const portalRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number; right?: number } | null>(null);
-  const enableBlur = useTheme((s) => s.enableBlur);
 
   // 展开时测量触发器位置（Portal 用 fixed 定位）
   useLayoutEffect(() => {
@@ -70,11 +77,7 @@ export function Dropdown({
         createPortal(
           <div
             ref={portalRef}
-            className={cn(
-              'animate-dropdown fixed z-[100] mt-1 max-h-[calc(100vh-4rem)] min-w-[8rem] overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md',
-              enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover',
-              contentClass
-            )}
+            className={cn(DROPDOWN_MENU_CLASS, 'mt-1 min-w-[8rem]', contentClass)}
             style={{ left: pos.right ? undefined : pos.left, right: pos.right, top: pos.top }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -104,7 +107,7 @@ export function DropdownItem({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors',
+        DROPDOWN_ITEM_CLASS,
         danger
           ? 'text-destructive hover:bg-destructive/10'
           : 'hover:bg-accent hover:text-accent-foreground',
