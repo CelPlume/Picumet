@@ -67,10 +67,11 @@ export function FileCard({
       data-file-id={f.id}
       data-file-card=""
       className={cn(
-        'group relative cursor-pointer rounded-lg border p-3 transition-all duration-150 hover:shadow-md',
-        selected ? 'lasso-item-selected' : 'border-border bg-card'
+        // 三态统一：rest 无填充无轮廓 → hover 轻微填充+轮廓 → selected 主色填充（对齐列表）
+        'item-surface group relative cursor-pointer rounded-lg border p-3',
+        selected && 'item-surface-selected'
       )}
-      style={f.customColor ? { borderColor: f.customColor } : undefined}
+      style={selected && f.customColor ? { borderColor: f.customColor } : undefined}
     >
       {/* 复选框 - 左上角 */}
       <div className="absolute left-2 top-2 z-10">
@@ -249,8 +250,9 @@ export function FileRow({
       className={cn(
         // 列顺序：复选框 | 名称(1fr 吸收全部余量) | 大小 | 日期(sm+) | 菜单
         // 大小/日期列由 1fr 名称列推向右侧，位置不随菜单列内容变化，保证行间对齐
-        'group grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border px-3 py-2 text-sm transition-colors sm:grid-cols-[auto_minmax(0,1fr)_100px_130px_auto]',
-        selected ? 'lasso-item-selected' : 'border-transparent hover:bg-accent'
+        // 三态与卡片共用 item-surface（rest → hover → selected）
+        'item-surface group grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border px-3 py-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)_100px_130px_auto]',
+        selected && 'item-surface-selected'
       )}
     >
       {/* 复选框列 */}
@@ -372,7 +374,7 @@ export function BulkActionsBar({
   ].filter((a) => a.show);
 
   return (
-    <div className="animate-slide-in-from-bottom inline-flex items-center gap-1 rounded-lg border bg-card px-2 py-1.5 text-sm shadow-xl sm:gap-1.5">
+    <div className="glass-surface glass-blur animate-slide-in-from-bottom inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-sm shadow-xl sm:gap-1.5">
       <Badge variant="secondary" className="shrink-0 whitespace-nowrap">
         <span className="sm:hidden">{count}</span>
         <span className="hidden sm:inline">已选 {count} 项</span>

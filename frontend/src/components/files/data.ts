@@ -141,6 +141,13 @@ export function useVerifyPassword() {
   });
 }
 
+/** useCopyLinks 的返回契约：复制链接 mutation（供弹窗等消费方按名引用） */
+export interface CopyLinksResult {
+  formats: { direct: string; html: string; markdown: string; bbcode: string };
+  accessMode: string;
+  needsPassword: boolean;
+}
+
 export function useCopyLinks() {
   return useMutation({
     mutationFn: async ({ id, signed, expiresIn }: { id: string; signed?: boolean; expiresIn?: number }) => {
@@ -150,14 +157,12 @@ export function useCopyLinks() {
         q.set('expiresIn', String(expiresIn ?? 3600));
       }
       const qs = q.toString();
-      return (await apiFetch<{
-        formats: { direct: string; html: string; markdown: string; bbcode: string };
-        accessMode: string;
-        needsPassword: boolean;
-      }>(`/api/files/${id}/copy-links${qs ? `?${qs}` : ''}`)).data;
+      return (await apiFetch<CopyLinksResult>(`/api/files/${id}/copy-links${qs ? `?${qs}` : ''}`)).data;
     },
   });
 }
+
+export type CopyLinksMutator = ReturnType<typeof useCopyLinks>;
 
 export interface UploadResult {
   sessionId: string;

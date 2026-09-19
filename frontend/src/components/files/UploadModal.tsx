@@ -95,7 +95,6 @@ export function UploadModal({
     pending.slice(0, 3).forEach((t) => void uploadOne(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, tasks.length, tasks.filter((t) => t.status === 'pending').map((t) => t.id).join(',')]);
-
   const statusCounts = {
     pending: tasks.filter((t) => t.status === 'pending').length,
     uploading: tasks.filter((t) => t.status === 'uploading').length,
