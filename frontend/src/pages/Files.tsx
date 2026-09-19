@@ -1,5 +1,6 @@
 // 文件管理器主页面
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -15,7 +16,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { Drawer } from '@/components/ui/drawer';
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
 import { toast } from '@/components/ui/toast';
-import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks } from '@/components/files/data';
+import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks, type CopyLinksMutator } from '@/components/files/data';
 import { FileCard, FileRow, BulkActionsBar, FileRowMenuItems, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
 import { UploadModal } from '@/components/files/UploadModal';
 import { PreviewModal } from '@/components/files/preview';
@@ -33,18 +34,30 @@ const SORT_FIELDS = [
 
 // ============ 复制链接弹窗（含图片/视频时选择格式与签名） ============
 function CopyLinksDialog({
+  open,
   files,
   onClose,
   copyLinks,
 }: {
+  open: boolean;
   files: FileListItem[];
   onClose: () => void;
-  copyLinks: ReturnType<typeof useCopyLinks>;
+  copyLinks: CopyLinksMutator;
 }) {
   const [format, setFormat] = useState<'direct' | 'html' | 'markdown'>('direct');
   const [signed, setSigned] = useState(false);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // 每次打开重置选择（保持与旧的条件挂载行为一致）
+  useEffect(() => {
+    if (open) {
+      setFormat('direct');
+      setSigned(false);
+      setCopied(false);
+      setLoading(false);
+    }
+  }, [open]);
 
   const doCopy = async () => {
     setLoading(true);
@@ -77,7 +90,7 @@ function CopyLinksDialog({
 
   return (
     <Dialog
-      open
+      open={open}
       onClose={onClose}
       title="复制链接"
       footer={
@@ -107,7 +120,7 @@ function CopyLinksDialog({
               }}
               className={cn(
                 'flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors',
-                format === o.value ? 'border-primary bg-primary/5' : 'hover:bg-accent'
+                format === o.value ? 'border-primary bg-primary/10' : 'border-border hover:bg-foreground/5'
               )}
             >
               <span>
@@ -153,13 +166,47 @@ export default function Files() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [multiSelect, setMultiSelect] = useState(false);
-  const enableBlur = useTheme((s) => s.enableBlur);
   const contentRef = useRef<HTMLDivElement>(null);
+  // 条目容器（命中测试 + 指针捕获用）
+  const rowRef = useRef<HTMLDivElement>(null);
   // 主列容器即拖拽面：空白处(含网格四周)均可起拖；网格跳过卡片，列表允许从行起拖
-  const lasso = useLassoSelect(contentRef, setSelected, {
+  const lasso = useLassoSelect(rowRef, setSelected, {
     skipSelector: '[data-file-card], button, a, input, textarea, [role="checkbox"], [role="menuitem"]',
   });
+  const lassoRef = useRef(lasso);
+  lassoRef.current = lasso;
+
+  // 拖拽面提升到 AppShell 根容器（main 的父元素）：覆盖公告横幅条、整行、
+  // 页面四周留白与内容下方空白，除头部导航外整个页面都能起拖（handlers 经 ref 转发）
+  useEffect(() => {
+    const surface = rowRef.current?.closest('main')?.parentElement;
+    if (!surface) return;
+    const down = (e: PointerEvent) => lassoRef.current.onPointerDown(e as unknown as React.PointerEvent);
+    const move = (e: PointerEvent) => lassoRef.current.onPointerMove(e as unknown as React.PointerEvent);
+    const up = (e: PointerEvent) => lassoRef.current.onPointerUp(e as unknown as React.PointerEvent);
+    const cancel = (e: PointerEvent) => lassoRef.current.onPointerCancel(e as unknown as React.PointerEvent);
+    const clickCap = (e: MouseEvent) => lassoRef.current.onClickCapture(e as unknown as React.MouseEvent);
+    surface.addEventListener('pointerdown', down);
+    surface.addEventListener('pointermove', move);
+    surface.addEventListener('pointerup', up);
+    surface.addEventListener('pointercancel', cancel);
+    surface.addEventListener('click', clickCap, true);
+    return () => {
+      surface.removeEventListener('pointerdown', down);
+      surface.removeEventListener('pointermove', move);
+      surface.removeEventListener('pointerup', up);
+      surface.removeEventListener('pointercancel', cancel);
+      surface.removeEventListener('click', clickCap, true);
+    };
+  }, []);
   const [showUpload, setShowUpload] = useState(false);
+  // 文件页整页禁选文本（拖拽多选时原生选择会污染横幅/侧栏，且拖拽起手即选中无法事后阻止）
+  useEffect(() => {
+    const root = rowRef.current?.closest('main')?.parentElement;
+    if (!root) return;
+    root.classList.add('select-none');
+    return () => root.classList.remove('select-none');
+  }, []);
   const [previewFile, setPreviewFile] = useState<FileListItem | null>(null);
   const [propsFile, setPropsFile] = useState<FileListItem | null>(null);
   const [moveTarget, setMoveTarget] = useState<FileListItem | null>(null);
@@ -430,19 +477,23 @@ export default function Files() {
 
   return (
     <AppShell activeNav="files">
-      <div className="flex items-start">
-        {/* 左侧文件树（桌面）：贴左，与内容间距归文件区 */}
+      <div
+        ref={rowRef}
+        // 拖拽监听绑定在 AppShell main 元素上（见上方 effect），覆盖整行与四周留白
+        // 文件页禁止选中文本：拖拽多选时原生文本选择会污染侧栏/树（select-none 常驻）
+        className={cn('flex select-none', lasso.rect && 'lasso-hint')}
+      >
+        {/* 左侧文件树（桌面）：玻璃面板，与内容间距归文件区 */}
         <div className="hidden w-56 shrink-0 pl-2 pr-1 lg:block">
-          <FileTree currentPath={path} onNavigate={(p) => navigate(`/files${p === '/' ? '' : p}`)} />
+          <div className="glass-surface glass-blur sticky top-20 flex h-[calc(100vh-6rem)] flex-col rounded-xl border">
+            <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none p-2">
+              <FileTree currentPath={path} onNavigate={(p) => navigate(`/files${p === '/' ? '' : p}`)} />
+            </div>
+          </div>
         </div>
         {/* 主区域 */}
         <div
           ref={contentRef}
-          onPointerDown={lasso.onPointerDown}
-          onPointerMove={lasso.onPointerMove}
-          onPointerUp={lasso.onPointerUp}
-          onPointerCancel={lasso.onPointerCancel}
-          onClickCapture={lasso.onClickCapture}
           onClick={(e) => {
             // 点击空白处：清空选择（批量栏随之消失）、关闭右键菜单
             const t = e.target as HTMLElement;
@@ -451,7 +502,7 @@ export default function Files() {
             setMultiSelect(false);
             setMenuPos(null);
           }}
-          className={cn('min-w-0 flex-1 px-3', lasso.rect && 'lasso-hint')}
+          className={cn('min-w-0 flex-1 px-3')}
         >
           {/* 面包屑 + 工具栏 */}
           <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -741,7 +792,7 @@ export default function Files() {
                     .forEach((file) => void downloadFile(file));
                 }}
                 onCopyLink={() => {
-                  const files = items.filter((f) => selected.has(f.id) && f.type !== 'folder');
+                  const files = items.filter((f) => selected.has(f.id));
                   if (files.length === 0) return;
                   if (files.some((f) => isImage(f.name) || isVideo(f.name))) {
                     setCopyDialog({ files });
@@ -802,7 +853,7 @@ export default function Files() {
 
         {/* 属性侧栏 - 平板/桌面始终紧贴右侧，仅在有文件时显示（手机用右侧抽屉避免压垮内容） */}
         {propsFile && (
-          <aside className="hidden sm:block w-72 shrink-0 border-l bg-card pl-3 pr-1 sticky top-20 self-start h-[calc(100vh-6rem)] overflow-y-auto scrollbar-thin">
+          <aside className="glass-surface glass-blur hidden w-72 shrink-0 border-l pl-3 pr-1 sticky top-20 self-start h-[calc(100vh-6rem)] overflow-y-auto scrollbar-thin sm:block">
             <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
           </aside>
         )}
@@ -813,16 +864,12 @@ export default function Files() {
         <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
       </Drawer>
 
-      {/* ===== 弹窗 ===== */}
-      {showUpload && (
-        <UploadModal open={showUpload} onClose={() => setShowUpload(false)} targetPath={path} onDone={() => setShowUpload(false)} />
-      )}
+      {/* ===== 弹窗（常驻挂载：进出动画由 Dialog 统一处理） ===== */}
+      <UploadModal open={showUpload} onClose={() => setShowUpload(false)} targetPath={path} onDone={() => setShowUpload(false)} />
       <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} onDownload={downloadFile} onCopyLink={doCopyLink} />
 
       {/* 复制链接弹窗（含图片/视频时） */}
-      {copyDialog && (
-        <CopyLinksDialog files={copyDialog.files} onClose={() => setCopyDialog(null)} copyLinks={copyLinks} />
-      )}
+      <CopyLinksDialog open={!!copyDialog} files={copyDialog?.files ?? []} onClose={() => setCopyDialog(null)} copyLinks={copyLinks} />
 
       {/* 新建文件夹 */}
       <Dialog
@@ -936,17 +983,17 @@ export default function Files() {
           }}
         />
       )}
-      {menuPos && (
-        <div
-          className={cn(
-            'animate-dropdown fixed z-50 w-48 overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md',
-            enableBlur ? 'bg-popover/80 backdrop-blur-xl backdrop-saturate-150' : 'bg-popover'
-          )}
-          style={{ left: menuPos.x, top: menuPos.y }}
-        >
-          <FileRowMenuItems f={menuPos.file} handlers={handlers} onClose={() => setMenuPos(null)} />
-        </div>
-      )}
+      {menuPos &&
+        createPortal(
+          <div
+            className="glass-surface-popover glass-blur animate-dropdown fixed z-[100] w-48 overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md"
+            style={{ left: menuPos.x, top: menuPos.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <FileRowMenuItems f={menuPos.file} handlers={handlers} onClose={() => setMenuPos(null)} />
+          </div>,
+          document.body
+        )}
     </AppShell>
   );
 }

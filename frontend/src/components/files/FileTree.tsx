@@ -101,20 +101,19 @@ export function FileTree({ currentPath, onNavigate }: { currentPath: string; onN
     });
   };
 
+  // 定位与玻璃面板由 Files 页容器负责，这里只输出滚动区
   return (
-    <div className="sticky top-20 flex h-[calc(100vh-6rem)] flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin pr-1 pt-4">
-        <TreeNode
-          path="/"
-          name="全部文件"
-          depth={0}
-          currentPath={currentPath}
-          onNavigate={onNavigate}
-          expanded={expanded}
-          toggle={toggle}
-          root
-        />
-      </div>
+    <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none">
+      <TreeNode
+        path="/"
+        name="全部文件"
+        depth={0}
+        currentPath={currentPath}
+        onNavigate={onNavigate}
+        expanded={expanded}
+        toggle={toggle}
+        root
+      />
     </div>
   );
 }
