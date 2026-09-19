@@ -104,7 +104,7 @@ export function UserMenu() {
       align="end"
       triggerClass="flex items-center"
       trigger={
-        <div className="flex items-center gap-2 rounded-full p-1 pr-2 hover:bg-accent">
+        <div className="flex h-9 items-center gap-1.5 rounded-md p-1 pr-2 hover:bg-accent">
           <Avatar name={display} url={user.avatarUrl} size={28} />
           <span className="hidden max-w-[120px] truncate text-sm sm:block">{display}</span>
         </div>
