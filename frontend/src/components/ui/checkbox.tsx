@@ -36,7 +36,7 @@ export function Checkbox({
         'disabled:cursor-not-allowed disabled:opacity-50',
         checked || indeterminate
           ? 'border-primary bg-primary text-primary-foreground'
-          : 'bg-background hover:bg-accent',
+          : 'bg-background/60 backdrop-blur-sm hover:bg-foreground/10',
         className
       )}
       id={id}
