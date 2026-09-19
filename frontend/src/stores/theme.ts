@@ -1,11 +1,14 @@
 // 主题与外观（localStorage 持久化）
 import { create } from 'zustand';
 
+/** 模糊强度三档：off 全站实底；default 项目默认强度；frosted 文件卡片磨砂配方全局化 */
+export type BlurLevel = 'off' | 'default' | 'frosted';
+
 export interface AppearanceSettings {
   theme: 'light' | 'dark' | 'system';
   accentColor: string;
   fontColor?: string;
-  enableBlur: boolean;
+  blurLevel: BlurLevel;
   backgroundType: 'none' | 'image' | 'color';
   backgroundUrl?: string;
   backgroundColor?: string;
@@ -18,7 +21,7 @@ export interface AppearanceSettings {
 const DEFAULT: AppearanceSettings = {
   theme: 'system',
   accentColor: '#3B82F6',
-  enableBlur: true,
+  blurLevel: 'default',
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
@@ -29,7 +32,12 @@ const DEFAULT: AppearanceSettings = {
 function load(): AppearanceSettings {
   try {
     const raw = localStorage.getItem('picumet:appearance');
-    return raw ? { ...DEFAULT, ...JSON.parse(raw) } : DEFAULT;
+    if (!raw) return DEFAULT;
+    // 旧版布尔模糊开关迁移为三档：false → off，true/unset → default
+    const legacy = JSON.parse(raw) as Partial<AppearanceSettings> & { enableBlur?: boolean };
+    const { enableBlur: _legacy, ...rest } = legacy;
+    const blurLevel = rest.blurLevel ?? (_legacy === false ? 'off' : 'default');
+    return { ...DEFAULT, ...rest, blurLevel };
   } catch {
     return DEFAULT;
   }
@@ -53,20 +61,32 @@ function applyTheme(s: AppearanceSettings) {
   if (s.accentColor) {
     const { r, g, b } = hexToRgb(s.accentColor);
     const hsl = rgbToHsl(r, g, b);
-    root.style.setProperty('--primary', `${hsl.h} ${hsl.s}% ${hsl.l}%`);
-    root.style.setProperty('--ring', `${hsl.h} ${hsl.s}% ${hsl.l}%`);
-    // 根据强调色亮度（YIQ）动态计算前景色，避免浅色强调色在浅色主题下文字/图标变白
-    const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+    // 按原样输出强调色（不做亮度补偿）
+    let l = hsl.l;
+    let adj = hslToRgb(hsl.h, hsl.s, l);
+    // 浅色模式：白色按钮文字在过亮强调色上不达标时逐步压暗强调色（AA 4.5:1，
+    // 最低压到 35% 亮度；压暗后由下方 YIQ 自动决定是否仍用白字）
+    if (!dark) {
+      const lum = (c: { r: number; g: number; b: number }) => {
+        const f = (v: number) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+        return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+      };
+      while (l > 35 && 1.05 / (lum(adj) + 0.05) < 4.5) {
+        l -= 2;
+        adj = hslToRgb(hsl.h, hsl.s, l);
+      }
+    }
+    root.style.setProperty('--primary', `${hsl.h} ${hsl.s}% ${l}%`);
+    root.style.setProperty('--ring', `${hsl.h} ${hsl.s}% ${l}%`);
+    // 根据调整后强调色亮度（YIQ）动态计算前景色，保证按钮文字对比度
+    const yiq = (adj.r * 299 + adj.g * 587 + adj.b * 114) / 1000;
     root.style.setProperty(
       '--primary-foreground',
       yiq >= 128 ? '222.2 47.4% 11.2%' : '210 40% 98%'
     );
   }
 
-  // 模糊
-  root.style.setProperty('--enable-blur', s.enableBlur ? '1' : '0');
-
-  // 背景
+  // 背景（先于玻璃不透明度计算：alpha 依赖是否存在背景图）
   const customBg = localStorage.getItem('picumet:custom-background');
   let bgImage = '';
   if (s.backgroundType === 'image') {
@@ -74,17 +94,33 @@ function applyTheme(s: AppearanceSettings) {
     if (src) bgImage = src;
   }
   if (bgImage) {
+    root.classList.add('has-bg-image');
     body.style.backgroundImage = `url(${bgImage})`;
     body.style.backgroundSize = 'cover';
     body.style.backgroundPosition = 'center';
     body.style.backgroundAttachment = 'fixed';
     body.style.backgroundColor = '';
   } else {
+    root.classList.remove('has-bg-image');
     body.style.backgroundImage = '';
     body.style.backgroundAttachment = '';
     body.style.backgroundColor =
       s.backgroundType === 'color' && s.backgroundColor ? s.backgroundColor : '';
   }
+
+  // 模糊三档（全站统一玻璃表面：--glass-alpha 控制底色透明度，--glass-blur 控制 blur 半径）
+  // off：全站实底无模糊（.no-blur 类使所有 backdrop-filter 失效，文件卡片也不再有磨砂底）
+  // default：项目默认强度（blur 20px）；毛玻璃：文件卡片磨砂配方（blur 16px + alpha 0.6）全局化
+  // 有背景图时提高 default 档不透明度：深色下背景混入会破坏文字对比度，保住 WCAG AA
+  const glass =
+    s.blurLevel === 'off'
+      ? { alpha: '1', blur: '0px' }
+      : s.blurLevel === 'frosted' && bgImage
+        ? { alpha: '0.6', blur: '16px' }
+        : { alpha: bgImage ? (dark ? '0.92' : '0.82') : dark ? '0.8' : '0.72', blur: '20px' };
+  root.classList.toggle('no-blur', s.blurLevel === 'off');
+  root.style.setProperty('--glass-alpha', glass.alpha);
+  root.style.setProperty('--glass-blur', glass.blur);
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -109,6 +145,15 @@ function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: n
   else if (max === g) h = ((b - r) / d + 2) / 6;
   else h = ((r - g) / d + 4) / 6;
   return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+  s /= 100;
+  l /= 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return { r: Math.round(f(0) * 255), g: Math.round(f(8) * 255), b: Math.round(f(4) * 255) };
 }
 
 const initial = load();

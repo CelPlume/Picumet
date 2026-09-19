@@ -22,7 +22,7 @@ interface SettingsData {
     locale: string;
     role: string;
   };
-  appearance: { theme: string; accentColor: string; enableBlur: boolean };
+  appearance: { theme: string; accentColor: string; blurLevel: string };
   quota: Quota;
 }
 

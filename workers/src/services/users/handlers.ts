@@ -32,7 +32,7 @@ userRoutes.get('/me/settings', async (c) => {
     appearance: {
       theme: user.theme,
       accentColor: '#3B82F6',
-      enableBlur: true,
+      blurLevel: 'default',
     },
     quota,
   });

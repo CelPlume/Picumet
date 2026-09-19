@@ -1,15 +1,15 @@
 // 外观设置
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Upload, X, Image as ImageIcon } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle, Input, Label, Switch, Button } from '@/components/ui/core';
-import { ColorPicker } from '@/components/ui/colorpicker';
+import { Pipette, Upload, X, Image as ImageIcon } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, Label, Switch, Button } from '@/components/ui/core';
 import { RadioGroup } from '@/components/ui/radio-group';
+import { BlurSlider } from '@/components/settings/BlurSlider';
 import { useTheme } from '@/stores/theme';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
 
-const COLORS = ['#3B82F6', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#0EA5E9', '#64748B'];
+const ACCENT_PRESETS = ['#3B82F6', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#0EA5E9', '#64748B'];
 
 const MAX_BG_SIZE = 2 * 1024 * 1024; // 2MB
 
@@ -17,6 +17,8 @@ export default function AppearancePage() {
   const { t } = useTranslation();
   const theme = useTheme();
   const [uploadingBg, setUploadingBg] = useState(false);
+  const customColorRef = useRef<HTMLInputElement>(null);
+  const isCustomAccent = !ACCENT_PRESETS.some((c) => c.toLowerCase() === theme.accentColor.toLowerCase());
 
   const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -71,22 +73,51 @@ export default function AppearancePage() {
             options={themeOptions}
           />
 
+          <div>
+            <Label>{t('settings.accentColor')}</Label>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {ACCENT_PRESETS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  aria-label={c}
+                  onClick={() => theme.set({ accentColor: c })}
+                  className={cn(
+                    'h-7 w-7 cursor-pointer rounded-full border shadow-sm transition-transform hover:scale-110',
+                    theme.accentColor.toLowerCase() === c.toLowerCase()
+                      ? 'border-transparent ring-2 ring-primary ring-offset-2 ring-offset-background'
+                      : 'border-border'
+                  )}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+              <button
+                type="button"
+                aria-label={t('settings.accentCustom')}
+                onClick={() => customColorRef.current?.click()}
+                className={cn(
+                  'flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border shadow-sm transition-transform hover:scale-110',
+                  isCustomAccent
+                    ? 'border-transparent ring-2 ring-primary ring-offset-2 ring-offset-background'
+                    : 'border-border'
+                )}
+                style={{ background: 'conic-gradient(#ef4444, #f59e0b, #10b981, #0ea5e9, #8b5cf6, #ec4899, #ef4444)' }}
+              >
+                <Pipette className="h-3.5 w-3.5 text-white drop-shadow" />
+              </button>
+              <input
+                ref={customColorRef}
+                type="color"
+                value={theme.accentColor}
+                onChange={(e) => theme.set({ accentColor: e.target.value })}
+                className="sr-only"
+                tabIndex={-1}
+                aria-hidden
+              />
+            </div>
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <Label>{t('settings.accentColor')}</Label>
-              <div className="mt-1.5">
-                <ColorPicker value={theme.accentColor} onChange={(c) => theme.set({ accentColor: c })} presets={COLORS} />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border px-3">
-              <div>
-                <p className="text-sm font-medium">{t('settings.enableBlur')}</p>
-                <p className="text-xs text-muted-foreground">弹窗/菜单/提示背景模糊</p>
-              </div>
-              <Switch checked={theme.enableBlur} onChange={(v) => theme.set({ enableBlur: v })} />
-            </div>
-
             <div>
               <Label>文件图标风格</Label>
               <RadioGroup
@@ -112,6 +143,11 @@ export default function AppearancePage() {
                 className="mt-1.5"
               />
             </div>
+          </div>
+
+          <div>
+            <Label>{t('settings.blurLevel')}</Label>
+            <BlurSlider value={theme.blurLevel} onChange={(level) => theme.set({ blurLevel: level })} className="mt-3" />
           </div>
 
           <div>

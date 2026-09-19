@@ -4,26 +4,26 @@
 
 @layer base {
   :root {
-    /* 斯堪的纳维亚极简：中性黑白底，alpha 黑梯度墨色 */
-    --background: 0 0% 100%;
-    --foreground: 0 0% 0%;
+    /* 冷灰层次：画布 / 卡片 / 悬浮层梯度分明，统一 220° 低饱和灰相 */
+    --background: 220 14% 96%;
+    --foreground: 224 14% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 0%;
+    --card-foreground: 224 14% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 0%;
-    --primary: 217.2 91.2% 59.8%;
+    --popover-foreground: 224 14% 11%;
+    --primary: 221.2 83.2% 53.3%;
     --primary-foreground: 210 40% 98%;
-    --secondary: 0 0% 95%;
-    --secondary-foreground: 0 0% 0%;
-    --muted: 0 0% 95%;
-    --muted-foreground: 0 0% 36%;
-    --accent: 0 0% 95%;
-    --accent-foreground: 0 0% 0%;
+    --secondary: 220 13% 92%;
+    --secondary-foreground: 224 14% 11%;
+    --muted: 220 13% 93%;
+    --muted-foreground: 220 9% 36%;
+    --accent: 220 12% 90%;
+    --accent-foreground: 224 14% 11%;
     --destructive: 0 72% 45%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 90%;
-    --input: 0 0% 90%;
-    --ring: 217.2 91.2% 59.8%;
+    --border: 220 12% 84%;
+    --input: 220 12% 84%;
+    --ring: 221.2 83.2% 53.3%;
     --selection: 33 100% 50%;
     --radius: 0.5rem;
 
@@ -38,26 +38,29 @@
   }
 
   .dark {
-    /* 深色反转：近黑画布 + 白色墨色（alpha 白梯度） */
-    --background: 0 0% 4%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 6%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 6%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 0 0% 13%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 13%;
-    --muted-foreground: 0 0% 58%;
-    --accent: 0 0% 13%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 72% 51%;
+    /* 深色梯度：近黑画布上逐层抬升的同族灰
+       对比度按 WCAG AA（正文 4.5:1）校准：
+       - muted-foreground 70% 在 card 14% 上 ≈ 7:1，玻璃混入背景后仍 ≥ 4.5:1
+       - primary 提亮至 68%（文字/图标 ≈ 6:1），primary-foreground 反转为深色（按钮文字 ≈ 6.5:1） */
+    --background: 224 14% 9%;
+    --foreground: 220 14% 95%;
+    --card: 224 14% 14%;
+    --card-foreground: 220 14% 95%;
+    --popover: 224 15% 14%;
+    --popover-foreground: 220 14% 95%;
+    --primary: 217.2 91.2% 68%;
+    --primary-foreground: 224 30% 10%;
+    --secondary: 223 12% 20%;
+    --secondary-foreground: 220 14% 95%;
+    --muted: 223 12% 19%;
+    --muted-foreground: 220 9% 70%;
+    --accent: 223 12% 24%;
+    --accent-foreground: 220 14% 95%;
+    --destructive: 0 72% 56%;
     --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 15%;
-    --input: 0 0% 15%;
-    --ring: 224.3 76.3% 48%;
+    --border: 223 11% 30%;
+    --input: 223 11% 30%;
+    --ring: 217.2 91.2% 68%;
     --selection: 33 100% 50%;
   }
 
@@ -70,11 +73,43 @@
     font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     font-feature-settings: 'rlig' 1, 'calt' 1;
   }
+
+  /* 常驻保留滚动条槽位：弹窗/抽屉锁定 body 滚动时经典滚动条消失会导致
+     居中内容右移、关闭时归位（布局抖动）。stable 让槽位恒定，全站零位移 */
+  html {
+    scrollbar-gutter: stable;
+  }
 }
 
 @layer components {
-  .glass {
-    @apply backdrop-blur-md;
+  /* ============ 统一玻璃表面系统 ============ */
+  /* 半透明底 + backdrop blur；由 --glass-alpha / --glass-blur（theme store，
+     外观设置“启用模糊”）全局门控：关闭时所有表面同时退化为实底，全站一致。
+     - .glass-surface        卡片/面板/树/侧栏（--card 底）
+     - .glass-surface-popover 菜单/提示/弹层（--popover 底）
+     - .glass-overlay        弹窗遮罩（压暗 + 半强度模糊同步进行） */
+  .glass-surface {
+    background-color: hsl(var(--card) / var(--glass-alpha, 0.72));
+  }
+  .glass-surface-popover {
+    background-color: hsl(var(--popover) / var(--glass-alpha, 0.72));
+  }
+  .glass-blur {
+    -webkit-backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
+    backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
+  }
+  .glass-overlay {
+    background-color: rgb(0 0 0 / 0.5);
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur, 20px) / 2.5));
+    backdrop-filter: blur(calc(var(--glass-blur, 20px) / 2.5));
+  }
+  /* 关闭模糊（.no-blur，theme store off 档）：所有 backdrop-filter 失效，
+     含遮罩与文件项磨砂底，全站实底（no-blur 与 has-bg-image 同在根元素上） */
+  .no-blur .glass-blur,
+  .no-blur .glass-overlay,
+  .no-blur .item-surface {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
   .scrollbar-thin {
     scrollbar-width: thin;
@@ -89,6 +124,13 @@
   }
   .scrollbar-thin::-webkit-scrollbar-track {
     background: transparent;
+  }
+  /* 隐藏滚动条（文件树/设置面板等内滚区域）：滚动仍可用滚轮/键盘/触屏 */
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
 }
 
@@ -245,13 +287,98 @@
   user-select: none;
   -webkit-user-select: none;
 }
+/* 拖拽期间覆盖全部后代（user-select 非继承属性，需显式通配） */
+.lasso-hint * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+/* 文件项（卡片/列表）与分享列表统一（参考 MyShares 列表行）：
+   rest = 玻璃表面（--glass-alpha/--glass-blur 三档门控）+ 透明边框；
+   hover = accent 填充 + 边框显现；selected = 玻璃底上叠加主色调（任何壁纸下保持可读） */
+.item-surface {
+  background-color: hsl(var(--card) / var(--glass-alpha, 0.72));
+  border-color: transparent;
+  -webkit-backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
+  backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
+  transition: background-color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.item-surface:hover {
+  border-color: hsl(var(--border));
+  /* 压暗而非透明填充：黑色叠加层盖在玻璃底上，任何主题/壁纸/模糊档位下观感一致 */
+  background-image: linear-gradient(rgb(0 0 0 / 0.08));
+}
+.item-surface-selected,
 .lasso-item-selected {
-  border-color: hsl(var(--primary)) !important;
-  background-color: hsl(var(--primary) / 0.08) !important;
+  background-color: hsl(var(--card) / var(--glass-alpha, 0.72)) !important;
+  border-color: hsl(var(--primary) / 0.55) !important;
+  background-image: linear-gradient(hsl(var(--primary) / 0.14), hsl(var(--primary) / 0.14));
+}
+.item-surface-selected:hover,
+.lasso-item-selected:hover {
+  border-color: hsl(var(--primary) / 0.75) !important;
+  background-image: linear-gradient(hsl(var(--primary) / 0.2), hsl(var(--primary) / 0.2));
 }
 .lasso-item-selected .lasso-item-dot {
   transform: scale(1.45);
   background: hsl(var(--primary)) !important;
+}
+
+/* ============ 离散档位滑块（外观-模糊强度，参考 dsh-effort-slider / dsh-reasoning-slider） ============ */
+/* 原生 range 完全透明化（appearance:none 同时去掉原生填充与轨道），交互全由自绘层呈现 */
+.discrete-slider {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.discrete-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+}
+.discrete-slider::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+}
+.discrete-slider::-webkit-slider-runnable-track {
+  background: transparent;
+  border: none;
+}
+.discrete-slider::-moz-range-track {
+  background: transparent;
+  border: none;
+}
+.discrete-slider:focus-visible {
+  outline: none;
+}
+/* 填充段：从半透明渐入强调色（横向渐变，宽端被滑块遮住） */
+.discrete-slider-fill {
+  background-image: linear-gradient(90deg, hsl(var(--primary) / 0.12), hsl(var(--primary) / 0.9));
+}
+/* 滑块：白色圆形（明暗主题通用），柔和中性投影；hover 放大、按下缩小 */
+.discrete-slider-thumb {
+  transform: translate(-50%, -50%);
+  box-shadow:
+    0 1px 3px rgb(0 0 0 / 0.15),
+    0 4px 14px rgb(0 0 0 / 0.12);
+  transition:
+    left var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+.discrete-slider-track:hover .discrete-slider-thumb {
+  transform: translate(-50%, -50%) scale(1.08);
+}
+.discrete-slider-track:has(.discrete-slider:active) .discrete-slider-thumb {
+  transform: translate(-50%, -50%) scale(0.95);
+}
+/* 键盘焦点环落在轨道容器上 */
+.discrete-slider-track:has(.discrete-slider:focus-visible) {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
 }
 
 /* ============ 降级方案 ============ */
@@ -266,7 +393,14 @@
 }
 
 @supports not (backdrop-filter: blur(4px)) {
-  .backdrop-blur-sm {
+  .glass-overlay {
     background-color: rgba(0, 0, 0, 0.75);
+  }
+  .glass-surface,
+  .glass-surface-popover {
+    background-color: hsl(var(--card));
+  }
+  .glass-surface-popover {
+    background-color: hsl(var(--popover));
   }
 }
