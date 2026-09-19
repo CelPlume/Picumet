@@ -21,7 +21,7 @@ export default function AdminLayout() {
     <AppShell activeNav="admin">
       <h1 className="mb-4 text-xl font-semibold">{t('admin.title')}</h1>
       <div className="flex flex-col gap-6 md:flex-row md:items-start">
-        <nav className="flex w-full shrink-0 flex-col gap-1 md:w-44 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto md:scrollbar-thin md:pr-1">
+        <nav className="glass-surface glass-blur flex w-full shrink-0 flex-col gap-1 rounded-xl border p-2 scrollbar-none md:w-44 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto">
           {items.map((it) => (
             <NavLink
               key={it.to}

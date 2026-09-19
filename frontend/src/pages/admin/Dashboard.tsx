@@ -34,7 +34,7 @@ export default function AdminDashboard() {
     : [];
 
   return (
-    <div className="h-full space-y-6 overflow-y-auto pr-1 scrollbar-thin">
+    <div className="h-full space-y-6 overflow-y-auto scrollbar-none">
       {!stats ? <StatCardSkeleton count={4} /> : (
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map((c) => (

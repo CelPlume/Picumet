@@ -106,7 +106,8 @@ export default function AdminSettings() {
   if (!settings) return <FormCardSkeleton />;
 
   return (
-    <div className="grid h-full max-w-5xl items-start gap-4 overflow-y-auto pr-1 scrollbar-thin lg:grid-cols-2">
+    <div className="h-full max-w-5xl space-y-4 overflow-y-auto scrollbar-none lg:grid lg:grid-cols-2 lg:items-start lg:gap-4 lg:space-y-0">
+      <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t('admin.settings')}</CardTitle>
@@ -148,6 +149,33 @@ export default function AdminSettings() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('admin.announcements')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-2">
+            <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t('admin.announcementTitle')} />
+            <Input value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder={t('admin.announcementContent')} />
+            <Button onClick={addAnnouncement}><Plus className="h-4 w-4" /> {t('admin.addAnnouncement')}</Button>
+          </div>
+          <div className="space-y-2">
+            {announcements.map((a) => (
+              <div key={a.id} className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
+                <Badge variant={a.level === 'danger' ? 'destructive' : a.level === 'warning' ? 'warning' : 'secondary'}>{a.level}</Badge>
+                <span className="min-w-0 flex-1 truncate font-medium">{a.title}</span>
+                <span className="text-xs text-muted-foreground">{a.active ? '启用' : '停用'}</span>
+                <button onClick={() => delAnnouncement(a.id)} className="rounded p-1 text-destructive hover:bg-destructive/10">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+      </div>
+
+      <div>
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -208,31 +236,7 @@ export default function AdminSettings() {
           </div>
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('admin.announcements')}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-2">
-            <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t('admin.announcementTitle')} />
-            <Input value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder={t('admin.announcementContent')} />
-            <Button onClick={addAnnouncement}><Plus className="h-4 w-4" /> {t('admin.addAnnouncement')}</Button>
-          </div>
-          <div className="space-y-2">
-            {announcements.map((a) => (
-              <div key={a.id} className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
-                <Badge variant={a.level === 'danger' ? 'destructive' : a.level === 'warning' ? 'warning' : 'secondary'}>{a.level}</Badge>
-                <span className="min-w-0 flex-1 truncate font-medium">{a.title}</span>
-                <span className="text-xs text-muted-foreground">{a.active ? '启用' : '停用'}</span>
-                <button onClick={() => delAnnouncement(a.id)} className="rounded p-1 text-destructive hover:bg-destructive/10">
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      </div>
     </div>
   );
 }

@@ -17,7 +17,7 @@ export default function SettingsLayout() {
     <AppShell activeNav="settings">
       <h1 className="mb-4 text-xl font-semibold">{t('settings.title')}</h1>
       <div className="flex flex-col gap-6 md:flex-row md:items-start">
-        <nav className="flex w-full shrink-0 flex-col gap-1 md:w-56 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto md:scrollbar-thin md:pr-1">
+        <nav className="glass-surface glass-blur flex w-full shrink-0 flex-col gap-1 rounded-xl border p-2 scrollbar-none md:w-56 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto">
           {items.map((it) => (
             <NavLink
               key={it.to}
@@ -37,7 +37,7 @@ export default function SettingsLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className="min-w-0 flex-1 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto md:scrollbar-thin">
+        <div className="scrollbar-none min-w-0 flex-1 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto">
           <Outlet />
         </div>
       </div>
