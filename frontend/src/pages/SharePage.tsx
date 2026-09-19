@@ -132,7 +132,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
           </div>
         ) : !info ? null : info.requiresPassword && !info.file ? (
           // 密码门
-          <div className="w-full max-w-sm rounded-xl border bg-card p-8 text-center">
+          <div className="w-full max-w-sm glass-surface glass-blur rounded-xl border p-8 text-center">
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
               <Lock className="h-6 w-6 text-muted-foreground" />
             </div>
@@ -146,7 +146,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
         ) : (
           // 分享内容
           <div className="w-full space-y-4">
-            <div className="rounded-xl border bg-card p-5 text-center">
+            <div className="glass-surface glass-blur rounded-xl border p-5 text-center">
               {file && imageMode && previewUrl && isImg ? (
                 <img src={previewUrl} alt={file.name} className="mx-auto max-h-[50vh] rounded-md object-contain" />
               ) : (
@@ -188,7 +188,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
             )}
 
             {file && !imageMode && info.allowPreview && (
-              <div className="mt-2 rounded-xl border bg-card p-4 text-center">
+              <div className="glass-surface glass-blur mt-2 rounded-xl border p-4 text-center">
                 <p className="mb-2 flex items-center justify-center gap-1 text-sm text-muted-foreground">
                   <Eye className="h-4 w-4" /> {t('share.view')}
                 </p>

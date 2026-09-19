@@ -23,7 +23,7 @@ export default function Landing() {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       {/* 顶部导航 */}
-      <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur-md shadow-sm transition-shadow duration-300">
+      <header className="glass-surface glass-blur sticky top-0 z-30 border-b shadow-sm transition-shadow duration-300">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
           <Logo size={26} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} />
           <div className="flex items-center gap-2">
@@ -77,7 +77,7 @@ export default function Landing() {
           {features.map((f) => (
             <div
               key={f.title}
-              className="group relative overflow-hidden rounded-lg border bg-card p-6 transition-all duration-300 hover:-translate-y-1 hover:border-primary/20 hover:shadow-lg"
+              className="glass-surface glass-blur group relative overflow-hidden rounded-lg border p-6 transition-all duration-300 hover:-translate-y-1 hover:border-primary/20 hover:shadow-lg"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
               <div className="relative">

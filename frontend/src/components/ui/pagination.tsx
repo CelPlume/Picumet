@@ -65,7 +65,7 @@ export function Pagination({
   };
 
   return (
-    <div className={cn('flex flex-wrap items-center justify-center gap-1.5 py-2', className)}>
+    <div className={cn('glass-surface glass-blur mx-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5', className)}>
       {onPageSizeChange && (
         <div className="mr-2 flex items-center gap-1.5 text-sm text-muted-foreground">
           每页

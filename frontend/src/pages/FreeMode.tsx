@@ -83,7 +83,7 @@ export default function FreeMode() {
             ))}
           </div>
 
-          <div className="space-y-3 rounded-lg border bg-card p-4">
+          <div className="glass-surface glass-blur space-y-3 rounded-lg border p-4">
             <div>
               <Label>Endpoint</Label>
               <Input className="mt-1" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://xxx.r2.cloudflarestorage.com" />

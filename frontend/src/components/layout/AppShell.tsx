@@ -46,7 +46,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
         'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
         activeNav === key || location.pathname.startsWith(to)
           ? 'font-medium text-primary'
-          : 'text-muted-foreground hover:text-foreground'
+          : 'text-foreground/80 hover:bg-foreground/5 hover:text-foreground'
       )}
     >
       {icon}
@@ -63,7 +63,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
 
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur-md shadow-sm supports-[backdrop-filter]:bg-background/70">
+      <header className="glass-surface glass-blur sticky top-0 z-30 border-b shadow-sm">
         <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-4">
           <div className="flex items-center gap-2">
             {/* 移动端汉堡菜单 */}
@@ -101,7 +101,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
                   'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                   activeNav === 'admin' || location.pathname.startsWith('/admin')
                     ? 'font-medium text-primary'
-                    : 'text-muted-foreground hover:text-foreground'
+                    : 'text-foreground/80 hover:bg-foreground/5 hover:text-foreground'
                 )}
               >
                 <ShieldCheck className="h-4 w-4" />

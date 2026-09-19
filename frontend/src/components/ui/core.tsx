@@ -102,7 +102,7 @@ export function Label({ className, children, htmlFor }: { className?: string; ch
 // ============ Card ============
 export function Card({ className, children, onClick }: { className?: string; children: ReactNode; onClick?: () => void }) {
   return (
-    <div onClick={onClick} className={cn('flex flex-col gap-4 rounded-xl border bg-card py-5 text-card-foreground shadow-sm', className)}>
+    <div onClick={onClick} className={cn('glass-surface glass-blur flex flex-col gap-4 rounded-xl border py-5 text-card-foreground shadow-sm', className)}>
       {children}
     </div>
   );
