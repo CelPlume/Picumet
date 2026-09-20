@@ -140,9 +140,9 @@ The evaluation order runs from highest to lowest priority:
 
 1. Admin override.
 2. Mount boundary check.
-3. User root-path limit.
+3. User root-path limit. Reads and downloads of files with `users` / `public` visibility are exempt from the `defaultPath` boundary; write operations are never exempt.
 4. API-key permission scope, applied as the intersection of key permissions and rule permissions.
-5. Path rules, ordered by subject specificity, path specificity, explicit priority, then effect.
+5. Path rules. Visibility-derived rules (reads and downloads of `users` / `public` files) flow through the same sort pipeline as stored rules; origin priority is `admin` > `user` > `system`, then subject specificity, path specificity, explicit priority, and effect.
 6. Owner-permission fallback.
 7. Default deny.
 
@@ -150,6 +150,7 @@ Two security boundaries matter:
 
 - `isPathWithinBoundary` compares path segments rather than using `startsWith`.
 - An API key with no matching rule receives a deny; the system never defaults to allow.
+- Visibility only relaxes reads and downloads: no write decision or path boundary is affected by it, and `deny` rules always override synthesized rules.
 
 **Dependencies**: `utils/path.ts`, the rule repository, and `shared/errors.ts`.
 
@@ -172,6 +173,8 @@ Copy links: `GET /api/files/:id/copy-links` returns `formats: { direct, html, ma
 Public path serving: `GET /*` streams an object by its virtual path. A public mount serves directly without login; a private mount requires an authenticated user with download permission; a password-protected file returns `403`.
 
 Move Saga: `moveWithSaga` validates permissions, conflicts, and cycles, creates a job, copies and verifies the object, switches the metadata atomically, and cleans up the source asynchronously. The main file API and WebDAV `MOVE` share this path.
+
+Visibility and review: files carry three visibility tiers — `private` (owner and admins), `users` (any signed-in user can read and download), and `public` (enters the anonymous public gallery once review passes). Setting `public` requires the owner to hold the `can_publish` capability, otherwise the file enters the `pending` review queue; setting it on a folder cascades to all entries inside. File-domain permission checks consistently use the file's full path (`filePermPath`) so user-authored full-path rules match, while parent-folder rules still apply through pattern inheritance.
 
 **Dependencies**: `permissions/principal.ts`, `storage/providers.ts`, `shares/tokens.ts`, and the file, mount, provider, log, and job repositories.
 
@@ -220,6 +223,9 @@ services/storage/
 ├── providers.ts   // provider factory (getProvider, getProviderForMount)
 ├── r2.ts          // R2BindingProvider based on the env.R2 binding
 ├── s3.ts          // S3Provider (R2 S3 API, AWS S3, Oracle)
+├── errors.ts      // ProviderError classification (not-found / auth / throttled / other)
+├── range.ts       // Range request parsing and S3 Range header construction
+├── serve.ts       // serveObject unified object egress (200/206/416/502)
 └── types.ts       // StorageProviderInterface
 ```
 
@@ -227,6 +233,8 @@ Provider selection:
 
 - A provider with `type=r2` and no endpoint uses `R2BindingProvider` (the local or production R2 binding).
 - Everything else uses `S3Provider`, an S3-protocol client.
+
+The storage layer also normalizes cross-provider details: object egress goes through `serveObject`, which owns Range handling (`206` on hit, `416` on invalid ranges, upstream failures classified via `ProviderError` as `502`); batch deletes follow the S3 convention of at most 1000 objects per batch, surfacing each failure in the `Errors` container as a `ProviderError` so callers can fall back to per-object deletes; copies above 5 GB (the move Saga's large-file path) use `UploadPartCopy` to copy in parts; and listing with a `Delimiter` aggregates common prefixes into virtual directories.
 
 **Dependencies**: the provider and mount repositories and `utils/crypto.ts` for secret decryption.
 
@@ -272,7 +280,7 @@ Security notes:
 
 ### Admin service
 
-**Responsibilities**: dashboard and statistics, user management, global shares, all files, access logs, system settings, announcements, storage providers, mount points, and permission rules.
+**Responsibilities**: dashboard and statistics, user management (including capability bits), global shares, all files with public review, access logs, system settings, announcements, storage providers, mount points, and permission rules.
 
 ```
 services/admin/
@@ -287,11 +295,13 @@ services/admin/
 
 ### Users service
 
-**Responsibilities**: profile, appearance preferences, default path, and password change.
+**Responsibilities**: profile, appearance preferences, default path, password change, and user-authored access rules.
 
 ```
 services/users/
 ├── handlers.ts    // /me/settings GET/PUT, /me/password PUT
+├── rules.ts       // /api/users/rules create, list, revoke
+├── rule-guard.ts  // gates for user-created rules (can_grant, target existence, permission surface)
 ├── schemas.ts     // ProfileSchema, PasswordSchema
 └── types.ts
 ```
@@ -318,13 +328,16 @@ Security notes:
 
 ### Public service
 
-**Responsibilities**: site settings, announcements, and health checks without authentication.
+**Responsibilities**: site settings, announcements, health checks, and the public gallery without authentication.
 
 ```
 services/public/
 ├── handlers.ts    // GET /api/public/settings, /announcements, /health
+├── gallery.ts     // /api/gallery anonymous listing, download links, password verification
 └── types.ts
 ```
+
+The gallery returns only files with `visibility=public` and review status `approved`, filtering directly on visibility without consulting path permission rules; downloads reuse the share download tokens and gateway (atomic D1 consumption) instead of opening a second authorization surface.
 
 **Dependencies**: the settings and announcement repositories.
 
@@ -369,14 +382,14 @@ D1 stores the following core tables:
 
 | Table | Purpose |
 | :--- | :--- |
-| `users` | User accounts, roles, status, default path, and locale preferences. |
+| `users` | User accounts, roles, status, default path, locale preferences, and capability bits. |
 | `user_quotas` | Used and reserved storage, file counts, and limits. |
 | `storage_providers` | S3-protocol provider configuration with encrypted credentials. |
 | `mounts` | Maps a provider to a virtual path with sorting preferences. |
-| `file_metadata` | Files and folders: object key, path, size, etag, owner, and custom attributes. |
+| `file_metadata` | Files and folders: object key, path, size, etag, owner, visibility, review status, and custom attributes. |
 | `upload_sessions` | Tracks upload progress, parts, and reserved quota. |
 | `operation_jobs` | Asynchronous move, copy, and delete jobs. |
-| `path_rules` | Permission rules scoped to a mount. |
+| `path_rules` | Permission rules scoped to a mount, with origin (admin/user/system) and creator. |
 | `api_keys` | API keys with permissions, protocols, and upload root. |
 | `shares` | Share links with password, expiry, and access limits. |
 | `download_tokens` | One-time download tokens consumed atomically. |
@@ -392,6 +405,8 @@ Migrations live in `workers/migrations/`:
 - `0002_add_parts_and_download_tokens.sql` adds multipart parts and the `download_tokens` table.
 - `0003_mount_id_and_session_version.sql` adds mount isolation and session revocation fields.
 - `0004_smtp_and_otp.sql` adds SMTP and one-time password (OTP) email verification.
+- `0005_provider_type_unify.sql` narrows provider types to `r2`/`s3` (oracle folded into s3) and drops the `upload_domain` field.
+- `0006_user_model.sql` adds file visibility and review status (with indexes), rule origin and creator, and user capability bits (backfilled to `["can_share"]`).
 
 ## Glossary
 
@@ -439,7 +454,7 @@ Capability matrix:
 | Custom domain | Yes | Yes | Yes (via CDN) |
 | Checksum (MD5) | Yes | Yes | Yes |
 
-Credential model: all providers share one S3-protocol configuration instead of a per-provider discriminated union. The config holds `type`, `name`, `endpoint`, `region`, `bucket`, `accessKeyId`, and `secretAccessKey`, plus optional `publicDomain`, `uploadDomain`, and `pathPrefix`. The store encrypts credentials with AES-GCM and decrypts them only when the provider client needs them. A provider with `type=r2` and no endpoint uses the Workers R2 binding directly.
+Credential model: all providers share one S3-protocol configuration instead of a per-provider discriminated union. The config holds `type`, `name`, `endpoint`, `region`, `bucket`, `accessKeyId`, and `secretAccessKey`, plus optional `publicDomain` and `pathPrefix` (`upload_domain` has been removed). The store encrypts credentials with AES-GCM and decrypts them only when the provider client needs them. `type` keeps two values, `r2` and `s3`: an `r2` provider with an empty `endpoint` uses the Workers R2 binding directly; anything with a non-empty `endpoint` (including the former Oracle, folded into `s3`) goes through the S3-protocol client. `endpoint`, `accessKeyId`, and `secretAccessKey` must be provided together or left empty together.
 
 ## Security design
 
@@ -459,6 +474,8 @@ The security model applies defense in depth across the request lifecycle:
 - **Download tokens**: D1 consumes each token atomically, so concurrent requests cannot reuse a one-time token.
 - **Share download counting**: issuing a token does not count; the gateway counts once when it consumes the token and returns `410` over the limit.
 - **Share passwords**: `POST /api/shares/:id/verify` sets a short-lived authorization cookie; the password never appears in a URL.
+- **Visibility and review**: files carry three visibility tiers `private` / `users` / `public`; `public` requires review approval to enter the anonymous gallery, and users without the `can_publish` capability enter `pending`. Visibility only relaxes `read` / `download`; write decisions and path boundaries are never relaxed.
+- **Owner binding**: the gateway, WebDAV, and compatibility channels filter files by owner; non-owners get a stealth `404` that does not reveal existence.
 - **Large-file memory**: PicGo-compatible upload, WebDAV, and free-mode paths stream request bodies instead of buffering them.
 - **Readiness**: `/api/public/health/live` and `/ready` probes gate the API; before initialization, business endpoints return `503`.
 - **CSP**: `script-src 'self' https://challenges.cloudflare.com` with no `unsafe-inline`.

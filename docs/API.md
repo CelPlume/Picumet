@@ -243,7 +243,7 @@ curl -X POST https://{domain}/api/auth/logout \
 
 ### Get the current user
 
-Returns the logged-in user and their quota.
+Returns the logged-in user, their quota, and capability bits. `capabilities` lists what the account may do: `can_publish` (publish public files), `can_share` (create shares), and `can_grant` (create per-file access rules for other users).
 
 `GET /api/auth/me`
 
@@ -262,7 +262,8 @@ Returns the logged-in user and their quota.
       "displayName": "Alice",
       "defaultPath": "/",
       "locale": "zh-CN",
-      "theme": "system"
+      "theme": "system",
+      "capabilities": ["can_share"]
     },
     "quota": {
       "maxStorage": 10737418240,
@@ -512,7 +513,7 @@ curl -X POST https://{domain}/api/files/folder \
 
 ### Get file details
 
-Returns a single file or folder with its permissions, access mode, and password status.
+Returns a single file or folder with its permissions, access mode, password status, visibility, and review status.
 
 `GET /api/files/{id}`
 
@@ -536,6 +537,8 @@ Returns a single file or folder with its permissions, access mode, and password 
       "size": 1048576,
       "mimeType": "image/jpeg",
       "hasPassword": false,
+      "visibility": "private",
+      "reviewStatus": null,
       "createdAt": 1710000000000
     },
     "mount": { "id": "mount-id", "name": "Drive", "sortBy": "name", "sortOrder": "asc" },
@@ -548,6 +551,8 @@ Returns a single file or folder with its permissions, access mode, and password 
 ```
 
 The `accessMode` value is `public_cdn` for files served by a public CDN domain, `signed_redirect` for pre-signed URL providers, or `private_gateway` for the Worker download gateway.
+
+File objects also carry `visibility` (`private` / `users` / `public`) and `reviewStatus` (`pending` / `approved` / `rejected`; only meaningful for `public`, otherwise `null`). `private` files are visible only to the owner and admins; `users` files are readable and downloadable by any signed-in user; `public` files that pass review enter the anonymous public gallery.
 
 #### Errors
 
@@ -564,7 +569,7 @@ curl https://{domain}/api/files/{id} -b cookies.txt
 
 ### Update file metadata
 
-Renames a file or folder and updates its metadata, including the access password and display options.
+Renames a file or folder and updates its metadata, including the access password, display options, and visibility.
 
 `PUT /api/files/{id}`
 
@@ -584,11 +589,12 @@ Renames a file or folder and updates its metadata, including the access password
 | `coverUrl` | `string` | No | A cover image URL. |
 | `iconEmoji` | `string` | No | An icon emoji, at most 16 characters. |
 | `accessPassword` | `string` | No | A new access password, or `null` to remove it. The server stores only a hash. |
+| `visibility` | `string` | No | The visibility: `private`, `users`, or `public`. Requires the update permission. |
 | `manualPosition` | `integer` | No | The manual sort position. |
 
 #### Response
 
-Returns the updated file.
+Returns the updated file. When setting `visibility`: `users` takes effect immediately; `public` requires the account to hold the `can_publish` capability, otherwise the file enters the `pending` review queue for admin approval; setting it on a folder cascades to everything inside. Visibility changes are recorded as a `visibility_change` audit log.
 
 ```json
 {
@@ -601,6 +607,7 @@ Returns the updated file.
       "type": "file",
       "size": 1048576,
       "hasPassword": true,
+      "visibility": "users",
       "updatedAt": 1710000000000
     }
   },
@@ -1803,6 +1810,72 @@ curl -X POST https://{domain}/api/users/me/email/verify-otp \
   -d '{"email":"new@example.com","code":"123456"}'
 ```
 
+## User access rules
+
+Users can grant or deny `read`/`download` permission on a **single file** to other users. The creator needs the `can_grant` capability. Rules join permission evaluation with `user` origin (sorted below admin rules, above system-synthesized rules), and `deny` always overrides a same-path `allow`.
+
+### List my access rules
+
+Returns every rule the current user created with `user` origin.
+
+`GET /api/users/rules`
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "rules": [{
+      "id": "rule-uuid",
+      "pathPattern": "/drive/photos/photo.jpg",
+      "effect": "allow",
+      "role": null,
+      "userId": "target-user-uuid",
+      "apiKeyId": null,
+      "permissions": ["read", "download"],
+      "origin": "user",
+      "createdBy": "creator-user-uuid"
+    }]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+### Create an access rule
+
+`POST /api/users/rules`
+
+#### Request body
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | Yes | The file identifier; the rule derives its `pathPattern` from the file's full path. |
+| `effect` | `string` | Yes | `allow` or `deny`. |
+| `targetUserId` | `string` | No | The target user ID; pair with `allUsers` (exactly one of the two). |
+| `allUsers` | `boolean` | No | `true` targets every signed-in user. |
+| `permissions` | `string[]` | Yes | At least one of `read`, `download`; write permissions are not supported. |
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `FORBIDDEN` | `403` | The account lacks `can_grant`, or the target user does not exist. | Check the capability and target. |
+| `VALIDATION_ERROR` | `400` | The subject, permission set, or file state is invalid. | Correct the fields and retry. |
+
+### Revoke an access rule
+
+Only `user`-origin rules you created yourself can be revoked here; admin rules are managed in the admin panel.
+
+`DELETE /api/users/rules/{id}`
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `FORBIDDEN` | `403` | The rule was not created by you, or it is an admin rule. | Use the admin panel. |
+| `NOT_FOUND` | `404` | The rule does not exist. | Confirm the rule ID. |
+
 ## API keys
 
 API key endpoints create, list, and revoke keys. Keys authenticate PicGo, PicList, scripts, and WebDAV clients. A user can have up to 20 active keys.
@@ -2056,6 +2129,7 @@ Lists, updates, and deletes users.
 | `defaultPath` | `string` | No | The default directory, starting with `/`. |
 | `maxStorage` | `integer` | No | The storage quota in bytes. |
 | `maxFiles` | `integer` | No | The file-count quota. |
+| `capabilities` | `string[]` | No | Capability bits, replaced wholesale: `can_publish`, `can_share`, `can_grant`. |
 
 #### List response
 
@@ -2130,7 +2204,7 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 
 ### List all files
 
-Searches every file across all mounts.
+Searches every file across all mounts; results carry visibility and review status columns.
 
 `GET /api/admin/files?page={page}&limit={limit}&search={search}`
 
@@ -2159,6 +2233,31 @@ Searches every file across all mounts.
 
 ```sh
 curl "https://{domain}/api/admin/files?search=photo" -b cookies.txt
+```
+
+### Review public files
+
+Approves or rejects public files waiting for review, and can directly adjust any file's visibility; visibility changes on folders cascade to everything inside.
+
+`PATCH /api/admin/files/{id}/review`
+
+#### Request body
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `status` | `string` | No | The review outcome: `approved`, `rejected`, or `pending`. |
+| `visibility` | `string` | No | The target visibility: `private`, `users`, or `public`. |
+
+Pass at least one of the two fields. Changes are written to the `review` and `visibility_change` audit logs.
+
+#### Example
+
+```sh
+curl -X PATCH https://{domain}/api/admin/files/{id}/review \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"status":"approved"}'
 ```
 
 ### Read access logs
@@ -2320,14 +2419,13 @@ Lists, creates, updates, tests, and deletes storage providers. The server stores
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `name` | `string` | Yes | A label for the provider. |
-| `type` | `string` | Yes | `r2`, `s3`, or `oracle`. |
-| `endpoint` | `string` | No | The S3 endpoint. Leave empty for a bound R2 provider. Public http(s) addresses only. |
+| `type` | `string` | No | `r2` or `s3` (`oracle` is folded into `s3`). When omitted it is derived from `endpoint`: empty means the R2 binding, non-empty means the S3 protocol. |
+| `endpoint` | `string` | No | The S3 endpoint. Leave empty for a bound R2 provider. Public http(s) addresses only. `endpoint`, `accessKeyId`, and `secretAccessKey` must be provided together or left empty together. |
 | `region` | `string` | No | The region. Defaults to `auto` for R2. |
 | `bucket` | `string` | Yes | The bucket name. |
 | `accessKeyId` | `string` | No | The access key. Leave empty for a bound R2 provider. |
 | `secretAccessKey` | `string` | No | The secret key. Leave empty for a bound R2 provider. |
 | `publicDomain` | `string` | No | A public CDN domain for direct URLs. |
-| `uploadDomain` | `string` | No | A custom upload domain. |
 | `pathPrefix` | `string` | No | A prefix applied to object keys. |
 
 #### Test response
@@ -2458,7 +2556,6 @@ Validates the storage endpoint, tests the connection, and starts a temporary ses
 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `type` | `string` | Yes | `r2`, `s3`, or `oracle`. |
 | `endpoint` | `string` | Yes | The S3 endpoint. Public http(s) addresses only; the server rejects private or local addresses. |
 | `region` | `string` | No | The region. |
 | `bucket` | `string` | Yes | The bucket name. |
@@ -2497,7 +2594,7 @@ Returns the session user, expiry, and a session-level CSRF token with status `20
 curl -X POST https://{domain}/api/free-mode/init \
   -H "Content-Type: application/json" \
   -c cookies.txt \
-  -d '{"type":"s3","endpoint":"https://s3.example.com","bucket":"my-bucket","accessKeyId":"AK","secretAccessKey":"SK","sessionHours":1}'
+  -d '{"endpoint":"https://s3.example.com","bucket":"my-bucket","accessKeyId":"AK","secretAccessKey":"SK","sessionHours":1}'
 ```
 
 ### List free-mode files
@@ -2802,6 +2899,78 @@ Files on a public mount serve with no authentication. Files on a private mount r
 ```sh
 curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 ```
+
+## Public gallery
+
+Files with `visibility=public` and an `approved` review status enter the public gallery, accessible anonymously. Listing, download links, and password verification require no login; the signed-in owner and admins download without a password. The public surface filters directly by visibility and review status and never consults path permission rules.
+
+### Browse the public gallery
+
+Returns approved public files with pagination. Only files are returned (no folders).
+
+`GET /api/gallery?page={page}&limit={limit}`
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [{
+      "id": "file-uuid",
+      "name": "photo.jpg",
+      "path": "/drive/photos/photo.jpg",
+      "type": "file",
+      "size": 1048576,
+      "mimeType": "image/jpeg",
+      "coverUrl": null,
+      "hasPassword": false,
+      "ownerName": "alice",
+      "visibility": "public",
+      "createdAt": 1710000000000,
+      "updatedAt": 1710000000000
+    }],
+    "pagination": { "total": 3, "page": 1, "limit": 50, "pages": 1 }
+  },
+  "timestamp": 1710000000000
+}
+```
+
+### Get a public file download link
+
+Returns a single-use gateway download link (valid for 15 minutes). Password-protected files return `403 PASSWORD_REQUIRED`; verify the password first.
+
+`GET /api/gallery/{id}/download`
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": { "url": "https://{domain}/api/gateway/download/{token}", "expiresIn": 900 },
+  "timestamp": 1710000000000
+}
+```
+
+### Verify a public file's password
+
+Verifies the access password anonymously and returns the same single-use gateway download link on success.
+
+`POST /api/gallery/{id}/verify-password`
+
+#### Request body
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `password` | `string` | Yes | The file's access password. |
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | The file does not exist, is not public, or is not approved. | Check the file state. |
+| `INVALID_PASSWORD` | `401` | The password is wrong. | Retry. |
+| `VALIDATION_ERROR` | `400` | The file has no password. | Download directly. |
 
 ## Gateway access (S3 / Lsky / OpenList compatible)
 

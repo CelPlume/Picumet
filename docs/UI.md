@@ -99,6 +99,7 @@ flowchart LR
 | Profile | `/settings/profile` | Signed in | `Profile` |
 | Security | `/settings/security` | Signed in | `Security` |
 | API keys | `/settings/api-keys` | Signed in | `ApiKeys` |
+| Access rules | `/settings/access-rules` | Signed in | `AccessRules` |
 | Appearance | `/settings/appearance` | Signed in | `Appearance` |
 | Admin layout | `/admin` | Admin | `AdminLayout` |
 | Dashboard | `/admin` | Admin | `Dashboard` |
@@ -168,11 +169,11 @@ The file manager (`/files`) arranges content into three regions:
 
 ### Settings and admin pages
 
-The settings layout (`/settings/*`) shows a vertical nav with **Profile**, **Security**, **API keys**, and **Appearance**. The admin layout (`/admin`) uses two columns: a vertical nav on the left and the page content on the right. The nav stacks above the content on mobile. Admin pages include the dashboard with stat cards, user management, storage configuration, permission rules, share management, all files, access logs, and system settings.
+The settings layout (`/settings/*`) shows a vertical nav with **Profile**, **Security**, **API keys**, **Access rules**, and **Appearance**. The access-rules page lists rules the user authored (target file, effect, subject, permissions) and revokes them behind a confirmation dialog. The admin layout (`/admin`) uses two columns: a vertical nav on the left and the page content on the right. The nav stacks above the content on mobile. Admin pages include the dashboard with stat cards, user management (the edit dialog carries capability checkboxes: publish/share/grant), storage configuration (the provider dialog uses preset options — R2/AWS S3/Oracle/MinIO/custom — that only prefill fields, plus a mount path), permission rules (the table has an "origin" column separating admin rules from user-authored ones), share management, all files (with visibility and review status columns to approve, reject, or override visibility), access logs, and system settings.
 
 ### Public pages
 
-The sign-in (`/login`), sign-up (`/register`), and reset-password (`/reset-password`) pages share a centered card layout. Sign-up collects username, password, email, and an optional invite code, and it can enforce Cloudflare Turnstile when the site enables it. After a successful sign-in, the app navigates to the `redirect` target, or to `/files` when no target exists. The free-mode page (`/free-mode`) lets visitors connect their own R2, S3, or Oracle bucket with temporary credentials; the credentials stay in server memory for the session.
+The sign-in (`/login`), sign-up (`/register`), and reset-password (`/reset-password`) pages share a centered card layout. Sign-up collects username, password, email, and an optional invite code, and it can enforce Cloudflare Turnstile when the site enables it. After a successful sign-in, the app navigates to the `redirect` target, or to `/files` when no target exists. The free-mode page (`/free-mode`) lets visitors connect their own object-storage bucket with temporary credentials; the form offers presets (R2, AWS S3, Oracle, MinIO, and more) that only prefill fields and stay editable, and the credentials are stored AES-GCM encrypted in a short-lived server session.
 
 ### Top bar components
 
@@ -347,6 +348,10 @@ The preview modal handles media types:
 ### Context menus and hover actions
 
 Right-click a file to select it and open the properties panel. Hovering a card or row reveals a checkbox and a three-dot menu at the top-right corner. The menu provides open, download, copy link, share, rename, move, set password, properties, and delete.
+
+### Visibility and access rules
+
+In the properties panel (`components/files/PropertiesPanel.tsx`) you can set a file's or folder's visibility to **private**, **users** (any signed-in user), or **public**. Going public requires the publish capability (`can_publish`), otherwise the item enters the admin review queue; setting it on a folder cascades to everything inside. Users holding the grant capability (`can_grant`) can also create per-file allow/deny rules for a specific user or all users (reads and downloads only) right in the properties panel; rules they created are managed on the settings "Access rules" page.
 
 ### Uploading files
 

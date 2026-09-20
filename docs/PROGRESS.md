@@ -39,12 +39,18 @@ This document tracks the product scope and implementation status. The requiremen
 | Properties panel | Done | Sticky sidebar (desktop) and right drawer (mobile); title/color/cover/emoji editing. |
 | Copy links | Done | Multi-file dialog; direct/HTML/Markdown/BBCode; direct public path or signed URL. |
 | Shares | Done | Password, expiry, download limits, QR code. |
+| Three-tier file visibility | Done | `private` / `users` / `public`; `public` requires `can_publish` plus review approval; folder-level cascade. |
+| User-authored access rules | Done | Single-file allow/deny for other users (`read`/`download`); requires `can_grant`; origin-aware sorting admin > user > system. |
+| Capability bits | Done | `can_publish` / `can_share` / `can_grant` stored on users, editable by admins, enforced server-side. |
+| Public gallery | Done | Anonymous list / download link / password verify for approved public files; owner and admin download password-exempt. |
 | Appearance | Done | Light/dark/system, accent color (HSL + YIQ foreground), blur, background image/URL, folder preview switch. Solid-color background removed. |
 | i18n (zh / en) | Done | |
 | Responsive layout | Done | Desktop/tablet/mobile; floating action bar tested at 350-1080 px. |
 | Users | Done | Register, login, email verify, guest role, free mode. |
 | Permissions and quotas | Done | 3 roles, path ACLs, file/path passwords, storage and file-count quotas. Download speed and monthly traffic quotas rejected. |
-| Storage configuration | Done | Mounts, upload/CDN domains, path prefix, sort, signing. Same-path multi-mount and path DSL pending. |
+| Storage configuration | Done | Mounts, CDN domain, path prefix, sort, signing. Same-path multi-mount and path DSL pending. |
+| Storage core hardening | Done | Ranged reads (206/416 via unified `serveObject`), `ProviderError` classification, batched delete (≤1000/batch with per-object fallback), delimiter listing, `UploadPartCopy` for >5 GB moves. |
+| Provider unification | Done | Type derived from `endpoint` (`r2` / `s3`; `oracle` folded into `s3`); migration `0005`; `upload_domain` removed. |
 | Admin | Done | Dashboard, users, storage, mounts, rules, shares, files, logs. Analytics pending. |
 | System settings | Done | Site info, registration/guest toggles, Turnstile. |
 | API keys + compatible protocols | Done | `pk_x.sk_y` opaque tokens, WebDAV, PicGo/PicList. S3/OSS protocol gateway rejected. |
@@ -99,6 +105,25 @@ Implements the outward relay surface identified by the PicList compatibility rep
 | Naming (user decision) | "API 密钥" → 「网关密钥」/ Gateway Keys; settings page shows per-channel integration info | frontend build |
 
 Migration: `workers/migrations/0006_s3_gateway.sql` adds `api_keys.secret_cipher` (AES-GCM-encrypted `sk_`); legacy keys must be recreated for S3 gateway use. Frontend: protocol checkbox `s3`, gateway-key naming, per-channel config cards.
+
+## User model and storage core (2026-09-20)
+
+Implements the user-model and storage-core items from the OpenList comparison report (`docs/OPENLIST_COMPARISON_CN.md`): three-tier visibility with review, user-authored access rules, capability bits, a hardened storage core, and provider-form unification.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Ranged reads | `storage/range.ts` + `serve.ts`: unified object egress (200/206/416/502) consumed by gateway, path-serve, WebDAV and compat | `storage-range.test.ts`, `fault-injection.test.ts` |
+| Error classification | `storage/errors.ts` `ProviderError` (not-found / auth / throttled / other) replaces provider-specific string matching | `fault-injection.test.ts` |
+| Batched ops | `deleteObjects` ≤1000/batch with `Errors` surfaced and per-object fallback; virtual-directory listing via `Delimiter` | `fault-injection.test.ts` |
+| Large-file moves | `UploadPartCopy` part-copy above 5 GB with abort compensation | `fault-injection.test.ts` |
+| Provider unification | Type derived from `endpoint` (empty = R2 binding); `oracle` folded into `s3`; migration `0005` is UPDATE-only (no table rebuild) | `free-mode-security.test.ts` |
+| Visibility + review | `file_metadata.visibility` / `review_status`; `users` tier opens signed-in reads; `public` tier gated by `can_publish` + admin review (`PATCH /api/admin/files/:id/review`); folder cascade | `user-model.test.ts` |
+| User access rules | `GET/POST/DELETE /api/users/rules` behind `rule-guard.ts` gates; visibility rules injected into the same sort pipeline with origin priority admin > user > system | `user-rules-api.test.ts`, `permission.test.ts` |
+| Capabilities | `users.capabilities` bits (`can_publish` / `can_share` / `can_grant`) enforced server-side, editable via admin user update | `user-model.test.ts` |
+| Gallery | `/api/gallery` anonymous list / download / verify-password reusing gateway download tokens; no second auth surface | `user-model.test.ts` |
+| Frontend | Storage presets (flat single forms, R2/AWS/Oracle/MinIO/custom), properties-panel visibility + inline rule composer, settings access-rules page, admin review/capabilities/origin surfaces | frontend typecheck, tests, coverage gate and build green |
+
+Verification: workers `tsc --noEmit` clean; scoped suites green (permission 60, user-model 18, user-rules-api 14, api-files 7, fault-injection 3). Full-suite status is tracked together with the parallel gateway work in the section above.
 
 ## Current baseline
 

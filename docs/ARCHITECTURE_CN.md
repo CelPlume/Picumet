@@ -140,9 +140,9 @@ services/permissions/
 
 1. 管理员特权。
 2. 挂载边界检查。
-3. 用户根路径限制。
+3. 用户根路径限制。对 `users` / `public` 可见性文件的 `read` / `download` 豁免 `defaultPath` 边界；写入类操作永不豁免。
 4. API 密钥权限范围，取密钥权限与规则权限的交集。
-5. 路径规则，按主体特异度、路径特异度、显式优先级、effect 排序。
+5. 路径规则。可见性合成规则（`users` / `public` 的读和下载）与存量规则走同一条排序管线；来源（origin）优先级 `admin` > `user` > `system`，同来源内再按主体特异度、路径特异度、显式优先级、effect 排序。
 6. 文件所有者权限回退。
 7. 默认拒绝。
 
@@ -150,6 +150,7 @@ services/permissions/
 
 - `isPathWithinBoundary` 按路径段比较，不用 `startsWith`。
 - API 密钥没有匹配规则时直接拒绝，系统不会默认放行。
+- 可见性只放宽读和下载：所有写入类判定和路径边界不受可见性影响，deny 规则始终压制合成规则。
 
 **依赖**：`utils/path.ts`、规则仓库、`shared/errors.ts`。
 
@@ -172,6 +173,8 @@ services/files/
 公开路径直服：`GET /*` 按虚拟路径流式返回对象。公开挂载无需登录直接可读；私有挂载需要已登录且有下载权限的用户；带密码的文件直接返回 `403`。
 
 移动 Saga：`moveWithSaga` 先校验权限、冲突和循环，建任务，复制并校验对象，再原子切换元数据，最后异步清理源对象。主文件 API 和 WebDAV 的 `MOVE` 走同一条路径。
+
+可见性与审核：文件有三级可见性——`private`（属主和管理员）、`users`（全站登录用户可读/下载）、`public`（审核通过后进匿名公开空间）。设为 `public` 需要属主具备 `can_publish` 能力位，否则进入 `pending` 审核队列；对文件夹设置会级联到其下所有条目。文件域的权限检查统一用文件全路径（`filePermPath`），保证用户按全路径创建的规则能命中；父目录规则仍通过模式匹配继承。
 
 **依赖**：`permissions/principal.ts`、`storage/providers.ts`、`shares/tokens.ts`，以及文件、挂载、提供商、日志、任务等仓库。
 
@@ -220,6 +223,9 @@ services/storage/
 ├── providers.ts   // 提供商工厂（getProvider、getProviderForMount）
 ├── r2.ts          // R2BindingProvider，基于 env.R2 绑定
 ├── s3.ts          // S3Provider（R2 S3 API / AWS S3 / Oracle）
+├── errors.ts      // ProviderError 分类（not-found / auth / throttled / other）
+├── range.ts       // Range 请求解析与 S3 Range 头构造
+├── serve.ts       // serveObject 统一对象出站（200/206/416/502）
 └── types.ts       // StorageProviderInterface 抽象接口
 ```
 
@@ -227,6 +233,8 @@ services/storage/
 
 - `type=r2` 且未配置 endpoint 的走 `R2BindingProvider`（本地或生产 R2 绑定）。
 - 其余一律走 `S3Provider`，即 S3 协议客户端。
+
+存储层统一处理跨提供商细节：对象出站统一走 `serveObject`，整体负责 Range 请求（命中返回 `206`，范围无效返回 `416`，上游失败按 `ProviderError` 分类返回 `502`）；批量删除按 S3 约定每批最多 1000 个对象，`Errors` 容器里的失败逐条上抛为 `ProviderError`，调用层回退为逐个删除；超过 5 GB 的复制（移动 Saga 的大文件路径）用 `UploadPartCopy` 分片复制；列表传 `Delimiter` 时把公共前缀聚合成虚拟目录。
 
 **依赖**：提供商、挂载仓库，`utils/crypto.ts` 负责解密密钥。
 
@@ -272,7 +280,7 @@ services/free-mode/
 
 ### 管理服务
 
-**职责**：仪表板和统计、用户管理、全局分享、全部文件、访问日志、系统设置、公告、存储提供商、挂载点、权限规则。
+**职责**：仪表板和统计、用户管理（含能力位）、全局分享、全部文件与公开审核、访问日志、系统设置、公告、存储提供商、挂载点、权限规则。
 
 ```
 services/admin/
@@ -287,11 +295,13 @@ services/admin/
 
 ### 用户设置服务
 
-**职责**：个人资料、外观偏好、默认路径、修改密码。
+**职责**：个人资料、外观偏好、默认路径、修改密码，以及用户级访问规则。
 
 ```
 services/users/
 ├── handlers.ts    // /me/settings GET/PUT、/me/password PUT
+├── rules.ts       // /api/users/rules 创建、列出、撤销
+├── rule-guard.ts  // 用户自建规则前置校验（can_grant、目标存在、权限面）
 ├── schemas.ts     // ProfileSchema、PasswordSchema
 └── types.ts
 ```
@@ -318,13 +328,16 @@ services/keys/
 
 ### 公开服务
 
-**职责**：站点设置、公告、健康检查，无需认证。
+**职责**：站点设置、公告、健康检查、公开空间 gallery，无需认证。
 
 ```
 services/public/
 ├── handlers.ts    // GET /api/public/settings、/announcements、/health
+├── gallery.ts     // /api/gallery 匿名列表、下载链接、密码验证
 └── types.ts
 ```
+
+公开空间只返回 `visibility=public` 且审核状态 `approved` 的文件，直接按可见性过滤，不经过路径权限规则；下载复用分享下载令牌与网关（D1 原子消费），不另开鉴权面。
 
 **依赖**：设置、公告仓库。
 
@@ -369,14 +382,14 @@ D1 里存以下核心表：
 
 | 表 | 作用 |
 | :--- | :--- |
-| `users` | 账号、角色、状态、默认路径、语言偏好。 |
+| `users` | 账号、角色、状态、默认路径、语言偏好、能力位。 |
 | `user_quotas` | 已用和预留的存储、文件数、上限。 |
 | `storage_providers` | S3 协议提供商配置，凭据加密存储。 |
 | `mounts` | 把提供商映射到虚拟路径，带排序偏好。 |
-| `file_metadata` | 文件和文件夹：对象键、路径、大小、etag、属主、自定义属性。 |
+| `file_metadata` | 文件和文件夹：对象键、路径、大小、etag、属主、可见性、审核状态、自定义属性。 |
 | `upload_sessions` | 记录上传进度、分片和预留配额。 |
 | `operation_jobs` | 异步的移动、复制、删除任务。 |
-| `path_rules` | 挂在挂载点上的权限规则。 |
+| `path_rules` | 挂在挂载点上的权限规则，带来源（admin/user/system）与创建者。 |
 | `api_keys` | API 密钥，含权限、协议和上传根目录。 |
 | `shares` | 分享链接，含密码、过期时间和访问限制。 |
 | `download_tokens` | 一次性下载令牌，原子消费。 |
@@ -392,6 +405,8 @@ D1 里存以下核心表：
 - `0002_add_parts_and_download_tokens.sql` 加分片字段和 `download_tokens` 表。
 - `0003_mount_id_and_session_version.sql` 加挂载隔离和会话撤销字段。
 - `0004_smtp_and_otp.sql` 加 SMTP 和一次性密码（OTP）邮箱验证。
+- `0005_provider_type_unify.sql` 提供商类型收敛为 `r2`/`s3`（oracle 折叠为 s3），移除 `upload_domain` 字段。
+- `0006_user_model.sql` 加文件可见性与审核状态（含索引）、规则来源与创建者、用户能力位（存量回填 `["can_share"]`）。
 
 ## 术语表
 
@@ -439,7 +454,7 @@ D1 里存以下核心表：
 | 自定义域名 | 支持 | 支持 | 支持（需 CDN） |
 | Checksum（MD5） | 支持 | 支持 | 支持 |
 
-凭据模型：所有提供商共用一套 S3 协议配置，不做按提供商的 discriminated union。配置包含 `type`、`name`、`endpoint`、`region`、`bucket`、`accessKeyId`、`secretAccessKey`，可选 `publicDomain`、`uploadDomain`、`pathPrefix`。凭据用 AES-GCM 加密存储，只有构建提供商客户端时才解密。`type=r2` 且没有 endpoint 的提供商直接用 Workers 的 R2 绑定。
+凭据模型：所有提供商共用一套 S3 协议配置，不做按提供商的 discriminated union。配置包含 `type`、`name`、`endpoint`、`region`、`bucket`、`accessKeyId`、`secretAccessKey`，可选 `publicDomain`、`pathPrefix`（`upload_domain` 已移除）。凭据用 AES-GCM 加密存储，只有构建提供商客户端时才解密。`type` 只保留 `r2` 和 `s3` 两个值：`endpoint` 为空的 `r2` 直接用 Workers 的 R2 绑定；`endpoint` 非空（含原 Oracle，已折叠为 `s3`）走 S3 协议客户端。`endpoint`、`accessKeyId`、`secretAccessKey` 三个字段必须同填或同空。
 
 ## 安全设计要点
 
@@ -459,6 +474,8 @@ D1 里存以下核心表：
 - **下载令牌**：D1 原子消费，一次性令牌不可复用。
 - **分享下载计数**：签发令牌不计数，网关消费令牌时才计一次，超限返回 `410`。
 - **分享密码**：`POST /api/shares/:id/verify` 种短期授权 Cookie，密码不进 URL。
+- **可见性与审核**：文件三级可见性 `private` / `users` / `public`；`public` 须审核通过才进匿名 gallery，未具备 `can_publish` 能力的用户设 `public` 进入 `pending`。可见性只放宽 `read` / `download`，写入类判定与路径边界永不放宽。
+- **属主绑定**：网关、WebDAV 与兼容通道按属主过滤文件，非属主一律 `404` 隐身，不泄露文件存在性。
 - **大文件内存**：PicGo 兼容上传、WebDAV、自由模式都流式转发请求体，不整包进内存。
 - **就绪探针**：`/api/public/health/live` 和 `/ready` 做探针；生产未初始化时业务接口返回 `503`。
 - **CSP**：`script-src 'self' https://challenges.cloudflare.com`，不含 `unsafe-inline`。

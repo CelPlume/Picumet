@@ -243,7 +243,7 @@ curl -X POST https://{domain}/api/auth/logout \
 
 ### 获取当前用户
 
-返回已登录用户及其配额。
+返回已登录用户、配额和能力位。`capabilities` 是当前账号具备的能力位列表：`can_publish`（可发布公开文件）、`can_share`（可创建分享）、`can_grant`（可为单个文件创建用户访问规则）。
 
 `GET /api/auth/me`
 
@@ -262,7 +262,8 @@ curl -X POST https://{domain}/api/auth/logout \
       "displayName": "Alice",
       "defaultPath": "/",
       "locale": "zh-CN",
-      "theme": "system"
+      "theme": "system",
+      "capabilities": ["can_share"]
     },
     "quota": {
       "maxStorage": 10737418240,
@@ -512,7 +513,7 @@ curl -X POST https://{domain}/api/files/folder \
 
 ### 获取文件详情
 
-返回单个文件或文件夹，附带权限、访问模式和密码状态。
+返回单个文件或文件夹，附带权限、访问模式、密码状态、可见性和审核状态。
 
 `GET /api/files/{id}`
 
@@ -536,6 +537,8 @@ curl -X POST https://{domain}/api/files/folder \
       "size": 1048576,
       "mimeType": "image/jpeg",
       "hasPassword": false,
+      "visibility": "private",
+      "reviewStatus": null,
       "createdAt": 1710000000000
     },
     "mount": { "id": "mount-id", "name": "Drive", "sortBy": "name", "sortOrder": "asc" },
@@ -548,6 +551,8 @@ curl -X POST https://{domain}/api/files/folder \
 ```
 
 `accessMode` 的取值：配置了公网 CDN 域名时为 `public_cdn`，支持预签名的提供商为 `signed_redirect`，其余情况走 Worker 下载网关，为 `private_gateway`。
+
+文件对象同时带 `visibility`（`private` / `users` / `public`）和 `reviewStatus`（`pending` / `approved` / `rejected`；仅 `public` 语义上有意义，其余取值为 `null`）。`private` 只有属主和管理员可见；`users` 对全站登录用户开放读和下载；`public` 且审核通过后进入匿名公开空间。
 
 #### 错误
 
@@ -564,7 +569,7 @@ curl https://{domain}/api/files/{id} -b cookies.txt
 
 ### 更新文件元数据
 
-重命名文件或文件夹，并更新元数据，包括访问密码和展示选项。
+重命名文件或文件夹，并更新元数据，包括访问密码、展示选项和可见性。
 
 `PUT /api/files/{id}`
 
@@ -584,11 +589,12 @@ curl https://{domain}/api/files/{id} -b cookies.txt
 | `coverUrl` | `string` | 否 | 封面图片地址。 |
 | `iconEmoji` | `string` | 否 | 图标表情，最多 16 个字符。 |
 | `accessPassword` | `string` | 否 | 新的访问密码，传 `null` 可移除。服务端只保存哈希。 |
+| `visibility` | `string` | 否 | 可见性：`private`、`users` 或 `public`，需要 `update` 权限。 |
 | `manualPosition` | `integer` | 否 | 手动排序位置。 |
 
 #### 响应
 
-返回更新后的文件。
+返回更新后的文件。设置 `visibility` 时：`users` 立即生效；`public` 需要当前账号具备 `can_publish` 能力位，否则文件进入 `pending` 审核队列等待管理员批准；对文件夹设置会级联到其下所有条目。可见性变更记录为 `visibility_change` 审计日志。
 
 ```json
 {
@@ -601,6 +607,7 @@ curl https://{domain}/api/files/{id} -b cookies.txt
       "type": "file",
       "size": 1048576,
       "hasPassword": true,
+      "visibility": "users",
       "updatedAt": 1710000000000
     }
   },
@@ -1803,6 +1810,72 @@ curl -X POST https://{domain}/api/users/me/email/verify-otp \
   -d '{"email":"new@example.com","code":"123456"}'
 ```
 
+## 用户访问规则
+
+用户可以把对**单个文件**的读取或下载权限授予或拒绝给其他用户。创建者需要具备 `can_grant` 能力位；规则以 `user` 来源参与权限判定（排序上低于管理员规则、高于系统合成规则），deny 永远压过同路径的 allow。
+
+### 列出我创建的访问规则
+
+返回当前用户以 `user` 来源创建的全部规则。
+
+`GET /api/users/rules`
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "rules": [{
+      "id": "rule-uuid",
+      "pathPattern": "/drive/photos/photo.jpg",
+      "effect": "allow",
+      "role": null,
+      "userId": "target-user-uuid",
+      "apiKeyId": null,
+      "permissions": ["read", "download"],
+      "origin": "user",
+      "createdBy": "creator-user-uuid"
+    }]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+### 创建访问规则
+
+`POST /api/users/rules`
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | 是 | 文件标识，规则按文件全路径生成 `pathPattern`。 |
+| `effect` | `string` | 是 | `allow` 或 `deny`。 |
+| `targetUserId` | `string` | 否 | 目标用户 ID；与 `allUsers` 二选一。 |
+| `allUsers` | `boolean` | 否 | `true` 表示面向全体登录用户。 |
+| `permissions` | `string[]` | 是 | `read`、`download` 至少一项，不支持写入类权限。 |
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `FORBIDDEN` | `403` | 当前账号没有 `can_grant` 能力，或目标用户不存在。 | 检查能力位与目标用户。 |
+| `VALIDATION_ERROR` | `400` | 主体、权限组合或文件状态不合法。 | 修正字段后重试。 |
+
+### 撤销访问规则
+
+只能撤销自己创建的 `user` 来源规则；管理员创建的规则在管理端管理。
+
+`DELETE /api/users/rules/{id}`
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `FORBIDDEN` | `403` | 规则不是自己创建的，或是管理员规则。 | 到管理端操作。 |
+| `NOT_FOUND` | `404` | 规则不存在。 | 核对规则 ID。 |
+
 ## API 密钥
 
 密钥端点负责 API 密钥的创建、列表和撤销。密钥用于 PicGo、PicList、脚本和 WebDAV 客户端认证。每个用户最多可持有 20 个有效密钥。
@@ -2056,6 +2129,7 @@ curl https://{domain}/api/admin/stats -b cookies.txt
 | `defaultPath` | `string` | 否 | 默认目录，必须以 `/` 开头。 |
 | `maxStorage` | `integer` | 否 | 存储配额，单位字节。 |
 | `maxFiles` | `integer` | 否 | 文件数量配额。 |
+| `capabilities` | `string[]` | 否 | 能力位，全量覆盖：`can_publish`、`can_share`、`can_grant`。 |
 
 #### 列表响应
 
@@ -2130,7 +2204,7 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 
 ### 列出全部文件
 
-跨所有挂载点搜索文件。
+跨所有挂载点搜索文件，结果带可见性与审核状态列。
 
 `GET /api/admin/files?page={page}&limit={limit}&search={search}`
 
@@ -2159,6 +2233,31 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 
 ```sh
 curl "https://{domain}/api/admin/files?search=photo" -b cookies.txt
+```
+
+### 审核公开文件
+
+批准或驳回进入审核队列的公开文件，也可以直接调整任意文件的可见性；对文件夹的可见性变更会级联到其下所有条目。
+
+`PATCH /api/admin/files/{id}/review`
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `status` | `string` | 否 | 审核结论：`approved`、`rejected` 或 `pending`。 |
+| `visibility` | `string` | 否 | 目标可见性：`private`、`users` 或 `public`。 |
+
+两个字段至少传一个。变更写入 `review` 与 `visibility_change` 审计日志。
+
+#### 示例
+
+```sh
+curl -X PATCH https://{domain}/api/admin/files/{id}/review \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"status":"approved"}'
 ```
 
 ### 查看访问日志
@@ -2320,14 +2419,13 @@ curl -X POST https://{domain}/api/admin/announcements \
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `name` | `string` | 是 | 提供商备注。 |
-| `type` | `string` | 是 | `r2`、`s3` 或 `oracle`。 |
-| `endpoint` | `string` | 否 | S3 端点。R2 绑定模式留空；只允许公网 http(s) 地址。 |
+| `type` | `string` | 否 | `r2` 或 `s3`（`oracle` 已折叠为 `s3`）。省略时由 `endpoint` 推导：为空即 R2 绑定，非空即 S3 协议。 |
+| `endpoint` | `string` | 否 | S3 端点。R2 绑定模式留空；只允许公网 http(s) 地址。`endpoint`、`accessKeyId`、`secretAccessKey` 必须同填或同空。 |
 | `region` | `string` | 否 | 区域，R2 默认 `auto`。 |
 | `bucket` | `string` | 是 | 存储桶名称。 |
 | `accessKeyId` | `string` | 否 | Access Key，R2 绑定模式留空。 |
 | `secretAccessKey` | `string` | 否 | Secret Key，R2 绑定模式留空。 |
 | `publicDomain` | `string` | 否 | 公网 CDN 域名，用于直链。 |
-| `uploadDomain` | `string` | 否 | 自定义上传域名。 |
 | `pathPrefix` | `string` | 否 | 对象键前缀。 |
 
 #### 测试响应
@@ -2458,7 +2556,6 @@ curl -X POST https://{domain}/api/admin/rules \
 
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `type` | `string` | 是 | `r2`、`s3` 或 `oracle`。 |
 | `endpoint` | `string` | 是 | S3 端点，只允许公网 http(s) 地址，私网或本地地址会被拒绝。 |
 | `region` | `string` | 否 | 区域。 |
 | `bucket` | `string` | 是 | 存储桶名称。 |
@@ -2497,7 +2594,7 @@ curl -X POST https://{domain}/api/admin/rules \
 curl -X POST https://{domain}/api/free-mode/init \
   -H "Content-Type: application/json" \
   -c cookies.txt \
-  -d '{"type":"s3","endpoint":"https://s3.example.com","bucket":"my-bucket","accessKeyId":"AK","secretAccessKey":"SK","sessionHours":1}'
+  -d '{"endpoint":"https://s3.example.com","bucket":"my-bucket","accessKeyId":"AK","secretAccessKey":"SK","sessionHours":1}'
 ```
 
 ### 列出自由模式文件
@@ -2802,6 +2899,78 @@ API 会直接从文件的公开虚拟路径返回文件，例如 `GET https://{d
 ```sh
 curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 ```
+
+## 公开空间（Gallery）
+
+`visibility=public` 且审核通过（`approved`）的文件进入公开空间，匿名可访问。列表、下载和密码验证均无需登录；已登录的属主和管理员下载免密。公开面直接按可见性与审核状态过滤，不经过路径权限规则。
+
+### 浏览公开空间
+
+分页返回审核通过的公开文件，仅返回文件（不含文件夹）。
+
+`GET /api/gallery?page={page}&limit={limit}`
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [{
+      "id": "file-uuid",
+      "name": "photo.jpg",
+      "path": "/drive/photos/photo.jpg",
+      "type": "file",
+      "size": 1048576,
+      "mimeType": "image/jpeg",
+      "coverUrl": null,
+      "hasPassword": false,
+      "ownerName": "alice",
+      "visibility": "public",
+      "createdAt": 1710000000000,
+      "updatedAt": 1710000000000
+    }],
+    "pagination": { "total": 3, "page": 1, "limit": 50, "pages": 1 }
+  },
+  "timestamp": 1710000000000
+}
+```
+
+### 获取公开文件下载链接
+
+返回一次性网关下载链接（15 分钟有效）。带密码的文件返回 `403 PASSWORD_REQUIRED`，需要先验证密码。
+
+`GET /api/gallery/{id}/download`
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": { "url": "https://{domain}/api/gateway/download/{token}", "expiresIn": 900 },
+  "timestamp": 1710000000000
+}
+```
+
+### 验证公开文件密码
+
+匿名验证访问密码，通过后同样返回一次性网关下载链接。
+
+`POST /api/gallery/{id}/verify-password`
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `password` | `string` | 是 | 文件访问密码。 |
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | 文件不存在、未公开或未过审。 | 核对文件状态。 |
+| `INVALID_PASSWORD` | `401` | 密码错误。 | 重试。 |
+| `VALIDATION_ERROR` | `400` | 文件未设置密码。 | 直接下载。 |
 
 ## 网关接入（S3 / Lsky / OpenList 兼容）
 
