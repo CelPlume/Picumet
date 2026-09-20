@@ -7,17 +7,17 @@ import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
+import { STORAGE_PRESETS, r2S3Endpoint } from '@/lib/storage-presets';
 import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
 
 interface Provider {
   id: string;
   name: string;
-  type: 'r2' | 's3' | 'oracle';
+  type: 'r2' | 's3';
   endpoint: string;
   region: string;
   bucket: string;
   publicDomain?: string;
-  uploadDomain?: string;
   pathPrefix: string;
   status: string;
   createdAt: number;
@@ -36,6 +36,7 @@ export function StorageProviders() {
   const [editing, setEditing] = useState<Provider | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [confirmDelete, setConfirmDelete] = useState<Provider | null>(null);
+  const [mountTouched, setMountTouched] = useState(false);
 
   const load = async () => {
     const res = await apiFetch<{ providers: Provider[] }>('/api/admin/storage/providers');
@@ -52,10 +53,11 @@ export function StorageProviders() {
   const create = async () => {
     try {
       await apiFetch('/api/admin/storage/providers', { method: 'POST', body: form });
-      toast('success', '已添加存储');
-      setShowCreate(false);
-      setForm({});
-      await load();
+        toast('success', '已添加存储');
+        setShowCreate(false);
+        setForm({});
+        setMountTouched(false);
+        await load();
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : '添加失败');
     }
@@ -90,8 +92,8 @@ export function StorageProviders() {
   const openEdit = (p: Provider) => {
     setEditing(p);
     setEditForm({
+      preset: 'custom',
       name: p.name,
-      type: p.type,
       endpoint: p.endpoint === '__binding__' ? '' : p.endpoint,
       region: p.region,
       bucket: p.bucket,
@@ -114,7 +116,7 @@ export function StorageProviders() {
     }
   };
 
-  const typeLabel: Record<string, string> = { r2: 'R2', s3: 'S3', oracle: 'Oracle' };
+  const typeLabel: Record<string, string> = { r2: 'R2 绑定', s3: 'S3' };
 
   const sortedRows = useMemo(() => {
     if (!sort) return providers;
@@ -178,37 +180,64 @@ export function StorageProviders() {
         }
       >
         <div className="space-y-3">
+          {/* 预设：仅预填字段，非模式切换（所有字段始终平铺可见） */}
+          <div>
+            <Label>预设</Label>
+            <Select
+              value={form.preset ?? 'custom'}
+              onValueChange={(v) => {
+                const preset = STORAGE_PRESETS.find((p) => p.id === v);
+                setForm((f) => ({
+                  ...f,
+                  preset: v,
+                  endpoint: preset?.endpoint ?? '',
+                  region: preset?.region ?? '',
+                }));
+              }}
+              className="mt-1"
+              options={STORAGE_PRESETS.map((p) => ({ value: p.id, label: p.label }))}
+            />
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>{t('admin.providerName')}</Label>
               <Input className="mt-1" value={form.name ?? ''} onChange={(e) => set('name', e.target.value)} placeholder="主存储" />
             </div>
             <div>
-              <Label>{t('admin.providerType')}</Label>
-              <Select
-                value={form.type ?? 'r2'}
-                onValueChange={(v) => set('type', v)}
-                className="mt-1"
-                options={[
-                  { value: 'r2', label: 'Cloudflare R2' },
-                  { value: 's3', label: 'AWS S3' },
-                  { value: 'oracle', label: 'Oracle Cloud' },
-                ]}
-              />
+              <Label>{t('admin.bucket')}</Label>
+              <Input className="mt-1" value={form.bucket ?? ''} onChange={(e) => {
+                set('bucket', e.target.value);
+                // 挂载路径默认 / + Bucket 名（未手动修改时跟随）
+                if (!mountTouched) set('mountPath', e.target.value ? `/${e.target.value}` : '');
+              }} placeholder="my-bucket" />
             </div>
           </div>
           <div>
-            <Label>{t('admin.endpoint')} <span className="text-muted-foreground">（R2 可留空使用本地绑定）</span></Label>
-            <Input className="mt-1" value={form.endpoint ?? ''} onChange={(e) => set('endpoint', e.target.value)} placeholder="https://xxx.r2.cloudflarestorage.com" />
+            <Label>Endpoint URL</Label>
+            <Input className="mt-1" value={form.endpoint ?? ''} onChange={(e) => set('endpoint', e.target.value)}
+              placeholder={STORAGE_PRESETS.find((p) => p.id === (form.preset ?? 'custom'))?.endpointHint ?? ''} />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {STORAGE_PRESETS.find((p) => p.id === (form.preset ?? 'custom'))?.endpointHint}
+              {' '}· 留空 endpoint 时无需 Access Key
+            </p>
           </div>
+          {form.preset === 'r2' && (
+            <div>
+              <Label>R2 Account ID 快捷</Label>
+              <Input className="mt-1" value={form.accountId ?? ''} onChange={(e) => {
+                set('accountId', e.target.value);
+                set('endpoint', r2S3Endpoint(e.target.value));
+              }} placeholder="填入 Account ID 自动拼接 S3 API 端点（留空 = 绑定模式）" />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>{t('admin.region')}</Label>
               <Input className="mt-1" value={form.region ?? ''} onChange={(e) => set('region', e.target.value)} placeholder="auto" />
             </div>
             <div>
-              <Label>{t('admin.bucket')}</Label>
-              <Input className="mt-1" value={form.bucket ?? ''} onChange={(e) => set('bucket', e.target.value)} placeholder="my-bucket" />
+              <Label>挂载路径</Label>
+              <Input className="mt-1" value={form.mountPath ?? ''} onChange={(e) => { setMountTouched(true); set('mountPath', e.target.value); }} placeholder="/my-bucket" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -247,28 +276,13 @@ export function StorageProviders() {
         }
       >
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>{t('admin.providerName')}</Label>
-              <Input className="mt-1" value={editForm.name ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} />
-            </div>
-            <div>
-              <Label>{t('admin.providerType')}</Label>
-              <Select
-                value={editForm.type ?? 'r2'}
-                onValueChange={(v) => setEditForm((f) => ({ ...f, type: v }))}
-                className="mt-1"
-                options={[
-                  { value: 'r2', label: 'Cloudflare R2' },
-                  { value: 's3', label: 'AWS S3' },
-                  { value: 'oracle', label: 'Oracle Cloud' },
-                ]}
-              />
-            </div>
+          <div>
+            <Label>{t('admin.providerName')}</Label>
+            <Input className="mt-1" value={editForm.name ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} />
           </div>
           <div>
-            <Label>{t('admin.endpoint')}</Label>
-            <Input className="mt-1" value={editForm.endpoint ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, endpoint: e.target.value }))} placeholder="https://xxx.r2.cloudflarestorage.com" />
+            <Label>Endpoint URL <span className="text-muted-foreground">（留空 = 切回 R2 绑定并清除凭据）</span></Label>
+            <Input className="mt-1" value={editForm.endpoint ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, endpoint: e.target.value }))} placeholder={STORAGE_PRESETS.find((p) => p.id === (editForm.preset ?? 'custom'))?.endpointHint ?? ''} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

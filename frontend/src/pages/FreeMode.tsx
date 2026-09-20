@@ -1,24 +1,24 @@
-// 自由模式：输入对象存储凭据临时访问
+// 自由模式：输入对象存储凭据临时访问（报告 §5.1：单表单平铺 + 预设，无模式切换）
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Cloud } from 'lucide-react';
 import { Button, Input, Label, Badge } from '@/components/ui/core';
+import { Select } from '@/components/ui/select';
 import { apiFetch, ApiError } from '@/lib/api';
+import { STORAGE_PRESETS, r2S3Endpoint } from '@/lib/storage-presets';
 import { Logo } from '@/components/layout/Logo';
 import { toast } from '@/components/ui/toast';
 import { useAuth } from '@/stores/auth';
 import { useSite } from '@/stores/site';
 
-type ProviderType = 'r2' | 's3' | 'oracle';
-
 export default function FreeMode() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const site = useSite();
-  const [type, setType] = useState<ProviderType>('r2');
+  const [presetId, setPresetId] = useState('r2');
   const [endpoint, setEndpoint] = useState('');
-  const [region, setRegion] = useState('');
+  const [region, setRegion] = useState('auto');
   const [bucket, setBucket] = useState('');
   const [accessKeyId, setAccessKeyId] = useState('');
   const [secretAccessKey, setSecretAccessKey] = useState('');
@@ -26,11 +26,14 @@ export default function FreeMode() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const providers: { id: ProviderType; label: string }[] = [
-    { id: 'r2', label: 'Cloudflare R2' },
-    { id: 's3', label: 'AWS S3' },
-    { id: 'oracle', label: 'Oracle Cloud' },
-  ];
+  const preset = STORAGE_PRESETS.find((p) => p.id === presetId) ?? STORAGE_PRESETS[STORAGE_PRESETS.length - 1];
+
+  const pickPreset = (id: string) => {
+    const p = STORAGE_PRESETS.find((x) => x.id === id);
+    setPresetId(id);
+    setEndpoint(p?.endpoint ?? '');
+    setRegion(p?.region ?? '');
+  };
 
   const submit = async () => {
     setError('');
@@ -38,7 +41,7 @@ export default function FreeMode() {
     try {
       const res = await apiFetch<{ expiresAt: number; sessionHours: number }>('/api/free-mode/init', {
         method: 'POST',
-        body: { type, endpoint, region, bucket, accessKeyId, secretAccessKey, sessionHours: hours },
+        body: { endpoint, region, bucket, accessKeyId, secretAccessKey, sessionHours: hours },
       });
       useAuth.getState().setFreeMode(true, res.data.expiresAt);
       toast('success', '自由模式已开启');
@@ -69,25 +72,28 @@ export default function FreeMode() {
             <p className="mt-1 text-sm text-muted-foreground">使用你自己的对象存储凭据临时访问，凭据仅保存在服务端内存中。</p>
           </div>
 
-          <div className="mb-4 grid grid-cols-3 gap-2">
-            {providers.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setType(p.id)}
-                className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
-                  type === p.id ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-
           <div className="glass-surface glass-blur space-y-3 rounded-lg border p-4">
             <div>
-              <Label>Endpoint</Label>
-              <Input className="mt-1" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://xxx.r2.cloudflarestorage.com" />
+              <Label>预设</Label>
+              <Select className="mt-1" value={presetId} onValueChange={pickPreset}
+                options={STORAGE_PRESETS.map((p) => ({ value: p.id, label: p.label }))} />
             </div>
+
+            {preset.needsAccountId && (
+              <div>
+                <Label>R2 Account ID 快捷</Label>
+                <Input className="mt-1" value={endpoint.match(/^https:\/\/(.+)\.r2\.cloudflarestorage\.com$/)?.[1] ?? ''}
+                  onChange={(e) => setEndpoint(e.target.value ? r2S3Endpoint(e.target.value) : '')}
+                  placeholder="填入 Account ID 自动拼接端点" />
+              </div>
+            )}
+
+            <div>
+              <Label>Endpoint URL</Label>
+              <Input className="mt-1" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder={preset.endpointHint} />
+              <p className="mt-1 text-xs text-muted-foreground">{preset.endpointHint}</p>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Region</Label>
@@ -117,7 +123,7 @@ export default function FreeMode() {
                       hours === h ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
                     }`}
                   >
-                    {h} {h === 1 ? '小时' : '小时'}
+                    {h} 小时
                   </button>
                 ))}
               </div>
