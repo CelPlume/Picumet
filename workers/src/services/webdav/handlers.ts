@@ -1,23 +1,35 @@
 // WebDAV 兼容协议：PicGo/PicList（Basic Auth：keyId:secret）
 // 审计 H-3/H-4：全部方法接入统一路径级权限服务；MOVE 复用移动 Saga，不再直接改 file_metadata。
+// 网关密钥数据层所有者隔离：文件行查询全部限定属主（check.ts + repos ownerId 过滤）。
+// P1-3（docs/PICLIST_COMPAT_CN.md）：href 逐段 URI 编码、PROPFIND 自项真实属性、
+// getcontenttype/getetag、OPTIONS 不再宣告未实现的 COPY、MOVE Overwrite 头、MKCOL/PUT 递归建父。
 import { Hono } from 'hono';
-import type { AppBindings } from '../../shared/types';
+import type { Context } from 'hono';
+import type { AppBindings, Env } from '../../shared/types';
+import type { FileMetadata } from '@shared/types';
 import {
-  FileRepo, QuotaRepo, MountRepo, ProviderRepo, LogRepo, ReconciliationRepo,
+  FileRepo, MountRepo, ProviderRepo, LogRepo,
 } from '../../db';
-import { getDb, getClientIp } from '../../middleware/auth';
-import { apiKeyAuthMiddleware } from '../../middleware/auth';
+import { getDb, getClientIp, apiKeyAuthMiddleware, assertApiKeyProtocol } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { requirePermission } from '../permissions/principal';
-import { moveWithSaga, cleanupObjects } from '../files/move';
+import { moveWithSaga } from '../files/move';
+import { deleteFileInternal } from '../files/remove';
+import { ensureFolders, upsertFileObject } from '../files/write';
+import { serveObject } from '../storage/serve';
+import type { StorageProviderInterface } from '../storage/types';
 import { ApiError } from '../../shared/errors';
-import { normalizePath, objectKeyFromPath, isValidFileName, isPathWithinBoundary } from '../../utils/path';
-import { uuid } from '../../utils/crypto';
-import type { Env } from '../../shared/types';
+import { normalizePath, isValidFileName, isPathWithinBoundary } from '../../utils/path';
 
 export const webdavRoutes = new Hono<AppBindings>();
 
 webdavRoutes.use('*', apiKeyAuthMiddleware);
+
+// P1-2：protocols 非空的密钥必须声明 webdav 面
+webdavRoutes.use('*', async (c, next) => {
+  assertApiKeyProtocol(c.get('apiKey'), 'webdav');
+  await next();
+});
 
 function davPath(p: string): string {
   return normalizePath(p);
@@ -49,7 +61,7 @@ function escapeXml(s: string): string {
   return s.replace(/[<>&'"]/g, (m) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[m] as string);
 }
 
-function makeMultistatus(items: Array<{ href: string; status: string; props?: string }>): string {
+function makeMultistatus(items: DavItem[]): string {
   const body = items
     .map(
       (it) =>
@@ -59,56 +71,118 @@ function makeMultistatus(items: Array<{ href: string; status: string; props?: st
   return `${XML_HEADER}<d:multistatus xmlns:d="DAV:" xmlns:ns0="DAV:">\n${body}\n</d:multistatus>`;
 }
 
-// ============ OPTIONS：声明 WebDAV 能力 ============
+interface DavItem {
+  href: string;
+  status: string;
+  props?: string;
+}
+
+/** P1-3.1：href 逐路径段 encodeURIComponent（整体 encodeURI 不转义 `#`，`%` 会炸 decodeURIComponent） */
+function davHrefFor(fullPath: string): string {
+  const segs = fullPath.split('/').filter(Boolean).map(encodeURIComponent);
+  return `/webdav/${segs.join('/')}`;
+}
+
+interface DavPropsInput {
+  name: string;
+  fullPath: string;
+  isFolder: boolean;
+  size: number;
+  mtime: number;
+  mime?: string;
+  etag?: string;
+}
+
+/** P1-3.2：自项按真实类型返回；文件补 getcontenttype / getetag */
+function davProps(item: DavPropsInput): DavItem {
+  const parts = [
+    `<d:displayname>${escapeXml(item.name)}</d:displayname>`,
+    `<d:resourcetype>${item.isFolder ? '<d:collection/>' : ''}</d:resourcetype>`,
+    `<d:getcontentlength>${item.size}</d:getcontentlength>`,
+    `<d:getlastmodified>${new Date(item.mtime).toUTCString()}</d:getlastmodified>`,
+  ];
+  if (!item.isFolder && item.mime) parts.push(`<d:getcontenttype>${escapeXml(item.mime)}</d:getcontenttype>`);
+  if (!item.isFolder && item.etag) parts.push(`<d:getetag>${escapeXml(`"${item.etag}"`)}</d:getetag>`);
+  return {
+    href: davHrefFor(item.fullPath),
+    status: '200 OK',
+    props: `<d:propstat>\n<d:prop>\n${parts.join('\n')}\n</d:prop>\n<d:status>HTTP/1.1 200 OK</d:status>\n</d:propstat>`,
+  };
+}
+
+// ============ OPTIONS：声明 WebDAV 能力（不再宣告未实现的 COPY，P1-3.3） ============
 webdavRoutes.options('*', (c) => {
   c.header('DAV', '1,2');
-  c.header('Allow', 'OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, PROPFIND, MOVE, COPY');
+  c.header('Allow', 'OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, PROPFIND, MOVE');
   c.header('MS-Author-Via', 'DAV');
   return c.body(null, 204);
 });
 
-// ============ PROPFIND：列出目录 ============
+// ============ PROPFIND：列出目录/文件 ============
 webdavRoutes.on(['PROPFIND'], '*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
   if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 WebDAV 认证');
 
   const depth = c.req.header('depth') ?? '1';
-  const rawPath = c.req.path.replace(/^\/webdav/, '') || '/';
-  const targetPath = davPath(rawPath);
+  const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
   // H-3：读操作走统一路径级权限
   await requirePermission(c, mount, targetPath, 'read');
 
-  const { rows } = await FileRepo.listChildren(db, mount.id, targetPath, {});
-  const items: Array<{ href: string; status: string; props?: string }> = [];
+  const segs = targetPath.split('/').filter(Boolean);
+  const selfName = segs.pop() ?? '';
+  const selfParent = '/' + segs.join('/');
+  const isRoot = targetPath === '/';
+  const isMountRoot = targetPath === mount.mountPath;
+  // 路径约定：文件夹行 path=自身全路径，文件行 path=父目录 → 双形态查询
+  let selfRow: FileMetadata | null = isRoot ? null : await FileRepo.getFileAtPath(db, mount.id, selfParent, selfName);
+  if (!selfRow && !isRoot) selfRow = await FileRepo.getFolderAtPath(db, mount.id, targetPath, selfName);
+  if (selfRow && selfRow.type === 'file' && selfRow.ownerId !== apiKey.userId) {
+    throw new ApiError(404, 'NOT_FOUND', '路径不存在');
+  }
+  // 自项不存在且非挂载根 → 404（此前对不存在路径返回空列表，客户端会误判）
+  if (!selfRow && !isRoot && !isMountRoot) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
+  const selfIsFolder = isRoot || isMountRoot || selfRow!.type === 'folder';
 
-  const mkProps = (name: string, isFolder: boolean, size: number, mtime: number) => {
-    const href = `/webdav${targetPath === '/' ? '' : targetPath}/${name}`;
-    return { href, status: '200 OK', props: `<d:propstat>\n<d:prop>\n<d:displayname>${escapeXml(name)}</d:displayname>\n<d:resourcetype>${isFolder ? '<d:collection/>' : ''}</d:resourcetype>\n<d:getcontentlength>${size}</d:getcontentlength>\n<d:getlastmodified>${new Date(mtime).toUTCString()}</d:getlastmodified>\n</d:prop>\n<d:status>HTTP/1.1 200 OK</d:status>\n</d:propstat>` };
-  };
+  const items: DavItem[] = [];
+  items.push(davProps({
+    name: isRoot ? '' : selfName,
+    fullPath: targetPath,
+    isFolder: selfIsFolder,
+    size: selfRow?.size ?? 0,
+    mtime: selfRow?.updatedAt ?? Date.now(),
+    mime: selfRow?.mimeType,
+    etag: selfRow?.etag,
+  }));
 
-  // 自身
-  items.push(mkProps('', true, 0, Date.now()));
-
-  if (depth !== '0') {
+  if (selfIsFolder && depth !== '0') {
+    // 所有者隔离：仅列出属主自己的子项
+    const { rows } = await FileRepo.listChildren(db, mount.id, targetPath, {}, apiKey.userId);
     for (const r of rows) {
-      items.push(mkProps(r.name, r.type === 'folder', r.size, r.updatedAt));
+      items.push(davProps({
+        name: r.name,
+        fullPath: r.type === 'folder' ? r.path : r.path === '/' ? `/${r.name}` : `${r.path}/${r.name}`,
+        isFolder: r.type === 'folder',
+        size: r.size,
+        mtime: r.updatedAt,
+        mime: r.mimeType,
+        etag: r.etag,
+      }));
     }
   }
 
   return xmlResponse(207, {}, makeMultistatus(items));
 });
 
-// ============ MKCOL：创建文件夹 ============
+// ============ MKCOL：创建文件夹（递归补齐缺失祖先，P1-3.5） ============
 webdavRoutes.on(['MKCOL'], '*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
   if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 WebDAV 认证');
-  const rawPath = c.req.path.replace(/^\/webdav/, '') || '/';
-  const targetPath = davPath(rawPath);
+  const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
   const name = targetPath.split('/').filter(Boolean).pop() ?? '';
   const parentPath = targetPath.slice(0, -(name.length + 1)) || '/';
   if (!isValidFileName(name)) throw new ApiError(400, 'VALIDATION_ERROR', '文件夹名非法');
@@ -119,33 +193,24 @@ webdavRoutes.on(['MKCOL'], '*', async (c) => {
   assertWithinUploadRoot(apiKey, targetPath);
   await requirePermission(c, mount, targetPath, 'write');
 
-  const existing = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
-  if (existing) return xmlResponse(405);
+  // 目录名占用检查（双形态：文件行 / 目录行）；被任何用户占用即 405
+  const asFile = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
+  const asFolder = asFile ?? await FileRepo.getFolderAtPath(db, mount.id, targetPath, name);
+  if (asFolder) return xmlResponse(405);
 
-  const objectKey = objectKeyFromPath(mount.mountPath, '', targetPath);
-  await FileRepo.createFile(db, {
-    mountId: mount.id,
-    objectKey: `folder:${objectKey}`,
-    path: targetPath,
-    name,
-    type: 'folder',
-    size: 0,
-    ownerId: apiKey.userId,
-  });
+  await ensureFolders(db, mount, targetPath, apiKey.userId);
   return xmlResponse(201);
 });
 
-// ============ PUT：上传 ============
+// ============ PUT：上传（统一走 upsertFileObject：覆盖语义/配额/目录行/补偿一致） ============
 webdavRoutes.put('*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
   if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 WebDAV 认证');
   const userId = c.get('userId');
 
-  const rawPath = c.req.path.replace(/^\/webdav/, '') || '/';
-  const targetPath = davPath(rawPath);
+  const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
   const name = targetPath.split('/').filter(Boolean).pop() ?? 'file';
-  const parentPath = targetPath.slice(0, -(name.length + 1)) || '/';
   if (!isValidFileName(name)) throw new ApiError(400, 'VALIDATION_ERROR', '文件名非法');
 
   // 审计 H-03：WebDAV PUT 流式转发请求体（不整包读入内存）。
@@ -156,7 +221,6 @@ webdavRoutes.put('*', async (c) => {
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '目标挂载点不存在');
-  // H-3：写操作走统一路径级权限；M-3：目标位于密钥上传根内
   assertWithinUploadRoot(apiKey, targetPath);
   await requirePermission(c, mount, targetPath, 'write');
 
@@ -178,166 +242,116 @@ webdavRoutes.put('*', async (c) => {
     });
   }
 
-  const reserved = await QuotaRepo.reserve(db, userId, size);
-  if (!reserved) throw new ApiError(413, 'QUOTA_EXCEEDED', '存储配额不足');
-
   const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
   if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
   const provider = await getProvider(db, providerRow, c.env as Env);
-  const objectKey = objectKeyFromPath(mount.mountPath, providerRow.pathPrefix, targetPath);
 
-  const existing = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
-  const fileId = existing?.id ?? uuid();
+  const result = await upsertFileObject(c, {
+    mount,
+    provider,
+    pathPrefix: providerRow.pathPrefix,
+    targetPath,
+    mimeType,
+    size,
+    body,
+    ownerId: userId,
+    via: 'webdav',
+  });
 
-  try {
-    await provider.putObject(objectKey, body, mimeType);
-    const head = await provider.headObject(objectKey);
-    if (!head) throw new ApiError(422, 'OPERATION_FAILED', '对象写入失败');
-
-    // H-5：元数据 + 配额 + 日志在同一批提交（对象失败不影响元数据原子性）
-    await db.transaction(async (tx) => {
-      if (existing && existing.type === 'file') {
-        await FileRepo.updateFileTx(tx, existing.id, {
-          object_key: objectKey, size, etag: head.etag, mime_type: mimeType, path: parentPath,
-        });
-        await tx.query(
-          `UPDATE user_quotas SET used_storage = MAX(0, used_storage - ? + ?), quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE user_id = ?`,
-          [existing.size, size, size, Date.now(), userId]
-        );
-      } else {
-        await FileRepo.createFileTx(tx, {
-          id: fileId,
-          mountId: mount.id,
-          objectKey,
-          path: parentPath,
-          name,
-          type: 'file',
-          mimeType,
-          size,
-          etag: head.etag,
-          ownerId: userId,
-        });
-        await tx.query(
-          `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
-          [size, size, Date.now(), userId]
-        );
-      }
-      await tx.query(
-        `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
-         VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 201, ?)`,
-        [uuid(), userId, targetPath, JSON.stringify({ fileName: name, via: 'webdav' }), getClientIp(c), c.req.header('user-agent'), size, Date.now()]
-      );
-    });
-
-    return xmlResponse(201, { ETag: head.etag ? `"${head.etag}"` : undefined });
-  } catch (err) {
-    // 补偿：释放预留；尽力删除已写对象，失败记录孤儿供对账
-    await QuotaRepo.releaseReservation(db, userId, size);
-    try {
-      await provider.deleteObject(objectKey);
-    } catch (cleanupErr) {
-      await ReconciliationRepo.createOrphanObject(db, {
-        mountId: mount.id,
-        objectKey,
-        reason: 'upload_db_failed',
-        error: cleanupErr instanceof Error ? cleanupErr.message : 'unknown',
-      });
-    }
-    throw err;
-  }
+  return xmlResponse(201, { ETag: result.etag ? `"${result.etag}"` : undefined });
 });
 
-// ============ GET：下载 ============
-webdavRoutes.get('*', async (c) => {
+// ============ GET/HEAD：下载（Range 走 serveObject，206） ============
+async function resolveDavFile(c: Context<AppBindings>, targetPath: string): Promise<{ file: FileMetadata; provider: StorageProviderInterface }> {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
   if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 WebDAV 认证');
-  const rawPath = c.req.path.replace(/^\/webdav/, '') || '/';
-  const targetPath = davPath(rawPath);
   const name = targetPath.split('/').filter(Boolean).pop() ?? '';
+  const parentPath = targetPath.slice(0, -(name.length + 1)) || '/';
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
   // H-3：读操作走统一路径级权限
   await requirePermission(c, mount, targetPath, 'read');
-  const parentPath = targetPath.slice(0, -(name.length + 1)) || '/';
-  const file = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
+  const file = await FileRepo.getFileAtPath(db, mount.id, parentPath, name, apiKey.userId);
   if (!file || file.type === 'folder') throw new ApiError(404, 'NOT_FOUND', '文件不存在');
 
   const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
-  const provider = await getProvider(db, providerRow!, c.env as Env);
-  const obj = await provider.getObject(file.objectKey);
-  if (!obj) throw new ApiError(404, 'NOT_FOUND', '对象不存在');
+  if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
+  const provider = await getProvider(db, providerRow, c.env as Env);
+  return { file, provider };
+}
+
+webdavRoutes.get('*', async (c) => {
+  const db = getDb(c);
+  const apiKey = c.get('apiKey');
+  if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 WebDAV 认证');
+  const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
+  const { file, provider } = await resolveDavFile(c, targetPath);
 
   await LogRepo.create(db, {
     userId: apiKey.userId,
     action: 'download',
     path: file.path,
-    metadata: JSON.stringify({ via: 'webdav' }),
+    metadata: JSON.stringify({ fileName: file.name, via: 'webdav' }),
     ipAddress: getClientIp(c),
     userAgent: c.req.header('user-agent'),
     bytesTransferred: file.size,
   });
 
-  return new Response(obj.body, {
-    status: 200,
-    headers: {
-      'Content-Type': file.mimeType ?? 'application/octet-stream',
-      'Content-Length': String(obj.size),
-      'Content-Disposition': `attachment; filename="${name.replace(/["\\]/g, '_')}"`,
-    },
+  return serveObject({
+    provider,
+    objectKey: file.objectKey,
+    name: file.name,
+    mimeType: file.mimeType,
+    rangeHeader: c.req.header('range'),
+    totalSize: file.size,
+    forceAttachment: true,
   });
 });
 
-// ============ DELETE：删除 ============
+webdavRoutes.on(['HEAD'], '*', async (c) => {
+  const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
+  const { file, provider } = await resolveDavFile(c, targetPath);
+  const res = await serveObject({
+    provider,
+    objectKey: file.objectKey,
+    name: file.name,
+    mimeType: file.mimeType,
+    rangeHeader: c.req.header('range'),
+    totalSize: file.size,
+  });
+  return new Response(null, { status: res.status, headers: res.headers });
+});
+
+// ============ DELETE：删除（复用共享删除实现） ============
 webdavRoutes.delete('*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
   if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 WebDAV 认证');
 
-  const rawPath = c.req.path.replace(/^\/webdav/, '') || '/';
-  const targetPath = davPath(rawPath);
+  const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
   const name = targetPath.split('/').filter(Boolean).pop() ?? '';
   const parentPath = targetPath.slice(0, -(name.length + 1)) || '/';
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
-  const file = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
+  // 双形态：文件行 (parent,name) / 目录行 (targetPath,name)
+  let file = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
+  file = file ?? await FileRepo.getFolderAtPath(db, mount.id, targetPath, name);
   if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  // 数据层所有者隔离：他人文件按不存在处理；目录行为共享命名空间，仅清理属主自己的行
+  if (file.type === 'file' && file.ownerId !== apiKey.userId) {
+    throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  }
   // H-3：删除操作走统一路径级权限
   await requirePermission(c, mount, targetPath, 'delete', file.ownerId);
 
-  let keys: string[] = [];
-  let totalSize = file.size;
-  let count = 1;
-  if (file.type === 'folder') {
-    const desc = await FileRepo.listDescendants(db, mount.id, file.path);
-    keys = desc.filter((d) => d.type === 'file').map((d) => d.objectKey);
-    totalSize = desc.reduce((s, d) => s + d.size, 0);
-    count = desc.length;
-  } else {
-    keys = [file.objectKey];
-  }
-
-  await db.transaction(async (tx) => {
-    if (file.type === 'folder') {
-      await tx.query(`DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)`, [mount.id, file.path, `${file.path}/%`]);
-    } else {
-      await tx.query(`DELETE FROM file_metadata WHERE id = ?`, [file.id]);
-    }
-    await tx.query(
-      `UPDATE user_quotas SET used_storage = MAX(0, used_storage - ?), used_files = MAX(0, used_files - ?), updated_at = ? WHERE user_id = ?`,
-      [totalSize, count, Date.now(), file.ownerId]
-    );
-    await tx.query(`DELETE FROM shares WHERE file_id = ?`, [file.id]);
-  });
-
-  // 对象清理：失败记录孤儿供对账（H-5 一致性边界）
-  await cleanupObjects(c, mount.id, keys);
+  await deleteFileInternal(c, mount, file, apiKey.userId);
   return xmlResponse(204);
 });
 
-// ============ MOVE：移动/重命名（复用移动 Saga，H-4） ============
+// ============ MOVE：移动/重命名（复用移动 Saga，H-4；处理 Overwrite 头，P1-3.4） ============
 webdavRoutes.on(['MOVE'], '*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
@@ -358,17 +372,22 @@ webdavRoutes.on(['MOVE'], '*', async (c) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Destination 头无效');
   }
 
-  const rawPath = c.req.path.replace(/^\/webdav/, '') || '/';
-  const sourcePath = davPath(rawPath);
+  const sourcePath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
   const destPath = davPath(destUrl.pathname.replace(/^\/webdav/, '') || '/');
 
   const name = sourcePath.split('/').filter(Boolean).pop() ?? '';
-  const sourceParent = sourcePath.slice(0, -(name.length + 1)) || '/';
 
   const mount = await MountRepo.findMountForPath(db, sourcePath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
-  const file = await FileRepo.getFileAtPath(db, mount.id, sourceParent, name);
+  const sourceParent = sourcePath.slice(0, -(name.length + 1)) || '/';
+  // 双形态：文件行 / 目录行（目录移动仍受 moveWithSaga 属主校验约束）
+  let file = await FileRepo.getFileAtPath(db, mount.id, sourceParent, name);
+  file = file ?? await FileRepo.getFolderAtPath(db, mount.id, sourcePath, name);
   if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  // 数据层所有者隔离：他人文件按不存在处理
+  if (file.type === 'file' && file.ownerId !== apiKey.userId) {
+    throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  }
 
   const destName = destPath.split('/').filter(Boolean).pop() ?? name;
   const destParent = destPath.slice(0, -(destName.length + 1)) || '/';
@@ -376,9 +395,25 @@ webdavRoutes.on(['MOVE'], '*', async (c) => {
   // M-3：目标位于密钥上传根内
   assertWithinUploadRoot(apiKey, destPath);
 
+  // P1-3.4：RFC 4918 默认 Overwrite: T；F 时目标已存在 → 412
+  const overwrite = (c.req.header('overwrite') ?? 'T').trim().toUpperCase() !== 'F';
+  const destMount = await MountRepo.findMountForPath(db, destPath);
+  if (destMount) {
+    const destExisting = await FileRepo.getFileAtPath(db, destMount.id, destParent, destName);
+    if (destExisting) {
+      if (destExisting.type === 'file' && destExisting.ownerId !== apiKey.userId) {
+        // 他人文件视为存在但不能覆盖：T → 403（由权限服务裁决）、F → 412
+        if (!overwrite) return xmlResponse(412);
+        await requirePermission(c, destMount, destPath, 'delete', destExisting.ownerId);
+        return xmlResponse(403);
+      }
+      if (!overwrite) return xmlResponse(412);
+      await requirePermission(c, destMount, destPath, 'delete', destExisting.ownerId);
+      await deleteFileInternal(c, destMount, destExisting, apiKey.userId);
+    }
+  }
+
   // H-4：完整 Saga（源 delete + 目标 write 双重权限、冲突/循环、复制校验、原子切换、异步清理）
   await moveWithSaga(c, { fileId: file.id, targetDir: destParent, targetName: destName });
   return xmlResponse(201, { Location: dest });
 });
-
-

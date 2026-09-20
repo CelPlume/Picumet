@@ -77,29 +77,3 @@ export function buildGatewayUrl(c: Context, token: string): string {
   return `${origin}/api/gateway/download/${token}`;
 }
 
-/**
- * 流式代理下载对象
- */
-export async function streamObject(
-  c: Context,
-  provider: StorageProviderInterface,
-  objectKey: string,
-  name: string,
-  mimeType?: string
-): Promise<Response> {
-  const obj = await provider.getObject(objectKey);
-  if (!obj) throw new ApiError(404, 'NOT_FOUND', '文件对象不存在或已被删除');
-  const headers = new Headers();
-  headers.set('Content-Type', mimeType || obj.contentType || 'application/octet-stream');
-  headers.set('Content-Length', String(obj.size));
-  headers.set('Cache-Control', 'private, max-age=300');
-  // 危险类型强制下载（防 XSS）
-  const safeName = name.replace(/["\\\r\n]/g, '_');
-  const ext = safeName.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
-  const forceDownload = ['.html', '.htm', '.svg', '.xml', '.xhtml', '.md', '.json'].includes(ext) || !mimeType;
-  headers.set(
-    'Content-Disposition',
-    `${forceDownload ? 'attachment' : 'inline'}; filename="${safeName}"`
-  );
-  return new Response(obj.body, { status: 200, headers });
-}

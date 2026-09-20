@@ -6,6 +6,7 @@ import { getDb } from '../../middleware/auth';
 import { getPrincipal } from '../permissions/principal';
 import { checkMovePermission, loadPrincipalRules } from '../permissions/check';
 import { getProvider } from '../storage/providers';
+import { COPY_OBJECT_MAX_BYTES } from '../storage/s3';
 import { ApiError } from '../../shared/errors';
 import { normalizePath, isPathWithinBoundary } from '../../utils/path';
 import type { Env } from '../../shared/types';
@@ -20,18 +21,26 @@ async function cleanupObjects(c: Ctx, mountId: string, objectKeys: string[]) {
   if (!providerRow) return;
   try {
     const provider = await getProvider(db, providerRow, c.env as Env);
-    for (const key of objectKeys) {
-      if (key.startsWith('folder:')) continue;
-      try {
-        await provider.deleteObject(key);
-      } catch (err) {
-        await ReconciliationRepo.createOrphanObject(db, {
-          mountId,
-          objectKey: key,
-          reason: 'deletion_failed',
-          error: err instanceof Error ? err.message : 'unknown',
-        });
+    const keys = objectKeys.filter((key) => !key.startsWith('folder:'));
+    if (keys.length === 0) return;
+    try {
+      // P1-4：批量删除（单请求 ≤1000），替代 N 次单对象删除
+      await provider.deleteObjects(keys);
+    } catch (batchErr) {
+      // 批量失败回退逐个删除，孤儿精确记录
+      for (const key of keys) {
+        try {
+          await provider.deleteObject(key);
+        } catch (err) {
+          await ReconciliationRepo.createOrphanObject(db, {
+            mountId,
+            objectKey: key,
+            reason: 'deletion_failed',
+            error: err instanceof Error ? err.message : 'unknown',
+          });
+        }
       }
+      void batchErr;
     }
   } catch {
     // 清理失败由对账任务处理
@@ -68,8 +77,15 @@ export async function moveWithSaga(
 
   // 源 delete + 目标 write 双重权限
   const principal = await getPrincipal(c);
+  // 网关密钥数据层所有者隔离：密钥不能移动属主之外的文件
+  if (principal.type === 'apiKey' && file.ownerId !== principal.id) {
+    throw new ApiError(403, 'FORBIDDEN', '无权操作其他用户的文件');
+  }
   const rules = await loadPrincipalRules(db, principal, mount.id);
-  const allowed = checkMovePermission(principal, mount, targetMount, file.path, targetFullPath, rules, file.ownerId);
+  // 源 delete 检查走文件全路径（文件行 path=父目录；父目录 pattern 仍继承匹配）
+  const sourceCheckPath =
+    file.type === 'folder' ? file.path : (file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`);
+  const allowed = checkMovePermission(principal, mount, targetMount, sourceCheckPath, targetFullPath, rules, file.ownerId);
   if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权移动文件');
 
   // 目标同名冲突
@@ -147,7 +163,13 @@ async function executeMove(c: Ctx, jobId: string) {
       if (state.sourceObjectKey.startsWith('folder:')) {
         // 文件夹对象无需复制
       } else {
-        await sourceProvider.copyObject(state.sourceObjectKey, state.targetObjectKey);
+        // P1-2：>5GB 走 UploadPartCopy 分片复制（AWS CopyObject 单命令上限）
+        const file = await FileRepo.getFileById(db, job.fileId as string);
+        if (file && file.size > COPY_OBJECT_MAX_BYTES && sourceProvider.copyObjectMultipart) {
+          await sourceProvider.copyObjectMultipart(state.sourceObjectKey, state.targetObjectKey);
+        } else {
+          await sourceProvider.copyObject(state.sourceObjectKey, state.targetObjectKey);
+        }
       }
     } else {
       const obj = await sourceProvider.getObject(state.sourceObjectKey);

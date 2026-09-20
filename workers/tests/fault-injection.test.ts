@@ -99,7 +99,8 @@ describe('H-5 一致性边界（故障注入）', () => {
     });
     expect(put.status).toBe(201);
 
-    // 元数据删除成功、对象清理失败 → 记孤儿
+    // 元数据删除成功、对象清理失败 → 记孤儿（批量与单删两条路径都注入故障）
+    vi.spyOn(R2BindingProvider.prototype, 'deleteObjects').mockRejectedValue(new Error('storage unavailable'));
     vi.spyOn(R2BindingProvider.prototype, 'deleteObject').mockRejectedValue(new Error('storage unavailable'));
     const del = await request(ctx, '/webdav/orphan.txt', { method: 'DELETE', headers: auth });
     expect(del.status).toBe(204);

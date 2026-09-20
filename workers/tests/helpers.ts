@@ -127,12 +127,27 @@ class MockR2 {
       customMetadata: options.customMetadata,
     });
   }
-  async get(key: string) {
+  async get(key: string, options?: { range?: { offset?: number; length?: number; suffix?: number } }) {
     const obj = this.objects.get(key);
     if (!obj) return null;
+    let data = obj.data;
+    let range: { offset: number; length: number } | undefined;
+    if (options?.range) {
+      const r = options.range;
+      if (typeof r.suffix === 'number') {
+        const start = Math.max(0, data.byteLength - r.suffix);
+        data = data.slice(start);
+        range = { offset: start, length: data.byteLength };
+      } else {
+        const offset = r.offset ?? 0;
+        const length = r.length ?? data.byteLength - offset;
+        data = data.slice(offset, offset + length);
+        range = { offset, length };
+      }
+    }
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(obj.data);
+        controller.enqueue(data);
         controller.close();
       },
     });
@@ -143,6 +158,7 @@ class MockR2 {
       httpEtag: obj.etag,
       httpMetadata: obj.httpMetadata,
       customMetadata: obj.customMetadata,
+      range,
       body: stream,
     };
   }
@@ -158,17 +174,30 @@ class MockR2 {
       customMetadata: obj.customMetadata,
     };
   }
-  async delete(key: string) {
-    this.objects.delete(key);
+  async delete(key: string | string[]) {
+    const keys = Array.isArray(key) ? key : [key];
+    for (const k of keys) this.objects.delete(k);
   }
-  async list(opts?: { prefix?: string; limit?: number; cursor?: string }) {
+  async list(opts?: { prefix?: string; limit?: number; cursor?: string; delimiter?: string }) {
     const prefix = opts?.prefix ?? '';
     const keys = [...this.objects.keys()].filter((k) => k.startsWith(prefix));
+    const delimitedPrefixes = new Set<string>();
+    const directKeys: string[] = [];
+    if (opts?.delimiter) {
+      for (const k of keys) {
+        const rest = k.slice(prefix.length);
+        const idx = rest.indexOf(opts.delimiter);
+        if (idx >= 0) delimitedPrefixes.add(prefix + rest.slice(0, idx + opts.delimiter.length));
+        else directKeys.push(k);
+      }
+    }
+    const listed = opts?.delimiter ? directKeys : keys;
     return {
-      objects: keys.map((k) => {
+      objects: listed.map((k) => {
         const o = this.objects.get(k)!;
         return { key: k, size: o.data.byteLength, etag: o.etag, httpEtag: o.etag };
       }),
+      delimitedPrefixes: [...delimitedPrefixes],
       truncated: false,
       cursor: undefined,
     };

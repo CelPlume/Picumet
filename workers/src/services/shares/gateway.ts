@@ -7,6 +7,7 @@ import { getDb } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { ApiError } from '../../shared/errors';
 import { consumeDownloadToken } from '../shares/tokens';
+import { serveObject } from '../storage/serve';
 import type { Env } from '../../shared/types';
 
 export const gatewayRoutes = new Hono<AppBindings>();
@@ -43,23 +44,14 @@ gatewayRoutes.get('/download/:token', async (c) => {
     }
   }
 
-  const obj = await provider.getObject(payload.objectKey);
-  if (!obj) {
-    throw new ApiError(404, 'NOT_FOUND', '文件对象不存在或已被删除');
-  }
-
-  const headers = new Headers();
-  const mime = payload.mimeType ?? obj.contentType ?? 'application/octet-stream';
-  headers.set('Content-Type', mime);
-  headers.set('Content-Length', String(payload.size || obj.size));
-  headers.set('Cache-Control', 'private, max-age=300');
-
-  const safeName = payload.name.replace(/["\\\r\n]/g, '_');
-  const ext = safeName.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
-  const forceDownload =
-    ['.html', '.htm', '.svg', '.xml', '.xhtml', '.md', '.json'].includes(ext) ||
-    !payload.mimeType;
-  headers.set('Content-Disposition', `${forceDownload ? 'attachment' : 'inline'}; filename="${safeName}"`);
+  const response = await serveObject({
+    provider,
+    objectKey: payload.objectKey,
+    name: payload.name,
+    mimeType: payload.mimeType,
+    rangeHeader: c.req.header('range'),
+    totalSize: payload.size || undefined,
+  });
 
   // 记录下载日志
   await LogRepo.create(db, {
@@ -73,7 +65,7 @@ gatewayRoutes.get('/download/:token', async (c) => {
     statusCode: 200,
   });
 
-  return new Response(obj.body, { status: 200, headers });
+  return response;
 });
 
 function ipOf(c: Context): string | undefined {

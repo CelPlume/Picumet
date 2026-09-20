@@ -6,7 +6,9 @@ import { getDb } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { ApiError } from '../../shared/errors';
 import { normalizePath } from '../../utils/path';
-import { decideAccessMode, streamObject } from '../shares/tokens';
+import { verifyPathSign } from '../../utils/crypto';
+import { decideAccessMode } from '../shares/tokens';
+import { serveObject } from '../storage/serve';
 import { can } from '../permissions/principal';
 
 export const pathPublicRoutes = new Hono<AppBindings>();
@@ -39,14 +41,27 @@ pathPublicRoutes.get('*', async (c) => {
   if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
   const provider = await getProvider(db, providerRow, c.env as Env);
 
-  // 公开挂载直接可读；私有挂载需登录且有读/下载权限
+  // 公开挂载直接可读；私有挂载需登录且有读/下载权限，或持有该路径的有效签名（?sign=，P0-1）
   const accessMode = decideAccessMode(file, provider, false);
   if (accessMode !== 'public_cdn') {
-    const allowed = await can(c, mount, file.path, 'download', file.ownerId);
-    if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权访问');
+    const sign = c.req.query('sign');
+    const signOk = sign ? await verifyPathSign(virtualPath, (c.env as Env).ENCRYPTION_KEY, sign) : false;
+    if (!signOk) {
+      // 此处 file.type 必为 'file'（上方已过滤）：permPath = 文件全路径
+      const permPath = file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`;
+      const allowed = await can(c, mount, permPath, 'download', file.ownerId, undefined, file.visibility);
+      if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权访问');
+    }
   }
 
-  return streamObject(c, provider, file.objectKey, file.name, file.mimeType);
+  return serveObject({
+    provider,
+    objectKey: file.objectKey,
+    name: file.name,
+    mimeType: file.mimeType,
+    rangeHeader: c.req.header('range'),
+    totalSize: file.size,
+  });
 });
 
 function safeDecode(s: string): string {

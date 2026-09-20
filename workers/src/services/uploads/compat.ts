@@ -1,21 +1,23 @@
 // 兼容上传 API：PicGo/PicList 自定义上传（Bearer API Key 认证）
+// P0-1 可用直链 / P0-2 覆盖语义 / P0-3 祖先目录行 —— 统一委托 files/write.ts
 import { Hono } from 'hono';
-import type { AppBindings } from '../../shared/types';
+import type { AppBindings, Env } from '../../shared/types';
 import {
-  FileRepo, QuotaRepo, MountRepo, ProviderRepo,
+  FileRepo, MountRepo, ProviderRepo, LogRepo,
 } from '../../db';
-import { getDb, getClientIp } from '../../middleware/auth';
+import { getDb } from '../../middleware/auth';
+import { assertApiKeyProtocol } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { requirePermission } from '../permissions/principal';
+import { serveObject } from '../storage/serve';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import {
-  normalizePath, objectKeyFromPath, isValidFileName, isPathWithinBoundary,
-  renderPathTemplate, buildTemplateVars, validateFileType,
+  normalizePath, isPathWithinBoundary,
+  renderPathTemplate, buildTemplateVars, splitNestedFileName,
 } from '../../utils/path';
 import { uuid } from '../../utils/crypto';
-import type { Env } from '../../shared/types';
-import { ReconciliationRepo } from '../../db';
+import { uploadBytes } from './upload-bytes';
 
 export const compatRoutes = new Hono();
 
@@ -27,11 +29,18 @@ export const compatRoutes = new Hono();
 compatRoutes.post('/', handleCompatUpload);
 compatRoutes.post('/upload', handleCompatUpload);
 
+/**
+ * GET /api/compat/file?path=/uploads/a.png（P1-4：密钥可用的程序化只读端点）
+ * 要求 read 权限；目标必须位于密钥上传根内。
+ */
+compatRoutes.get('/file', handleCompatDownload);
+
 async function handleCompatUpload(c: Parameters<typeof ok>[0]) {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
   if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 API 密钥认证');
   if (!apiKey.permissions.includes('write')) throw new ApiError(403, 'FORBIDDEN', '密钥无上传权限');
+  assertApiKeyProtocol(apiKey, 'api');
   const userId = c.get('userId');
 
   const contentType = c.req.header('content-type') ?? '';
@@ -44,16 +53,21 @@ async function handleCompatUpload(c: Parameters<typeof ok>[0]) {
     const file = form.get('file');
     customPath = (form.get('path') as string | null) ?? undefined;
     if (!(file instanceof File)) throw ApiError.badRequest('缺少 file 字段');
+    // P1-3.6：{localFolder:N} 等重命名可让 multipart 文件名携带嵌套路径段
+    const split = splitNestedFileName(file.name, customPath);
     // 审计 H-03：multipart 用 file.stream() 流式写入，避免 arrayBuffer 整包入内存
     const stream = file.stream();
-    return uploadBytes(c, db, userId, apiKey.uploadPath, file.name, file.type, file.size, stream, customPath);
+    return uploadBytes(c, db, userId, apiKey.uploadPath, split.fileName, file.type, file.size, stream, split.customPath);
   }
 
   // 原始 body 上传：x-file-name header 指定文件名
-  fileName = c.req.header('x-file-name') ?? c.req.header('filename') ?? '';
+  const rawName = c.req.header('x-file-name') ?? c.req.header('filename') ?? '';
   mimeType = c.req.header('content-type') ?? '';
   customPath = c.req.header('x-path');
-  if (!fileName) throw ApiError.badRequest('缺少文件名（使用 X-File-Name 头或 multipart）');
+  if (!rawName) throw ApiError.badRequest('缺少文件名（使用 X-File-Name 头或 multipart）');
+  const split = splitNestedFileName(rawName, customPath);
+  fileName = split.fileName;
+  customPath = split.customPath;
   // 审计 H-03：raw body 流式转发；Content-Length 已知则流式，缺失（chunked）回退读取
   const rawLength = Number(c.req.header('content-length') ?? '');
   const hasLength = Number.isFinite(rawLength) && rawLength > 0;
@@ -77,132 +91,55 @@ async function handleCompatUpload(c: Parameters<typeof ok>[0]) {
   return uploadBytes(c, db, userId, apiKey.uploadPath, fileName, mimeType, size, body, customPath);
 }
 
-async function uploadBytes(
-  c: Parameters<typeof ok>[0],
-  db: ReturnType<typeof getDb>,
-  userId: string,
-  uploadPathTemplate: string,
-  fileName: string,
-  mimeType: string,
-  size: number,
-  body: ReadableStream<Uint8Array>,
-  customPath?: string
-) {
-  if (!isValidFileName(fileName)) throw ApiError.badRequest('文件名包含非法字符');
-  validateFileType(fileName, mimeType);
+async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
+  const db = getDb(c);
+  const apiKey = c.get('apiKey');
+  if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 API 密钥认证');
+  if (!apiKey.permissions.includes('read')) throw new ApiError(403, 'FORBIDDEN', '密钥无读取权限');
+  assertApiKeyProtocol(apiKey, 'api');
 
-  // M-3：密钥上传根（规范化），最终目标必须落在其边界内
-  const uploadRoot = normalizePath(uploadPathTemplate || '/uploads');
-
-  // 渲染路径模板
-  const extMatch = fileName.match(/\.[^.]+$/)?.[0] ?? '';
-  const vars = buildTemplateVars({
-    uuid: uuid(),
-    ext: extMatch.replace('.', ''),
-    mime: mimeType,
-    username: c.get('user')?.username ?? 'anonymous',
-  });
-  const rendered = normalizePath(renderPathTemplate(uploadPathTemplate || '/uploads', vars));
-  const targetPath = customPath
-    ? normalizePath(`${customPath}/${fileName}`)
-    : rendered === '/'
-      ? `/${fileName}`
-      : rendered.endsWith('/' + fileName)
-        ? rendered
-        : normalizePath(`${rendered}/${fileName}`);
-
-  // M-3：customPath 与模板结果都不得越过密钥上传根
+  const rawPath = c.req.query('path');
+  if (!rawPath) throw ApiError.badRequest('缺少 path 查询参数');
+  const targetPath = normalizePath(rawPath);
+  const uploadRoot = normalizePath(apiKey.uploadPath || '/');
   if (!isPathWithinBoundary(targetPath, uploadRoot)) {
-    throw new ApiError(403, 'FORBIDDEN', '上传目标超出密钥配置的上传根目录');
+    throw new ApiError(403, 'FORBIDDEN', '目标路径超出密钥上传根目录');
   }
 
-  // 配额预留
-  const reserved = await QuotaRepo.reserve(db, userId, size);
-  if (!reserved) throw new ApiError(413, 'QUOTA_EXCEEDED', '存储配额不足');
-  const canAdd = await QuotaRepo.canAddFile(db, userId);
-  if (!canAdd) {
-    await QuotaRepo.releaseReservation(db, userId, size);
-    throw new ApiError(413, 'QUOTA_EXCEEDED', '文件数量配额已满');
-  }
+  const mount = await MountRepo.findMountForPath(db, targetPath);
+  if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  await requirePermission(c, mount, targetPath, 'read');
 
-  let objectKey: string | undefined;
-  let mountId: string | undefined;
+  const segs = targetPath.split('/').filter(Boolean);
+  const name = segs.pop();
+  if (!name) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  const parent = '/' + segs.join('/');
+  // 网关密钥数据层所有者绑定：按属主过滤查询 → 他人文件不可见（404，与 WebDAV 语义一致）
+  const file = await FileRepo.getFileAtPath(db, mount.id, parent, name, apiKey.userId);
+  if (!file || file.type !== 'file') throw new ApiError(404, 'NOT_FOUND', '文件不存在');
 
-  try {
-    const mount = await MountRepo.findMountForPath(db, targetPath);
-    if (!mount) throw new ApiError(404, 'NOT_FOUND', '目标挂载点不存在');
-    // M-3/H-3：最终路径再次通过统一权限服务（API Key 权限 ∩ 路径规则）
-    await requirePermission(c, mount, targetPath, 'write');
-    const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
-    if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-    const provider = await getProvider(db, providerRow, c.env as Env);
-    const key = objectKeyFromPath(mount.mountPath, providerRow.pathPrefix, targetPath);
-    objectKey = key;
-    mountId = mount.id;
+  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
+  if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
+  const provider = await getProvider(db, providerRow, c.env as Env);
 
-    await provider.putObject(key, body, mimeType);
-    const head = await provider.headObject(key);
-    if (!head || head.size !== size) {
-      throw new ApiError(422, 'OPERATION_FAILED', '上传校验失败');
-    }
+  await LogRepo.create(db, {
+    userId: apiKey.userId,
+    action: 'download',
+    path: file.path,
+    metadata: JSON.stringify({ fileName: file.name, via: 'compat-api' }),
+    ipAddress: c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? undefined,
+    userAgent: c.req.header('user-agent'),
+    bytesTransferred: file.size,
+  });
 
-    // H-5：元数据 + 配额 + 日志同一批提交（对象已写入，DB 侧原子；失败即补偿删对象）
-    const fileId = uuid();
-    await db.transaction(async (tx) => {
-      await FileRepo.createFileTx(tx, {
-        id: fileId,
-        mountId: mount.id,
-        objectKey: key,
-        path: targetPath.slice(0, -(fileName.length + 1)) || '/',
-        name: fileName,
-        type: 'file',
-        mimeType,
-        size,
-        etag: head.etag,
-        ownerId: userId,
-      });
-      await tx.query(
-        `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
-        [size, size, Date.now(), userId]
-      );
-      await tx.query(
-        `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
-         VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
-        [uuid(), userId, targetPath, JSON.stringify({ fileName, via: 'api' }), getClientIp(c), c.req.header('user-agent'), size, Date.now()]
-      );
-    });
-
-    // 兼容图床响应：返回 URL
-    const base = c.env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
-    return ok(c, {
-      url: `${base}/api/files/${fileId}/download`,
-      fileId,
-      path: targetPath,
-      size,
-      filename: fileName,
-    });
-  } catch (err) {
-    // 补偿：释放预留；尽力删除已写对象，失败记录孤儿供对账
-    await QuotaRepo.releaseReservation(db, userId, size);
-    if (objectKey && mountId) {
-      try {
-        const mount = await MountRepo.getMountById(db, mountId);
-        const providerRow = mount ? await ProviderRepo.getProviderById(db, mount.providerId) : null;
-        if (providerRow) {
-          const provider = await getProvider(db, providerRow, c.env as Env);
-          await provider.deleteObject(objectKey);
-        }
-      } catch (cleanupErr) {
-        await ReconciliationRepo.createOrphanObject(db, {
-          mountId,
-          objectKey,
-          reason: 'upload_db_failed',
-          error: cleanupErr instanceof Error ? cleanupErr.message : 'unknown',
-        });
-      }
-    }
-    throw err;
-  }
+  return serveObject({
+    provider,
+    objectKey: file.objectKey,
+    name: file.name,
+    mimeType: file.mimeType,
+    rangeHeader: c.req.header('range'),
+    totalSize: file.size,
+  });
 }
 
 export { uploadBytes };
