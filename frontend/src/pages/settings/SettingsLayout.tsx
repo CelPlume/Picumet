@@ -1,7 +1,7 @@
 // 设置页布局
 import { NavLink, Outlet } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { User, Shield, KeyRound, Palette } from 'lucide-react';
+import { User, Shield, KeyRound, Palette, Users } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { cn } from '@/lib/utils';
 
@@ -11,6 +11,7 @@ export default function SettingsLayout() {
     { to: '/settings/profile', icon: <User className="h-4 w-4" />, label: t('settings.profile'), desc: t('settings.profileDesc') },
     { to: '/settings/security', icon: <Shield className="h-4 w-4" />, label: t('settings.security'), desc: t('settings.securityDesc') },
     { to: '/settings/api-keys', icon: <KeyRound className="h-4 w-4" />, label: t('settings.apiKeys'), desc: t('settings.apiKeysDesc') },
+    { to: '/settings/access-rules', icon: <Users className="h-4 w-4" />, label: '访问规则', desc: '授权其他用户访问' },
     { to: '/settings/appearance', icon: <Palette className="h-4 w-4" />, label: t('settings.appearance'), desc: t('settings.appearanceDesc') },
   ];
   return (

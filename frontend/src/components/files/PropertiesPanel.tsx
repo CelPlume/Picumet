@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import type { FileListItem } from '@shared/types';
 import { Button, Input, Label, Separator, Badge } from '@/components/ui/core';
+import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
+import { apiFetch } from '@/lib/api';
 import { formatBytes, formatDateTime } from '@/lib/utils';
 import { useUpdateFile } from './data';
 
@@ -23,6 +25,10 @@ export function PropertiesPanel({
   const [customColor, setCustomColor] = useState(file?.customColor ?? '');
   const [iconEmoji, setIconEmoji] = useState(file?.iconEmoji ?? '');
   const [password, setPassword] = useState('');
+  const [visibility, setVisibility] = useState<'private' | 'users' | 'public'>(file?.visibility ?? 'private');
+  const [ruleEffect, setRuleEffect] = useState('allow');
+  const [ruleTargetMode, setRuleTargetMode] = useState('all');
+  const [ruleUserId, setRuleUserId] = useState('');
 
   if (!file) return null;
 
@@ -32,6 +38,24 @@ export function PropertiesPanel({
       toast('success', '已保存');
     } catch (err) {
       toast('error', err instanceof Error ? err.message : '保存失败');
+    }
+  };
+
+  const createRule = async () => {
+    try {
+      await apiFetch('/api/users/rules', {
+        method: 'POST',
+        body: {
+          itemId: file.id,
+          effect: ruleEffect,
+          permissions: ['read', 'download'],
+          ...(ruleTargetMode === 'all' ? { allUsers: true } : { targetUserId: ruleUserId.trim() }),
+        },
+      });
+      toast('success', '规则已创建');
+      setRuleUserId('');
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : '创建失败');
     }
   };
 
@@ -141,6 +165,64 @@ export function PropertiesPanel({
               </div>
             </div>
           )}
+
+          <div>
+            <Label className="text-xs">可见性</Label>
+            <Select
+              className="mt-1"
+              value={visibility}
+              onValueChange={(v) => {
+                if (v !== 'private' && v !== 'users' && v !== 'public') return;
+                setVisibility(v);
+                void save({ visibility: v });
+              }}
+              options={[
+                { value: 'private', label: '私密（仅自己与授权者）' },
+                { value: 'users', label: '站内用户可见' },
+                { value: 'public', label: '公开（进入公开空间）' },
+              ]}
+            />
+            {file.visibility === 'public' && file.reviewStatus === 'pending' && (
+              <p className="mt-1 text-xs text-amber-600">公开申请审核中，管理员批准后所有人可见</p>
+            )}
+            {file.visibility === 'public' && file.reviewStatus === 'approved' && (
+              <p className="mt-1 text-xs text-emerald-600">已公开，可在公开空间访问</p>
+            )}
+            {file.visibility === 'public' && file.reviewStatus === 'rejected' && (
+              <p className="mt-1 text-xs text-destructive">公开申请被驳回</p>
+            )}
+          </div>
+
+          <div>
+            <Label className="text-xs">访问规则</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">授权/禁止其他用户访问此文件（需 can_grant 能力位；管理入口：设置 → 访问规则）</p>
+            <div className="mt-1 flex gap-1.5">
+              <Select
+                className="w-24 shrink-0"
+                value={ruleEffect}
+                onValueChange={(v) => setRuleEffect(v)}
+                options={[
+                  { value: 'allow', label: '允许' },
+                  { value: 'deny', label: '禁止' },
+                ]}
+              />
+              <Select
+                className="w-32 shrink-0"
+                value={ruleTargetMode}
+                onValueChange={(v) => setRuleTargetMode(v)}
+                options={[
+                  { value: 'all', label: '全部用户' },
+                  { value: 'user', label: '指定用户' },
+                ]}
+              />
+              {ruleTargetMode === 'user' && (
+                <Input value={ruleUserId} onChange={(e) => setRuleUserId(e.target.value)} placeholder="用户 ID" className="h-8 min-w-0 flex-1 text-sm" />
+              )}
+              <Button variant="outline" size="sm" onClick={() => void createRule()} className="h-8 shrink-0">
+                添加
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

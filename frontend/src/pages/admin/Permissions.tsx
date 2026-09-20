@@ -25,6 +25,8 @@ interface Rule {
   requirePassword: boolean;
   allowedIps?: string[];
   priority: number;
+  origin?: 'admin' | 'user' | 'system';
+  createdBy?: string;
   status: string;
 }
 
@@ -144,6 +146,7 @@ export default function AdminPermissions() {
             <tr className="border-b text-left text-muted-foreground">
               <th className="px-4 py-2"><SortableHeader title="路径" sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className="px-4 py-2">主体</th>
+              <th className="px-4 py-2">来源</th>
               <th className="px-4 py-2">权限</th>
               <th className="px-4 py-2"><SortableHeader title="优先级" sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className="px-4 py-2"><SortableHeader title="效果" sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
@@ -152,11 +155,18 @@ export default function AdminPermissions() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6}><TableSkeleton rows={5} cols={4} /></td></tr>
+              <tr><td colSpan={7}><TableSkeleton rows={5} cols={4} /></td></tr>
             ) : sortedRows.map((r) => (
               <tr key={r.id} className="border-b last:border-0 hover:bg-accent/50">
                 <td className="px-4 py-2 font-mono text-sm"><code>{r.pathPattern}</code></td>
                 <td className="px-4 py-2 text-xs text-muted-foreground">{subjectLabel(r)}{r.mountId ? ` · ${r.mountName ?? r.mountId}` : ''}</td>
+                <td className="px-4 py-2 text-xs">
+                  {r.origin === 'user' ? (
+                    <Badge variant="warning">用户{r.createdBy ? `:${r.createdBy.slice(0, 8)}` : ''}</Badge>
+                  ) : (
+                    <Badge variant="secondary">管理员</Badge>
+                  )}
+                </td>
                 <td className="px-4 py-2">
                   <div className="flex flex-wrap items-center gap-1.5">
                     {r.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}

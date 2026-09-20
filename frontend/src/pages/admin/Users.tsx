@@ -31,6 +31,7 @@ export default function AdminUsers() {
   const [status, setStatus] = useState('active');
   const [maxStorage, setMaxStorage] = useState('10');
   const [maxFiles, setMaxFiles] = useState('10000');
+  const [capabilities, setCapabilities] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState<UserRow | null>(null);
 
   const load = async () => {
@@ -53,7 +54,7 @@ export default function AdminUsers() {
     try {
       await apiFetch(`/api/admin/users/${editing.id}`, {
         method: 'PUT',
-        body: { role, status, maxStorage: Number(maxStorage) * 1024 * 1024 * 1024, maxFiles: Number(maxFiles) },
+        body: { role, status, maxStorage: Number(maxStorage) * 1024 * 1024 * 1024, maxFiles: Number(maxFiles), capabilities },
       });
       toast('success', '已保存');
       setEditing(null);
@@ -80,6 +81,7 @@ export default function AdminUsers() {
     setStatus(u.status);
     setMaxStorage(String((u.quota?.maxStorage ?? 10 * 1024 ** 3) / 1024 ** 3));
     setMaxFiles(String(u.quota?.maxFiles ?? 10000));
+    setCapabilities(u.capabilities ?? []);
   };
 
   const sortedRows = useMemo(() => {
@@ -209,6 +211,28 @@ export default function AdminUsers() {
             <div>
               <Label>{t('admin.maxFiles')}</Label>
               <Input type="number" value={maxFiles} onChange={(e) => setMaxFiles(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <Label>能力位</Label>
+            <div className="mt-1.5 flex flex-wrap gap-3 text-sm">
+              {[
+                { id: 'can_share', label: '可分享（can_share）' },
+                { id: 'can_publish', label: '可公开发布（can_publish）' },
+                { id: 'can_grant', label: '可创建访问规则（can_grant）' },
+              ].map((cap) => (
+                <label key={cap.id} className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={capabilities.includes(cap.id)}
+                    onChange={(e) => {
+                      setCapabilities((prev) => (e.target.checked ? [...prev, cap.id] : prev.filter((c) => c !== cap.id)));
+                    }}
+                    className="h-4 w-4 rounded border-border"
+                  />
+                  {cap.label}
+                </label>
+              ))}
             </div>
           </div>
         </div>

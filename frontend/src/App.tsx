@@ -20,6 +20,7 @@ const SettingsLayout = lazy(() => import('@/pages/settings/SettingsLayout'));
 const ProfilePage = lazy(() => import('@/pages/settings/Profile'));
 const SecurityPage = lazy(() => import('@/pages/settings/Security'));
 const ApiKeysPage = lazy(() => import('@/pages/settings/ApiKeys'));
+const AccessRulesPage = lazy(() => import('@/pages/settings/AccessRules'));
 const AppearancePage = lazy(() => import('@/pages/settings/Appearance'));
 const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'));
 const AdminDashboard = lazy(() => import('@/pages/admin/Dashboard'));
@@ -105,6 +106,7 @@ export default function App() {
             <Route path="profile" element={<ProfilePage />} />
             <Route path="security" element={<SecurityPage />} />
             <Route path="api-keys" element={<ApiKeysPage />} />
+            <Route path="access-rules" element={<AccessRulesPage />} />
             <Route path="appearance" element={<AppearancePage />} />
           </Route>
         </Route>
