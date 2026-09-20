@@ -6,11 +6,11 @@ import { getDb } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
-import { encryptSecret, hashPassword } from '../../utils/crypto';
+import { encryptSecret, hashPassword, uuid } from '../../utils/crypto';
 import { normalizePath } from '../../utils/path';
 import type { Env } from '../../shared/types';
 import { validateEndpoint } from '../../utils/ssrf';
-import { ProviderSchema, MountSchema, RuleSchema } from './storage-schemas';
+import { ProviderSchema, ProviderSchemaBase, MountSchema, RuleSchema } from './storage-schemas';
 
 export const adminStorageRoutes = new Hono<AppBindings>();
 
@@ -27,7 +27,6 @@ adminStorageRoutes.get('/storage/providers', async (c) => {
       region: p.region,
       bucket: p.bucket,
       publicDomain: p.publicDomain,
-      uploadDomain: p.uploadDomain,
       pathPrefix: p.pathPrefix,
       status: p.status,
       createdAt: p.createdAt,
@@ -43,51 +42,86 @@ adminStorageRoutes.post('/storage/providers', async (c) => {
   const parsed = ProviderSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '存储配置无效');
 
-  const { name, type, endpoint, region, bucket, accessKeyId, secretAccessKey, publicDomain, uploadDomain, pathPrefix } = parsed.data;
+  const { name, endpoint, region, bucket, accessKeyId, secretAccessKey, publicDomain, pathPrefix, mountPath } = parsed.data;
 
-  // R2 绑定模式：endpoint 为空表示使用本地/生产 R2 绑定
-  const isBindingR2 = type === 'r2' && !endpoint;
+  // §5.2：type 由「有无 endpoint」推导，不再是用户选择项
+  const isBinding = !endpoint;
   // M-1：统一 SSRF 校验（scheme/端口/userinfo + IPv4/IPv6 私网保留段）
-  if (!isBindingR2 && endpoint && !validateEndpoint(endpoint)) {
+  if (!isBinding && !validateEndpoint(endpoint)) {
     throw ApiError.badRequest('存储端点无效：必须为公网 http(s) 地址，且不允许私网/保留地址');
   }
 
-  const provider = await ProviderRepo.createProvider(db, {
-    name,
-    type,
-    endpoint: isBindingR2 ? '__binding__' : (endpoint ?? ''),
-    region: region ?? (type === 'r2' ? 'auto' : ''),
-    bucket,
-    accessKeyId: isBindingR2 ? '__binding__' : accessKeyId ?? '',
-    secretAccessKey: isBindingR2 ? '__binding__' : secretAccessKey ?? '',
-    publicDomain: publicDomain ?? undefined,
-    uploadDomain: uploadDomain ?? undefined,
-    pathPrefix: pathPrefix ?? '',
+  // 可选一步创建挂载点：同事务 provider + mount（§2.5 交互合并，90% 场景 1:1）
+  let normalizedMountPath: string | null = null;
+  if (mountPath) {
+    normalizedMountPath = normalizePath(mountPath);
+    const existing = await MountRepo.listMounts(db);
+    if (existing.some((m) => m.mountPath === normalizedMountPath)) {
+      throw new ApiError(409, 'ALREADY_EXISTS', '挂载路径已存在');
+    }
+  }
+
+  const now = Date.now();
+  const providerId = uuid();
+  await db.transaction(async (tx) => {
+    await tx.query(
+      `INSERT INTO storage_providers (id, name, type, endpoint, region, bucket, access_key_id, secret_access_key, public_domain, path_prefix, created_at, updated_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [
+        providerId,
+        name,
+        isBinding ? 'r2' : 's3',
+        isBinding ? '' : endpoint,
+        region || 'auto',
+        bucket,
+        isBinding ? '' : accessKeyId ?? '',
+        isBinding ? '' : secretAccessKey ?? '',
+        publicDomain ?? null,
+        pathPrefix ?? '',
+        now,
+        now,
+      ]
+    );
+    if (normalizedMountPath) {
+      await tx.query(
+        `INSERT INTO mounts (id, provider_id, mount_path, name, sort_by, sort_order, priority, created_at, updated_at, status)
+         VALUES (?, ?, ?, ?, 'name', 'asc', 0, ?, ?, 'active')`,
+        [uuid(), providerId, normalizedMountPath, name, now, now]
+      );
+    }
   });
 
-  return ok(c, { provider: { id: provider.id } }, undefined, 201);
+  return ok(c, { provider: { id: providerId }, mountPath: normalizedMountPath }, undefined, 201);
 });
 
 adminStorageRoutes.put('/storage/providers/:id', async (c) => {
   const db = getDb(c);
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
-  const parsed = ProviderSchema.partial().safeParse(body ?? {});
+  const parsed = ProviderSchemaBase.partial().safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('存储配置无效');
   const fields: Record<string, unknown> = {};
   const map: Record<string, string> = {
     name: 'name',
-    type: 'type',
     endpoint: 'endpoint',
     region: 'region',
     bucket: 'bucket',
     publicDomain: 'public_domain',
-    uploadDomain: 'upload_domain',
     pathPrefix: 'path_prefix',
   };
   for (const [k, v] of Object.entries(parsed.data)) {
     if (v === undefined) continue;
     fields[map[k] ?? k] = v;
+  }
+  // endpoint 驱动 type：置空 = 切回绑定（清凭据）；填写 = S3 协议
+  if (parsed.data.endpoint !== undefined) {
+    if (parsed.data.endpoint === '') {
+      fields.type = 'r2';
+      fields.access_key_id = '';
+      fields.secret_access_key = '';
+    } else {
+      fields.type = 's3';
+    }
   }
   if (parsed.data.accessKeyId) fields.access_key_id = await encryptSecret(parsed.data.accessKeyId, c.env.ENCRYPTION_KEY as string);
   if (parsed.data.secretAccessKey) fields.secret_access_key = await encryptSecret(parsed.data.secretAccessKey, c.env.ENCRYPTION_KEY as string);

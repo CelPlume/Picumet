@@ -9,9 +9,9 @@ export const ProviderRepo = {
     const id = uuid();
     const now = Date.now();
     await db.run(
-      `INSERT INTO storage_providers (id, name, type, endpoint, region, bucket, access_key_id, secret_access_key, public_domain, upload_domain, path_prefix, created_at, updated_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [id, p.name, p.type, p.endpoint, p.region, p.bucket, p.accessKeyId, p.secretAccessKey, p.publicDomain ?? null, p.uploadDomain ?? null, p.pathPrefix ?? '', now, now]
+      `INSERT INTO storage_providers (id, name, type, endpoint, region, bucket, access_key_id, secret_access_key, public_domain, path_prefix, created_at, updated_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [id, p.name, p.type, p.endpoint, p.region, p.bucket, p.accessKeyId, p.secretAccessKey, p.publicDomain ?? null, p.pathPrefix ?? '', now, now]
     );
     return (await this.getProviderById(db, id)) as StorageProvider;
   },

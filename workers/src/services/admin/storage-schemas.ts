@@ -24,18 +24,31 @@ function httpsUrl(message: string) {
     }, '仅允许 https 公网地址（本地开发可使用 http://localhost）');
 }
 
-// 存储提供商
-export const ProviderSchema = z.object({
+// 存储提供商（报告 §5.2 单表单平铺）：
+// type 由「有无 endpoint」在后端推导，不再是入参；绑定模式 = endpoint/AK/SK 全留空。
+export const ProviderSchemaBase = z.object({
   name: z.string().min(1).max(100),
-  type: z.enum(['r2', 's3', 'oracle']),
   endpoint: z.string().max(500).optional(),
   region: z.string().max(100).optional(),
   bucket: z.string().min(1).max(255),
   accessKeyId: z.string().max(500).optional(),
   secretAccessKey: z.string().max(500).optional(),
   publicDomain: httpsUrl('公网域名格式不正确').nullable().optional(),
-  uploadDomain: httpsUrl('上传域名格式不正确').nullable().optional(),
   pathPrefix: z.string().max(500).optional(),
+  // 可选：提交时同事务创建挂载点（添加存储一步完成，§2.5 交互合并）
+  mountPath: z.string().max(500).optional(),
+});
+
+// 创建用：endpoint/AK/SK 必须同填同空
+export const ProviderSchema = ProviderSchemaBase.superRefine((data, ctx) => {
+  const filled = [data.endpoint?.trim(), data.accessKeyId?.trim(), data.secretAccessKey?.trim()].filter(Boolean).length;
+  if (filled !== 0 && filled !== 3) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['endpoint'],
+      message: 'Endpoint、Access Key ID、Secret Access Key 需同时填写或同时留空（留空 = 使用 R2 绑定）',
+    });
+  }
 });
 
 // 挂载点

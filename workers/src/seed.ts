@@ -74,11 +74,11 @@ async function seedAll(db: Db, env: Env): Promise<void> {
     provider = await ProviderRepo.createProvider(db, {
       name: '本地存储',
       type: 'r2',
-      endpoint: '__binding__',
+      endpoint: '',
       region: 'auto',
       bucket: 'picumet-storage',
-      accessKeyId: '__binding__',
-      secretAccessKey: '__binding__',
+      accessKeyId: '',
+      secretAccessKey: '',
       pathPrefix: '',
     });
   }

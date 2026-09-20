@@ -125,7 +125,6 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
   const session: FreeModeSession = {
     userId: user.id,
     provider: {
-      type: parsed.data.type,
       endpoint: parsed.data.endpoint,
       region: parsed.data.region || 'auto',
       bucket: parsed.data.bucket,
@@ -162,7 +161,7 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
     user: { id: user.id, username: user.username, role: user.role, defaultPath: '/' },
     expiresAt: session.expiresAt,
     sessionHours: parsed.data.sessionHours,
-    provider: { type: parsed.data.type, bucket: parsed.data.bucket },
+    provider: { bucket: parsed.data.bucket },
     csrfToken,
   }, undefined, 201);
 });
@@ -173,22 +172,68 @@ freeModeRoutes.get('/files', async (c) => {
   const provider = await buildProvider(session);
   // 列表前缀同样走规范化（拒绝 .. 逃逸）
   const prefix = validateFreeModeDir(c.req.query('path'), session.mountPath);
-  const res = await provider.listObjects(prefix, {});
+  // P1-5：Delimiter 折叠出目录结构，用户自带桶不再 flat 平铺
+  const res = await provider.listObjects(prefix, { delimiter: '/' });
+
+  type FreeModeItem = {
+    key: string;
+    name: string;
+    path: string;
+    type: 'file' | 'folder';
+    size: number;
+    etag?: string;
+  };
+
+  const items: FreeModeItem[] = [];
+  const folderNames = new Set<string>();
+
+  // 公共前缀 → 虚拟目录行
+  for (const p of res.prefixes ?? []) {
+    if (!p.startsWith(prefix) || p === prefix) continue;
+    const rel = p.slice(prefix.length).replace(/\/+$/, '');
+    if (!rel) continue;
+    folderNames.add(rel);
+    items.push({
+      key: p,
+      name: decodeURIComponent(rel),
+      path: `/${p}`,
+      type: 'folder',
+      size: 0,
+    });
+  }
+
+  // 对象行：跳过目录占位（已由前缀表达或单独成行）与前缀本身
+  for (const k of res.keys) {
+    if (!k.key.startsWith(prefix) || k.key === prefix) continue;
+    const rel = k.key.slice(prefix.length);
+    if (!rel) continue;
+    const isFolder = rel.endsWith('/');
+    if (isFolder) {
+      const folderRel = rel.replace(/\/+$/, '');
+      if (folderRel && folderNames.has(folderRel)) continue;
+      if (folderRel) folderNames.add(folderRel);
+      items.push({
+        key: k.key,
+        name: decodeURIComponent(folderRel || k.key),
+        path: `/${k.key}`,
+        type: 'folder',
+        size: 0,
+        etag: k.etag,
+      });
+      continue;
+    }
+    items.push({
+      key: k.key,
+      name: decodeURIComponent(k.key.split('/').filter(Boolean).pop() ?? k.key),
+      path: `/${k.key}`,
+      type: 'file',
+      size: k.size,
+      etag: k.etag,
+    });
+  }
+
   return ok(c, {
-    items: res.keys
-      .filter((k) => k.key.startsWith(prefix) && k.key !== prefix)
-      .map((k) => {
-        const rel = k.key.slice(prefix.length);
-        const isFolder = rel.endsWith('/');
-        return {
-          key: k.key,
-          name: decodeURIComponent(k.key.split('/').filter(Boolean).pop() ?? k.key),
-          path: `/${k.key}`,
-          type: isFolder ? 'folder' : 'file',
-          size: isFolder ? 0 : k.size,
-          etag: k.etag,
-        };
-      }),
+    items,
     mount: { id: 'free', name: '自由模式', mountPath: '/', sortBy: 'name', sortOrder: 'asc' },
   });
 });
