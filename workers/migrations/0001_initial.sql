@@ -1,6 +1,5 @@
+
 -- Picumet 初始迁移：全部核心表 + 预置数据
--- 升级脚本（本文件）
--- 降级脚本（注释形式，见文件末尾 ROLLBACK 段）
 
 PRAGMA foreign_keys = ON;
 
@@ -347,23 +346,122 @@ INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALU
 
 -- ============ 初始管理员账户 ============
 -- 管理员账户由 seed 逻辑创建：生产环境从 env.ADMIN_PASSWORD 注入（审计 H-02），
--- 不再在代码/迁移中硬编码固定凭据。
+-- 不在代码中硬编码固定凭据。
 
--- ============ ROLLBACK ============
--- 如需降级，按逆序删除表：
--- DROP TABLE IF EXISTS orphan_objects;
--- DROP TABLE IF EXISTS reconciliation_reports;
--- DROP TABLE IF EXISTS user_announcement_dismissals;
--- DROP TABLE IF EXISTS announcements;
--- DROP TABLE IF EXISTS system_settings;
--- DROP TABLE IF EXISTS access_logs;
--- DROP TABLE IF EXISTS shares;
--- DROP TABLE IF EXISTS api_keys;
--- DROP TABLE IF EXISTS path_rules;
--- DROP TABLE IF EXISTS operation_jobs;
--- DROP TABLE IF EXISTS upload_sessions;
--- DROP TABLE IF EXISTS file_metadata;
--- DROP TABLE IF EXISTS mounts;
--- DROP TABLE IF EXISTS storage_providers;
--- DROP TABLE IF EXISTS user_quotas;
--- DROP TABLE IF EXISTS users;
+-- ============================================================
+
+-- 1) upload_sessions.parts_completed：记录已成功上传的分片（断点续传 / 服务端留存 ETag）
+ALTER TABLE upload_sessions ADD COLUMN parts_completed TEXT;
+
+-- 2) download_tokens：下载令牌持久化存储，支持原子消费（DELETE ... RETURNING）
+CREATE TABLE IF NOT EXISTS download_tokens (
+  token TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_download_tokens_expires_at ON download_tokens(expires_at);
+
+-- ============================================================
+
+-- 审计 H-01：path_rules 增加 mount_id（挂载隔离）
+-- 审计 H-05：users 增加 session_version（会话撤销）
+
+-- 1) path_rules.mount_id：绑定规则到挂载点（NULL = 全局规则，兼容旧数据）
+ALTER TABLE path_rules ADD COLUMN mount_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_path_rules_mount ON path_rules(mount_id, status);
+
+-- 2) users.session_version：递增使旧 JWT 立即失效
+ALTER TABLE users ADD COLUMN session_version INTEGER DEFAULT 0;
+
+-- 注意：path_rules.mount_id 的外键约束需在重建表时加入（ALTER 无法加 FK）。
+-- 查询层强制按挂载过滤。
+
+-- ============================================================
+
+-- 1) email_tokens 表：OTP 邮箱验证令牌（验证码流程）
+CREATE TABLE IF NOT EXISTS email_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  code TEXT NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'verify',
+  expires_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_tokens_user ON email_tokens(user_id, email);
+
+-- 2) SMTP 设置种子键
+INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALUES
+('smtp_host', '""', 'SMTP 服务器地址', unixepoch() * 1000),
+('smtp_port', '"587"', 'SMTP 端口', unixepoch() * 1000),
+('smtp_secure', 'true', '是否启用 TLS/SSL', unixepoch() * 1000),
+('smtp_user', '""', 'SMTP 用户名', unixepoch() * 1000),
+('smtp_password', '""', 'SMTP 密码', unixepoch() * 1000),
+('smtp_from_name', '"Picumet"', '发件人名称', unixepoch() * 1000),
+('smtp_from_email', '""', '发件人邮箱', unixepoch() * 1000),
+('email_enabled', 'false', '是否启用邮件服务', unixepoch() * 1000);
+
+-- ============================================================
+
+-- Provider type 收敛（对照报告 §5.2）：运行时唯一语义 = 绑定与否。
+--   type='r2' 且无 endpoint → R2 绑定；其余 → S3 兼容协议（AWS / R2 S3 API / Oracle / MinIO）。
+-- 不重建 storage_providers 表：该表被 mounts.provider_id 外键引用，重建需停外键，风险高；
+-- CHECK 约束保持 ('r2','s3','oracle')，'oracle' 历史值折叠为 's3'，此后新增值只会是 'r2'/'s3'。
+
+-- 1) oracle → s3（Oracle 走 S3 兼容协议，type 无独立语义）
+UPDATE storage_providers SET type = 's3' WHERE type = 'oracle';
+
+-- 2) r2 + 已配置真实 endpoint → s3（R2 S3 API / 自配端点形态）
+UPDATE storage_providers SET type = 's3'
+WHERE type = 'r2'
+  AND endpoint IS NOT NULL AND endpoint != '' AND endpoint != '__binding__';
+
+-- 3) 绑定行哨兵归一：'__binding__' 占位 → ''（此后绑定判定 = type='r2' AND endpoint = ''）
+UPDATE storage_providers SET endpoint = '' WHERE endpoint = '__binding__';
+UPDATE storage_providers SET access_key_id = '' WHERE access_key_id = '__binding__';
+UPDATE storage_providers SET secret_access_key = '' WHERE secret_access_key = '__binding__';
+
+-- 4) upload_domain 死配置删除（报告 P1-6：建表/读写/schema 全链路存在但无消费者）
+ALTER TABLE storage_providers DROP COLUMN upload_domain;
+
+-- ============================================================
+
+-- S3 兼容网关支持（docs/PICLIST_COMPAT_CN.md P2-2）
+-- SigV4 验签需要服务端持有可逆的 secretAccessKey（sha256 哈希不可用），
+-- 故为 API 密钥增加 AES-GCM 加密的 secret 密文列（enc: 前缀，密钥来自 ENCRYPTION_KEY）。
+-- 存量密钥该列为 NULL：S3 网关对其实例返回明确错误，重建密钥后即可使用。
+
+ALTER TABLE api_keys ADD COLUMN secret_cipher TEXT;
+
+-- ============================================================
+
+-- 用户模型完善（对照报告 §4.4）：
+--   a) file_metadata.visibility    三级可见性（private | users | public）
+--   b) file_metadata.review_status 公开审核状态（public 需 approved 才进 gallery）
+--   c) path_rules.origin           规则来源（admin | user；system 仅内存合成规则，不入库）
+--   d) path_rules.created_by       user-origin 规则的创建者
+--   e) users.capabilities          能力位 JSON 数组（can_publish / can_share / can_grant）
+
+-- 1) 三级可见性：默认 private 保持既有行为。
+--    users = 全部登录用户可 read/download；public = 在 users 基础上进入公开空间（gallery 匿名面）。
+ALTER TABLE file_metadata ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private';
+CREATE INDEX IF NOT EXISTS idx_file_metadata_visibility ON file_metadata(visibility, owner_id);
+
+-- 2) 公开审核：public 提交后默认 pending，管理员 approved 后进入 gallery；
+--    private/users 语义与该列无关（默认 approved 便于统一查询）。
+ALTER TABLE file_metadata ADD COLUMN review_status TEXT NOT NULL DEFAULT 'approved';
+CREATE INDEX IF NOT EXISTS idx_file_metadata_review ON file_metadata(visibility, review_status);
+
+-- 3) path_rules 规则来源：user-origin 规则由用户在设置页创建（创建时校验边界与所有权），
+--    sortRules 按 origin（admin > user > system）压制，用户规则不可越权。
+ALTER TABLE path_rules ADD COLUMN origin TEXT NOT NULL DEFAULT 'admin';
+ALTER TABLE path_rules ADD COLUMN created_by TEXT;
+CREATE INDEX IF NOT EXISTS idx_path_rules_created_by ON path_rules(created_by);
+
+-- 4) 能力位：JSON 数组（如 '["can_share"]'）。NULL 视为空集；
+--    存量用户回填 can_share 保持既有分享行为不变。
+ALTER TABLE users ADD COLUMN capabilities TEXT;
+UPDATE users SET capabilities = '["can_share"]' WHERE capabilities IS NULL;
