@@ -124,7 +124,13 @@ fileOpsRoutes.post('/batch', async (c) => {
       if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
 
       if (action === 'delete') {
-        await requirePermission(c, mount, file.path, 'delete', file.ownerId);
+        await requirePermission(
+          c,
+          mount,
+          file.type === 'folder' ? file.path : (file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`),
+          'delete',
+          file.ownerId
+        );
         let keys: string[] = [];
         let size = file.size;
         let count = 1;

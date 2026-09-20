@@ -111,7 +111,7 @@ describe('文件全流程', () => {
     expect(data.data.file.name).toBe('new.txt');
   });
 
-  it('设置密码 → 无密码下载被拒 → 验证密码后可下载', async () => {
+  it('设置密码 → owner 免密下载（§4.4c 豁免）→ 非 owner 需验密 → 验证后可下载', async () => {
     const { authCookie } = await registerAndLogin(ctx, 'pwduser');
     const uploaded = await uploadFile(authCookie, 'secret.txt', 'topsecret');
     const csrf = await getCsrf(ctx, authCookie);
@@ -121,20 +121,28 @@ describe('文件全流程', () => {
       method: 'PUT',
       cookie: authCookie,
       headers: { 'X-CSRF-Token': csrf },
-      body: { accessPassword: 's3cret' },
+      body: { accessPassword: 's3cret', visibility: 'users' },
     });
     expect(setRes.status).toBe(200);
 
-    // 直接下载被拒
-    const dlRes = await request(ctx, `/api/files/${uploaded.file.id}/download`, { cookie: authCookie });
+    // owner 直接下载：§4.4c 密码豁免（管理员/owner 不受限）
+    const ownerRes = await request(ctx, `/api/files/${uploaded.file.id}/download`, { cookie: authCookie });
+    expect(ownerRes.status).toBe(200);
+    const ownerData = await json(ownerRes);
+    expect(ownerData.data.url).toContain('/api/gateway/download/');
+
+    // 非 owner（users 可见性有 download 权限）无密码被拒
+    const other = await registerAndLogin(ctx, 'pwother' + Math.random().toString(36).slice(2, 6));
+    const otherCsrf = await getCsrf(ctx, other.authCookie);
+    const dlRes = await request(ctx, `/api/files/${uploaded.file.id}/download`, { cookie: other.authCookie });
     expect(dlRes.status).toBe(403);
     expect((await json(dlRes)).error.code).toBe('PASSWORD_REQUIRED');
 
     // 错误密码
     const badRes = await request(ctx, `/api/files/${uploaded.file.id}/verify-password`, {
       method: 'POST',
-      cookie: authCookie,
-      headers: { 'X-CSRF-Token': csrf },
+      cookie: other.authCookie,
+      headers: { 'X-CSRF-Token': otherCsrf },
       body: { password: 'wrong' },
     });
     expect(badRes.status).toBe(401);
@@ -142,8 +150,8 @@ describe('文件全流程', () => {
     // 正确密码
     const okRes = await request(ctx, `/api/files/${uploaded.file.id}/verify-password`, {
       method: 'POST',
-      cookie: authCookie,
-      headers: { 'X-CSRF-Token': csrf },
+      cookie: other.authCookie,
+      headers: { 'X-CSRF-Token': otherCsrf },
       body: { password: 's3cret' },
     });
     expect(okRes.status).toBe(200);
@@ -154,6 +162,11 @@ describe('文件全流程', () => {
     const gwRes = await request(ctx, okData.data.url.replace('http://localhost:8787', ''));
     expect(gwRes.status).toBe(200);
     expect(await gwRes.text()).toBe('topsecret');
+
+    // owner 的豁免 token 同样可下载
+    const ownerGw = await request(ctx, ownerData.data.url.replace('http://localhost:8787', ''));
+    expect(ownerGw.status).toBe(200);
+    expect(await ownerGw.text()).toBe('topsecret');
   });
 
   it('删除文件', async () => {

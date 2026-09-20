@@ -1,7 +1,7 @@
 // Picumet Workers 入口：Hono 应用组装
 import { Hono } from 'hono';
 import { corsHeaders, securityHeaders, initContext, errorHandler } from './middleware/global';
-import { authMiddleware, adminMiddleware, optionalAuthMiddleware, apiKeyAuthMiddleware } from './middleware/auth';
+import { authMiddleware, adminMiddleware, optionalAuthMiddleware, apiKeyAuthMiddleware, apiKeyTokenAuthMiddleware } from './middleware/auth';
 import { csrfMiddleware } from './middleware/csrf';
 import { rateLimitMiddleware } from './middleware/rate-limit';
 import { authRoutes } from './services/auth/handlers';
@@ -10,14 +10,19 @@ import { fileOpsRoutes } from './services/files/operations';
 import { uploadRoutes } from './services/uploads/handlers';
 import { shareRoutes } from './services/shares/handlers';
 import { userRoutes } from './services/users/handlers';
+import { userRuleRoutes } from './services/users/rules';
 import { keyRoutes } from './services/keys/handlers';
 import { adminRoutes } from './services/admin/handlers';
 import { adminStorageRoutes } from './services/admin/storage';
 import { compatRoutes } from './services/uploads/compat';
+import { lskyRoutes } from './services/uploads/lsky';
 import { webdavRoutes } from './services/webdav/handlers';
+import { s3gwRoutes } from './services/s3gw/handlers';
+import { alistRoutes } from './services/alist/handlers';
 import { freeModeRoutes } from './services/free-mode/handlers';
 import { gatewayRoutes } from './services/shares/gateway';
 import { publicRoutes } from './services/public/handlers';
+import { galleryRoutes } from './services/public/gallery';
 import { pathPublicRoutes } from './services/files/path-serve';
 import { ensureSeed } from './seed';
 import { runScheduledTasks } from './services/cleanup';
@@ -45,11 +50,30 @@ app.route('/api/upload', compatRoutes);
 app.use('/api/compat/*', apiKeyAuthMiddleware, rateLimitMiddleware);
 app.route('/api/compat', compatRoutes);
 
+// Lsky Pro V2 兼容壳（PicList 内置 lskyplist 通道）：Bearer/裸 token API Key
+app.use('/api/v1/*', apiKeyTokenAuthMiddleware, rateLimitMiddleware);
+app.route('/api/v1', lskyRoutes);
+
 // WebDAV
 app.route('/webdav', webdavRoutes);
 
+// S3 兼容网关（SigV4；路径式寻址，endpoint = https://host/s3）
+app.use('/s3', rateLimitMiddleware);
+app.use('/s3/*', rateLimitMiddleware);
+app.route('/s3', s3gwRoutes);
+
+// AList/OpenList 兼容 shim（PicList 内置 alistplist 通道；独立前缀避开自有 /api/auth/login）
+app.use('/openlist/*', rateLimitMiddleware);
+app.route('/openlist', alistRoutes);
+
 // 自由模式
 app.route('/api/free-mode', freeModeRoutes);
+
+// 公开空间 gallery（§4.2：匿名面，显式列表接口，非池子）
+const galleryApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
+galleryApi.use('*', optionalAuthMiddleware, rateLimitMiddleware);
+galleryApi.route('/', galleryRoutes);
+app.route('/api/gallery', galleryApi);
 
 // 需登录的 API
 const protectedApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
@@ -67,6 +91,7 @@ sharesApi.route('/', shareRoutes);
 app.route('/api/shares', sharesApi);
 
 protectedApi.route('/users', userRoutes);
+protectedApi.route('/users', userRuleRoutes);
 protectedApi.route('/keys', keyRoutes);
 
 // 管理员

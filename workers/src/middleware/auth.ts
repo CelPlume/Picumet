@@ -5,6 +5,7 @@ import { Db, UserRepo, ApiKeyRepo } from '../db';
 import { verifyJwt, sha256Hex } from '../utils/crypto';
 import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
+import type { ApiKey } from '@shared/types';
 import type { AppBindings, AppVariables, Env } from '../shared/types';
 
 type AppContext = Context<AppBindings>;
@@ -72,6 +73,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Env; Variables: AppVa
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
     status: user.status,
+    capabilities: user.capabilities,
   });
   await next();
 });
@@ -92,6 +94,66 @@ export interface ApiKeyAuthResult {
   permissions: string[];
   protocols: string[];
   uploadPath: string;
+}
+
+/** 守卫返回值：null 表示通过；Response 表示应直接返回的错误响应 */
+type GuardResult = Response | null;
+
+/** 按 token（pk.sk）解析密钥行；格式非法或不存在返回 null */
+export async function resolveApiKeyByToken(db: Db, token: string): Promise<ApiKey | null> {
+  if (!/^pk_[a-zA-Z0-9]+\.sk_[a-zA-Z0-9]+$/.test(token)) return null;
+  const tokenHash = await sha256Hex(token);
+  return ApiKeyRepo.getKeyByTokenHash(db, tokenHash);
+}
+
+/** 密钥可用性：状态 / 过期 / IP 白名单（fail-closed，不可绕过） */
+export async function ensureApiKeyUsable(c: AppContext, apiKey: ApiKey): Promise<GuardResult> {
+  if (apiKey.status !== 'active') {
+    return fail(c, new ApiError(401, 'INVALID_TOKEN', 'API 密钥无效或已撤销'));
+  }
+  if (apiKey.expiresAt && Date.now() > apiKey.expiresAt) {
+    return fail(c, new ApiError(401, 'INVALID_TOKEN', 'API 密钥已过期'));
+  }
+  if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
+    const clientIp = getClientIp(c);
+    if (!apiKey.allowedIps.includes(clientIp)) {
+      return fail(c, new ApiError(403, 'FORBIDDEN', '该 API 密钥不允许从当前 IP 使用'));
+    }
+  }
+  return null;
+}
+
+/** 认证成功：touch、校验所有者、注入 principal 上下文 */
+export async function applyApiKeyContext(c: AppContext, db: Db, apiKey: ApiKey): Promise<GuardResult> {
+  await ApiKeyRepo.touchKey(db, apiKey.id);
+  const owner = await UserRepo.getUserById(db, apiKey.userId);
+  if (!owner || owner.status !== 'active') {
+    return fail(c, new ApiError(401, 'USER_DISABLED', '密钥所属账号不可用'));
+  }
+  c.set('userId', owner.id);
+  c.set('userRole', owner.role);
+  c.set('apiKey', {
+    id: apiKey.id,
+    keyId: apiKey.keyId,
+    userId: apiKey.userId,
+    permissions: apiKey.permissions,
+    protocols: apiKey.protocols,
+    uploadPath: apiKey.uploadPath,
+    allowedIps: apiKey.allowedIps,
+    expiresAt: apiKey.expiresAt,
+  });
+  c.set('user', {
+    id: owner.id,
+    username: owner.username,
+    email: owner.email,
+    emailVerified: owner.emailVerified,
+    role: owner.role,
+    defaultPath: owner.defaultPath,
+    locale: owner.locale,
+    theme: owner.theme,
+    status: owner.status,
+  });
+  return null;
 }
 
 /**
@@ -119,53 +181,63 @@ export const apiKeyAuthMiddleware = createMiddleware<{ Bindings: Env; Variables:
     if (!/^pk_[a-zA-Z0-9]+\.sk_[a-zA-Z0-9]+$/.test(token)) {
       return fail(c, new ApiError(401, 'INVALID_TOKEN', '无效的 API 密钥格式'));
     }
-    const tokenHash = await sha256Hex(token);
-    const apiKey = await ApiKeyRepo.getKeyByTokenHash(db, tokenHash);
-    if (!apiKey || apiKey.status !== 'active') {
+    const apiKey = await resolveApiKeyByToken(db, token);
+    if (!apiKey) {
       return fail(c, new ApiError(401, 'INVALID_TOKEN', 'API 密钥无效或已撤销'));
     }
-    if (apiKey.expiresAt && Date.now() > apiKey.expiresAt) {
-      return fail(c, new ApiError(401, 'INVALID_TOKEN', 'API 密钥已过期'));
-    }
-    // 强制执行 IP 白名单：不在白名单内的客户端 IP 直接拒绝，不可绕过
-    if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
-      const clientIp = getClientIp(c);
-      if (!apiKey.allowedIps.includes(clientIp)) {
-        return fail(c, new ApiError(403, 'FORBIDDEN', '该 API 密钥不允许从当前 IP 使用'));
-      }
-    }
-    await ApiKeyRepo.touchKey(db, apiKey.id);
-    const owner = await UserRepo.getUserById(db, apiKey.userId);
-    if (!owner || owner.status !== 'active') {
-      return fail(c, new ApiError(401, 'USER_DISABLED', '密钥所属账号不可用'));
-    }
-    c.set('userId', owner.id);
-    c.set('userRole', owner.role);
-    c.set('apiKey', {
-      id: apiKey.id,
-      keyId: apiKey.keyId,
-      userId: apiKey.userId,
-      permissions: apiKey.permissions,
-      protocols: apiKey.protocols,
-      uploadPath: apiKey.uploadPath,
-      allowedIps: apiKey.allowedIps,
-      expiresAt: apiKey.expiresAt,
-    });
-    c.set('user', {
-      id: owner.id,
-      username: owner.username,
-      email: owner.email,
-      emailVerified: owner.emailVerified,
-      role: owner.role,
-      defaultPath: owner.defaultPath,
-      locale: owner.locale,
-      theme: owner.theme,
-      status: owner.status,
-    });
+    const guard = await ensureApiKeyUsable(c, apiKey);
+    if (guard) return guard;
+    const applied = await applyApiKeyContext(c, db, apiKey);
+    if (applied) return applied;
   }
 
   await next();
 });
+
+/**
+ * API 密钥认证（必需）：在 Bearer/Basic 之外接受裸 token（AList `Authorization: <token>`、
+ * Lsky 用户自填 token 的风格）。用于 /api/v1（Lsky 壳）与 /openlist（AList shim）。
+ */
+export const apiKeyTokenAuthMiddleware = createMiddleware<{ Bindings: Env; Variables: AppVariables }>(async (c, next) => {
+  const db = getDb(c);
+  const authHeader = c.req.header('authorization');
+  let token: string | null = null;
+  if (authHeader?.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim();
+  } else if (authHeader?.startsWith('Basic ')) {
+    try {
+      const creds = atob(authHeader.slice(6).trim());
+      const [keyId, secret] = creds.split(':');
+      if (keyId && secret) token = `${keyId}.${secret}`;
+    } catch {
+      token = null;
+    }
+  } else if (authHeader) {
+    token = authHeader.trim();
+  }
+  if (!token) {
+    return fail(c, new ApiError(401, 'UNAUTHORIZED', '需要 API 密钥认证'));
+  }
+  const apiKey = await resolveApiKeyByToken(db, token);
+  if (!apiKey) {
+    return fail(c, new ApiError(401, 'INVALID_TOKEN', 'API 密钥无效或已撤销'));
+  }
+  const guard = await ensureApiKeyUsable(c, apiKey);
+  if (guard) return guard;
+  const applied = await applyApiKeyContext(c, db, apiKey);
+  if (applied) return applied;
+  await next();
+});
+
+/**
+ * 协议面校验（P1-2）：protocols 非空时必须包含目标协议面，防止 api-only 密钥走 WebDAV 等
+ * 越面使用。空 protocols（理论不存在，创建 schema min(1)）视为全量放行以兼容存量数据。
+ */
+export function assertApiKeyProtocol(apiKey: { protocols: string[] } | undefined, protocol: string): void {
+  if (apiKey && apiKey.protocols.length > 0 && !apiKey.protocols.includes(protocol)) {
+    throw new ApiError(403, 'FORBIDDEN', `该密钥未授权 ${protocol} 协议`);
+  }
+}
 
 /** 宽松认证：已登录则填充用户信息，未登录继续（用于公开/半公开路由） */
 export const optionalAuthMiddleware = createMiddleware<{ Bindings: Env; Variables: AppVariables }>(async (c, next) => {
@@ -192,6 +264,7 @@ export const optionalAuthMiddleware = createMiddleware<{ Bindings: Env; Variable
           displayName: user.displayName,
           avatarUrl: user.avatarUrl,
           status: user.status,
+          capabilities: user.capabilities,
         });
       }
     }

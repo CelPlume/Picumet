@@ -27,6 +27,7 @@ userRoutes.get('/me/settings', async (c) => {
       defaultPath: user.defaultPath,
       locale: user.locale,
       role: user.role,
+      capabilities: user.capabilities ?? [],
       createdAt: user.createdAt,
     },
     appearance: {

@@ -6,6 +6,7 @@ import type {
   Conditions,
   PathRule,
   RuleEffect,
+  Visibility,
 } from '@shared/types';
 import { Db } from '../../db';
 import { RuleRepo } from '../../db';
@@ -31,7 +32,8 @@ export function checkPermission(
   action: Permission,
   allRules: PathRule[],
   fileOwnerId?: string,
-  conditions?: Conditions
+  conditions?: Conditions,
+  visibility?: Visibility
 ): PermissionResult {
   const path = normalizePath(canonicalPath);
 
@@ -46,7 +48,12 @@ export function checkPermission(
   }
 
   // 3. 用户根路径限制
-  if (principal.type === 'user' && principal.defaultPath !== '/') {
+  // §4.4a：users/public 可见性对 read/download 豁免根边界（owner 主动授权的例外）；
+  // 写入类操作永不豁免；deny 规则仍在本步之后的规则排序中正常压制（admin/user origin > system）。
+  const visibilityAllowsRead =
+    (visibility === 'users' || visibility === 'public') &&
+    (action === 'read' || action === 'download');
+  if (principal.type === 'user' && principal.defaultPath !== '/' && !visibilityAllowsRead) {
     const userRoot = normalizePath(principal.defaultPath);
     if (!isPathWithinBoundary(path, userRoot)) {
       return 'deny';
@@ -59,10 +66,17 @@ export function checkPermission(
     if (!allowed.includes(action)) {
       return 'deny';
     }
+    // 网关密钥数据层所有者隔离（用户决策 2026-09-20）：密钥只能触达属主自己的文件行，
+    // 即使路径规则被误配为 /** 也无法越权到其他用户的数据。
+    if (fileOwnerId !== undefined && fileOwnerId !== principal.id) {
+      return 'deny';
+    }
   }
 
-  // 5. 收集并排序匹配规则
-  const matching = allRules.filter((r) => r.status === 'active' && pathMatches(path, r.pathPattern));
+  // 5. 收集并排序匹配规则（visibility 合成规则并入候选集，§4.4a）
+  const synthetic = syntheticVisibilityRule(path, visibility, mount.id);
+  const candidates = synthetic ? [...allRules, synthetic] : allRules;
+  const matching = candidates.filter((r) => r.status === 'active' && pathMatches(path, r.pathPattern));
   const sorted = sortRules(matching, path);
 
   // 6. 应用第一个匹配的规则
@@ -102,10 +116,21 @@ export function checkPermission(
 }
 
 /**
- * 规则排序：主体特异度 > 路径特异度 > 显式优先级 > effect（deny > allow）
+ * 规则排序（§4.4 排序修订）：
+ * origin（admin > user > system）> 主体特异度 > 路径特异度 > 显式优先级 > effect（deny > allow）
+ *
+ * origin 必须最先：user-origin「指定用户 allow」（主体特异度 3）若排在 admin「role 级 deny」
+ * （主体特异度 1）之前即构成越权提权——管理员规则必须恒压用户规则；
+ * 「公开但禁止某人」由 user-origin deny（origin user）压 system 合成 allow（origin system）成立。
  */
 export function sortRules(rules: PathRule[], canonicalPath: string): PathRule[] {
+  const originScore = (rule: PathRule): number =>
+    rule.origin === 'user' ? 2 : rule.origin === 'system' ? 1 : 3;
   return [...rules].sort((a, b) => {
+    // 5.0 规则来源（admin > user > system）
+    const originDiff = originScore(b) - originScore(a);
+    if (originDiff !== 0) return originDiff;
+
     // 5.1 主体特异度（user > apiKey > role）
     const subjectScore = (rule: PathRule): number => {
       if (rule.userId) return 3;
@@ -133,6 +158,43 @@ export function sortRules(rules: PathRule[], canonicalPath: string): PathRule[] 
 
     return 0;
   });
+}
+
+/**
+ * visibility 合成规则（§4.4a）：users/public 可见性注入 role='user' 的
+ * read/download allow 规则（origin=system，仅内存存在不入库）。
+ * public 的匿名面由 gallery 路由独立处理，不经过本规则引擎（§4.2 权限交互）。
+ * pattern 与调用方传入的 canonicalPath 同基准（文件走父目录约定），故为精确匹配。
+ */
+export function syntheticVisibilityRule(
+  canonicalPath: string,
+  visibility: Visibility | undefined,
+  mountId: string
+): PathRule | null {
+  if (visibility !== 'users' && visibility !== 'public') return null;
+  return {
+    id: '__synthetic_visibility__',
+    mountId,
+    pathPattern: normalizePath(canonicalPath),
+    effect: 'allow',
+    role: 'user',
+    permissions: ['read', 'download'],
+    requirePassword: false,
+    priority: 0,
+    origin: 'system',
+    status: 'active',
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+/**
+ * 密码门禁豁免（§4.4c）：管理员不受限；owner 本人跳过。
+ * 其余主体访问带密码文件必须先验证密码。
+ */
+export function isPasswordExempt(principal: Principal, fileOwnerId?: string): boolean {
+  if (principal.role === 'admin') return true;
+  return principal.type === 'user' && !!fileOwnerId && fileOwnerId === principal.id;
 }
 
 /**

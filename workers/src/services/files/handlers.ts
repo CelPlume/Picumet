@@ -3,7 +3,8 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo, LogRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
-import { requirePermission, can } from '../permissions/principal';
+import { requirePermission, can, getPrincipal } from '../permissions/principal';
+import { isPasswordExempt } from '../permissions/check';
 import { getProvider } from '../storage/providers';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
@@ -16,6 +17,7 @@ import {
 import { hashPassword, verifyPassword } from '../../utils/crypto';
 import { toFileListItem } from '../../db/repos/files';
 import type { Env } from '../../shared/types';
+import { CAPABILITIES, type Visibility } from '@shared/types';
 import { decideAccessMode, createDownloadToken, buildGatewayUrl } from '../shares/tokens';
 import { UpdateFileSchema, CreateFolderSchema, VerifyPasswordSchema, ListQuerySchema } from './schemas';
 
@@ -57,7 +59,17 @@ filesRoutes.get('/', async (c) => {
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
 
-  await requirePermission(c, mount, targetPath, 'read');
+  // §4.4a：目录列表受目标文件夹自身可见性门控（users/public 文件夹可被其他用户列出）
+  const segs = targetPath.split('/').filter(Boolean);
+  const folderName = segs.pop();
+  let folderVisibility: Visibility | undefined;
+  if (folderName) {
+    const folderParent = '/' + segs.join('/');
+    const folderRow = await FileRepo.getFileAtPath(db, mount.id, folderParent, folderName);
+    if (folderRow?.type === 'folder') folderVisibility = folderRow.visibility;
+  }
+
+  await requirePermission(c, mount, targetPath, 'read', undefined, undefined, folderVisibility);
 
   const page = q.page ?? 1;
   const limit = q.limit ?? 100;
@@ -123,10 +135,18 @@ filesRoutes.post('/folder', async (c) => {
   return ok(c, { file: toFileListItem(folder) }, undefined, 201);
 });
 
+// 文件域权限检查路径：文件行 path=父目录，但规则粒度需要文件全路径
+// （pattern=父目录的规则经 pathMatches 继承仍匹配；pattern=文件自身的规则获得精确粒度）
+function filePermPath(f: { path: string; name: string; type: 'file' | 'folder' }): string {
+  if (f.type === 'folder') return f.path;
+  return f.path === '/' ? `/${f.name}` : `${f.path}/${f.name}`;
+}
+
 // ============ 文件详情 ============
 filesRoutes.get('/:id', async (c) => {
   const { file, mount, db } = await resolveFile(c);
-  await requirePermission(c, mount, file.path, 'read', file.ownerId);
+  const permPath = filePermPath(file);
+  await requirePermission(c, mount, permPath, 'read', file.ownerId, undefined, file.visibility);
 
   const provider = await providerFor(c, mount.id);
   const accessMode = decideAccessMode(file, provider, false);
@@ -134,7 +154,7 @@ filesRoutes.get('/:id', async (c) => {
   const perms = (
     await Promise.all(
       (['read', 'write', 'update', 'delete', 'share', 'download'] as const).map(async (p) => {
-        const allowed = await can(c, mount, file.path, p, file.ownerId);
+        const allowed = await can(c, mount, permPath, p, file.ownerId);
         return allowed ? p : null;
       })
     )
@@ -158,11 +178,45 @@ filesRoutes.put('/:id', async (c) => {
   const parsed = UpdateFileSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '参数无效');
 
-  const { name, accessPassword, ...rest } = parsed.data;
+  const { name, accessPassword, visibility, ...rest } = parsed.data;
+
+  // §4.4a：可见性变更（能力位门禁 + 审核状态 + folder 级联）
+  // 已是 public/pending 时重新提交允许升级审核状态（如获得 can_publish 后直接 approved）
+  if (visibility !== undefined) {
+    const principal = await getPrincipal(c);
+    const canPublish =
+      principal.role === 'admin' || (principal.capabilities ?? []).includes(CAPABILITIES.publish);
+    // users：全部登录用户可读（需求③，无需能力位）；
+    // public：can_publish 直接 approved；否则提交进入审核（§4.2.2），管理员批准后进 gallery
+    const reviewStatus = visibility === 'public' ? (canPublish ? 'approved' : 'pending') : 'approved';
+    if (visibility !== file.visibility || reviewStatus !== file.reviewStatus) {
+      await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
+      if (file.type === 'folder') {
+        // 级联子树：公开相册场景一次置可见
+        await db.run(
+          `UPDATE file_metadata SET visibility = ?, review_status = ?, updated_at = ?
+           WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
+          [visibility, reviewStatus, Date.now(), mount.id, file.path, `${file.path}/%`]
+        );
+      }
+      await LogRepo.create(db, {
+        userId: c.get('userId') as string,
+        action: 'visibility_change',
+        path: file.path,
+        metadata: JSON.stringify({ from: file.visibility, to: visibility, reviewStatus }),
+        ipAddress: ipOf(c),
+        userAgent: c.req.header('user-agent'),
+      });
+      // 级联后仍需更新自身行（folder 行 path=自身；file 行在下方 fields 统一更新）
+      await FileRepo.updateFile(db, file.id, { visibility, review_status: reviewStatus });
+      await FileRepo.updateVersion(db, file.id);
+    }
+  }
+
   if (name) {
     if (!isValidFileName(name)) throw ApiError.badRequest('文件名包含非法字符');
     validateFileType(name, file.mimeType);
-    await requirePermission(c, mount, file.path, 'update', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
     const parentPath = file.path.length > file.name.length
       ? file.path.slice(0, -(file.name.length + 1)) || '/'
       : '/';
@@ -185,11 +239,11 @@ filesRoutes.put('/:id', async (c) => {
     fields[colMap[k] ?? k] = v;
   }
   if (accessPassword !== undefined) {
-    await requirePermission(c, mount, file.path, 'update', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
     fields.access_password = accessPassword ? hashPassword(accessPassword) : null;
   }
   if (Object.keys(fields).length > 0) {
-    await requirePermission(c, mount, file.path, 'update', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
     await FileRepo.updateFile(db, file.id, fields);
     await FileRepo.updateVersion(db, file.id);
   }
@@ -230,8 +284,11 @@ filesRoutes.post('/:id/verify-password', async (c) => {
 // ============ 获取下载链接 ============
 filesRoutes.get('/:id/download', async (c) => {
   const { file, mount, db } = await resolveFile(c);
-  await requirePermission(c, mount, file.path, 'download', file.ownerId);
-  if (file.accessPassword) {
+  await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility);
+  // §4.4c：密码门禁统一豁免判定——admin 不受限、owner 跳过；其余主体需先验证密码
+  const principal = await getPrincipal(c);
+  const passwordExempt = isPasswordExempt(principal, file.ownerId);
+  if (file.accessPassword && !passwordExempt) {
     throw new ApiError(403, 'PASSWORD_REQUIRED', '该文件受密码保护，请先验证密码');
   }
   const token = await createDownloadToken(db, {
@@ -241,7 +298,7 @@ filesRoutes.get('/:id/download', async (c) => {
     name: file.name,
     mimeType: file.mimeType,
     size: file.size,
-    passwordVerified: false,
+    passwordVerified: passwordExempt,
   });
   const url = buildGatewayUrl(c, token);
   await LogRepo.create(db, {
@@ -259,7 +316,7 @@ filesRoutes.get('/:id/download', async (c) => {
 // ============ 复制链接（多种格式，支持签名） ============
 filesRoutes.get('/:id/copy-links', async (c) => {
   const { file, mount, db } = await resolveFile(c);
-  await requirePermission(c, mount, file.path, 'download', file.ownerId);
+  await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility);
   const provider = await providerFor(c, mount.id);
 
   const q = c.req.query();

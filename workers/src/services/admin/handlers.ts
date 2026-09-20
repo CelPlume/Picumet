@@ -85,7 +85,7 @@ adminRoutes.put('/users/:id', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = UserUpdateSchema.safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('用户参数无效');
-  const { maxStorage, maxFiles, ...rest } = parsed.data;
+  const { maxStorage, maxFiles, capabilities, ...rest } = parsed.data;
   const fields: Record<string, unknown> = {};
   if (rest.role !== undefined) fields.role = rest.role;
   if (rest.status !== undefined) fields.status = rest.status;
@@ -93,6 +93,7 @@ adminRoutes.put('/users/:id', async (c) => {
     if (!rest.defaultPath.startsWith('/')) throw ApiError.badRequest('默认路径必须以 / 开头');
     fields.default_path = rest.defaultPath;
   }
+  if (capabilities !== undefined) fields.capabilities = JSON.stringify(capabilities);
   // 审计 H-05：禁用/封禁账户时递增会话版本，使其已签发 JWT 立即失效
   const disableChange = rest.status !== undefined && rest.status !== 'active';
   if (Object.keys(fields).length) {
@@ -147,6 +148,48 @@ adminRoutes.delete('/shares/:id', async (c) => {
   const db = getDb(c);
   await ShareRepo.revokeShare(db, c.req.param('id'));
   return ok(c, null);
+});
+
+// ============ 公开审核（§4.2：管理公开） + 可见性管理（用户设置的管控面） ============
+adminRoutes.patch('/files/:id/review', async (c) => {
+  const db = getDb(c);
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  const parsed = z
+    .object({
+      status: z.enum(['approved', 'rejected', 'pending']).optional(),
+      // 管理员可直接修改用户文件的可见性（private/users/public）
+      visibility: z.enum(['private', 'users', 'public']).optional(),
+    })
+    .refine((v) => v.status !== undefined || v.visibility !== undefined, '至少提供 status 或 visibility')
+    .safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('审核参数无效');
+  const file = await FileRepo.getFileById(db, id);
+  if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+
+  const fields: Record<string, unknown> = {};
+  if (parsed.data.visibility !== undefined) {
+    fields.visibility = parsed.data.visibility;
+    // 管理员设置可见性视为已裁定，审核态归位 approved
+    fields.review_status = 'approved';
+  }
+  if (parsed.data.status !== undefined) fields.review_status = parsed.data.status;
+  await FileRepo.updateFile(db, id, fields);
+  if (file.type === 'folder' && parsed.data.visibility !== undefined) {
+    // folder 级联（与用户侧行为一致）
+    await db.run(
+      `UPDATE file_metadata SET visibility = ?, review_status = ?, updated_at = ?
+       WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
+      [parsed.data.visibility, fields.review_status, Date.now(), file.mountId, file.path, `${file.path}/%`]
+    );
+  }
+  await LogRepo.create(db, {
+    userId: c.get('userId'),
+    action: 'review',
+    path: file.path,
+    metadata: JSON.stringify({ fileId: id, status: parsed.data.status, visibility: parsed.data.visibility }),
+  });
+  return ok(c, { message: '已更新' });
 });
 
 // ============ 全部文件 ============

@@ -38,6 +38,7 @@ export function mapUser(row: Row): User {
     lastLoginAt: row.last_login_at ? num(row.last_login_at) : undefined,
     passwordHash: str(row.password_hash),
     sessionVersion: row.session_version === null || row.session_version === undefined ? 0 : num(row.session_version),
+    capabilities: row.capabilities ? parseJson<string[]>(row.capabilities, []) : undefined,
   };
 }
 
@@ -67,7 +68,6 @@ export function mapProvider(row: Row): StorageProvider {
     accessKeyId: str(row.access_key_id) ?? '',
     secretAccessKey: str(row.secret_access_key) ?? '',
     publicDomain: str(row.public_domain),
-    uploadDomain: str(row.upload_domain),
     pathPrefix: str(row.path_prefix) ?? '',
     createdAt: num(row.created_at),
     updatedAt: num(row.updated_at),
@@ -108,6 +108,8 @@ export function mapFile(row: Row): FileMetadata {
     accessPassword: str(row.access_password),
     manualPosition: row.manual_position === null || row.manual_position === undefined ? undefined : num(row.manual_position),
     metadata: str(row.metadata),
+    visibility: (str(row.visibility) ?? 'private') as FileMetadata['visibility'],
+    reviewStatus: (str(row.review_status) ?? 'approved') as FileMetadata['reviewStatus'],
     ownerId: str(row.owner_id)!,
     createdAt: num(row.created_at),
     updatedAt: num(row.updated_at),
@@ -130,6 +132,8 @@ export function toFileListItem(f: FileMetadata): FileListItem {
     iconEmoji: f.iconEmoji,
     hasPassword: !!f.accessPassword,
     manualPosition: f.manualPosition,
+    visibility: f.visibility,
+    reviewStatus: f.reviewStatus,
     ownerId: f.ownerId,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
@@ -150,6 +154,8 @@ export function mapPathRule(row: Row): PathRule {
     passwordHash: str(row.password_hash),
     allowedIps: row.allowed_ips ? String(row.allowed_ips).split(',').map((s) => s.trim()).filter(Boolean) : undefined,
     priority: num(row.priority),
+    origin: (str(row.origin) ?? 'admin') as PathRule['origin'],
+    createdBy: str(row.created_by),
     status: str(row.status) ?? 'active',
     createdAt: num(row.created_at),
     updatedAt: num(row.updated_at),
@@ -170,6 +176,7 @@ export function mapApiKey(row: Row): ApiKey {
     lastUsedAt: row.last_used_at ? num(row.last_used_at) : undefined,
     createdAt: num(row.created_at),
     status: (str(row.status) ?? 'active') as ApiKey['status'],
+    secretCipher: str(row.secret_cipher),
   };
 }
 

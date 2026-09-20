@@ -65,14 +65,29 @@ export const FileRepo = {
     const row = await db.first('SELECT * FROM file_metadata WHERE mount_id = ? AND object_key = ?', [mountId, objectKey]);
     return row ? mapFile(row) : null;
   },
-  async getFileAtPath(db: Db, mountId: string, path: string, name: string): Promise<FileMetadata | null> {
-    const row = await db.first('SELECT * FROM file_metadata WHERE mount_id = ? AND path = ? AND name = ?', [mountId, path, name]);
+  /** ownerId（网关密钥所有者隔离）：传入时仅返回该用户的文件行 */
+  async getFileAtPath(db: Db, mountId: string, path: string, name: string, ownerId?: string): Promise<FileMetadata | null> {
+    const sql = `SELECT * FROM file_metadata WHERE mount_id = ? AND path = ? AND name = ?${ownerId ? ' AND owner_id = ?' : ''}`;
+    const row = await db.first(sql, ownerId ? [mountId, path, name, ownerId] : [mountId, path, name]);
     return row ? mapFile(row) : null;
   },
-  async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number }): Promise<{ rows: FileMetadata[]; total: number }> {
+  /** 目录行表示为 path=自身完整路径：按完整路径+名字查目录（file-form 查不到目录行） */
+  async getFolderAtPath(db: Db, mountId: string, fullPath: string, name: string): Promise<FileMetadata | null> {
+    const row = await db.first(
+      `SELECT * FROM file_metadata WHERE mount_id = ? AND path = ? AND name = ? AND type = 'folder'`,
+      [mountId, fullPath, name]
+    );
+    return row ? mapFile(row) : null;
+  },
+  async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number }, ownerId?: string): Promise<{ rows: FileMetadata[]; total: number }> {
     // 文件行 path = 父目录；文件夹行 path = 自身全路径 → 需额外匹配深度 1 的子文件夹
     const base: string[] = [];
     const params: unknown[] = [mountId];
+    if (ownerId) {
+      // 目录行为共享命名空间（所有网关密钥可见），仅文件行按属主隔离
+      base.push("(type = 'folder' OR owner_id = ?)");
+      params.push(ownerId);
+    }
     if (opts.type) {
       if (opts.type === 'file') {
         base.push("type = 'file' AND path = ?");
@@ -110,12 +125,10 @@ export const FileRepo = {
     );
     return { rows: rows.map(mapFile), total };
   },
-  /** 列出某路径下所有子项（含子文件夹，递归），用于文件夹删除/移动 */
-  async listDescendants(db: Db, mountId: string, path: string): Promise<FileMetadata[]> {
-    const rows = await db.all(
-      `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
-      [mountId, path, `${path}/%`]
-    );
+  /** 列出某路径下所有子项（含子文件夹，递归），用于文件夹删除/移动；ownerId 传入时限定属主 */
+  async listDescendants(db: Db, mountId: string, path: string, ownerId?: string): Promise<FileMetadata[]> {
+    const sql = `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)${ownerId ? ' AND owner_id = ?' : ''}`;
+    const rows = await db.all(sql, ownerId ? [mountId, path, `${path}/%`, ownerId] : [mountId, path, `${path}/%`]);
     return rows.map(mapFile);
   },
   async updateFile(db: Db, id: string, fields: Record<string, unknown>): Promise<void> {
@@ -185,6 +198,20 @@ export const FileRepo = {
       [limit]
     );
     return rows.map(mapFile);
+  },
+  /** 公开空间 gallery（§4.2）：visibility=public 且审核通过的直接文件行 */
+  async listPublic(db: Db, opts: { page: number; limit: number }): Promise<{ rows: FileMetadata[]; total: number }> {
+    const page = Math.max(1, opts.page);
+    const limit = Math.min(100, Math.max(1, opts.limit));
+    const offset = (page - 1) * limit;
+    const where = `type = 'file' AND visibility = 'public' AND review_status = 'approved'`;
+    const countRow = await db.first(`SELECT COUNT(*) AS c FROM file_metadata WHERE ${where}`);
+    const total = num(countRow?.c);
+    const rows = await db.all(
+      `SELECT * FROM file_metadata WHERE ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+    return { rows: rows.map(mapFile), total };
   },
 };
 

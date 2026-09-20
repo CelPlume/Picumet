@@ -1,6 +1,6 @@
 // 路由辅助：构造 Principal、加载规则、统一权限校验
 import type { Context } from 'hono';
-import type { Principal, Mount, Permission, Conditions, PathRule } from '@shared/types';
+import type { Principal, Mount, Permission, Conditions, PathRule, Visibility } from '@shared/types';
 import { getDb } from '../../middleware/auth';
 import { loadPrincipalRules, checkPermission } from './check';
 import { ApiError } from '../../shared/errors';
@@ -16,6 +16,7 @@ export async function getPrincipal(c: Context): Promise<Principal> {
       apiKeyId: apiKey.keyId,
       defaultPath: user.defaultPath,
       allowedPermissions: apiKey.permissions as Permission[],
+      capabilities: user.capabilities,
     };
   }
   return {
@@ -23,6 +24,7 @@ export async function getPrincipal(c: Context): Promise<Principal> {
     id: user.id,
     role: user.role,
     defaultPath: user.defaultPath,
+    capabilities: user.capabilities,
   };
 }
 
@@ -45,7 +47,8 @@ function getClientIpSafe(c: Context): string {
 }
 
 /**
- * 校验权限，失败抛出 403
+ * 校验权限，失败抛出 403。
+ * visibility：目标文件的可见性（§4.4a）——users/public 注入合成 allow 规则。
  */
 export async function requirePermission(
   c: Context,
@@ -53,11 +56,12 @@ export async function requirePermission(
   path: string,
   action: Permission,
   fileOwnerId?: string,
-  conditions?: Conditions
+  conditions?: Conditions,
+  visibility?: Visibility
 ): Promise<void> {
   const principal = await getPrincipal(c);
   const rules = await getRules(c, mount.id);
-  const result = checkPermission(principal, mount, path, action, rules, fileOwnerId, conditions);
+  const result = checkPermission(principal, mount, path, action, rules, fileOwnerId, conditions, visibility);
   if (result !== 'allow') {
     throw new ApiError(403, 'FORBIDDEN', '无权执行此操作');
   }
@@ -69,10 +73,12 @@ export async function can(
   mount: Mount,
   path: string,
   action: Permission,
-  fileOwnerId?: string
+  fileOwnerId?: string,
+  conditions?: Conditions,
+  visibility?: Visibility
 ): Promise<boolean> {
   try {
-    await requirePermission(c, mount, path, action, fileOwnerId);
+    await requirePermission(c, mount, path, action, fileOwnerId, conditions, visibility);
     return true;
   } catch {
     return false;

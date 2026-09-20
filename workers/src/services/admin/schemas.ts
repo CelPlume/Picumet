@@ -8,6 +8,8 @@ export const UserUpdateSchema = z.object({
   defaultPath: z.string().min(1).optional(),
   maxStorage: z.number().int().min(0).optional(),
   maxFiles: z.number().int().min(0).optional(),
+  // 能力位（§4.4 防线 5）：can_publish / can_share / can_grant
+  capabilities: z.array(z.enum(['can_publish', 'can_share', 'can_grant'])).optional(),
 });
 
 // 系统设置

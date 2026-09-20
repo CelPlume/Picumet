@@ -5,6 +5,21 @@
 
 export type Role = 'admin' | 'user' | 'guest';
 
+/** 三级可见性（§4.4a）：private 仅 owner/授权者；users 全部登录用户可读；public 另进 gallery 匿名面 */
+export type Visibility = 'private' | 'users' | 'public';
+
+/** 公开审核状态（§4.2）：public 提交默认 pending，管理员 approved 后进 gallery */
+export type ReviewStatus = 'pending' | 'approved' | 'rejected';
+
+/** 能力位名称（§4.4 越权防线 5） */
+export const CAPABILITIES = {
+  publish: 'can_publish',
+  share: 'can_share',
+  grant: 'can_grant',
+} as const;
+
+export type CapabilityName = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
+
 export interface User {
   id: string;
   username: string;
@@ -24,6 +39,8 @@ export interface User {
   passwordHash?: string;
   /** 会话版本：登出/改密/禁用时递增，使旧 JWT 立即失效（审计 H-05） */
   sessionVersion: number;
+  /** 能力位 JSON（can_publish/can_share/can_grant）；NULL = 空集 */
+  capabilities?: string[];
 }
 
 export interface Quota {
@@ -74,6 +91,8 @@ export interface Principal {
   apiKeyId?: string;
   defaultPath: string;
   allowedPermissions?: Permission[];
+  /** 能力位（can_publish/can_share/can_grant）；admin 天然全量 */
+  capabilities?: string[];
 }
 
 export interface Mount {
@@ -106,6 +125,10 @@ export interface PathRule {
   passwordHash?: string;
   allowedIps?: string[];
   priority: number;
+  /** 规则来源：admin 管理员创建；user 用户自建（越权防线约束）；system 内存合成（visibility），不入库。缺省视为 admin（存量数据） */
+  origin?: 'admin' | 'user' | 'system';
+  /** user-origin 规则的创建者 */
+  createdBy?: string;
   status: string;
   createdAt: number;
   updatedAt: number;
@@ -132,6 +155,10 @@ export interface FileMetadata {
   accessPassword?: string;
   manualPosition?: number;
   metadata?: string;
+  /** 三级可见性（§4.4a）；folder 置可见性时级联到子树 */
+  visibility: Visibility;
+  /** 公开审核状态：仅 visibility=public 时进入 gallery 需 approved */
+  reviewStatus: ReviewStatus;
   ownerId: string;
   createdAt: number;
   updatedAt: number;
@@ -152,6 +179,8 @@ export interface FileListItem {
   iconEmoji?: string;
   hasPassword: boolean;
   manualPosition?: number;
+  visibility: Visibility;
+  reviewStatus: ReviewStatus;
   ownerId: string;
   createdAt: number;
   updatedAt: number;
@@ -256,11 +285,15 @@ export interface ApiKey {
   lastUsedAt?: number;
   createdAt: number;
   status: 'active' | 'revoked';
+  /** S3 SigV4 网关验签需要可逆 secret：AES-GCM 加密密文（enc: 前缀），任何 API 响应不得返回 */
+  secretCipher?: string;
 }
 
 // ============ 存储与挂载 ============
 
-export type ProviderType = 'r2' | 's3' | 'oracle';
+// type 收敛（报告 §5.2）：'r2' = Worker R2 绑定（endpoint 空），'s3' = S3 兼容端点（AWS/R2 S3 API/Oracle/MinIO）。
+// 由「有无 endpoint」在后端推导，不再是用户选择项。
+export type ProviderType = 'r2' | 's3';
 
 export interface StorageProvider {
   id: string;
@@ -272,7 +305,6 @@ export interface StorageProvider {
   accessKeyId: string;
   secretAccessKey: string;
   publicDomain?: string;
-  uploadDomain?: string;
   pathPrefix: string;
   createdAt: number;
   updatedAt: number;
@@ -373,6 +405,8 @@ export const ErrorCode = {
   SHARE_LIMIT_REACHED: 'SHARE_LIMIT_REACHED',
   DANGEROUS_FILE_TYPE: 'DANGEROUS_FILE_TYPE',
   DANGEROUS_MIME_TYPE: 'DANGEROUS_MIME_TYPE',
+  RANGE_NOT_SATISFIABLE: 'RANGE_NOT_SATISFIABLE',
+  UPSTREAM_ERROR: 'UPSTREAM_ERROR',
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];

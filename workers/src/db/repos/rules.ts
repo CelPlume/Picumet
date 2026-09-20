@@ -17,18 +17,29 @@ export const RuleRepo = {
     passwordHash?: string;
     allowedIps?: string[];
     priority?: number;
+    /** 规则来源（§4.4b）：admin 缺省；user = 用户自建（须带 createdBy） */
+    origin?: 'admin' | 'user';
+    createdBy?: string;
   }): Promise<PathRule> {
     const id = uuid();
     const now = Date.now();
     await db.run(
       `INSERT INTO path_rules (id, path_pattern, effect, mount_id, role, user_id, api_key_id, permissions, require_password,
-        password_hash, allowed_ips, priority, created_at, updated_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+        password_hash, allowed_ips, priority, origin, created_by, created_at, updated_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
       [id, r.pathPattern, r.effect, r.mountId ?? null, r.role ?? null, r.userId ?? null, r.apiKeyId ?? null,
         JSON.stringify(r.permissions), r.requirePassword ? 1 : 0, r.passwordHash ?? null,
-        r.allowedIps?.join(',') ?? null, r.priority ?? 0, now, now]
+        r.allowedIps?.join(',') ?? null, r.priority ?? 0, r.origin ?? 'admin', r.createdBy ?? null, now, now]
     );
     return (await this.getRuleById(db, id)) as PathRule;
+  },
+  /** 用户自建规则列表（origin='user' 且 created_by 匹配） */
+  async listByCreator(db: Db, userId: string): Promise<PathRule[]> {
+    const rows = await db.all(
+      `SELECT * FROM path_rules WHERE origin = 'user' AND created_by = ? AND status = 'active' ORDER BY created_at DESC`,
+      [userId]
+    );
+    return rows.map(mapPathRule);
   },
   async getRuleById(db: Db, id: string): Promise<PathRule | null> {
     const row = await db.first('SELECT * FROM path_rules WHERE id = ?', [id]);
@@ -101,14 +112,16 @@ export const ApiKeyRepo = {
     uploadPath?: string;
     allowedIps?: string[];
     expiresAt?: number;
+    /** AES-GCM 加密的 secret 密文（S3 SigV4 网关验签用） */
+    secretCipher?: string;
   }): Promise<string> {
     const id = uuid();
     const now = Date.now();
     await db.run(
-      `INSERT INTO api_keys (id, user_id, name, key_id, token_hash, permissions, protocols, upload_path, allowed_ips, expires_at, created_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+      `INSERT INTO api_keys (id, user_id, name, key_id, token_hash, permissions, protocols, upload_path, allowed_ips, expires_at, secret_cipher, created_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
       [id, k.userId, k.name, k.keyId, k.tokenHash, JSON.stringify(k.permissions), JSON.stringify(k.protocols),
-        k.uploadPath ?? '/', k.allowedIps?.join(',') ?? null, k.expiresAt ?? null, now]
+        k.uploadPath ?? '/', k.allowedIps?.join(',') ?? null, k.expiresAt ?? null, k.secretCipher ?? null, now]
     );
     return id;
   },
@@ -116,6 +129,11 @@ export const ApiKeyRepo = {
     const row = userId
       ? await db.first('SELECT * FROM api_keys WHERE id = ? AND user_id = ?', [id, userId])
       : await db.first('SELECT * FROM api_keys WHERE id = ?', [id]);
+    return row ? mapApiKey(row) : null;
+  },
+  /** 按 keyId（SigV4 AccessKeyId）查询密钥 */
+  async getKeyByKeyId(db: Db, keyId: string) {
+    const row = await db.first('SELECT * FROM api_keys WHERE key_id = ?', [keyId]);
     return row ? mapApiKey(row) : null;
   },
   async getKeyByTokenHash(db: Db, tokenHash: string) {

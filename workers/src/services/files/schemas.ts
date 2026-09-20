@@ -1,7 +1,7 @@
 // 文件服务 Zod schemas（docs/ARCHITECTURE_CN.md §文件管理服务）
 import { z } from 'zod';
 
-// 更新元数据 / 重命名
+// 更新元数据 / 重命名 / 可见性
 export const UpdateFileSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   customTitle: z.string().max(200).nullable().optional(),
@@ -10,6 +10,8 @@ export const UpdateFileSchema = z.object({
   iconEmoji: z.string().max(16).nullable().optional(),
   accessPassword: z.string().min(1).max(128).nullable().optional(),
   manualPosition: z.number().int().nullable().optional(),
+  // §4.4a：三级可见性（folder 置可见性时级联子树）
+  visibility: z.enum(['private', 'users', 'public']).optional(),
 });
 
 // 创建文件夹

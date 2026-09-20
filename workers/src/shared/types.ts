@@ -51,6 +51,7 @@ export interface AppVariables {
     displayName?: string;
     avatarUrl?: string;
     status: string;
+    capabilities?: string[];
   };
   apiKey?: {
     id: string;
@@ -62,10 +63,11 @@ export interface AppVariables {
     allowedIps?: string[];
     expiresAt?: number;
   };
+  /** S3 网关：SigV4 payload-hash 校验时读取的请求体（PUT 处理器直接复用，避免二次读取） */
+  s3Payload?: Uint8Array;
   // 自由模式（用户自带凭据的临时 Provider）
   freeMode?: {
     provider: {
-      type: string;
       endpoint: string;
       region: string;
       bucket: string;
@@ -83,7 +85,6 @@ export interface AppVariables {
 export interface FreeModeSession {
   userId: string;
   provider: {
-    type: 'r2' | 's3' | 'oracle';
     endpoint: string;
     region: string;
     bucket: string;
