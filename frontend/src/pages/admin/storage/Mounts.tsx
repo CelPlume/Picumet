@@ -7,7 +7,8 @@ import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
-import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
+import { formatBytes } from '@/lib/utils';
+import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 
 interface MountItem {
   id: string;
@@ -20,6 +21,11 @@ interface MountItem {
   sortOrder: string;
   priority: number;
   status: string;
+  maxStorage: number | null;
+  usedStorage: number;
+  quotaReserved: number;
+  poolStrategy: string;
+  poolMembers: Array<{ providerId: string; weight: number; name: string }>;
 }
 
 interface Provider {
@@ -39,6 +45,8 @@ export function StorageMounts() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<MountItem | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [poolIds, setPoolIds] = useState<string[]>([]);
+  const [editPoolIds, setEditPoolIds] = useState<string[]>([]);
   const [detail, setDetail] = useState<MountItem | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<MountItem | null>(null);
 
@@ -60,10 +68,20 @@ export function StorageMounts() {
 
   const create = async () => {
     try {
-      await apiFetch('/api/admin/mounts', { method: 'POST', body: { ...form, priority: Number(form.priority ?? 0) } });
+      await apiFetch('/api/admin/mounts', {
+        method: 'POST',
+        body: {
+          ...form,
+          priority: Number(form.priority ?? 0),
+          maxStorage: form.maxStorageGb ? Math.round(Number(form.maxStorageGb) * 1024 ** 3) : null,
+          poolStrategy: form.poolStrategy ?? 'least_used',
+          poolProviderIds: poolIds,
+        },
+      });
       toast('success', t('admin.storageMounts.added'));
       setShowCreate(false);
       setForm({});
+      setPoolIds([]);
       await load();
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : t('admin.addFailed'));
@@ -90,7 +108,10 @@ export function StorageMounts() {
       sortBy: m.sortBy,
       sortOrder: m.sortOrder,
       priority: String(m.priority),
+      maxStorageGb: m.maxStorage == null ? '' : String(Math.round((m.maxStorage / 1024 ** 3) * 100) / 100),
+      poolStrategy: m.poolStrategy,
     });
+    setEditPoolIds(m.poolMembers.map((p) => p.providerId));
   };
 
   const saveEdit = async () => {
@@ -98,7 +119,13 @@ export function StorageMounts() {
     try {
       await apiFetch(`/api/admin/mounts/${editing.id}`, {
         method: 'PUT',
-        body: { ...editForm, priority: Number(editForm.priority ?? 0) },
+        body: {
+          ...editForm,
+          priority: Number(editForm.priority ?? 0),
+          maxStorage: editForm.maxStorageGb ? Math.round(Number(editForm.maxStorageGb) * 1024 ** 3) : null,
+          poolStrategy: editForm.poolStrategy ?? 'least_used',
+          poolProviderIds: editPoolIds,
+        },
       });
       toast('success', t('admin.updated'));
       setEditing(null);
@@ -121,30 +148,51 @@ export function StorageMounts() {
       </div>
 
 
-      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto py-0">
+      <Card className="mt-3 max-h-[calc(100vh-14rem)] overflow-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2"><SortableHeader title={t('admin.mountPath')} sortKey="mountPath" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title={t('files.name')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('admin.provider')}</th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.sortBy')} sortKey="sortBy" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.priority')} sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('common.actions')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.mountPath')} sortKey="mountPath" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('files.name')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('admin.provider')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.sortBy')} sortKey="sortBy" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.priority')} sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('admin.storageMounts.capacity')}</th>
+              <th className={'px-4 py-2'}>{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6}><TableSkeleton rows={5} cols={4} /></td></tr>
+              <tr><td colSpan={7}><TableSkeleton rows={5} cols={4} /></td></tr>
             ) : sortedRows.length === 0 ? (
-              <tr><td colSpan={6}><EmptyState icon={<FolderOpen className="h-7 w-7" />} title={t('admin.storageMounts.emptyTitle')} description={t('admin.storageMounts.emptyDesc')} /></td></tr>
+              <tr><td colSpan={7}><EmptyState icon={<FolderOpen className="h-7 w-7" />} title={t('admin.storageMounts.emptyTitle')} description={t('admin.storageMounts.emptyDesc')} /></td></tr>
             ) : sortedRows.map((m) => (
               <tr key={m.id} className="border-b last:border-0 hover:bg-accent/50">
                 <td className="px-4 py-2 font-mono text-primary"><code>{m.mountPath}</code></td>
                 <td className="px-4 py-2">{m.name}</td>
-                <td className="px-4 py-2 text-xs text-muted-foreground">{m.providerName} · {m.providerType}</td>
+                <td className="px-4 py-2 text-xs text-muted-foreground">
+                  {m.providerName} · {m.providerType}
+                  {m.poolMembers.length > 1 && (
+                    <span className="ml-1 text-primary">+{m.poolMembers.length - 1} <span className="text-muted-foreground">({m.poolStrategy})</span></span>
+                  )}
+                </td>
                 <td className="px-4 py-2"><Badge variant="secondary">{m.sortBy} {m.sortOrder}</Badge></td>
                 <td className="px-4 py-2 tabular-nums text-muted-foreground">{m.priority}</td>
+                <td className="px-4 py-2">
+                  <div className="min-w-28">
+                    <div className="text-xs tabular-nums text-muted-foreground">
+                      {formatBytes(m.usedStorage + m.quotaReserved)} / {m.maxStorage == null ? t('admin.storageMounts.unlimited') : formatBytes(m.maxStorage)}
+                    </div>
+                    {m.maxStorage != null && (
+                      <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-accent">
+                        <div
+                          className={`h-full ${m.usedStorage + m.quotaReserved >= m.maxStorage ? 'bg-destructive' : 'bg-primary'}`}
+                          style={{ width: `${Math.min(100, Math.round(((m.usedStorage + m.quotaReserved) / m.maxStorage) * 100))}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </td>
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-1">
                     <button onClick={() => setDetail(m)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title={t('common.details')}><Eye className="h-4 w-4" /></button>
@@ -220,6 +268,52 @@ export function StorageMounts() {
               <Input type="number" className="mt-1" value={form.priority ?? '0'} onChange={(e) => set('priority', e.target.value)} />
             </div>
           </div>
+          <div>
+            <Label>{t('admin.storageMounts.capacity')}</Label>
+            <Input
+              type="number"
+              className="mt-1"
+              value={form.maxStorageGb ?? ''}
+              onChange={(e) => set('maxStorageGb', e.target.value)}
+              placeholder={t('admin.storageMounts.capacityPlaceholder')}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.capacityHint')}</p>
+          </div>
+          <div>
+            <Label>{t('admin.storageMounts.poolStrategy')}</Label>
+            <Select
+              value={form.poolStrategy ?? 'least_used'}
+              onValueChange={(v) => setForm((f) => ({ ...f, poolStrategy: v }))}
+              className="mt-1"
+              options={[
+                { value: 'least_used', label: t('admin.storageMounts.strategyLeastUsed') },
+                { value: 'round_robin', label: t('admin.storageMounts.strategyRoundRobin') },
+                { value: 'hash', label: t('admin.storageMounts.strategyHash') },
+              ]}
+            />
+          </div>
+          <div>
+            <Label>{t('admin.storageMounts.poolMembers')}</Label>
+            <div className="mt-1 space-y-1.5">
+              {providers.map((p) => {
+                const primary = form.providerId === p.id;
+                const selected = poolIds.includes(p.id);
+                return (
+                  <label key={p.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={primary || selected}
+                      disabled={primary}
+                      onChange={(e) => setPoolIds((prev) => (e.target.checked ? [...prev, p.id] : prev.filter((id) => id !== p.id)))}
+                    />
+                    <span className="truncate">{p.name} ({p.type})</span>
+                    {primary && <span className="text-xs text-muted-foreground">{t('admin.storageMounts.poolPrimary')}</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.poolHint')}</p>
+          </div>
         </div>
       </Dialog>
 
@@ -243,6 +337,18 @@ export function StorageMounts() {
               [t('admin.sortBy'), `${detail.sortBy} · ${detail.sortOrder === 'asc' ? t('files.sortAsc') : t('files.sortDesc')}`],
               [t('admin.priority'), String(detail.priority)],
               [t('admin.status'), detail.status],
+              [
+                t('admin.storageMounts.poolMembers'),
+                detail.poolMembers.length > 0
+                  ? `${detail.poolMembers.map((p) => p.name).join(' · ')}（${detail.poolStrategy}）`
+                  : t('admin.storageMounts.unlimited'),
+              ],
+              [
+                t('admin.storageMounts.capacity'),
+                detail.maxStorage == null
+                  ? t('admin.storageMounts.unlimited')
+                  : `${formatBytes(detail.usedStorage + detail.quotaReserved)} / ${formatBytes(detail.maxStorage)}`,
+              ],
             ].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between border-b pb-2 text-sm last:border-0">
                 <span className="text-muted-foreground">{k}</span>
@@ -314,6 +420,52 @@ export function StorageMounts() {
               <Label>{t('admin.priority')}</Label>
               <Input type="number" className="mt-1" value={editForm.priority ?? '0'} onChange={(e) => setEditForm((f) => ({ ...f, priority: e.target.value }))} />
             </div>
+          </div>
+          <div>
+            <Label>{t('admin.storageMounts.capacity')}</Label>
+            <Input
+              type="number"
+              className="mt-1"
+              value={editForm.maxStorageGb ?? ''}
+              onChange={(e) => setEditForm((f) => ({ ...f, maxStorageGb: e.target.value }))}
+              placeholder={t('admin.storageMounts.capacityPlaceholder')}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.capacityHint')}</p>
+          </div>
+          <div>
+            <Label>{t('admin.storageMounts.poolStrategy')}</Label>
+            <Select
+              value={editForm.poolStrategy ?? 'least_used'}
+              onValueChange={(v) => setEditForm((f) => ({ ...f, poolStrategy: v }))}
+              className="mt-1"
+              options={[
+                { value: 'least_used', label: t('admin.storageMounts.strategyLeastUsed') },
+                { value: 'round_robin', label: t('admin.storageMounts.strategyRoundRobin') },
+                { value: 'hash', label: t('admin.storageMounts.strategyHash') },
+              ]}
+            />
+          </div>
+          <div>
+            <Label>{t('admin.storageMounts.poolMembers')}</Label>
+            <div className="mt-1 space-y-1.5">
+              {providers.map((p) => {
+                const primary = editForm.providerId === p.id;
+                const selected = editPoolIds.includes(p.id);
+                return (
+                  <label key={p.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={primary || selected}
+                      disabled={primary}
+                      onChange={(e) => setEditPoolIds((prev) => (e.target.checked ? [...prev, p.id] : prev.filter((id) => id !== p.id)))}
+                    />
+                    <span className="truncate">{p.name} ({p.type})</span>
+                    {primary && <span className="text-xs text-muted-foreground">{t('admin.storageMounts.poolPrimary')}</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.poolHint')}</p>
           </div>
         </div>
       </Dialog>

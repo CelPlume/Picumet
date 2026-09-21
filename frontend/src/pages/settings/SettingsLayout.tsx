@@ -2,7 +2,7 @@
 import { useRef } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { User, Shield, KeyRound, Palette, Users } from 'lucide-react';
+import { KeyRound, Share2, UserCog, Users } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { cn } from '@/lib/utils';
 import { INDICATOR_CLASS, useIndicator } from '@/components/ui/indicator';
@@ -13,15 +13,14 @@ export default function SettingsLayout() {
   const navRef = useRef<HTMLElement>(null);
   const indicator = useIndicator(navRef, location.pathname);
   const items = [
-    { to: '/settings/profile', icon: <User className="h-4 w-4 shrink-0" />, label: t('settings.nav.profile'), desc: t('settings.profileDesc') },
-    { to: '/settings/security', icon: <Shield className="h-4 w-4 shrink-0" />, label: t('settings.nav.security'), desc: t('settings.securityDesc') },
+    { to: '/settings/profile', icon: <UserCog className="h-4 w-4 shrink-0" />, label: t('settings.nav.personalization'), desc: t('settings.personalizationDesc') },
+    { to: '/settings/shares', icon: <Share2 className="h-4 w-4 shrink-0" />, label: t('settings.nav.shares'), desc: t('settings.sharesDesc') },
     { to: '/settings/api-keys', icon: <KeyRound className="h-4 w-4 shrink-0" />, label: t('settings.nav.apiKeys'), desc: t('settings.apiKeysDesc') },
     { to: '/settings/access-rules', icon: <Users className="h-4 w-4 shrink-0" />, label: t('settings.layout.accessRules'), desc: t('settings.layout.accessRulesDesc') },
-    { to: '/settings/appearance', icon: <Palette className="h-4 w-4 shrink-0" />, label: t('settings.nav.appearance'), desc: t('settings.appearanceDesc') },
   ];
   return (
     <AppShell activeNav="settings">
-      <h1 className="mb-4 text-xl font-semibold">{t('settings.title')}</h1>
+      <div className="pt-1" />
       <div className="flex flex-col gap-6 md:flex-row md:items-start">
         <nav
           ref={navRef}
@@ -50,7 +49,7 @@ export default function SettingsLayout() {
             );
           })}
         </nav>
-        <div className="scrollbar-none min-w-0 flex-1 md:max-h-[calc(100vh-12rem)] md:overflow-y-auto">
+        <div className="scrollbar-none min-h-[20vh] min-w-0 flex-1">
           <Outlet />
         </div>
       </div>

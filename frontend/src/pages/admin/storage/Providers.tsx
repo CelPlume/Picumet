@@ -8,7 +8,7 @@ import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { STORAGE_PRESETS, r2S3Endpoint } from '@/lib/storage-presets';
-import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
+import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 
 interface Provider {
   id: string;
@@ -131,17 +131,17 @@ export function StorageProviders() {
       </div>
 
 
-      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto py-0">
+      <Card className="mt-3 max-h-[calc(100vh-14rem)] overflow-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2"><SortableHeader title={t('admin.providerName')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.providerType')} sortKey="type" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('admin.bucket')}</th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.region')} sortKey="region" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('admin.pathPrefix')}</th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.status')} sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('common.actions')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.providerName')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.providerType')} sortKey="type" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('admin.bucket')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.region')} sortKey="region" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('admin.pathPrefix')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.status')} sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>

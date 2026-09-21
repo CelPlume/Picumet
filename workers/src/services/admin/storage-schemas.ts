@@ -59,6 +59,13 @@ export const MountSchema = z.object({
   sortBy: z.enum(['name', 'time', 'size', 'manual']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional(),
   priority: z.number().int().optional(),
+  // 挂载容量（字节）；null = 不限（默认）
+  maxStorage: z.number().int().positive().nullable().optional(),
+  // 展示容量（§26 仪表盘占用率，字节）；null/缺省 = 未设置
+  capacityBytes: z.number().int().min(0).nullable().optional(),
+  // 存储池（§E）：写入选桶策略 + 池成员 provider（缺省 = 仅主 provider）
+  poolStrategy: z.enum(['least_used', 'round_robin', 'hash']).optional(),
+  poolProviderIds: z.array(z.string().min(1)).max(20).optional(),
 });
 
 // 权限规则

@@ -5,6 +5,7 @@ import { Save, Plus, Trash2, Mail, Send } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Switch, Badge } from '@/components/ui/core';
 import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
+import { Select } from '@/components/ui/select';
 import { apiFetch, ApiError } from '@/lib/api';
 
 interface Settings {
@@ -18,6 +19,10 @@ interface Settings {
   turnstileSiteKey?: string;
   rateLimitEnabled: boolean;
   rateLimitRequestsPerMinute: number;
+  maxConcurrentTransfers: number;
+  rateLimitDownloadsPerMinute: number;
+  directPrefix: string;
+  rootTarget: 'landing' | 'files' | 'direct';
   smtpHost: string;
   smtpPort: number;
   smtpSecure: boolean;
@@ -106,11 +111,12 @@ export default function AdminSettings() {
   if (!settings) return <FormCardSkeleton />;
 
   return (
-    <div className="h-full max-w-5xl space-y-4 overflow-y-auto scrollbar-none lg:grid lg:grid-cols-2 lg:items-start lg:gap-4 lg:space-y-0">
-      <div className="space-y-4">
+    <div className="h-full max-w-7xl space-y-4 overflow-y-auto scrollbar-none lg:grid lg:grid-cols-2 lg:items-start lg:gap-6 lg:space-y-0">
+      {/* 左列：站点设置 + 安全设置 */}
+      <div className="min-w-0 space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>{t('admin.settings')}</CardTitle>
+          <CardTitle>{t('admin.settingsSite')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
@@ -127,6 +133,46 @@ export default function AdminSettings() {
             <Label>{t('admin.siteFavicon')}</Label>
             <Input className="mt-1" value={settings.siteFavicon ?? ''} onChange={(e) => set('siteFavicon', e.target.value)} />
           </div>
+          <div className="grid grid-cols-2 gap-3 rounded-md border p-3">
+            <div>
+              <Label>{t('admin.directPrefix')}</Label>
+              <Select
+                className="mt-1"
+                value={settings.directPrefix}
+                onValueChange={(v: string) => set('directPrefix', v)}
+                options={[
+                  { value: '', label: t('admin.directPrefixRoot') },
+                  { value: '/d', label: '/d' },
+                  { value: '/download', label: '/download' },
+                  { value: '/raw', label: '/raw' },
+                ]}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.directPrefixHint')}</p>
+            </div>
+            <div>
+              <Label>{t('admin.rootTarget')}</Label>
+              <Select
+                className="mt-1"
+                value={settings.rootTarget}
+                onValueChange={(v: string) => set('rootTarget', 'landing' === v || 'files' === v || 'direct' === v ? v : 'landing')}
+                options={[
+                  { value: 'landing', label: t('admin.rootTargetLanding') },
+                  { value: 'files', label: t('admin.rootTargetFiles') },
+                  { value: 'direct', label: t('admin.rootTargetDirect') },
+                ]}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.rootTargetHint')}</p>
+            </div>
+          </div>
+          <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('admin.settingsSecurity')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-sm">{t('admin.allowRegistration')}</span>
@@ -136,46 +182,67 @@ export default function AdminSettings() {
               <span className="text-sm">{t('admin.allowGuestAccess')}</span>
               <Switch checked={settings.allowGuestAccess} onChange={(v) => set('allowGuestAccess', v)} />
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">{t('admin.requireEmailVerification')}</span>
-              <Switch checked={settings.requireEmailVerification} onChange={(v) => set('requireEmailVerification', v)} />
-            </div>
+          </div>
+          <div className="space-y-2 rounded-md border p-3">
+            <p className="text-sm font-medium">{t('admin.rateLimit')}</p>
             <div className="flex items-center justify-between">
               <span className="text-sm">{t('admin.rateLimitEnabled')}</span>
               <Switch checked={settings.rateLimitEnabled} onChange={(v) => set('rateLimitEnabled', v)} />
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>{t('admin.rateLimitRequestsPerMinute')}</Label>
+                <Input
+                  className="mt-1"
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={String(settings.rateLimitRequestsPerMinute)}
+                  onChange={(e) => set('rateLimitRequestsPerMinute', Number(e.target.value) || 1)}
+                  disabled={!settings.rateLimitEnabled}
+                />
+              </div>
+              <div>
+                <Label>{t('admin.rateLimitDownloadsPerMinute')}</Label>
+                <Input
+                  className="mt-1"
+                  type="number"
+                  min={0}
+                  max={100000}
+                  value={String(settings.rateLimitDownloadsPerMinute)}
+                  onChange={(e) => set('rateLimitDownloadsPerMinute', Math.max(0, Number(e.target.value) || 0))}
+                  disabled={!settings.rateLimitEnabled}
+                />
+              </div>
+              <div>
+                <Label>{t('admin.maxConcurrentTransfers')}</Label>
+                <Input
+                  className="mt-1"
+                  type="number"
+                  min={0}
+                  max={1000}
+                  value={String(settings.maxConcurrentTransfers)}
+                  onChange={(e) => set('maxConcurrentTransfers', Math.max(0, Number(e.target.value) || 0))}
+                  disabled={!settings.rateLimitEnabled}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t('admin.rateLimitHint', {
+                limit: settings.rateLimitRequestsPerMinute,
+                user: settings.rateLimitRequestsPerMinute * 2,
+              })}
+            </p>
+            <p className="text-xs text-muted-foreground">{t('admin.maxConcurrentTransfersHint')}</p>
+            <p className="text-xs text-muted-foreground">{t('admin.rateLimitDownloadsHint')}</p>
           </div>
           <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('admin.announcements')}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-2">
-            <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t('admin.announcementTitle')} />
-            <Input value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder={t('admin.announcementContent')} />
-            <Button onClick={addAnnouncement}><Plus className="h-4 w-4" /> {t('admin.addAnnouncement')}</Button>
-          </div>
-          <div className="space-y-2">
-            {announcements.map((a) => (
-              <div key={a.id} className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
-                <Badge variant={a.level === 'danger' ? 'destructive' : a.level === 'warning' ? 'warning' : 'secondary'}>{a.level}</Badge>
-                <span className="min-w-0 flex-1 truncate font-medium">{a.title}</span>
-                <span className="text-xs text-muted-foreground">{a.active ? t('admin.active') : t('admin.disabled')}</span>
-                <button onClick={() => delAnnouncement(a.id)} className="rounded p-1 text-destructive hover:bg-destructive/10">
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
       </div>
 
-      <div>
+      {/* 右列：SMTP + 公告 */}
+      <div className="min-w-0 space-y-4">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -220,6 +287,10 @@ export default function AdminSettings() {
               <span className="text-sm">{t('admin.systemSettings.enableEmail')}</span>
               <Switch checked={settings.emailEnabled} onChange={(v) => set('emailEnabled', v)} />
             </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">{t('admin.requireEmailVerification')}</span>
+              <Switch checked={settings.requireEmailVerification} onChange={(v) => set('requireEmailVerification', v)} />
+            </div>
           </div>
           <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
           <div className="flex items-center gap-2 border-t pt-3">
@@ -233,6 +304,31 @@ export default function AdminSettings() {
             <Button variant="outline" onClick={sendTestEmail} loading={testSending}>
               <Send className="h-4 w-4" /> {t('admin.systemSettings.sendTestEmail')}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('admin.announcements')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-2">
+            <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t('admin.announcementTitle')} />
+            <Input value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder={t('admin.announcementContent')} />
+            <Button onClick={addAnnouncement}><Plus className="h-4 w-4" /> {t('admin.addAnnouncement')}</Button>
+          </div>
+          <div className="space-y-2">
+            {announcements.map((a) => (
+              <div key={a.id} className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
+                <Badge variant={a.level === 'danger' ? 'destructive' : a.level === 'warning' ? 'warning' : 'secondary'}>{a.level}</Badge>
+                <span className="min-w-0 flex-1 truncate font-medium">{a.title}</span>
+                <span className="text-xs text-muted-foreground">{a.active ? t('admin.active') : t('admin.disabled')}</span>
+                <button onClick={() => delAnnouncement(a.id)} className="rounded p-1 text-destructive hover:bg-destructive/10">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
           </div>
         </CardContent>
       </Card>

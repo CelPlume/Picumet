@@ -1,7 +1,7 @@
 // 管理员路由：存储提供商、挂载点、权限规则
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { ProviderRepo, MountRepo, RuleRepo } from '../../db';
+import { ProviderRepo, MountRepo, MountProviderRepo, RuleRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { ok } from '../../shared/response';
@@ -10,6 +10,7 @@ import { encryptSecret, hashPassword, uuid } from '../../utils/crypto';
 import { normalizePath } from '../../utils/path';
 import type { Env } from '../../shared/types';
 import { validateEndpoint } from '../../utils/ssrf';
+import { ensureAllMountFolders, ensureMountFolder, removeMountFolder } from '../storage/mount-folders';
 import { ProviderSchema, ProviderSchemaBase, MountSchema, RuleSchema } from './storage-schemas';
 
 export const adminStorageRoutes = new Hono<AppBindings>();
@@ -150,13 +151,36 @@ adminStorageRoutes.delete('/storage/providers/:id', async (c) => {
   return ok(c, null);
 });
 
+/** §E 存储池：校验成员 provider 存在后整体替换（主 provider 始终保留） */
+async function setPoolMembersValidated(
+  db: ReturnType<typeof getDb>,
+  mountId: string,
+  primaryProviderId: string,
+  providerIds: string[]
+): Promise<void> {
+  for (const providerId of providerIds) {
+    const provider = await ProviderRepo.getProviderById(db, providerId);
+    if (!provider) throw ApiError.badRequest(`存储提供商不存在：${providerId}`);
+  }
+  await MountProviderRepo.setMembers(db, mountId, primaryProviderId, providerIds);
+}
+
 // ============ 挂载点 ============
 adminStorageRoutes.get('/mounts', async (c) => {
   const db = getDb(c);
+  // §H 挂载点皆目录：打开管理页即自愈补齐缺失的挂载点目录行
+  await ensureAllMountFolders(db);
   const mounts = await MountRepo.allMounts(db);
   const providers = await ProviderRepo.listProviders(db);
   const pInfo: Record<string, { name: string; type: string }> = {};
   for (const p of providers) pInfo[p.id] = { name: p.name, type: p.type };
+  // §E 池成员（一次查询后在内存按挂载分组）
+  const memberRows = await db.all('SELECT mount_id, provider_id, weight FROM mount_providers');
+  const poolMembers = memberRows.map((r) => ({
+    mountId: String(r.mount_id),
+    providerId: String(r.provider_id),
+    weight: Number(r.weight ?? 1),
+  }));
   return ok(c, {
     mounts: mounts.map((m) => ({
       id: m.id,
@@ -169,6 +193,14 @@ adminStorageRoutes.get('/mounts', async (c) => {
       sortOrder: m.sortOrder,
       priority: m.priority,
       status: m.status,
+      maxStorage: m.maxStorage,
+      capacityBytes: m.capacityBytes,
+      usedStorage: m.usedStorage,
+      quotaReserved: m.quotaReserved,
+      poolStrategy: m.poolStrategy,
+      poolMembers: poolMembers
+        .filter((p) => p.mountId === m.id)
+        .map((p) => ({ providerId: p.providerId, weight: p.weight, name: pInfo[p.providerId]?.name ?? '未知' })),
     })),
   });
 });
@@ -188,7 +220,15 @@ adminStorageRoutes.post('/mounts', async (c) => {
     sortBy: parsed.data.sortBy,
     sortOrder: parsed.data.sortOrder,
     priority: parsed.data.priority,
+    maxStorage: parsed.data.maxStorage ?? null,
+    poolStrategy: parsed.data.poolStrategy,
+    capacityBytes: parsed.data.capacityBytes ?? null,
   });
+  if (parsed.data.poolProviderIds && parsed.data.poolProviderIds.length > 0) {
+    await setPoolMembersValidated(db, mount.id, parsed.data.providerId, parsed.data.poolProviderIds);
+  }
+  // §H：挂载点必须是父命名空间里可见的目录
+  await ensureMountFolder(db, mount, c.get('userId') as string | undefined);
   return ok(c, { mount }, undefined, 201);
 });
 
@@ -198,6 +238,8 @@ adminStorageRoutes.put('/mounts/:id', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = MountSchema.partial().safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('挂载点参数无效');
+  const before = await MountRepo.getMountById(db, id);
+  if (!before) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
   const fields: Record<string, unknown> = {};
   if (parsed.data.mountPath !== undefined) fields.mount_path = normalizePath(parsed.data.mountPath);
   if (parsed.data.name !== undefined) fields.name = parsed.data.name;
@@ -205,7 +247,22 @@ adminStorageRoutes.put('/mounts/:id', async (c) => {
   if (parsed.data.sortOrder !== undefined) fields.sort_order = parsed.data.sortOrder;
   if (parsed.data.priority !== undefined) fields.priority = parsed.data.priority;
   if (parsed.data.providerId !== undefined) fields.provider_id = parsed.data.providerId;
+  if (parsed.data.maxStorage !== undefined) fields.max_storage = parsed.data.maxStorage;
+  if (parsed.data.capacityBytes !== undefined) fields.capacity_bytes = parsed.data.capacityBytes;
+  if (parsed.data.poolStrategy !== undefined) fields.pool_strategy = parsed.data.poolStrategy;
   await MountRepo.updateMount(db, id, fields);
+  if (parsed.data.poolProviderIds !== undefined) {
+    const existing = await MountRepo.getMountById(db, id);
+    if (!existing) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+    const primary = (fields.provider_id as string | undefined) ?? existing.providerId;
+    await setPoolMembersValidated(db, id, primary, parsed.data.poolProviderIds);
+  }
+  // §H：路径或显示名变化时同步挂载点目录行
+  const after = await MountRepo.getMountById(db, id);
+  if (after) {
+    if (before.mountPath !== after.mountPath) await removeMountFolder(db, before);
+    await ensureMountFolder(db, after, c.get('userId') as string | undefined);
+  }
   return ok(c, { message: '已更新' });
 });
 
@@ -216,7 +273,10 @@ adminStorageRoutes.delete('/mounts/:id', async (c) => {
   if (Number(countRow?.c ?? 0) > 0) {
     throw new ApiError(409, 'OPERATION_FAILED', '挂载点下仍有文件，无法删除');
   }
+  const mount = await MountRepo.getMountById(db, id);
   await MountRepo.deleteMount(db, id);
+  // §H：连带清理父命名空间里的挂载点目录行
+  if (mount) await removeMountFolder(db, mount);
   return ok(c, null);
 });
 

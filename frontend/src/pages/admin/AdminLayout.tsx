@@ -24,7 +24,7 @@ export default function AdminLayout() {
   ];
   return (
     <AppShell activeNav="admin">
-      <h1 className="mb-4 text-xl font-semibold">{t('admin.title')}</h1>
+      <div className="pt-1" />
       <div className="flex flex-col gap-6 md:flex-row md:items-start">
         <nav
           ref={navRef}
@@ -53,7 +53,7 @@ export default function AdminLayout() {
         </nav>
         {/* overflow-clip + clip-margin：内容贴边时（如 Users/Files 工具栏的搜索框），
             3px focus ring 仍可画出裁切边界而不产生布局位移；不支持的浏览器退化为纯裁切 */}
-        <div className="flex min-w-0 flex-1 flex-col md:h-[calc(100vh-12rem)] md:overflow-clip md:[overflow-clip-margin:4px]">
+        <div className="flex min-h-[20vh] min-w-0 flex-1 flex-col">
           <Outlet />
         </div>
       </div>

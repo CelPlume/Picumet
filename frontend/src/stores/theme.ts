@@ -14,6 +14,8 @@ export interface AppearanceSettings {
   backgroundColor?: string;
   fileIcons: 'iconify' | 'emoji';
   folderPreview: 'icon' | 'contents';
+  /** 文件页卡片视图每行卡片数（4–8，默认 6） */
+  filesPerRow: number;
   rightClickAction: 'properties' | 'menu';
   rightClickMultiSelect: boolean;
 }
@@ -25,6 +27,7 @@ const DEFAULT: AppearanceSettings = {
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
+  filesPerRow: 6,
   rightClickAction: 'properties',
   rightClickMultiSelect: false,
 };
