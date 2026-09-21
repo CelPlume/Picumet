@@ -1,14 +1,14 @@
 // 网关密钥管理（对象存储中转 / PicGo / WebDAV / S3 / OpenList 兼容）
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { KeyRound, Copy, Trash2, Check } from 'lucide-react';
+import { KeyRound, Copy, Trash2, Check , AlertTriangle, Boxes, Database, Link2 , Wrench } from 'lucide-react';
 import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
 import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { timeAgo } from '@/lib/utils';
-import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
+import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 
 interface ApiKeyItem {
   id: string;
@@ -117,16 +117,16 @@ export default function ApiKeysPage() {
       {loading ? (
         <FormCardSkeleton />
       ) : (
-        <Card className="overflow-x-auto py-0">
+        <Card className="max-h-[calc(100vh-12.9rem)] overflow-auto py-0">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2"><SortableHeader title={t('files.name')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-                <th className="px-4 py-2">{t('settings.keyId')}</th>
-                <th className="px-4 py-2">{t('settings.permissions')} / {t('settings.protocols')}</th>
-                <th className="px-4 py-2">{t('admin.userStatus')}</th>
-                <th className="px-4 py-2"><SortableHeader title={t('settings.lastUsed')} sortKey="lastUsedAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-                <th className="px-4 py-2">{t('common.actions')}</th>
+                <th className={'px-4 py-2'}><SortableHeader title={t('files.name')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+                <th className={'px-4 py-2'}>{t('settings.keyId')}</th>
+                <th className={'px-4 py-2'}>{t('settings.permissions')} / {t('settings.protocols')}</th>
+                <th className={'px-4 py-2'}>{t('admin.userStatus')}</th>
+                <th className={'px-4 py-2'}><SortableHeader title={t('settings.lastUsed')} sortKey="lastUsedAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+                <th className={'px-4 py-2'}>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -154,7 +154,7 @@ export default function ApiKeysPage() {
                     </td>
                     <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{k.keyId.slice(0, 12)}...{k.keyId.slice(-6)}</td>
                     <td className="px-4 py-2">
-                      <div className="flex flex-wrap gap-1">
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                         {k.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
                         {k.protocols.map((p) => <Badge key={p} variant="outline">{p}</Badge>)}
                       </div>
@@ -226,13 +226,13 @@ export default function ApiKeysPage() {
       <Dialog
         open={!!created}
         onClose={() => setCreated(null)}
-        title={`✅ ${t('settings.createKeySuccess')}`}
+        title={t('settings.createKeySuccess')}
         footer={<Button onClick={() => setCreated(null)}>{t('common.close')}</Button>}
       >
         {created && (
           <div className="space-y-3">
             <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
-              ⚠️ {t('settings.secretWarning')}
+              <AlertTriangle className="inline h-4 w-4 shrink-0" /> {t('settings.secretWarning')}
             </div>
             <div className="space-y-2 text-sm">
               <div className="flex items-center gap-2">
@@ -248,7 +248,7 @@ export default function ApiKeysPage() {
               </div>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">📦 {t('settings.apiKeys.webdavConfig')}</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground"><Boxes className="inline h-4 w-4 shrink-0" /> {t('settings.apiKeys.webdavConfig')}</p>
               <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.webdav.url}
 ${t('login.username')}: ${created.configs.webdav.username}
@@ -260,7 +260,7 @@ ${t('settings.apiKeys.customUrlHint')}: ${created.configs.webdav.customUrlHint ?
               </Button>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">🪣 {t('settings.s3')}{t('settings.apiKeys.s3Compat')}</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground"><Database className="inline h-4 w-4 shrink-0" /> {t('settings.s3')}{t('settings.apiKeys.s3Compat')}</p>
               <pre className="overflow-x-auto text-xs">
 {`endpoint: ${created.configs.s3.endpoint}
 region: ${created.configs.s3.region}
@@ -274,7 +274,7 @@ ${t('settings.apiKeys.pathStyleAddressing')}: ${created.configs.s3.pathStyle}`}
               </Button>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">🟦 {t('settings.openlist')}{t('settings.apiKeys.alistProto')}</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground"><Link2 className="inline h-4 w-4 shrink-0" /> {t('settings.openlist')}{t('settings.apiKeys.alistProto')}</p>
               <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.openlist.url}
 Token: ${created.configs.openlist.token}`}
@@ -284,7 +284,7 @@ Token: ${created.configs.openlist.token}`}
               </Button>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">🔧 {t('settings.customApi')}</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground"><Wrench className="inline h-4 w-4 shrink-0" /> {t('settings.customApi')}</p>
               <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.bearer.url}/api/upload
 Header: ${created.configs.bearer.header}`}

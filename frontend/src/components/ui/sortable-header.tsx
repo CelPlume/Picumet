@@ -27,7 +27,7 @@ export function SortableHeader({
       type="button"
       onClick={() => onSort(sortKey)}
       className={cn(
-        'inline-flex items-center gap-1 rounded px-1 py-0.5 font-medium transition-colors hover:text-foreground',
+        'inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:text-foreground',
         active ? 'text-foreground' : 'text-muted-foreground',
         className
       )}

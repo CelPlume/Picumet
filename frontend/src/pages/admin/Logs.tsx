@@ -6,7 +6,7 @@ import { Card, Badge, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api';
-import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
+import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 import { formatDateTime, formatBytes } from '@/lib/utils';
 
 interface LogRow {
@@ -25,10 +25,15 @@ interface LogRow {
 const ACTION_COLOR: Record<string, string> = {
   upload: 'success',
   download: 'default',
+  download_failed: 'destructive',
   share: 'secondary',
   delete: 'destructive',
   login: 'outline',
 };
+
+/** 表头与数据行共用的网格模板（md 起多一列 IP），保证表头表与行表列对齐 */
+const LOG_ROW_GRID =
+  'grid grid-cols-[104px_minmax(0,1fr)_96px_88px_150px] md:grid-cols-[104px_minmax(0,1fr)_96px_110px_88px_150px]';
 
 export default function AdminLogs() {
   const { t } = useTranslation();
@@ -58,35 +63,41 @@ export default function AdminLogs() {
   return (
     <div className="flex h-full min-h-0 flex-col">
 
-      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto py-0">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left text-muted-foreground">
+      {/* 表头固定在滚动区上方：表头与数据行同在卡片玻璃上、同为透明层（观感一致），
+          行只在下方容器内滚动，不会滑到表头下面造成叠加 */}
+      <Card className="mt-3 flex max-h-[calc(100vh-10.45rem)] flex-col py-0 overflow-hidden">
+        <table className="block w-full shrink-0 overflow-hidden text-sm [scrollbar-gutter:stable]">
+          <thead className="block">
+            <tr className={LOG_ROW_GRID + ' border-b text-left text-muted-foreground'}>
               <th className="px-4 py-2"><SortableHeader title={t('admin.logs.action')} sortKey="action" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className="px-4 py-2">{t('admin.logs.path')}</th>
               <th className="px-4 py-2">{t('admin.user')}</th>
-              <th className="hidden px-4 py-2 md:table-cell">IP</th>
+              <th className="hidden px-4 py-2 md:block">IP</th>
               <th className="px-4 py-2"><SortableHeader title={t('admin.logs.bytes')} sortKey="bytesTransferred" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className="px-4 py-2"><SortableHeader title={t('admin.logs.time')} sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
             </tr>
           </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={6}><TableSkeleton rows={6} cols={5} /></td></tr>
-            ) : logs.length === 0 ? (
-              <tr><td colSpan={6}><EmptyState icon={<ScrollText className="h-7 w-7" />} title={t('admin.logs.empty')} description={t('admin.logs.emptyDesc')} /></td></tr>
-            ) : sortedRows.map((l) => (
-              <tr key={l.id} className="border-b last:border-0 hover:bg-accent/50">
-                <td className="px-4 py-2"><Badge variant={(ACTION_COLOR[l.action] as 'success' | 'default' | 'secondary' | 'destructive' | 'outline') ?? 'secondary'}>{l.action}</Badge></td>
-                <td className="max-w-[260px] truncate px-4 py-2 font-mono text-xs">{l.path ?? '-'}</td>
-                <td className="px-4 py-2 text-xs text-muted-foreground">{l.userId ? l.userId.slice(0, 8) : t('admin.logs.anonymous')}</td>
-                <td className="hidden px-4 py-2 text-xs text-muted-foreground md:table-cell">{l.ipAddress ?? '-'}</td>
-                <td className="px-4 py-2 text-xs tabular-nums text-muted-foreground">{l.bytesTransferred ? formatBytes(l.bytesTransferred) : '-'}</td>
-                <td className="px-4 py-2 text-xs text-muted-foreground">{formatDateTime(l.createdAt)}</td>
-              </tr>
-            ))}
-          </tbody>
         </table>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+          <table className="block w-full text-sm">
+            <tbody className="block">
+              {loading ? (
+                <tr className="block"><td className="block px-4 py-2"><TableSkeleton rows={6} cols={5} /></td></tr>
+              ) : logs.length === 0 ? (
+                <tr className="block"><td className="block px-4 py-2"><EmptyState icon={<ScrollText className="h-7 w-7" />} title={t('admin.logs.empty')} description={t('admin.logs.emptyDesc')} /></td></tr>
+              ) : sortedRows.map((l) => (
+                <tr key={l.id} className={LOG_ROW_GRID + ' border-b last:border-0 hover:bg-accent/50'}>
+                  <td className="px-4 py-2"><Badge variant={(ACTION_COLOR[l.action] as 'success' | 'default' | 'secondary' | 'destructive' | 'outline') ?? 'secondary'}>{l.action}</Badge></td>
+                  <td className="truncate px-4 py-2 font-mono text-xs">{l.path ?? '-'}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{l.userId ? l.userId.slice(0, 8) : t('admin.logs.anonymous')}</td>
+                  <td className="hidden px-4 py-2 text-xs text-muted-foreground md:block">{l.ipAddress ?? '-'}</td>
+                  <td className="px-4 py-2 text-xs tabular-nums text-muted-foreground">{l.bytesTransferred ? formatBytes(l.bytesTransferred) : '-'}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{formatDateTime(l.createdAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Card>
 
       {total > 0 && (

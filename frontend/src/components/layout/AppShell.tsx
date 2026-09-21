@@ -1,7 +1,7 @@
 // 认证应用外壳：顶栏 + 内容区 + 页脚（含移动端汉堡菜单、公告横幅）
 import { Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { FolderOpen, Share2, Settings, ShieldCheck, Menu, X, Home } from 'lucide-react';
+import { FolderOpen, Settings, ShieldCheck, Menu, X, Home } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/stores/auth';
@@ -25,7 +25,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
   // 活跃项以 data-active 标记（与 Tabs/侧边栏共用同一测量 hook）
   const navInd = useIndicator(navRef, location.pathname, { axis: 'x', persistKey: 'appshell-nav' });
 
-  const navItem = (key: 'files' | 'shares' | 'settings', to: string, icon: ReactNode, label: string) => {
+  const navItem = (key: 'files' | 'settings', to: string, icon: ReactNode, label: string) => {
     const active = activeNav === key || location.pathname.startsWith(to);
     return (
       <Link
@@ -43,10 +43,11 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
   };
 
   const mobileLinks = [
-    { to: '/files', icon: <FolderOpen className="h-5 w-5" />, label: t('nav.files') },
-    { to: '/shares', icon: <Share2 className="h-5 w-5" />, label: t('nav.shares') },
-    { to: '/settings/profile', icon: <Settings className="h-5 w-5" />, label: t('nav.settings') },
-    ...(user?.role === 'admin' ? [{ to: '/admin', icon: <ShieldCheck className="h-5 w-5" />, label: t('nav.admin') }] : []),
+    { to: '/files', active: location.pathname.startsWith('/files'), icon: <FolderOpen className="h-5 w-5" />, label: t('nav.files') },
+    { to: '/settings/profile', active: location.pathname.startsWith('/settings/profile'), icon: <Settings className="h-5 w-5" />, label: t('nav.settings') },
+    ...(user?.role === 'admin'
+      ? [{ to: '/admin', active: location.pathname.startsWith('/admin'), icon: <ShieldCheck className="h-5 w-5" />, label: t('nav.admin') }]
+      : []),
   ];
 
   return (
@@ -71,34 +72,34 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
               </span>
             )}
           </div>
-          <nav ref={navRef} className="relative hidden items-center gap-1 rounded-lg p-1 md:flex">
-            {navInd.ready && (
-              <span
-                aria-hidden
-                className="pointer-events-none absolute inset-y-1 rounded-md bg-primary/10 transition-all duration-300 ease-out"
-                style={{ left: navInd.pos, width: navInd.size }}
-              />
-            )}
-            {navItem('files', '/files', <FolderOpen className="h-4 w-4" />, t('nav.files'))}
-            {navItem('shares', '/shares', <Share2 className="h-4 w-4" />, t('nav.shares'))}
-            {navItem('settings', '/settings/profile', <Settings className="h-4 w-4" />, t('nav.settings'))}
-            {user?.role === 'admin' && (
-              <Link
-                to="/admin"
-                data-active={activeNav === 'admin' || location.pathname.startsWith('/admin') ? 'true' : 'false'}
-                className={cn(
-                  'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                  activeNav === 'admin' || location.pathname.startsWith('/admin')
-                    ? 'font-medium text-primary'
-                    : 'text-foreground/80 hover:bg-foreground/5 hover:text-foreground'
-                )}
-              >
-                <ShieldCheck className="h-4 w-4" />
-                {t('nav.admin')}
-              </Link>
-            )}
-          </nav>
-          <div className="flex items-center gap-1">
+          {/* 右侧控制组：导航 tab 右缘紧贴深浅色切换（与主页「查看文档」同款对齐） */}
+          <div className="flex items-center gap-2">
+            <nav ref={navRef} className="relative hidden items-center gap-1 rounded-lg p-1 md:flex">
+              {navInd.ready && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-1 rounded-md bg-primary/10 transition-all duration-300 ease-out"
+                  style={{ left: navInd.pos, width: navInd.size }}
+                />
+              )}
+              {navItem('files', '/files', <FolderOpen className="h-4 w-4" />, t('nav.files'))}
+              {navItem('settings', '/settings/profile', <Settings className="h-4 w-4" />, t('nav.settings'))}
+              {user?.role === 'admin' && (
+                <Link
+                  to="/admin"
+                  data-active={activeNav === 'admin' || location.pathname.startsWith('/admin') ? 'true' : 'false'}
+                  className={cn(
+                    'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    activeNav === 'admin' || location.pathname.startsWith('/admin')
+                      ? 'font-medium text-primary'
+                      : 'text-foreground/80 hover:bg-foreground/5 hover:text-foreground'
+                  )}
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  {t('nav.admin')}
+                </Link>
+              )}
+            </nav>
             <ThemeToggle />
             <LanguageSwitcher />
             <UserMenu />
@@ -111,7 +112,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
         <AnnouncementBanner />
       </div>
 
-      <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-4">{children}</main>
+      <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-3">{children}</main>
 
       {/* 移动端抽屉菜单 */}
       <Drawer open={mobileOpen} onClose={() => setMobileOpen(false)} side="left" title={t('common.menu')}>
@@ -125,7 +126,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
               to={l.to}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2.5 text-sm hover:bg-accent',
-                location.pathname.startsWith(l.to) && 'bg-accent font-medium'
+                l.active && 'bg-accent font-medium'
               )}
               onClick={() => setMobileOpen(false)}
             >

@@ -92,7 +92,9 @@
     background-color: hsl(var(--card) / var(--glass-alpha, 0.72));
   }
   .glass-surface-popover {
-    background-color: hsl(var(--popover) / var(--glass-alpha, 0.72));
+    /* 弹层常悬在白色卡片/行之上，同档透明度会读成实底；
+       与 .glass-dialog 同手法再让一档（下限 0.5），让模糊透出来 */
+    background-color: hsl(var(--popover) / max(0.5, calc(var(--glass-alpha, 0.72) - 0.12)));
   }
   .glass-blur {
     -webkit-backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
@@ -138,6 +140,9 @@
   }
   .no-blur .glass-dialog {
     background-color: hsl(var(--card));
+  }
+  .no-blur .glass-surface-popover {
+    background-color: hsl(var(--popover));
   }
   .scrollbar-thin {
     scrollbar-width: thin;

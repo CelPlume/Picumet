@@ -1,5 +1,5 @@
 // 文件管理器主页面
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState , useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -13,12 +13,15 @@ import { useTheme } from '@/stores/theme';
 import { FileTree } from '@/components/files/FileTree';
 import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner, Switch, SEARCH_INPUT_GLASS } from '@/components/ui/core';
 import { AppShell } from '@/components/layout/AppShell';
+import { SortableHeader } from '@/components/ui/sortable-header';
+import { Pagination } from '@/components/ui/pagination';
 import { Drawer } from '@/components/ui/drawer';
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
 import { toast } from '@/components/ui/toast';
 import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks, type CopyLinksMutator } from '@/components/files/data';
 import { FileCard, FileRow, BulkActionsBar, FileRowMenuItems, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
 import { UploadModal } from '@/components/files/UploadModal';
+import { ShareDialog } from '@/components/files/ShareDialog';
 import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
@@ -101,7 +104,7 @@ function CopyLinksDialog({
         </>
       }
     >
-      <div className="space-y-4">
+      <div className="flex min-h-[calc(100vh-14rem)] flex-col gap-4">
         <div className="flex flex-wrap gap-1.5">
           {files.map((f) => (
             <span key={f.id} className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs">
@@ -162,7 +165,12 @@ export default function Files() {
 
   const [path, setPath] = useState(routePath);
   const [view, setView] = useState<ViewMode>(() => (localStorage.getItem('picumet:view') as ViewMode) || 'grid');
+  // 卡片视图每行卡片数（个性化设置，4–8，默认 6）
+  const filesPerRow = useTheme((st) => st.filesPerRow);
   const [sort, setSort] = useState<string | undefined>();
+  // 服务端分页：默认每页 50（路径/筛选/排序变化时回到第一页）
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -220,7 +228,12 @@ export default function Files() {
   const [bulkMove, setBulkMove] = useState(false);
   const [bulkMoveTarget, setBulkMoveTarget] = useState('');
   const [copyDialog, setCopyDialog] = useState<{ files: FileListItem[] } | null>(null);
+  // 创建分享：打开对话框时冻结所选条目快照（文件/文件夹混合，可多选）
+  const [shareItems, setShareItems] = useState<FileListItem[] | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number; file: FileListItem } | null>(null);
+  /** 右键菜单渲染后实测高度：贴底时向上翻转、左右夹紧（视口边缘自适应） */
+  const [menuXY, setMenuXY] = useState<{ left: number; top: number } | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
   // 切换目录时关闭右键菜单并清空选择（批量操作栏随之消失）
   useEffect(() => {
     setMenuPos(null);
@@ -228,14 +241,45 @@ export default function Files() {
     setMultiSelect(false);
   }, [path]);
 
-  // 开启非批量弹窗（上传/新建/重命名/删除/移动/属性/预览/复制链接）时清空选择
+  // 开启非批量弹窗（上传/新建/重命名/删除/移动/属性/预览/复制链接/分享）时清空选择
   useEffect(() => {
-    if (showUpload || newFolder || renameTarget || deleteTarget || moveTarget || propsFile || previewFile || copyDialog) {
+    if (showUpload || newFolder || renameTarget || deleteTarget || moveTarget || propsFile || previewFile || copyDialog || shareItems) {
       setSelected(new Set());
       setMultiSelect(false);
       setMenuPos(null);
     }
-  }, [showUpload, newFolder, renameTarget, deleteTarget, moveTarget, propsFile, previewFile, copyDialog]);
+  }, [showUpload, newFolder, renameTarget, deleteTarget, moveTarget, propsFile, previewFile, copyDialog, shareItems]);
+
+  // 右键菜单渲染后实测尺寸：贴近视口底部 → 向上翻转（菜单底缘贴点击点），左右夹紧防截断
+  useLayoutEffect(() => {
+    if (!menuPos || !ctxMenuRef.current) { setMenuXY(null); return; }
+    const m = ctxMenuRef.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const left = Math.max(8, Math.min(menuPos.x, vw - m.width - 8));
+    let top = menuPos.y;
+    if (top + m.height > vh - 8) top = Math.max(8, menuPos.y - m.height - 4);
+    setMenuXY({ left, top });
+  }, [menuPos]);
+
+  // 右键菜单打开期间：点任意菜单外区域（左键/右键）都关闭——右键其他文件由行处理重新定位
+  useEffect(() => {
+    if (!menuPos) return;
+    const onDown = (e: MouseEvent) => {
+      if (ctxMenuRef.current?.contains(e.target as Node)) return;
+      setMenuPos(null);
+    };
+    const onCtx = (e: MouseEvent) => {
+      if (ctxMenuRef.current?.contains(e.target as Node)) return;
+      setMenuPos(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('contextmenu', onCtx);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('contextmenu', onCtx);
+    };
+  }, [menuPos]);
 
   // 点击主列之外（文件树/页边距/顶栏等空白处）清空选择
   useEffect(() => {
@@ -263,9 +307,17 @@ export default function Files() {
   }, []);
 
   useEffect(() => setPath(routePath), [routePath]);
+  // 换目录、改搜索词或排序后回到第一页（否则可能停在超出范围的页码上）
+  useEffect(() => setPage(1), [routePath, search, sort, order, pageSize]);
   useEffect(() => localStorage.setItem('picumet:view', view), [view]);
 
-  const { data, isLoading, error } = useFilesQuery(path, { search: search || undefined, sort, order });
+  const { data, isLoading, error } = useFilesQuery(path, {
+    search: search || undefined,
+    sort,
+    order,
+    page,
+    limit: pageSize,
+  });
   const createFolder = useCreateFolder();
   const renameFile = useRenameFile();
   const deleteFile = useDeleteFile();
@@ -377,7 +429,7 @@ export default function Files() {
     },
     onDelete: (f) => setDeleteTarget(f),
     onMove: (f) => setMoveTarget(f),
-    onShare: (f) => navigate(`/shares?create=${f.id}`),
+    onShare: (f) => setShareItems([f]),
     onCopyLink: doCopyLink,
     onProperties: (f) => setPropsFile(f),
     onSetPassword: (f) => setPropsFile(f),
@@ -385,6 +437,7 @@ export default function Files() {
 
   const contextMenu = (e: React.MouseEvent, f: FileListItem) => {
     e.preventDefault();
+    e.stopPropagation();
     // 右键多选（可开关）：开启时未选中项累积加入；关闭时仅选中该项
     if (!selected.has(f.id)) {
       if (useTheme.getState().rightClickMultiSelect) {
@@ -393,7 +446,8 @@ export default function Files() {
         setSelected(new Set([f.id]));
       }
     }
-    if (useTheme.getState().rightClickAction === 'menu') {
+    if (f.banned || useTheme.getState().rightClickAction === 'menu') {
+      // 封禁文件强制走菜单（菜单内仅剩删除），避免右键直接打开含写操作的属性面板
       setMenuPos({ x: e.clientX, y: e.clientY, file: f });
     } else {
       setPropsFile(f);
@@ -673,7 +727,7 @@ export default function Files() {
 
           {/* 搜索 + 排序 */}
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[140px] max-w-sm flex-1">
+            <div className="relative min-w-[140px] max-w-[432px] flex-1">
               <Search className="pointer-events-none absolute left-2.5 top-2.5 z-10 h-4 w-4 text-muted-foreground" />
               <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className={cn('pl-8', SEARCH_INPUT_GLASS)} />
             </div>
@@ -745,7 +799,10 @@ export default function Files() {
               }
             />
           ) : view === 'grid' ? (
-            <div className="grid grid-cols-3 gap-3 md:grid-cols-4 lg:grid-cols-5">
+            <div
+              className="grid grid-cols-2 gap-3 sm:[grid-template-columns:repeat(var(--files-cols),minmax(0,1fr))]"
+              style={{ '--files-cols': String(Math.min(8, Math.max(4, filesPerRow))) } as React.CSSProperties}
+            >
               {items.map((f) => (
                 <FileCard
                   key={f.id}
@@ -763,26 +820,86 @@ export default function Files() {
               ))}
             </div>
           ) : (
-            <div className="space-y-0.5">
-              {items.map((f) => (
-                <FileRow
-                  key={f.id}
-                  f={f}
-                  selected={selected.has(f.id)}
-                  onSelect={() => toggleSelect(f.id)}
-                  onDoubleClick={() => openItem(f)}
-                  onContext={(e) => contextMenu(e, f)}
-                  onSingleClick={handleFileClick}
-                  handlers={handlers}
-                  multiSelect={multiSelect}
+            <div className="flex flex-col gap-0.5">
+              {/* 表头：与文件行同一 item-surface 玻璃（同底色 token、同模糊、同边框圆角），
+                  固定在滚动区上方——数据行只在下方容器内滚动，不会滑到表头下面造成叠加；
+                  两侧预留相同滚动条槽位保证列对齐 */}
+              <div data-file-list-header className='item-surface grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 overflow-hidden rounded-md border px-3 py-2 text-sm text-muted-foreground [scrollbar-gutter:stable] sm:grid-cols-[auto_minmax(0,1fr)_100px_130px_auto]'>
+                <span className="w-4" aria-hidden />
+                <SortableHeader
+                  title={t('files.name')}
+                  sortKey="name"
+                  sort={sort ?? null}
+                  order={order ?? 'asc'}
+                  onSort={(k) => {
+                    setSort(k as typeof sort);
+                    setOrder(order === 'asc' ? 'desc' : 'asc');
+                  }}
                 />
-              ))}
+                <span className="hidden text-right sm:block">
+                  <SortableHeader
+                    title={t('files.size')}
+                    sortKey="size"
+                    sort={sort ?? null}
+                    order={order ?? 'asc'}
+                    onSort={(k) => {
+                      setSort(k as typeof sort);
+                      setOrder(order === 'asc' ? 'desc' : 'asc');
+                    }}
+                  />
+                </span>
+                <span className="hidden sm:block">
+                  <SortableHeader
+                    title={t('files.modified')}
+                    sortKey="time"
+                    sort={sort ?? null}
+                    order={order ?? 'asc'}
+                    onSort={(k) => {
+                      setSort(k as typeof sort);
+                      setOrder(order === 'asc' ? 'desc' : 'asc');
+                    }}
+                  />
+                </span>
+                <span aria-hidden />
+              </div>
+              <div className="max-h-[calc(100vh-18.625rem)] space-y-0.5 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+                {items.map((f) => (
+                  <FileRow
+                    key={f.id}
+                    f={f}
+                    selected={selected.has(f.id)}
+                    onSelect={() => toggleSelect(f.id)}
+                    onDoubleClick={() => openItem(f)}
+                    onContext={(e) => contextMenu(e, f)}
+                    onSingleClick={handleFileClick}
+                    handlers={handlers}
+                    multiSelect={multiSelect}
+                  />
+                ))}
+              </div>
             </div>
           )}
+
+          <div className="mt-auto pt-2">
+          {(data?.pagination?.total ?? 0) > 0 && (
+            <Pagination
+              page={page}
+              total={data?.pagination?.total ?? 0}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+              className="mt-3"
+            />
+          )}
+          </div>
 
           {selected.size > 0 && (
             <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
               <BulkActionsBar
+                onlyDelete={items.some((f) => selected.has(f.id) && f.banned)}
                 count={selected.size}
                 onClear={clearSelection}
                 onMove={() => setBulkMove(true)}
@@ -817,15 +934,7 @@ export default function Files() {
                     }
                   })();
                 }}
-                onShare={
-                  selected.size === 1
-                    ? () => {
-                        const [id] = selected;
-                        const file = items.find((f) => f.id === id);
-                        if (file) navigate(`/shares?create=${file.id}`);
-                      }
-                    : undefined
-                }
+                onShare={() => setShareItems(items.filter((f) => selected.has(f.id)))}
                 onRename={
                   selected.size === 1
                     ? () => {
@@ -843,7 +952,7 @@ export default function Files() {
                     ? () => {
                         const [id] = selected;
                         const file = items.find((f) => f.id === id);
-                        if (file) setPropsFile(file);
+                        if (file && !file.banned) setPropsFile(file);
                       }
                     : undefined
                 }
@@ -871,6 +980,9 @@ export default function Files() {
 
       {/* 复制链接弹窗（含图片/视频时） */}
       <CopyLinksDialog open={!!copyDialog} files={copyDialog?.files ?? []} onClose={() => setCopyDialog(null)} copyLinks={copyLinks} />
+
+      {/* 创建分享（行菜单单选 / 批量栏多选，文件与文件夹均可） */}
+      <ShareDialog open={!!shareItems} items={shareItems ?? []} onClose={() => setShareItems(null)} />
 
       {/* 新建文件夹 */}
       <Dialog
@@ -962,7 +1074,9 @@ export default function Files() {
         onClose={() => setDeleteTarget(null)}
         onConfirm={doDelete}
         title={t('common.delete')}
-        message={t('files.deleteConfirm', { name: deleteTarget?.name ?? '' })}
+        message={deleteTarget?.banned
+          ? t('files.bannedDeleteConfirm', { name: deleteTarget?.name ?? '' })
+          : t('files.deleteConfirm', { name: deleteTarget?.name ?? '' })}
         loading={deleteFile.isPending}
       />
       <ConfirmDialog
@@ -987,8 +1101,11 @@ export default function Files() {
       {menuPos &&
         createPortal(
           <div
+            ref={ctxMenuRef}
             className="glass-surface-popover glass-blur animate-dropdown fixed z-[100] w-48 overflow-y-auto rounded-md border p-1 text-popover-foreground shadow-md"
-            style={{ left: menuPos.x, top: menuPos.y }}
+            style={{ left: menuXY?.left ?? menuPos.x, top: menuXY?.top ?? menuPos.y }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
             <FileRowMenuItems f={menuPos.file} handlers={handlers} onClose={() => setMenuPos(null)} />

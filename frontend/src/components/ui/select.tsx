@@ -22,6 +22,7 @@ export function Select({
   placeholder,
   disabled,
   className,
+  triggerClassName,
 }: {
   value: string;
   onValueChange: (value: string) => void;
@@ -29,19 +30,36 @@ export function Select({
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  /** 触发按钮附加类（坐在壁纸上时套 SEARCH_INPUT_GLASS 等玻璃配方） */
+  triggerClassName?: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const portalRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const trigTop = useRef(0);
 
   // 展开时测量触发器位置与宽度（Portal 用 fixed 定位，菜单与触发器等宽对齐）
   useLayoutEffect(() => {
     if (!open) return;
     const r = ref.current?.getBoundingClientRect();
-    if (r) setPos({ left: r.left, top: r.bottom + 4, width: r.width });
+    if (r) {
+      trigTop.current = r.top;
+      setPos({ left: r.left, top: r.bottom + 4, width: r.width });
+    }
   }, [open]);
+
+  // 菜单渲染后实测高度：底部放不下且上方有空间 → 翻到触发器上方；否则夹在视口内
+  useLayoutEffect(() => {
+    if (!open || !pos || !portalRef.current) return;
+    const m = portalRef.current.getBoundingClientRect();
+    const vh = window.innerHeight;
+    let top = pos.top;
+    if (top + m.height > vh - 8 && trigTop.current - m.height - 12 > 0) top = Math.max(8, trigTop.current - m.height - 6);
+    else if (top + m.height > vh - 8) top = Math.max(8, vh - m.height - 8);
+    if (Math.abs(top - pos.top) > 1) setPos({ ...pos, top });
+  }, [open, pos]);
 
   useEffect(() => {
     if (!open) return;
@@ -74,7 +92,8 @@ export function Select({
           'flex h-9 w-full items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-[color,box-shadow] outline-none',
           'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
           'disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30',
-          open && 'border-ring ring-[3px] ring-ring/50'
+          open && 'border-ring ring-[3px] ring-ring/50',
+          triggerClassName
         )}
       >
         <span className={cn('truncate', !selected && 'text-muted-foreground')}>

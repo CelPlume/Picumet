@@ -10,7 +10,7 @@ import { TableSkeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { formatDateTime } from '@/lib/utils';
-import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
+import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 
 interface UserRule extends PathRule {
   createdBy?: string;
@@ -61,16 +61,16 @@ export default function AccessRulesPage() {
         {t('settings.accessRules.intro')}
       </p>
 
-      <Card className="mt-3 overflow-x-auto py-0">
+      <Card className="mt-3 max-h-[calc(100vh-11.7rem)] overflow-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2"><SortableHeader title={t('settings.accessRules.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.ruleEffect')} sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('settings.accessRules.target')}</th>
-              <th className="px-4 py-2">{t('settings.permissions')}</th>
-              <th className="px-4 py-2"><SortableHeader title={t('settings.accessRules.createdAt')} sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('common.actions')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('settings.accessRules.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.ruleEffect')} sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('settings.accessRules.target')}</th>
+              <th className={'px-4 py-2'}>{t('settings.permissions')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('settings.accessRules.createdAt')} sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>

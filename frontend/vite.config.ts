@@ -13,6 +13,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // 忽略构建/覆盖率产物：coverage 与 dist 会随测试与构建写入，watcher 命中会触发整页重载（表现为页面反复刷新/卡住）
+    watch: { ignored: ['**/coverage/**', '**/dist/**'] },
+
     proxy: {
       '/api': {
         target: 'http://localhost:8787',
