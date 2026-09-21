@@ -19,11 +19,11 @@ export default function AdminStorage() {
         <TabsList>
           <TabsTrigger value="providers">
             <HardDrive className="h-4 w-4" />
-            存储提供商
+            {t('admin.storage.providers')}
           </TabsTrigger>
           <TabsTrigger value="mounts">
             <FolderTree className="h-4 w-4" />
-            挂载点配置
+            {t('admin.storage.mounts')}
           </TabsTrigger>
         </TabsList>
 

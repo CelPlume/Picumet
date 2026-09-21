@@ -1,8 +1,8 @@
 // 管理员：全部分享
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Trash2, Link2 } from 'lucide-react';
-import { Card, Badge, ConfirmDialog } from '@/components/ui/core';
+import { Trash2, Link2, Share2 } from 'lucide-react';
+import { Card, Badge, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Pagination } from '@/components/ui/pagination';
 import { toast } from '@/components/ui/toast';
@@ -50,10 +50,10 @@ export default function AdminShares() {
   const revoke = async (id: string) => {
     try {
       await apiFetch(`/api/admin/shares/${id}`, { method: 'DELETE' });
-      toast('success', '已撤销');
+      toast('success', t('common.revoked'));
       await load();
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '操作失败');
+      toast('error', err instanceof Error ? err.message : t('common.operationFailed'));
     }
     setConfirmRevoke(null);
   };
@@ -66,22 +66,24 @@ export default function AdminShares() {
   return (
     <div className="flex h-full min-h-0 flex-col">
 
-      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2"><SortableHeader title="标题" sortKey="title" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">创建者</th>
-              <th className="px-4 py-2"><SortableHeader title="浏览" sortKey="viewCount" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title="下载" sortKey="downloadCount" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title="过期时间" sortKey="expiresAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">状态</th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.shares.fileTitle')} sortKey="title" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('admin.shares.creator')}</th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.shares.views')} sortKey="viewCount" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.shares.downloads')} sortKey="downloadCount" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title={t('share.expiresAt')} sortKey="expiresAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('admin.shares.status')}</th>
               <th className="px-4 py-2">{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr><td colSpan={7}><TableSkeleton rows={6} cols={5} /></td></tr>
+            ) : shares.length === 0 ? (
+              <tr><td colSpan={7}><EmptyState icon={<Share2 className="h-7 w-7" />} title={t('admin.shares.empty')} description={t('admin.shares.emptyDesc')} /></td></tr>
             ) : sortedRows.map((s) => (
               <tr key={s.id} className="border-b last:border-0 hover:bg-accent/50">
                 <td className="px-4 py-2">
@@ -93,10 +95,10 @@ export default function AdminShares() {
                 <td className="px-4 py-2 text-xs text-muted-foreground">{s.creatorId}</td>
                 <td className="px-4 py-2 tabular-nums text-muted-foreground">{s.viewCount}</td>
                 <td className="px-4 py-2 tabular-nums text-muted-foreground">{s.downloadCount}</td>
-                <td className="px-4 py-2 text-xs text-muted-foreground">{s.expiresAt ? formatDateTime(s.expiresAt) : '永久'}</td>
+                <td className="px-4 py-2 text-xs text-muted-foreground">{s.expiresAt ? formatDateTime(s.expiresAt) : t('share.forever')}</td>
                 <td className="px-4 py-2"><Badge variant={s.status === 'active' ? 'success' : 'secondary'}>{s.status}</Badge></td>
                 <td className="px-4 py-2">
-                  <button onClick={() => setConfirmRevoke(s)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="撤销">
+                  <button onClick={() => setConfirmRevoke(s)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title={t('settings.revoke')}>
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </td>
@@ -104,7 +106,6 @@ export default function AdminShares() {
             ))}
           </tbody>
         </table>
-        {!loading && shares.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">暂无分享</p>}
       </Card>
 
       {total > 0 && (
@@ -123,8 +124,8 @@ export default function AdminShares() {
         open={!!confirmRevoke}
         onClose={() => setConfirmRevoke(null)}
         onConfirm={() => confirmRevoke && void revoke(confirmRevoke.id)}
-        title="撤销分享"
-        message={`确定撤销分享「${confirmRevoke?.title ?? confirmRevoke?.file?.name ?? confirmRevoke?.id}」？撤销后链接立即失效。`}
+        title={t('admin.shares.revokeTitle')}
+        message={t('admin.shares.revokeConfirm', { name: confirmRevoke?.title ?? confirmRevoke?.file?.name ?? confirmRevoke?.id })}
       />
     </div>
   );

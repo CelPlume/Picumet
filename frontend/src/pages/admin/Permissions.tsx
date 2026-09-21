@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
-import { Card, Button, Input, Label, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
+import { Card, Button, Input, Label, Badge, Dialog, Switch, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -106,27 +106,27 @@ export default function AdminPermissions() {
     if (form.password) body.password = form.password;
     try {
       await apiFetch('/api/admin/rules', { method: 'POST', body });
-      toast('success', '已创建规则');
+      toast('success', t('admin.permissions.created'));
       setShowCreate(false);
       await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '创建失败');
+      toast('error', err instanceof ApiError ? err.message : t('admin.permissions.createFailed'));
     }
   };
 
   const del = async (id: string) => {
     try {
       await apiFetch(`/api/admin/rules/${id}`, { method: 'DELETE' });
-      toast('success', '已删除');
+      toast('success', t('admin.permissions.deleted'));
       await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '删除失败');
+      toast('error', err instanceof ApiError ? err.message : t('admin.permissions.deleteFailed'));
     }
     setConfirmDelete(null);
   };
 
   const subjectLabel = (r: Rule) =>
-    r.userId ? `用户:${r.userId}` : r.apiKeyId ? `密钥:${r.apiKeyId}` : `角色:${r.role ?? r.apiKeyId ?? '-'}`;
+    r.userId ? t('admin.permissions.targetUser', { id: r.userId.slice(0, 8) }) : r.apiKeyId ? t('admin.permissions.targetApiKey', { id: r.apiKeyId.slice(0, 8) }) : t('admin.permissions.targetRole', { role: r.role ?? '-' });
   const sortedRows = useMemo(() => {
     if (!sort) return rules;
     return sortByKey(rules, sort as keyof Rule, order);
@@ -135,48 +135,50 @@ export default function AdminPermissions() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{t('admin.permissions')} · {total} 条</p>
+        <p className="text-sm text-muted-foreground">{t('admin.nav.permissions')} · {t('admin.permissions.ruleCount', { n: total })}</p>
         <Button onClick={() => { setShowCreate(true); setEditMode('gui'); setJsonError(null); setJsonText(''); }}><Plus className="h-4 w-4" /> {t('admin.addRule')}</Button>
       </div>
 
 
-      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2"><SortableHeader title="路径" sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">主体</th>
-              <th className="px-4 py-2">来源</th>
-              <th className="px-4 py-2">权限</th>
-              <th className="px-4 py-2"><SortableHeader title="优先级" sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title="效果" sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.permissions.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('admin.permissions.subject')}</th>
+              <th className="px-4 py-2">{t('admin.permissions.source')}</th>
+              <th className="px-4 py-2">{t('settings.permissions')}</th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.permissions.priority')} sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.permissions.effect')} sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className="px-4 py-2">{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr><td colSpan={7}><TableSkeleton rows={5} cols={4} /></td></tr>
+            ) : rules.length === 0 ? (
+              <tr><td colSpan={7}><EmptyState icon={<ShieldCheck className="h-7 w-7" />} title={t('admin.permissions.emptyTitle')} description={t('admin.permissions.emptyDesc')} /></td></tr>
             ) : sortedRows.map((r) => (
               <tr key={r.id} className="border-b last:border-0 hover:bg-accent/50">
                 <td className="px-4 py-2 font-mono text-sm"><code>{r.pathPattern}</code></td>
                 <td className="px-4 py-2 text-xs text-muted-foreground">{subjectLabel(r)}{r.mountId ? ` · ${r.mountName ?? r.mountId}` : ''}</td>
                 <td className="px-4 py-2 text-xs">
                   {r.origin === 'user' ? (
-                    <Badge variant="warning">用户{r.createdBy ? `:${r.createdBy.slice(0, 8)}` : ''}</Badge>
+                    <Badge variant="warning">{t('admin.permissions.badgeUser')}{r.createdBy ? `:${r.createdBy.slice(0, 8)}` : ''}</Badge>
                   ) : (
-                    <Badge variant="secondary">管理员</Badge>
+                    <Badge variant="secondary">{t('admin.permissions.badgeAdmin')}</Badge>
                   )}
                 </td>
                 <td className="px-4 py-2">
                   <div className="flex flex-wrap items-center gap-1.5">
                     {r.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
-                    {r.requirePassword && <Badge variant="warning">密码</Badge>}
+                    {r.requirePassword && <Badge variant="warning">{t('admin.permissions.badgePassword')}</Badge>}
                   </div>
                 </td>
                 <td className="px-4 py-2 tabular-nums text-muted-foreground">{r.priority}</td>
                 <td className="px-4 py-2"><Badge variant={r.effect === 'allow' ? 'success' : 'destructive'}>{r.effect}</Badge></td>
                 <td className="px-4 py-2">
-                  <button onClick={() => setConfirmDelete(r)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除">
+                  <button onClick={() => setConfirmDelete(r)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title={t("common.delete")}>
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </td>
@@ -184,7 +186,6 @@ export default function AdminPermissions() {
             ))}
           </tbody>
         </table>
-        {!loading && rules.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">暂无权限规则</p>}
       </Card>
 
       {total > 0 && (
@@ -213,10 +214,10 @@ export default function AdminPermissions() {
         <Tabs value={editMode} onValueChange={(v) => setEditMode(v as 'gui' | 'code')}>
           <TabsList className="mb-3">
             <TabsTrigger value="gui">
-              <span className="mr-1 text-base leading-none">◧</span> 图形化编辑
+              <span className="mr-1 text-base leading-none">◧</span> {t('admin.permissions.tabGui')}
             </TabsTrigger>
             <TabsTrigger value="code">
-              <span className="mr-1 font-mono text-base leading-none">{'{}'}</span> 代码编辑
+              <span className="mr-1 font-mono text-base leading-none">{'{}'}</span> {t('admin.permissions.tabCode')}
             </TabsTrigger>
           </TabsList>
 
@@ -226,14 +227,14 @@ export default function AdminPermissions() {
             <Input className="mt-1 font-mono" value={form.pathPattern as string} onChange={(e) => set('pathPattern', e.target.value)} placeholder="/public/**" />
           </div>
           <div>
-            <Label>挂载点</Label>
+            <Label>{t('admin.permissions.mount')}</Label>
             <Select
               value={form.mountId as string}
               onValueChange={(v) => set('mountId', v)}
-              placeholder="全部挂载（全局规则）"
+              placeholder={t('admin.permissions.mountAll')}
               className="mt-1"
               options={[
-                { value: '', label: '全部挂载（全局规则）' },
+                { value: '', label: t('admin.permissions.mountAll') },
                 ...mounts.map((m) => ({ value: m.id, label: `${m.name} · ${m.mountPath}` })),
               ]}
             />
@@ -252,22 +253,22 @@ export default function AdminPermissions() {
               />
             </div>
             <div>
-              <Label>主体</Label>
+              <Label>{t('admin.permissions.subject')}</Label>
               <Select
                 value={form.subject as string}
                 onValueChange={(v) => set('subject', v)}
                 className="mt-1"
                 options={[
-                  { value: 'role', label: '角色' },
-                  { value: 'user', label: '用户 ID' },
-                  { value: 'guest', label: '访客' },
+                  { value: 'role', label: t('admin.permissions.subjectRole') },
+                  { value: 'user', label: t('admin.permissions.subjectUser') },
+                  { value: 'guest', label: t('admin.permissions.subjectGuest') },
                 ]}
               />
             </div>
           </div>
           {form.subject === 'role' && (
             <div>
-              <Label>角色</Label>
+              <Label>{t('admin.permissions.role')}</Label>
               <Select
                 value={form.role as string}
                 onValueChange={(v) => set('role', v)}
@@ -282,7 +283,7 @@ export default function AdminPermissions() {
           )}
           {form.subject === 'user' && (
             <div>
-              <Label>用户 ID</Label>
+              <Label>{t('admin.permissions.subjectUser')}</Label>
               <Input className="mt-1" value={(form.userId as string) ?? ''} onChange={(e) => set('userId', e.target.value)} />
             </div>
           )}
@@ -309,7 +310,7 @@ export default function AdminPermissions() {
           </div>
           {form.requirePassword && (
             <div>
-              <Label>密码</Label>
+              <Label>{t('admin.permissions.password')}</Label>
               <Input type="password" className="mt-1" value={(form.password as string) ?? ''} onChange={(e) => set('password', e.target.value)} />
             </div>
           )}
@@ -317,7 +318,7 @@ export default function AdminPermissions() {
 
           <TabsContent value="code" className="mt-0">
             <div>
-              <Label>权限配置 JSON</Label>
+              <Label>{t('admin.permissions.jsonLabel')}</Label>
               <textarea
                 value={jsonText}
                 onChange={(e) => {
@@ -337,15 +338,15 @@ export default function AdminPermissions() {
                     if (parsed.requirePassword !== undefined) set('requirePassword', Boolean(parsed.requirePassword));
                     if (Array.isArray(parsed.permissions)) setForm((f) => ({ ...f, permissions: parsed.permissions }));
                   } catch {
-                    setJsonError('JSON 格式错误');
+                    setJsonError(t('admin.permissions.jsonInvalid'));
                   }
                 }}
-                className="h-64 w-full rounded-md border border-input bg-background p-3 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="h-64 w-full rounded-md border border-input bg-transparent p-3 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-input/30"
                 placeholder='{"pathPattern": "/public/**", "effect": "allow", "permissions": ["read", "download"]}'
               />
               {jsonError && <p className="mt-2 text-sm text-destructive">{jsonError}</p>}
               <p className="mt-2 text-xs text-muted-foreground">
-                在代码模式下编辑 JSON 将同步更新图形化表单，保存时以图形化表单为准。
+                {t('admin.permissions.jsonHelp')}
               </p>
             </div>
           </TabsContent>
@@ -356,8 +357,8 @@ export default function AdminPermissions() {
         open={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
         onConfirm={() => confirmDelete && void del(confirmDelete.id)}
-        title="删除权限规则"
-        message={`确定删除规则 ${confirmDelete?.pathPattern ?? ''}？该操作不可恢复。`}
+        title={t('admin.permissions.deleteTitle')}
+        message={t('admin.permissions.deleteMessage', { path: confirmDelete?.pathPattern ?? '' })}
       />
     </div>
   );

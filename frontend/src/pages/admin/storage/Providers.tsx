@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { HardDrive, Plus, Trash2, PlugZap, Pencil } from 'lucide-react';
-import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog } from '@/components/ui/core';
+import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -53,13 +53,13 @@ export function StorageProviders() {
   const create = async () => {
     try {
       await apiFetch('/api/admin/storage/providers', { method: 'POST', body: form });
-        toast('success', '已添加存储');
+        toast('success', t('admin.storageProviders.added'));
         setShowCreate(false);
         setForm({});
         setMountTouched(false);
         await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '添加失败');
+      toast('error', err instanceof ApiError ? err.message : t('admin.addFailed'));
     }
   };
 
@@ -72,7 +72,7 @@ export function StorageProviders() {
       );
       toast(res.data.connected ? 'success' : 'error', `${p.name}: ${res.data.message}${res.data.latency ? ` (${res.data.latency}ms)` : ''}`);
     } catch {
-      toast('error', '测试失败');
+      toast('error', t('admin.storageProviders.testFailed'));
     } finally {
       setTesting(null);
     }
@@ -81,10 +81,10 @@ export function StorageProviders() {
   const del = async (p: Provider) => {
     try {
       await apiFetch(`/api/admin/storage/providers/${p.id}`, { method: 'DELETE' });
-      toast('success', '已删除');
+      toast('success', t('admin.deleted'));
       await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '删除失败');
+      toast('error', err instanceof ApiError ? err.message : t('admin.deleteFailed'));
     }
     setConfirmDelete(null);
   };
@@ -108,15 +108,15 @@ export function StorageProviders() {
     if (!editing) return;
     try {
       await apiFetch(`/api/admin/storage/providers/${editing.id}`, { method: 'PUT', body: editForm });
-      toast('success', '已更新');
+      toast('success', t('admin.updated'));
       setEditing(null);
       await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '更新失败');
+      toast('error', err instanceof ApiError ? err.message : t('admin.updateFailed'));
     }
   };
 
-  const typeLabel: Record<string, string> = { r2: 'R2 绑定', s3: 'S3' };
+  const typeLabel: Record<string, string> = { r2: t('admin.storageProviders.typeR2'), s3: t('admin.storageProviders.typeS3') };
 
   const sortedRows = useMemo(() => {
     if (!sort) return providers;
@@ -126,27 +126,29 @@ export function StorageProviders() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{t('admin.storage')} · {providers.length} 个</p>
+        <p className="text-sm text-muted-foreground">{t('admin.nav.storage')} · {t('admin.itemCount', { n: providers.length })}</p>
         <Button onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('admin.addProvider')}</Button>
       </div>
 
 
-      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2"><SortableHeader title="名称" sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title="类型" sortKey="type" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">Bucket</th>
-              <th className="px-4 py-2"><SortableHeader title="区域" sortKey="region" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">前缀</th>
-              <th className="px-4 py-2"><SortableHeader title="状态" sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.providerName')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.providerType')} sortKey="type" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('admin.bucket')}</th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.region')} sortKey="region" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('admin.pathPrefix')}</th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.status')} sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className="px-4 py-2">{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr><td colSpan={7}><TableSkeleton rows={5} cols={5} /></td></tr>
+            ) : sortedRows.length === 0 ? (
+              <tr><td colSpan={7}><EmptyState icon={<HardDrive className="h-7 w-7" />} title={t('admin.storageProviders.emptyTitle')} description={t('admin.storageProviders.emptyDesc')} /></td></tr>
             ) : sortedRows.map((p) => (
               <tr key={p.id} className="border-b last:border-0 hover:bg-accent/50">
                 <td className="px-4 py-2 font-medium">{p.name}</td>
@@ -158,8 +160,8 @@ export function StorageProviders() {
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-1">
                     <button onClick={() => test(p)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title={t('admin.testConnection')}><PlugZap className="h-4 w-4" /></button>
-                    <button onClick={() => openEdit(p)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title="编辑"><Pencil className="h-4 w-4" /></button>
-                    <button onClick={() => setConfirmDelete(p)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title="删除"><Trash2 className="h-4 w-4" /></button>
+                    <button onClick={() => openEdit(p)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent" title={t('common.edit')}><Pencil className="h-4 w-4" /></button>
+                    <button onClick={() => setConfirmDelete(p)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title={t('common.delete')}><Trash2 className="h-4 w-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -182,7 +184,7 @@ export function StorageProviders() {
         <div className="space-y-3">
           {/* 预设：仅预填字段，非模式切换（所有字段始终平铺可见） */}
           <div>
-            <Label>预设</Label>
+            <Label>{t('admin.storageProviders.preset')}</Label>
             <Select
               value={form.preset ?? 'custom'}
               onValueChange={(v) => {
@@ -201,7 +203,7 @@ export function StorageProviders() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>{t('admin.providerName')}</Label>
-              <Input className="mt-1" value={form.name ?? ''} onChange={(e) => set('name', e.target.value)} placeholder="主存储" />
+              <Input className="mt-1" value={form.name ?? ''} onChange={(e) => set('name', e.target.value)} placeholder={t('admin.storageProviders.namePlaceholder')} />
             </div>
             <div>
               <Label>{t('admin.bucket')}</Label>
@@ -213,21 +215,21 @@ export function StorageProviders() {
             </div>
           </div>
           <div>
-            <Label>Endpoint URL</Label>
+            <Label>{t('admin.endpoint')}</Label>
             <Input className="mt-1" value={form.endpoint ?? ''} onChange={(e) => set('endpoint', e.target.value)}
               placeholder={STORAGE_PRESETS.find((p) => p.id === (form.preset ?? 'custom'))?.endpointHint ?? ''} />
             <p className="mt-1 text-xs text-muted-foreground">
               {STORAGE_PRESETS.find((p) => p.id === (form.preset ?? 'custom'))?.endpointHint}
-              {' '}· 留空 endpoint 时无需 Access Key
+              {' '}· {t('admin.storageProviders.endpointHint')}
             </p>
           </div>
           {form.preset === 'r2' && (
             <div>
-              <Label>R2 Account ID 快捷</Label>
+              <Label>{t('admin.storageProviders.accountIdLabel')}</Label>
               <Input className="mt-1" value={form.accountId ?? ''} onChange={(e) => {
                 set('accountId', e.target.value);
                 set('endpoint', r2S3Endpoint(e.target.value));
-              }} placeholder="填入 Account ID 自动拼接 S3 API 端点（留空 = 绑定模式）" />
+              }} placeholder={t('admin.storageProviders.accountIdPlaceholder')} />
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
@@ -236,7 +238,7 @@ export function StorageProviders() {
               <Input className="mt-1" value={form.region ?? ''} onChange={(e) => set('region', e.target.value)} placeholder="auto" />
             </div>
             <div>
-              <Label>挂载路径</Label>
+              <Label>{t('admin.mountPath')}</Label>
               <Input className="mt-1" value={form.mountPath ?? ''} onChange={(e) => { setMountTouched(true); set('mountPath', e.target.value); }} placeholder="/my-bucket" />
             </div>
           </div>
@@ -267,7 +269,7 @@ export function StorageProviders() {
       <Dialog
         open={!!editing}
         onClose={() => setEditing(null)}
-        title={`编辑存储 · ${editing?.name ?? ''}`}
+        title={t('admin.storageProviders.editTitle', { name: editing?.name ?? '' })}
         footer={
           <>
             <Button variant="outline" onClick={() => setEditing(null)}>{t('common.cancel')}</Button>
@@ -281,7 +283,7 @@ export function StorageProviders() {
             <Input className="mt-1" value={editForm.name ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} />
           </div>
           <div>
-            <Label>Endpoint URL <span className="text-muted-foreground">（留空 = 切回 R2 绑定并清除凭据）</span></Label>
+            <Label>{t('admin.endpoint')} <span className="text-muted-foreground">{t('admin.storageProviders.endpointResetHint')}</span></Label>
             <Input className="mt-1" value={editForm.endpoint ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, endpoint: e.target.value }))} placeholder={STORAGE_PRESETS.find((p) => p.id === (editForm.preset ?? 'custom'))?.endpointHint ?? ''} />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -296,11 +298,11 @@ export function StorageProviders() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>{t('admin.accessKey')} <span className="text-muted-foreground">（留空不改）</span></Label>
+              <Label>{t('admin.accessKey')} <span className="text-muted-foreground">{t('admin.storageProviders.keepIfEmpty')}</span></Label>
               <Input className="mt-1" value={editForm.accessKeyId ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, accessKeyId: e.target.value }))} />
             </div>
             <div>
-              <Label>{t('admin.secretKey')} <span className="text-muted-foreground">（留空不改）</span></Label>
+              <Label>{t('admin.secretKey')} <span className="text-muted-foreground">{t('admin.storageProviders.keepIfEmpty')}</span></Label>
               <Input className="mt-1" type="password" value={editForm.secretAccessKey ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, secretAccessKey: e.target.value }))} />
             </div>
           </div>
@@ -321,8 +323,8 @@ export function StorageProviders() {
         open={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
         onConfirm={() => confirmDelete && void del(confirmDelete)}
-        title="删除存储提供商"
-        message={`确定删除存储 ${confirmDelete?.name ?? ''}？挂载其上的配置将失效，该操作不可恢复。`}
+        title={t('admin.storageProviders.deleteTitle')}
+        message={t('admin.storageProviders.deleteConfirm', { name: confirmDelete?.name ?? '' })}
       />
     </div>
   );

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Users, Files, HardDrive, Activity } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/core';
+import { Card, CardContent, EmptyState } from '@/components/ui/core';
 import { StatCardSkeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { formatBytes } from '@/lib/utils';
@@ -28,8 +28,8 @@ export default function AdminDashboard() {
     ? [
         { icon: <Users className="h-5 w-5" />, label: t('admin.totalUsers'), value: String(stats.users.total), sub: `${t('admin.activeUsers')}: ${stats.users.active}` },
         { icon: <Files className="h-5 w-5" />, label: t('admin.totalFiles'), value: String(stats.files.total), sub: formatBytes(stats.files.size) },
-        { icon: <HardDrive className="h-5 w-5" />, label: t('admin.storageUsage'), value: stats.storage.length ? formatBytes(stats.storage[0]?.usedSpace ?? 0) : '0 B', sub: `${stats.storage.length} 存储源` },
-        { icon: <Activity className="h-5 w-5" />, label: t('admin.requests24h'), value: '-', sub: '近 24 小时' },
+        { icon: <HardDrive className="h-5 w-5" />, label: t('admin.storageUsage'), value: stats.storage.length ? formatBytes(stats.storage[0]?.usedSpace ?? 0) : '0 B', sub: t('admin.dashboard.providers', { count: stats.storage.length }) },
+        { icon: <Activity className="h-5 w-5" />, label: t('admin.requests24h'), value: '-', sub: t('admin.dashboard.last24h') },
       ]
     : [];
 
@@ -61,7 +61,7 @@ export default function AdminDashboard() {
                 <div key={s.providerId}>
                   <div className="mb-1 flex justify-between text-sm">
                     <span>{s.name}</span>
-                    <span className="text-muted-foreground">{formatBytes(s.usedSpace)} · {s.fileCount} 文件</span>
+                    <span className="text-muted-foreground">{formatBytes(s.usedSpace)} · {t('admin.dashboard.filesCount', { count: s.fileCount })}</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-muted">
                     <div className="h-full rounded-full bg-primary" style={{ width: '60%' }} />
@@ -69,7 +69,7 @@ export default function AdminDashboard() {
                 </div>
               ))}
               {(!stats?.storage || stats.storage.length === 0) && (
-                <p className="text-sm text-muted-foreground">暂无存储数据</p>
+                <EmptyState compact icon={<HardDrive className="h-4 w-4" />} title={t('admin.dashboard.noStorage')} description={t('admin.dashboard.noStorageDesc')} />
               )}
             </div>
           </CardContent>
@@ -88,7 +88,7 @@ export default function AdminDashboard() {
                 </div>
               ))}
               {(!stats?.recentActivity || stats.recentActivity.length === 0) && (
-                <p className="text-sm text-muted-foreground">暂无活动</p>
+                <EmptyState compact icon={<Activity className="h-4 w-4" />} title={t('admin.dashboard.noActivity')} description={t('admin.dashboard.noActivityDesc')} />
               )}
             </div>
           </CardContent>
@@ -96,7 +96,7 @@ export default function AdminDashboard() {
       </div>
 
       <p className="text-sm text-muted-foreground">
-        当前管理员：<span className="font-medium">{user?.username}</span>
+        {t('admin.dashboard.currentAdmin')}<span className="font-medium">{user?.username}</span>
       </p>
     </div>
   );
