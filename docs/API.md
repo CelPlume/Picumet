@@ -101,6 +101,7 @@ Failed requests return an error envelope with an HTTP status code and a machine-
 | `QUOTA_EXCEEDED` | `413` | The storage or file-count quota has run out. | Free up space or raise the quota. |
 | `PAYLOAD_TOO_LARGE` | `413` | The upload exceeds the 1 GB free-mode limit. | Split the file or use a smaller file. |
 | `RATE_LIMIT_EXCEEDED` | `429` | The caller exceeded a rate limit. | Wait and retry, or raise the limit. |
+| `FILE_BANNED` | `429` | An administrator banned the target file (all content outlets block it; deletion is unaffected). | Contact an administrator. |
 | `INTERNAL_ERROR` | `500` | An unexpected server error occurred. | Retry later or report the issue. |
 
 ## Authentication
@@ -2139,7 +2140,7 @@ Admin endpoints manage users, shares, files, logs, settings, announcements, stor
 
 ### Get the dashboard
 
-Returns aggregate statistics, recent activity, and the request count for the last 24 hours.
+Returns top-level statistics, per-mount usage, recent activity, and the request count for the last 24 hours.
 
 `GET /api/admin/dashboard`
 
@@ -2150,16 +2151,34 @@ Returns aggregate statistics, recent activity, and the request count for the las
   "success": true,
   "data": {
     "stats": {
-      "users": 12,
+      "userRoles": { "admin": 2, "user": 9, "guest": 1 },
       "files": 345,
-      "storage": [{ "providerId": "provider-uuid", "name": "R2", "usedSpace": 10485760, "fileCount": 300 }]
+      "usedSpace": 10485760,
+      "providers": 3,
+      "activeMounts": 4,
+      "totalCapacity": 10737418240
     },
+    "mounts": [
+      {
+        "id": "mount-uuid",
+        "name": "Drive",
+        "mountPath": "/drive",
+        "status": "active",
+        "capacityBytes": 10737418240,
+        "usedSpace": 5242880,
+        "fileCount": 180,
+        "provider": { "id": "provider-uuid", "name": "R2 primary", "bucket": "picumet-primary" },
+        "standbys": [{ "id": "provider-uuid-2", "name": "R2 standby", "bucket": "picumet-standby", "weight": 1 }]
+      }
+    ],
     "requests24h": 1200,
     "recentActivity": [{ "action": "upload", "path": "/drive/a.txt", "userId": "user-uuid", "createdAt": 1710000000000 }]
   },
   "timestamp": 1710000000000
 }
 ```
+
+> `stats.totalCapacity` is the sum of every mount's `capacityBytes`, or `null` when no mount sets one; `mounts[].standbys` lists the mount's standby bucket pool members (the `mount_providers` entries other than the primary provider). `GET /api/admin/stats` returns the same `stats` structure.
 
 #### Example
 
@@ -2169,7 +2188,7 @@ curl https://{domain}/api/admin/dashboard -b cookies.txt
 
 ### Get statistics
 
-Returns user, file, and storage statistics.
+Returns the same `stats` top-level totals, per-mount `mounts` usage, and `recentActivity` as the dashboard, without `requests24h`.
 
 `GET /api/admin/stats`
 
@@ -2179,9 +2198,15 @@ Returns user, file, and storage statistics.
 {
   "success": true,
   "data": {
-    "users": 12,
-    "files": 345,
-    "storage": [{ "providerId": "provider-uuid", "name": "R2", "usedSpace": 10485760, "fileCount": 300 }],
+    "stats": {
+      "userRoles": { "admin": 2, "user": 9, "guest": 1 },
+      "files": 345,
+      "usedSpace": 10485760,
+      "providers": 3,
+      "activeMounts": 4,
+      "totalCapacity": 10737418240
+    },
+    "mounts": [],
     "recentActivity": []
   },
   "timestamp": 1710000000000
@@ -2312,9 +2337,9 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 
 ### List all files
 
-Searches every file across all mounts; results carry visibility and review status columns.
+Searches every file across all mounts; results carry visibility, review status, and storage-location columns.
 
-`GET /api/admin/files?page={page}&limit={limit}&search={search}`
+`GET /api/admin/files?page={page}&limit={limit}&search={search}&mount={mount}&bucket={bucket}&hash={hash}&user={user}&visibility={visibility}&banned={banned}`
 
 #### List query parameters
 
@@ -2323,6 +2348,14 @@ Searches every file across all mounts; results carry visibility and review statu
 | `page` | `integer` | No | The page number. Defaults to `1`. |
 | `limit` | `integer` | No | Items per page. Defaults to `20`, maximum `100`. |
 | `search` | `string` | No | A keyword to match file names. |
+| `mount` | `string` | No | Exact match on the mount id. |
+| `bucket` | `string` | No | Exact match on the storage provider (bucket) id. |
+| `hash` | `string` | No | Substring match on the content hash (`blob_hash`). |
+| `user` | `string` | No | Exact match on the uploading user (owner) id. |
+| `visibility` | `string` | No | `private`, `users`, or `public`. |
+| `banned` | `string` | No | `true` or `false`, filtering by ban state. |
+
+> Invalid enum values are ignored and coexist with `search` and pagination. Each row's mount names, bucket names, and content-addressed replica locations are filled in server-side with one batched `IN` query per page (no N+1).
 
 #### Response
 
@@ -2330,17 +2363,51 @@ Searches every file across all mounts; results carry visibility and review statu
 {
   "success": true,
   "data": {
-    "items": [{ "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 }],
+    "items": [{
+      "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576,
+      "banned": false, "hash": "9f2c…",
+      "buckets": ["R2 primary"], "mounts": ["Drive"], "ownerName": "alice"
+    }],
     "pagination": { "total": 345, "page": 1, "limit": 20, "pages": 18 }
   },
   "timestamp": 1710000000000
 }
 ```
 
+> `buckets` is the deduplicated set of provider names across the file's primary bucket and its content-addressed replicas (`blob_objects`); `mounts` holds the mount names the file lives on; `hash` is only set on content-addressed files.
+
 #### Example
 
 ```sh
-curl "https://{domain}/api/admin/files?search=photo" -b cookies.txt
+curl "https://{domain}/api/admin/files?search=photo&banned=false" -b cookies.txt
+```
+
+### Ban or unban a file
+
+Sets or clears the file ban. A ban blocks only content outlets (file download, public path serving, share download/preview, and the download gateway) and **does not block deletion** — banned files can still be deleted by their owner or an admin. To its owner a banned file appears as a ghost: translucent on the files page with the menu collapsed to delete only, and any content outlet answers `429 FILE_BANNED`.
+
+`PUT /api/admin/files/{id}/ban`
+
+#### Request body
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `banned` | `boolean` | Yes | `true` bans the file, `false` unbans it. |
+
+#### Response
+
+```json
+{ "success": true, "data": { "id": "file-uuid", "banned": true }, "timestamp": 1710000000000 }
+```
+
+#### Example
+
+```sh
+curl -X PUT https://{domain}/api/admin/files/{id}/ban \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"banned":true}'
 ```
 
 ### Review public files
@@ -2588,6 +2655,9 @@ Lists, creates, updates, and deletes mount points that bind a provider to a virt
 | `sortBy` | `string` | No | The default sort field. |
 | `sortOrder` | `string` | No | `asc` or `desc`. |
 | `priority` | `integer` | No | The mount priority. Higher values win for overlapping paths. |
+| `maxStorage` | `integer` | No | The mount's write quota in bytes. |
+| `poolStrategy` | `string` | No | The storage pool strategy, defaulting to `least_used`. |
+| `capacityBytes` | `integer` | No | The mount's display capacity in bytes; leave unset when not configured (the dashboard capacity total ignores mounts without one). Pass `null` on update to clear it. |
 
 #### Errors
 

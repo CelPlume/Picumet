@@ -232,10 +232,20 @@ Terminology note: the **guest role** (a signed-in account with `role='guest'`) d
 | Admin file properties | `PUT /api/files/:id` accepts `cascade` (default true); the admin files page gained a visibility column and a properties dialog that submits `cascade: false` by default, so publishing one folder no longer cascades the whole subtree by surprise | `admin-shares.test.ts` |
 | Direct-link prefix | `direct_prefix` (`''` / `/d` / `/download` / `/raw`) scopes public and signed direct links, and `root_target` decides whether `/` serves the landing page, the file page or the direct-link namespace — both are selectable in admin → System settings and validated together (a non-empty direct prefix cannot own `/`). The file browser stays at `/files`: a configurable files-page prefix was evaluated and dropped as too risky | `route-prefixes.test.ts` |
 
+## File ban governance, dashboard rework and admin files columns (§N, 2026-09-22)
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| File ban | `file_metadata.banned` (migration §26) + `PUT /api/admin/files/:id/ban`; `assertNotBanned` (`services/files/ban.ts`) gates all content outlets (file download, path-serve, share download/preview, gateway) with `429 FILE_BANNED`; delete is intentionally not blocked; owner-side ghost state is presentation-only (dimmed row, delete-only menu) | `files-ban.test.ts` (22 cases) |
+| Admin files columns & filters | Storage bucket / mount point / content-hash columns, per-page batched `IN` enrichment (mounts, `blob_objects`, providers — no N+1); filters `mount` / `bucket` / `hash` (substring) / `user` / `visibility` / `banned`; ban/unban entry with `ConfirmDialog`; rows with banned selections collapse the bulk bar to delete-only | `files-ban.test.ts` |
+| Mount capacity | `mounts.capacity_bytes` persisted via create/update; `Mount.capacityBytes` in shared types; dashboard aggregates Σ capacity (null when all unset) | `mount-quota.test.ts` |
+| Dashboard rework | `DashboardRepo.stats()` (role counts, files, used space, providers, active mounts, total capacity) + `DashboardRepo.mounts()` (primary provider, standby pool members, per-mount usage/file count) in `db/repos/dashboard.ts` — batched queries, no N+1; UI: four single-row stat cards, mount relation diagram (primary solid pill + standby outline pills), storage usage with capacity bars, recent activity (6) | `dashboard.test.ts` |
+| Admin settings restructure | System settings page split into Site / Security / SMTP / Announcements cards; settings Appearance/Profile/Security merged into Personalization with files-per-row slider | frontend |
+
 ## Current baseline
 
-- Backend: 255+ Vitest tests pass; `tsc --noEmit` clean.
-- Frontend: 10 Vitest tests pass; coverage gate passes; build succeeds; `tsc --noEmit` clean.
+- Backend: 39 test files / 353 Vitest tests pass; `tsc --noEmit` clean.
+- Frontend: 3 test files / 14 Vitest tests pass; coverage gate passes (91.8% statements / 72.7% branches / 83.3% functions / 93.2% lines); build succeeds; `tsc --noEmit` clean.
 - Language: zh + en.
 
 ## What's next

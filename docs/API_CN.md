@@ -100,7 +100,8 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 | `UPLOAD_SESSION_EXPIRED` | `410` | 上传会话超过 1 小时有效期。 | 重新创建上传会话。 |
 | `QUOTA_EXCEEDED` | `413` | 存储空间或文件数量配额已用完。 | 释放空间或提高配额。 |
 | `PAYLOAD_TOO_LARGE` | `413` | 上传超过自由模式的 1 GB 上限。 | 拆分文件或改用小文件。 |
-| `RATE_LIMIT_EXCEEDED` | `429` | 请求超过限流阈值。 | 等待后重试，或提高限额。 |
+| `RATE_LIMIT_EXCEEDED` | `429` | 请求超过限流阈值（限流、传输并发、下载限速）。 | 等待后重试，或提高限额。 |
+| `FILE_BANNED` | `429` | 目标文件已被管理员封禁（内容出口统一拦截，删除不受影响）。 | 联系管理员处理。 |
 | `INTERNAL_ERROR` | `500` | 服务器内部错误。 | 稍后重试或反馈问题。 |
 
 ## 认证
@@ -2139,7 +2140,7 @@ curl -X DELETE https://{domain}/api/keys/{id} \
 
 ### 获取仪表板
 
-返回聚合统计、近期活动和最近 24 小时的请求量。
+返回顶层统计、每挂载点用量总览、近期活动和最近 24 小时的请求量。
 
 `GET /api/admin/dashboard`
 
@@ -2150,16 +2151,34 @@ curl -X DELETE https://{domain}/api/keys/{id} \
   "success": true,
   "data": {
     "stats": {
-      "users": 12,
+      "userRoles": { "admin": 2, "user": 9, "guest": 1 },
       "files": 345,
-      "storage": [{ "providerId": "provider-uuid", "name": "R2", "usedSpace": 10485760, "fileCount": 300 }]
+      "usedSpace": 10485760,
+      "providers": 3,
+      "activeMounts": 4,
+      "totalCapacity": 10737418240
     },
+    "mounts": [
+      {
+        "id": "mount-uuid",
+        "name": "Drive",
+        "mountPath": "/drive",
+        "status": "active",
+        "capacityBytes": 10737418240,
+        "usedSpace": 5242880,
+        "fileCount": 180,
+        "provider": { "id": "provider-uuid", "name": "R2 主桶", "bucket": "picumet-primary" },
+        "standbys": [{ "id": "provider-uuid-2", "name": "R2 备桶", "bucket": "picumet-standby", "weight": 1 }]
+      }
+    ],
     "requests24h": 1200,
     "recentActivity": [{ "action": "upload", "path": "/drive/a.txt", "userId": "user-uuid", "createdAt": 1710000000000 }]
   },
   "timestamp": 1710000000000
 }
 ```
+
+> `stats.totalCapacity` 是全部挂载点 `capacityBytes` 之和，全部未设置时为 `null`；`mounts[].standbys` 是该挂载点的备用桶池成员（`mount_providers` 中除主 provider 外的部分）。`GET /api/admin/stats` 返回相同的 `stats` 结构。
 
 #### 示例
 
@@ -2169,7 +2188,7 @@ curl https://{domain}/api/admin/dashboard -b cookies.txt
 
 ### 获取统计数据
 
-返回用户、文件和存储统计。
+返回与仪表板相同的 `stats` 顶层统计、每挂载点 `mounts` 用量总览与 `recentActivity`（不含 `requests24h`）。
 
 `GET /api/admin/stats`
 
@@ -2179,9 +2198,15 @@ curl https://{domain}/api/admin/dashboard -b cookies.txt
 {
   "success": true,
   "data": {
-    "users": 12,
-    "files": 345,
-    "storage": [{ "providerId": "provider-uuid", "name": "R2", "usedSpace": 10485760, "fileCount": 300 }],
+    "stats": {
+      "userRoles": { "admin": 2, "user": 9, "guest": 1 },
+      "files": 345,
+      "usedSpace": 10485760,
+      "providers": 3,
+      "activeMounts": 4,
+      "totalCapacity": 10737418240
+    },
+    "mounts": [],
     "recentActivity": []
   },
   "timestamp": 1710000000000
@@ -2312,9 +2337,9 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 
 ### 列出全部文件
 
-跨所有挂载点搜索文件，结果带可见性与审核状态列。
+跨所有挂载点搜索文件，结果带可见性、审核状态与落桶位置列。
 
-`GET /api/admin/files?page={page}&limit={limit}&search={search}`
+`GET /api/admin/files?page={page}&limit={limit}&search={search}&mount={mount}&bucket={bucket}&hash={hash}&user={user}&visibility={visibility}&banned={banned}`
 
 #### 列表查询参数
 
@@ -2323,6 +2348,14 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 | `page` | `integer` | 否 | 页码，默认 `1`。 |
 | `limit` | `integer` | 否 | 每页条数，默认 `20`，最大 `100`。 |
 | `search` | `string` | 否 | 匹配文件名的关键字。 |
+| `mount` | `string` | 否 | 按挂载点 ID 精确过滤。 |
+| `bucket` | `string` | 否 | 按存储提供商（桶）ID 精确过滤。 |
+| `hash` | `string` | 否 | 按内容哈希（`blob_hash`）子串过滤。 |
+| `user` | `string` | 否 | 按上传用户（属主）ID 精确过滤。 |
+| `visibility` | `string` | 否 | `private`、`users` 或 `public`。 |
+| `banned` | `string` | 否 | `true` 或 `false`，按封禁状态过滤。 |
+
+> 非法的枚举取值会被忽略，与 `search`、分页共存。每行的挂载点名、存储桶名与内容寻址副本落桶在服务端按页批量 `IN` 查询补齐（各一条，无 N+1）。
 
 #### 响应
 
@@ -2330,17 +2363,51 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 {
   "success": true,
   "data": {
-    "items": [{ "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 }],
+    "items": [{
+      "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576,
+      "banned": false, "hash": "9f2c…",
+      "buckets": ["R2 主桶"], "mounts": ["Drive"], "ownerName": "alice"
+    }],
     "pagination": { "total": 345, "page": 1, "limit": 20, "pages": 18 }
   },
   "timestamp": 1710000000000
 }
 ```
 
+> `buckets` 是「文件主桶 + 内容寻址副本（`blob_objects`）落桶」的提供商名去重集合；`mounts` 是文件所在挂载点名；`hash` 仅内容寻址文件有值。
+
 #### 示例
 
 ```sh
-curl "https://{domain}/api/admin/files?search=photo" -b cookies.txt
+curl "https://{domain}/api/admin/files?search=photo&banned=false" -b cookies.txt
+```
+
+### 封禁/解封文件
+
+设置或解除文件封禁。封禁只拦截内容出口（文件下载、公开路径直服、分享下载/预览、下载网关），**不拦截删除**——被封禁的文件仍可由用户或管理员删除。被封禁的文件对属主呈幽灵态：文件页半透明显示、菜单收敛为仅可删除，任何内容出口返回 `429 FILE_BANNED`。
+
+`PUT /api/admin/files/{id}/ban`
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `banned` | `boolean` | 是 | `true` 封禁，`false` 解封。 |
+
+#### 响应
+
+```json
+{ "success": true, "data": { "id": "file-uuid", "banned": true }, "timestamp": 1710000000000 }
+```
+
+#### 示例
+
+```sh
+curl -X PUT https://{domain}/api/admin/files/{id}/ban \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"banned":true}'
 ```
 
 ### 审核公开文件
@@ -2588,6 +2655,9 @@ curl -X POST https://{domain}/api/admin/storage/providers \
 | `sortBy` | `string` | 否 | 默认排序字段。 |
 | `sortOrder` | `string` | 否 | `asc` 或 `desc`。 |
 | `priority` | `integer` | 否 | 挂载点优先级，路径重叠时高优先级优先。 |
+| `maxStorage` | `integer` | 否 | 挂载点写入配额，单位字节。 |
+| `poolStrategy` | `string` | 否 | 存储池策略，默认 `least_used`。 |
+| `capacityBytes` | `integer` | 否 | 挂载点展示容量，单位字节；留空表示未设置（仪表盘容量汇总忽略未设置的挂载点）。更新时传 `null` 清除。 |
 
 #### 错误
 

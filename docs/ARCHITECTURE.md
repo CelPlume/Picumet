@@ -181,6 +181,8 @@ Move Saga: `moveWithSaga` validates permissions, conflicts, and cycles, creates 
 
 Visibility and review: files carry three visibility tiers — `private` (owner and admins), `users` (any signed-in user can read and download), and `public` (enters the anonymous public gallery once review passes). Setting `public` requires the owner to hold the `can_publish` capability, otherwise the file enters the `pending` review queue; setting it on a folder cascades to all entries inside. File-domain permission checks consistently use the file's full path (`filePermPath`) so user-authored full-path rules match, while parent-folder rules still apply through pattern inheritance.
 
+**File ban (§N).** `file_metadata.banned` is set by admins through `PUT /api/admin/files/:id/ban`; `assertNotBanned` in `services/files/ban.ts` hooks into every content outlet (file download, `path-serve.ts` direct serving, share download/preview, and the download gateway) and throws `429 FILE_BANNED` on a hit. A ban **does not block deletion** — owners and admins can still delete a banned file, and the delete flow performs no ban check. The user side is presentation-only (a translucent ghost with the menu reduced to delete); the real enforcement lives on the server.
+
 **Dependencies**: `permissions/principal.ts`, `storage/providers.ts`, `shares/tokens.ts`, and the file, mount, provider, log, and job repositories.
 
 ### Uploads service
@@ -303,16 +305,18 @@ Security notes:
 
 ### Admin service
 
-**Responsibilities**: dashboard and statistics, user management (including capability bits), global shares, all files with public review, access logs, system settings, announcements, storage providers, mount points, and permission rules.
+**Responsibilities**: dashboard and statistics, user management (capability bits plus per-user permission overrides), global shares (with the settings-dialog data), all files (filters, storage locations, bans), public review, access logs, system settings, announcements, storage providers, mount points (with capacity), and permission rules.
 
 ```
 services/admin/
-├── handlers.ts          // dashboard, users, shares, files, logs, settings, announcements
-├── storage.ts           // storage providers, mount points, permission rules
-├── schemas.ts           // UserUpdate, Settings, Announcement
+├── handlers.ts          // dashboard, users, shares, files (list/review/ban), logs, settings, announcements
+├── storage.ts           // storage providers, mount points (capacityBytes), permission rules
+├── schemas.ts           // UserUpdate, Settings, Announcement, FileBan
 ├── storage-schemas.ts   // Provider, Mount, Rule
 └── types.ts
 ```
+
+The dashboard and statistics endpoints (`GET /api/admin/dashboard`, `/stats`) aggregate in `db/repos/dashboard.ts`: top-level `stats` (role counts, file count, used space, bucket count, active mounts, capacity total) plus per-mount `mounts` rows (primary bucket / standby pool members / usage / file count), built from 8 aggregate queries assembled in memory — N+1 queries are forbidden. The all-files list enriches mount, bucket, and hash the same way with batched per-page `IN` queries.
 
 **Dependencies**: the user, share, log, settings, announcement, provider, mount, and rule repositories, `storage/providers.ts`, and `utils/ssrf.ts`.
 
@@ -410,8 +414,8 @@ D1 stores the following core tables:
 | `users` | User accounts, roles, status, default path, locale preferences, and capability bits. |
 | `user_quotas` | Used and reserved storage, file counts, and limits. |
 | `storage_providers` | S3-protocol provider configuration with encrypted credentials. |
-| `mounts` | Maps a provider to a virtual path with sorting preferences. |
-| `file_metadata` | Files and folders: virtual object key, physical key (§F content addressing), content hash, path, size, etag, owner, visibility, review status, **guest visibility (`guest_visibility`: NULL/none/download/view)**, and custom attributes. |
+| `mounts` | Maps a provider to a virtual path with sorting preferences, a write quota (`max_storage`), a storage pool strategy (`pool_strategy`), and a display capacity (`capacity_bytes`, NULL = unset). |
+| `file_metadata` | Files and folders: virtual object key, physical key (§F content addressing), content hash, path, size, etag, owner, visibility, review status, **guest visibility (`guest_visibility`: NULL/none/download/view)**, **ban flag (`banned`, §N)**, and custom attributes. |
 | `blob_objects` | Content-addressed object index: content hash → provider and physical key (one object shared by equal content). |
 | `blob_gc` | Content-object collection queue: enqueued when the last reference disappears, deleted by a scheduled task after a grace period, retried on failure. |
 | `upload_sessions` | Tracks upload progress, parts, and reserved quota. |

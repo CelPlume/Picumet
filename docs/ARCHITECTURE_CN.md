@@ -181,6 +181,8 @@ services/files/
 
 可见性与审核：文件有三级可见性——`private`（属主和管理员）、`users`（全站登录用户可读/下载）、`public`（审核通过后进匿名公开空间）。设为 `public` 需要属主具备 `can_publish` 能力位，否则进入 `pending` 审核队列；对文件夹设置会级联到其下所有条目。文件域的权限检查统一用文件全路径（`filePermPath`），保证用户按全路径创建的规则能命中；父目录规则仍通过模式匹配继承。
 
+**文件封禁（§N）**：`file_metadata.banned` 由管理员经 `PUT /api/admin/files/:id/ban` 设置；`services/files/ban.ts` 的 `assertNotBanned` 接入全部内容出口（文件下载、`path-serve.ts` 直服、分享下载/预览、下载网关），命中即抛 `429 FILE_BANNED`。封禁**不拦截删除**——属主与管理员仍可删除被封禁文件；删除流程不做封禁检查。用户侧仅是展示层幽灵态（半透明 + 菜单仅剩删除），真正的拦截在服务端。
+
 **依赖**：`permissions/principal.ts`、`storage/providers.ts`、`shares/tokens.ts`，以及文件、挂载、提供商、日志、任务等仓库。
 
 ### 上传服务
@@ -303,16 +305,18 @@ services/free-mode/
 
 ### 管理服务
 
-**职责**：仪表板和统计、用户管理（含能力位）、全局分享、全部文件与公开审核、访问日志、系统设置、公告、存储提供商、挂载点、权限规则。
+**职责**：仪表板和统计、用户管理（含能力位与个别权限覆盖）、全局分享（含设置弹窗数据）、全部文件（筛选/落桶位置/封禁）、公开审核、访问日志、系统设置、公告、存储提供商、挂载点（含容量）、权限规则。
 
 ```
 services/admin/
-├── handlers.ts          // 仪表板、用户、分享、文件、日志、设置、公告
-├── storage.ts           // 存储提供商、挂载点、权限规则
-├── schemas.ts           // UserUpdate、Settings、Announcement
+├── handlers.ts          // 仪表板、用户、分享、文件（列表/审核/封禁）、日志、设置、公告
+├── storage.ts           // 存储提供商、挂载点（capacityBytes）、权限规则
+├── schemas.ts           // UserUpdate、Settings、Announcement、FileBan
 ├── storage-schemas.ts   // Provider、Mount、Rule
 └── types.ts
 ```
+
+仪表板与统计（`GET /api/admin/dashboard`、`/stats`）由 `db/repos/dashboard.ts` 聚合：顶层 `stats`（角色计数、文件数、占用空间、桶数、活跃挂载点、容量合计）+ 每挂载点 `mounts`（主桶/备用池成员/用量/文件数），共 8 条聚合查询 + 内存组装，禁止 N+1；全部文件列表的挂载点/桶/哈希富化同样按页批量 `IN` 查询。
 
 **依赖**：用户、分享、日志、设置、公告、提供商、挂载、规则等仓库，`storage/providers.ts`，`utils/ssrf.ts`。
 
@@ -410,8 +414,8 @@ D1 里存以下核心表：
 | `users` | 账号、角色、状态、默认路径、语言偏好、能力位。 |
 | `user_quotas` | 已用和预留的存储、文件数、上限。 |
 | `storage_providers` | S3 协议提供商配置，凭据加密存储。 |
-| `mounts` | 把提供商映射到虚拟路径，带排序偏好。 |
-| `file_metadata` | 文件和文件夹：虚拟对象键、物理键（§F 内容寻址）、内容哈希、路径、大小、etag、属主、可见性、审核状态、**游客可见性（`guest_visibility`：NULL/none/download/view）**、自定义属性。 |
+| `mounts` | 把提供商映射到虚拟路径，带排序偏好、写入配额（`max_storage`）、存储池策略（`pool_strategy`）与展示容量（`capacity_bytes`，NULL = 未设置）。 |
+| `file_metadata` | 文件和文件夹：虚拟对象键、物理键（§F 内容寻址）、内容哈希、路径、大小、etag、属主、可见性、审核状态、**游客可见性（`guest_visibility`：NULL/none/download/view）**、**封禁位（`banned`，§N）**、自定义属性。 |
 | `blob_objects` | 内容寻址对象索引：内容哈希 → 落桶 provider 与物理键（同内容共享一份）。 |
 | `blob_gc` | 内容对象回收队列：最后一个引用消失后入队，定时任务带保护期删除、失败重试。 |
 | `upload_sessions` | 记录上传进度、分片和预留配额。 |
