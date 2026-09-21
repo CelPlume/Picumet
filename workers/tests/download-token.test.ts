@@ -44,7 +44,7 @@ describe('下载令牌原子消费', () => {
       method: 'POST',
       cookie: authCookie,
       headers: { 'X-CSRF-Token': csrf },
-      body: { fileId: uploaded.file.id, allowDownload: true },
+      body: { fileIds: [uploaded.file.id], allowDownload: true },
     });
     const shareId = (await json(shareRes)).data.share.id as string;
 
@@ -75,7 +75,7 @@ describe('H-04 分享下载计数', () => {
       method: 'POST',
       cookie: authCookie,
       headers: { 'X-CSRF-Token': csrf },
-      body: { fileId: uploaded.file.id, allowDownload: true, maxDownloads: 5 },
+      body: { fileIds: [uploaded.file.id], allowDownload: true, maxDownloads: 5 },
     });
     const shareId = (await json(shareRes)).data.share.id as string;
 
@@ -105,7 +105,7 @@ describe('H-04 分享下载计数', () => {
       method: 'POST',
       cookie: authCookie,
       headers: { 'X-CSRF-Token': csrf },
-      body: { fileId: uploaded.file.id, allowDownload: true, maxDownloads: 1 },
+      body: { fileIds: [uploaded.file.id], allowDownload: true, maxDownloads: 1 },
     });
     const shareId = (await json(shareRes)).data.share.id as string;
 

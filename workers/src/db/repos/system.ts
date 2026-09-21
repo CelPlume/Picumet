@@ -1,74 +1,209 @@
 // 分享、访问日志、系统设置、公告、对账仓库
-import type { Share, ShareStatus, Announcement } from '@shared/types';
-import { Db } from '../db';
-import { mapShare, mapAnnouncement, num, str, type Row } from '../row';
+import type { Share, ShareStatus, Announcement, FileMetadata, FileListItem } from '@shared/types';
+import { Db, type Row, type Tx } from '../db';
+import { mapShare, mapAnnouncement, mapFile, toFileListItem, num, str } from '../row';
 import { uuid } from '../../utils/crypto';
-import { toFileListItem } from './files';
-import { mapFile } from '../row';
+import { isPathWithinBoundary } from '../../utils/path';
+
+/** 创建分享入参：项目集合 + 访问控制（§多项目分享） */
+export interface CreateShareInput {
+  /** 项目 id（1..50，已去重且保持请求顺序；首项写入 shares.file_id） */
+  fileIds: string[];
+  creatorId: string;
+  title?: string;
+  passwordHash?: string;
+  /** 密码可逆密文（`enc:` + AES-GCM），仅创建者列表回看用；缺省 = 不保存密文 */
+  passwordCipher?: string;
+  expiresAt?: number;
+  maxViews?: number;
+  maxDownloads?: number;
+  allowPreview?: boolean;
+  allowDownload?: boolean;
+  requireLogin?: boolean;
+  allowedUserIds?: string[] | null;
+}
+
+/** 我的分享列表条目：分享字段 + 项目聚合（一条 SQL 取回，无 N+1） */
+export interface ShareSummary {
+  share: Share;
+  itemCount: number;
+  totalSize: number;
+  firstItem: FileListItem | null;
+  /** 创建者用户名（同一 SQL 带出；创建者已被删除时为 ''） */
+  creatorName: string;
+}
+
+/** 文件行绝对路径：文件夹行的 path 是自身全路径，文件行的 path 是父目录 */
+function absolutePathOf(f: Pick<FileMetadata, 'type' | 'path' | 'name'>): string {
+  if (f.type === 'folder') return f.path;
+  return f.path === '/' ? `/${f.name}` : `${f.path}/${f.name}`;
+}
+
+/**
+ * 我的列表聚合行 → 摘要：首项目列（first_*）重建为完整文件行后复用 mapFile/toFileListItem 映射
+ */
+function summaryOfRow(row: Row): ShareSummary {
+  const first = row.first_id == null
+    ? null
+    : toFileListItem(
+        mapFile({
+          id: row.first_id,
+          mount_id: row.first_mount_id,
+          object_key: row.first_object_key,
+          path: row.first_path,
+          name: row.first_name,
+          type: row.first_type,
+          mime_type: row.first_mime_type,
+          size: row.first_size,
+          custom_title: row.first_custom_title,
+          custom_color: row.first_custom_color,
+          cover_url: row.first_cover_url,
+          icon_emoji: row.first_icon_emoji,
+          access_password: row.first_access_password,
+          manual_position: row.first_manual_position,
+          visibility: row.first_visibility,
+          review_status: row.first_review_status,
+          owner_id: row.first_owner_id,
+          created_at: row.first_created_at,
+          updated_at: row.first_updated_at,
+        })
+      );
+  return {
+    share: mapShare(row),
+    itemCount: num(row.item_count),
+    totalSize: num(row.total_size),
+    firstItem: first,
+    creatorName: str(row.creator_name) ?? '',
+  };
+}
+
+/**
+ * 分享列表聚合查询：一条 SQL 带出项目数、总大小与首项目行（子查询保序取 sort_order 最小项）。
+ * 首项目列显式别名（first_*），避免与 shares.id / created_at 互相覆盖；WHERE 由调用方拼接。
+ */
+const SHARE_SUMMARY_SQL = `SELECT s.*,
+        agg.item_count AS item_count, agg.total_size AS total_size,
+        u.username AS creator_name,
+        f.id AS first_id, f.mount_id AS first_mount_id, f.object_key AS first_object_key,
+        f.path AS first_path, f.name AS first_name, f.type AS first_type,
+        f.mime_type AS first_mime_type, f.size AS first_size,
+        f.custom_title AS first_custom_title, f.custom_color AS first_custom_color,
+        f.cover_url AS first_cover_url, f.icon_emoji AS first_icon_emoji,
+        f.access_password AS first_access_password, f.manual_position AS first_manual_position,
+        f.visibility AS first_visibility, f.review_status AS first_review_status,
+        f.owner_id AS first_owner_id, f.created_at AS first_created_at, f.updated_at AS first_updated_at
+ FROM shares s
+ LEFT JOIN users u ON u.id = s.creator_id
+ LEFT JOIN share_items fi ON fi.share_id = s.id
+   AND fi.sort_order = (SELECT MIN(si2.sort_order) FROM share_items si2 WHERE si2.share_id = s.id)
+ LEFT JOIN file_metadata f ON f.id = fi.file_id
+ LEFT JOIN (
+   SELECT si.share_id AS share_id, COUNT(*) AS item_count, COALESCE(SUM(fm.size), 0) AS total_size
+   FROM share_items si JOIN file_metadata fm ON fm.id = si.file_id
+   GROUP BY si.share_id
+ ) agg ON agg.share_id = s.id`;
+
+/** 分享列表分页（count + 聚合行），全量 SQL 条数与项目数无关 */
+async function listSharesSummaryPage(
+  db: Db,
+  filterSql: string,
+  params: unknown[],
+  page: number,
+  limit: number
+): Promise<{ rows: ShareSummary[]; total: number }> {
+  const countRow = await db.first(`SELECT COUNT(*) AS c FROM shares s WHERE ${filterSql}`, params);
+  const total = num(countRow?.c);
+  const rows = await db.all(
+    `${SHARE_SUMMARY_SQL} WHERE ${filterSql} ORDER BY s.created_at DESC LIMIT ? OFFSET ?`,
+    [...params, limit, (page - 1) * limit]
+  );
+  return { rows: rows.map(summaryOfRow), total };
+}
 
 export const ShareRepo = {
-  async createShare(db: Db, s: {
-    fileId: string;
-    creatorId: string;
-    title?: string;
-    passwordHash?: string;
-    expiresAt?: number;
-    maxViews?: number;
-    maxDownloads?: number;
-    allowPreview?: boolean;
-    allowDownload?: boolean;
-  }): Promise<Share> {
-    const id = s.title ? uuid().slice(0, 8) : uuid().slice(0, 8);
+  async createShare(db: Db, s: CreateShareInput): Promise<Share> {
+    const id = uuid().slice(0, 8);
     const now = Date.now();
-    await db.run(
-      `INSERT INTO shares (id, file_id, creator_id, title, password_hash, expires_at, max_views, max_downloads,
-        allow_preview, allow_download, created_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [id, s.fileId, s.creatorId, s.title ?? null, s.passwordHash ?? null, s.expiresAt ?? null,
-        s.maxViews ?? null, s.maxDownloads ?? null, s.allowPreview === false ? 0 : 1,
-        s.allowDownload === false ? 0 : 1, now]
-    );
+    const [firstFileId] = s.fileIds;
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO shares (id, file_id, creator_id, title, password_hash, password_cipher, expires_at, max_views, max_downloads,
+          allow_preview, allow_download, require_login, allowed_user_ids, created_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+        [id, firstFileId, s.creatorId, s.title ?? null, s.passwordHash ?? null, s.passwordCipher ?? null, s.expiresAt ?? null,
+          s.maxViews ?? null, s.maxDownloads ?? null, s.allowPreview === false ? 0 : 1,
+          s.allowDownload === false ? 0 : 1, s.requireLogin ? 1 : 0,
+          s.allowedUserIds && s.allowedUserIds.length > 0 ? JSON.stringify(s.allowedUserIds) : null, now]
+      );
+      for (let i = 0; i < s.fileIds.length; i++) {
+        await tx.query(
+          `INSERT INTO share_items (share_id, file_id, sort_order, created_at) VALUES (?, ?, ?, ?)`,
+          [id, s.fileIds[i], i, now]
+        );
+      }
+    });
     return (await this.getShare(db, id)) as Share;
+  },
+  /** 分享项目行（含项目元数据），单条 JOIN 按 sort_order 升序取回 */
+  async listItems(db: Db, shareId: string): Promise<Array<{ file: FileMetadata; sortOrder: number }>> {
+    const rows = await db.all(
+      `SELECT f.*, si.sort_order AS item_sort_order
+       FROM share_items si JOIN file_metadata f ON f.id = si.file_id
+       WHERE si.share_id = ?
+       ORDER BY si.sort_order ASC`,
+      [shareId]
+    );
+    return rows.map((r) => ({ file: mapFile(r), sortOrder: num(r.item_sort_order) }));
   },
   async getShare(db: Db, id: string): Promise<Share | null> {
     const row = await db.first('SELECT * FROM shares WHERE id = ?', [id]);
     return row ? mapShare(row) : null;
   },
-  async listSharesByUser(db: Db, userId: string, opts: { page?: number; limit?: number; status?: ShareStatus }): Promise<{ rows: Share[]; total: number }> {
-    const where = ['creator_id = ?'];
+  /** 我的分享列表（多项目）：项目数 / 总大小 / 首项目行由聚合 SQL 一次取回 */
+  async listSharesWithSummary(db: Db, userId: string, opts: { page?: number; limit?: number; status?: ShareStatus }): Promise<{ rows: ShareSummary[]; total: number }> {
+    const where = ['s.creator_id = ?'];
     const params: unknown[] = [userId];
     if (opts.status) {
-      where.push('status = ?');
+      where.push('s.status = ?');
       params.push(opts.status);
     }
-    const whereSql = where.join(' AND ');
-    const countRow = await db.first(`SELECT COUNT(*) AS c FROM shares WHERE ${whereSql}`, params);
-    const total = num(countRow?.c);
-    const page = opts.page ?? 1;
-    const limit = opts.limit ?? 20;
-    const rows = await db.all(
-      `SELECT * FROM shares WHERE ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...params, limit, (page - 1) * limit]
-    );
-    return { rows: rows.map(mapShare), total };
+    return listSharesSummaryPage(db, where.join(' AND '), params, opts.page ?? 1, opts.limit ?? 20);
   },
-  async listAllShares(db: Db, opts: { page?: number; limit?: number; status?: string }): Promise<{ rows: Share[]; total: number }> {
+  /** 管理员全局分享列表（多项目）：同聚合口径，含非属主分享 */
+  async listAllSharesWithSummary(db: Db, opts: { page?: number; limit?: number; status?: string }): Promise<{ rows: ShareSummary[]; total: number }> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts.status) {
-      where.push('status = ?');
+      where.push('s.status = ?');
       params.push(opts.status);
     }
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const countRow = await db.first(`SELECT COUNT(*) AS c FROM shares ${whereSql}`, params);
-    const total = num(countRow?.c);
-    const page = opts.page ?? 1;
-    const limit = opts.limit ?? 20;
-    const rows = await db.all(
-      `SELECT * FROM shares ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...params, limit, (page - 1) * limit]
+    return listSharesSummaryPage(db, where.length ? where.join(' AND ') : '1 = 1', params, opts.page ?? 1, opts.limit ?? 20);
+  },
+  /**
+   * 解析分享作用域内的文件：项目自身优先，其次为该分享任一文件夹项目的后代
+   * （同一挂载点 + 同一属主 + 绝对路径在根子树内，路径段边界语义）。
+   */
+  async resolveShareFile(db: Db, share: Share, fileId: string): Promise<FileMetadata | null> {
+    const items = (await this.listItems(db, share.id)).map((i) => i.file);
+    const direct = items.find((f) => f.id === fileId);
+    if (direct) return direct;
+    const row = await db.first('SELECT * FROM file_metadata WHERE id = ?', [fileId]);
+    if (!row) return null;
+    const file = mapFile(row);
+    const absPath = absolutePathOf(file);
+    for (const root of items) {
+      if (root.type !== 'folder') continue;
+      if (root.mountId !== file.mountId || root.ownerId !== file.ownerId) continue;
+      if (isPathWithinBoundary(absPath, root.path)) return file;
+    }
+    return null;
+  },
+  /** 已无任何项目的分享行（首项目删除、其余项目亦不存在时残留） */
+  async deleteEmptyShares(db: Db | Tx): Promise<number> {
+    const res = await db.query(
+      `DELETE FROM shares WHERE NOT EXISTS (SELECT 1 FROM share_items WHERE share_items.share_id = shares.id)`
     );
-    return { rows: rows.map(mapShare), total };
+    return res.changes;
   },
   async updateShare(db: Db, id: string, fields: Record<string, unknown>): Promise<void> {
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
@@ -113,7 +248,8 @@ export const ShareRepo = {
     const row = await db.first(
       `SELECT f.id AS file_row_id, f.*, s.id, s.file_id, s.creator_id, s.title, s.password_hash, s.expires_at,
               s.max_views, s.view_count, s.max_downloads, s.download_count,
-              s.allow_preview, s.allow_download, s.created_at, s.last_accessed_at, s.status,
+              s.allow_preview, s.allow_download, s.require_login, s.allowed_user_ids,
+              s.created_at, s.last_accessed_at, s.status,
               u.username AS creator_name
        FROM shares s
        JOIN file_metadata f ON f.id = s.file_id
@@ -130,6 +266,23 @@ export const ShareRepo = {
       file,
       creatorName: str(row.creator_name) ?? 'unknown',
       listItem: toFileListItem(file),
+    };
+  },
+  /** 分享 + 创作者名 + 全部项目（按 sort_order 升序）；显式列名避免 shares.id 覆盖 file_metadata.id */
+  async getShareWithItems(db: Db, id: string): Promise<{ share: Share; creatorName: string; items: FileMetadata[] } | null> {
+    const row = await db.first(
+      `SELECT s.*, u.username AS creator_name
+       FROM shares s
+       LEFT JOIN users u ON u.id = s.creator_id
+       WHERE s.id = ?`,
+      [id]
+    );
+    if (!row) return null;
+    const items = (await this.listItems(db, id)).map((i) => i.file);
+    return {
+      share: mapShare(row),
+      creatorName: str(row.creator_name) ?? 'unknown',
+      items,
     };
   },
   /** 自动过期标记 */
@@ -238,6 +391,17 @@ export const SettingsRepo = {
   async get(db: Db, key: string): Promise<string | null> {
     const row = await db.first('SELECT value FROM system_settings WHERE key = ?', [key]);
     return row ? (str(row.value) ?? null) : null;
+  },
+  /** 布尔设置读取：值按 JSON 存储（'true'/'false'），缺失或格式异常回退 fallback */
+  async getBool(db: Db, key: string, fallback = false): Promise<boolean> {
+    const raw = await this.get(db, key);
+    if (raw == null || raw === 'null') return fallback;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return typeof parsed === 'boolean' ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
   },
   async set(db: Db, key: string, value: unknown): Promise<void> {
     const v = typeof value === 'string' ? value : JSON.stringify(value);

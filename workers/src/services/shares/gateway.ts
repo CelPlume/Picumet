@@ -4,10 +4,12 @@ import type { AppBindings } from '../../shared/types';
 import type { Context } from 'hono';
 import { FileRepo, MountRepo, ProviderRepo, LogRepo, ShareRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
-import { getProvider } from '../storage/providers';
+import { getProviderForFile } from '../storage/pool';
 import { ApiError } from '../../shared/errors';
 import { consumeDownloadToken } from '../shares/tokens';
+import { assertNotBanned } from '../files/ban';
 import { serveObject } from '../storage/serve';
+import { serveFileObject } from '../storage/failover';
 import type { Env } from '../../shared/types';
 
 export const gatewayRoutes = new Hono<AppBindings>();
@@ -22,31 +24,55 @@ gatewayRoutes.get('/download/:token', async (c) => {
   const mount = await MountRepo.getMountById(db, payload.mountId);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '文件不存在或已删除');
 
-  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
-  if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
+  // §E 存储池 + §G 读容灾：按文件落桶定位，取不到时轮询池内其余桶
+  if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在或已删除');
+
+  // §26 违规封禁：下载网关内容出口门禁（令牌签发后文件被封禁也在此拦截）
+  await assertNotBanned(db, [file.id]);
 
   // 文件设置了密码但 token 未验证 → 拒绝
   if (file?.accessPassword && !payload.passwordVerified) {
     throw new ApiError(403, 'PASSWORD_REQUIRED', '该文件受密码保护');
   }
 
-  const provider = await getProvider(db, providerRow, c.env as Env);
-
   // 审计 H-04：网关消费令牌成功后计数一次（下载次数在令牌消费阶段绑定）；
   // 超限则拒绝本次下载，避免先拉对象浪费资源。
   if (payload.shareId) {
     const share = await ShareRepo.getShare(db, payload.shareId);
-    if (share) {
-      const ok = await ShareRepo.incrementDownload(db, payload.shareId, share.maxDownloads);
-      if (!ok) {
-        throw new ApiError(410, 'SHARE_LIMIT_REACHED', '下载次数已达上限');
+    if (!share) throw new ApiError(410, 'SHARE_REVOKED', '分享已被撤销或删除');
+    if (share.status !== 'active') throw new ApiError(410, 'SHARE_REVOKED', '分享不可用');
+    if (share.expiresAt && Date.now() > share.expiresAt) {
+      await ShareRepo.updateShare(db, payload.shareId, { status: 'expired' });
+      throw new ApiError(410, 'SHARE_EXPIRED', '分享已过期');
+    }
+    // 访问策略实时校验（仅登录 / 指定用户）：令牌签发后的权限修改与撤销立即生效
+    const uid = c.get('userId') as string | undefined;
+    if (share.requireLogin && !uid) {
+      throw new ApiError(401, 'LOGIN_REQUIRED', '该分享仅登录用户可下载');
+    }
+    if (share.allowedUserIds && share.allowedUserIds.length > 0) {
+      if (!uid) throw new ApiError(401, 'LOGIN_REQUIRED', '该分享仅指定用户可下载，请先登录');
+      if (!share.allowedUserIds.includes(uid)) {
+        throw new ApiError(403, 'FORBIDDEN', '你不在该分享的指定用户范围内');
       }
+    }
+    const ok = await ShareRepo.incrementDownload(db, payload.shareId, share.maxDownloads);
+    if (!ok) {
+      throw new ApiError(410, 'SHARE_LIMIT_REACHED', '下载次数已达上限');
     }
   }
 
-  const response = await serveObject({
-    provider,
-    objectKey: payload.objectKey,
+  const response = await serveFileObject({
+    db,
+    env: c.env as Env,
+    mount,
+    ref: {
+      fileId: file.id,
+      mountId: payload.mountId,
+      providerId: file.providerId,
+      physicalKey: payload.objectKey,
+      size: payload.size,
+    },
     name: payload.name,
     mimeType: payload.mimeType,
     rangeHeader: c.req.header('range'),

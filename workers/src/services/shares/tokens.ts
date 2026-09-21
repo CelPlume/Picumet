@@ -2,6 +2,7 @@
 import type { Context } from 'hono';
 import type { FileMetadata, Mount } from '@shared/types';
 import type { StorageProviderInterface } from '../storage/types';
+import { physicalObjectKey } from '../storage/keys';
 import { randomString } from '../../utils/crypto';
 import { ApiError } from '../../shared/errors';
 import type { Db } from '../../db';
@@ -65,7 +66,7 @@ export function decideAccessMode(
   provider: StorageProviderInterface,
   _passwordVerified: boolean
 ): 'private_gateway' | 'signed_redirect' | 'public_cdn' {
-  const publicUrl = provider.getPublicUrl(file.objectKey);
+  const publicUrl = provider.getPublicUrl(physicalObjectKey(file));
   if (publicUrl && !file.accessPassword) return 'public_cdn';
   // R2 绑定等不支持预签名时统一走网关代理
   return 'private_gateway';
