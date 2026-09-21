@@ -64,14 +64,9 @@ export async function uploadBytes(
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '目标挂载点不存在');
   // M-3/H-3：最终路径再次通过统一权限服务（API Key 权限 ∩ 路径规则）
   await requirePermission(c, mount, targetPath, 'write');
-  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
-  if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-  const provider = await getProvider(db, providerRow, c.env as Env);
-
+  // §E 存储池：写路径由 upsertFileObject 内部按挂载策略选桶（覆盖写粘住原 provider）
   const result = await upsertFileObject(c, {
     mount,
-    provider,
-    pathPrefix: providerRow.pathPrefix,
     targetPath,
     mimeType,
     size,
@@ -81,7 +76,11 @@ export async function uploadBytes(
   });
 
   // P0-1：返回外部可用的直链（provider 公网域名 → CDN；否则 path-serve + 签名）
-  const url = await buildFileAccessUrl(c, provider, result.objectKey, targetPath);
+  // §E：用实际落桶 provider 构造 URL（池内可能不是主 provider）
+  const resultProviderRow = await ProviderRepo.getProviderById(db, result.providerId);
+  const resultProvider = resultProviderRow ? await getProvider(db, resultProviderRow, c.env as Env) : null;
+  if (!resultProvider) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
+  const url = await buildFileAccessUrl(c, resultProvider, result.objectKey, targetPath);
   return ok(c, {
     url,
     fileId: result.fileId,

@@ -15,6 +15,8 @@ import type { AppBindings, Env } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo } from '../../db';
 import { getDb, getClientIp, apiKeyTokenAuthMiddleware, assertApiKeyProtocol, resolveApiKeyByToken } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
+import { serveFileObject } from '../storage/failover';
+import { physicalObjectKey } from '../storage/keys';
 import { requirePermission } from '../permissions/principal';
 import { deleteFileInternal } from '../files/remove';
 import { serveObject } from '../storage/serve';
@@ -226,7 +228,8 @@ async function handleDirectLink(c: Context<AppBindings>): Promise<Response> {
   if (!file || file.type !== 'file') return c.text('not found', 404);
   if (file.accessPassword) return c.text('password required', 403);
 
-  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
+  // 直链公开判定用文件落桶 provider（§F）；对象读取由 serveFileObject 做池内回退（§G）
+  const providerRow = await ProviderRepo.getProviderById(db, file.providerId ?? mount.providerId);
   if (!providerRow) return c.text('not found', 404);
   const provider = await getProvider(db, providerRow, env);
 
@@ -237,9 +240,11 @@ async function handleDirectLink(c: Context<AppBindings>): Promise<Response> {
     if (!signOk) return c.text('forbidden', 403);
   }
 
-  return serveObject({
-    provider,
-    objectKey: file.objectKey,
+  return serveFileObject({
+    db,
+    env,
+    mount,
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
     name: file.name,
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),

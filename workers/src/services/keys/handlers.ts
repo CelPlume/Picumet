@@ -133,6 +133,6 @@ keyRoutes.delete('/:id', async (c) => {
 keyRoutes.get('/rules', async (c) => {
   const db = getDb(c);
   const userId = c.get('userId');
-  const rules = await RuleRepo.findCandidates(db, { id: userId, role: c.get('userRole') });
+  const rules = await RuleRepo.findCandidates(db, { id: userId, roles: [c.get('userRole')] });
   return ok(c, { rules });
 });

@@ -7,11 +7,16 @@ export const UpdateFileSchema = z.object({
   customTitle: z.string().max(200).nullable().optional(),
   customColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
   coverUrl: z.string().max(1000).nullable().optional(),
-  iconEmoji: z.string().max(16).nullable().optional(),
+  // 自定义图标：可存 Emoji / 图片 URL（http/https、data:image/） / SVG 代码
+  iconEmoji: z.string().max(2000).nullable().optional(),
   accessPassword: z.string().min(1).max(128).nullable().optional(),
   manualPosition: z.number().int().nullable().optional(),
   // §4.4a：三级可见性（folder 置可见性时级联子树）
   visibility: z.enum(['private', 'users', 'public']).optional(),
+  // §C 文件级游客可见性：inherit（或不传）= 未设置（跟随角色默认/不额外开放）；none/download/view = 显式
+  guestVisibility: z.enum(['inherit', 'none', 'download', 'view']).optional(),
+  // 可见性级联开关：缺省 true（folder 置可见性时级联整棵子树）；false = 只改本项本身
+  cascade: z.boolean().optional(),
 });
 
 // 创建文件夹

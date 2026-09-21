@@ -6,6 +6,7 @@ import type { AppBindings } from '../../shared/types';
 import { FileRepo, LogRepo, UserRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { createDownloadToken, buildGatewayUrl } from '../shares/tokens';
+import { physicalObjectKey } from '../storage/keys';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { verifyPassword } from '../../utils/crypto';
@@ -66,7 +67,7 @@ galleryRoutes.get('/:id/download', async (c) => {
   const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,
-    objectKey: file.objectKey,
+    objectKey: physicalObjectKey(file),
     name: file.name,
     mimeType: file.mimeType,
     size: file.size,
@@ -96,7 +97,7 @@ galleryRoutes.post('/:id/verify-password', async (c) => {
   const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,
-    objectKey: file.objectKey,
+    objectKey: physicalObjectKey(file),
     name: file.name,
     mimeType: file.mimeType,
     size: file.size,

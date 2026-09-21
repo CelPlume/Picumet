@@ -44,7 +44,7 @@ describe('分享', () => {
       method: 'POST',
       cookie: authCookie,
       headers: { 'X-CSRF-Token': csrf },
-      body: { fileId: uploaded.file.id, allowDownload: true },
+      body: { fileIds: [uploaded.file.id], allowDownload: true },
     });
     expect(createRes.status).toBe(201);
     const createData = await json(createRes);
@@ -55,7 +55,7 @@ describe('分享', () => {
     const getRes = await request(ctx, `/api/shares/${shareId}`);
     expect(getRes.status).toBe(200);
     const getData = await json(getRes);
-    expect(getData.data.share.file.name).toBe('share.txt');
+    expect(getData.data.share.items[0].name).toBe('share.txt');
     expect(getData.data.share.requiresPassword).toBe(false);
 
     // 下载链接
@@ -90,7 +90,7 @@ describe('分享', () => {
       method: 'POST',
       cookie: authCookie,
       headers: { 'X-CSRF-Token': csrf },
-      body: { fileId: uploaded.file.id, password: 'sharepass' },
+      body: { fileIds: [uploaded.file.id], password: 'sharepass' },
     });
     const createData = await json(createRes);
     const shareId = createData.data.share.id;

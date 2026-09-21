@@ -17,13 +17,16 @@ import type { AppBindings, Env } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo, ApiKeyRepo, LogRepo } from '../../db';
 import { getDb, getClientIp, applyApiKeyContext, assertApiKeyProtocol } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
+import { getProviderForFile } from '../storage/pool';
+import { serveFileObject } from '../storage/failover';
+import { physicalObjectKey } from '../storage/keys';
 import { requirePermission } from '../permissions/principal';
 import { deleteFileInternal } from '../files/remove';
 import { upsertFileObject } from '../files/write';
 import { serveObject } from '../storage/serve';
 import { verifySigV4, SigV4Error, parseSigV4Request } from './sigv4';
 import type { SigV4ErrorCode } from './sigv4';
-import { decryptSecret } from '../../utils/crypto';
+import { decryptSecret, sha256HexBytes } from '../../utils/crypto';
 import { normalizePath, isPathWithinBoundary } from '../../utils/path';
 import type { ApiKey, Mount } from '@shared/types';
 
@@ -239,7 +242,7 @@ s3gwRoutes.put('*', async (c) => {
   if (denied) return denied;
   const resolved = await resolveMountAndProvider(c, db, virtualPath);
   if (resolved instanceof Response) return resolved;
-  const { mount, provider, pathPrefix } = resolved;
+  const { mount } = resolved;
   const guard = await guardPermission(c, mount, virtualPath, 'write');
   if (guard) return guard;
 
@@ -253,9 +256,13 @@ s3gwRoutes.put('*', async (c) => {
   const contentLength = Number(c.req.header('content-length') ?? '');
   let size = 0;
   let body: ReadableStream<Uint8Array>;
+  // §F 内容寻址：SigV4 整包校验已把载荷缓存在内存 → 顺手算出内容哈希，写入路径可据此
+  // 完全跳过落对象（去重命中）或直写内容键（无需暂存 + 复制）。
+  let contentHash: string | undefined;
   if (payloadBytes) {
     size = payloadBytes.byteLength;
     body = streamFromBytes(payloadBytes);
+    contentHash = await sha256HexBytes(payloadBytes);
   } else if (Number.isFinite(contentLength) && contentLength > 0) {
     size = contentLength;
     body = c.req.raw.body as ReadableStream<Uint8Array>;
@@ -263,12 +270,11 @@ s3gwRoutes.put('*', async (c) => {
     const bytes = new Uint8Array(await c.req.raw.arrayBuffer());
     size = bytes.byteLength;
     body = streamFromBytes(bytes);
+    contentHash = await sha256HexBytes(bytes);
   }
 
   const result = await upsertFileObject(c, {
     mount,
-    provider,
-    pathPrefix,
     targetPath: virtualPath,
     mimeType,
     size,
@@ -276,6 +282,7 @@ s3gwRoutes.put('*', async (c) => {
     ownerId: apiKey.userId,
     via: 's3',
     metadata,
+    contentHash,
   });
   return new Response(null, {
     status: 200,
@@ -310,7 +317,7 @@ async function getObjectOrHead(c: Ctx, bucket: string, key: string, head: boolea
   if (scopeDenied) return scopeDenied;
   const resolved = await resolveMountAndProvider(c, db, virtualPath);
   if (resolved instanceof Response) return resolved;
-  const { mount, provider } = resolved;
+  const { mount } = resolved;
 
   const segs = virtualPath.split('/').filter(Boolean);
   const name = segs.pop()!;
@@ -334,9 +341,11 @@ async function getObjectOrHead(c: Ctx, bucket: string, key: string, head: boolea
       bytesTransferred: file.size,
     });
   }
-  const res = await serveObject({
-    provider,
-    objectKey: file.objectKey,
+  const res = await serveFileObject({
+    db,
+    env: c.env,
+    mount,
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
     name: file.name,
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),

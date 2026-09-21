@@ -1,10 +1,12 @@
 // 上传路由：单文件 + 分片 + Worker 代理上传 + 完成校验（防伪造）
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, ReconciliationRepo } from '../../db';
+import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, ReconciliationRepo } from '../../db';
+import type { Db } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission } from '../permissions/principal';
 import { getProvider } from '../storage/providers';
+import { pickWriteProvider } from '../storage/pool';
 import { ProviderRepo } from '../../db';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
@@ -12,7 +14,9 @@ import { normalizePath, objectKeyFromPath, isValidFileName, validateFileType } f
 import { uuid } from '../../utils/crypto';
 import { sha256Hex } from '../../utils/crypto';
 import type { Env } from '../../shared/types';
+import type { StorageProvider } from '@shared/types';
 import type { StorageProviderInterface } from '../storage/types';
+import { writeContentAddressed } from '../storage/content';
 import { InitUploadSchema, CompleteUploadSchema } from './schemas';
 
 const SESSION_TTL = 60 * 60; // 1 小时
@@ -63,9 +67,17 @@ uploadRoutes.post('/upload-session', async (c) => {
     await QuotaRepo.releaseReservation(db, userId, fileSize);
     throw new ApiError(413, 'QUOTA_EXCEEDED', '文件数量配额已满');
   }
+  // 第二道闸门：挂载点容量（与用户限额独立，取交集语义）
+  const mountReserved = await MountQuotaRepo.reserve(db, mount.id, fileSize);
+  if (!mountReserved) {
+    await QuotaRepo.releaseReservation(db, userId, fileSize);
+    throw new ApiError(413, 'MOUNT_QUOTA_EXCEEDED', '挂载点容量不足');
+  }
 
-  const objectKey = objectKeyFromPath(mount.mountPath, (await getProviderCfg(db, mount.providerId)).pathPrefix, joinPath(targetPath, fileName));
-  const provider = await getProvider(db, await ProviderRepo.getProviderById(db, mount.providerId) as NonNullable<Awaited<ReturnType<typeof ProviderRepo.getProviderById>>>, c.env as Env);
+  // §E 存储池：上传会话开始时选定落桶（分片/续传期间保持不变）
+  const sessionProviderRow = await pickWriteProvider(db, mount, joinPath(targetPath, fileName), c.env as Env);
+  const objectKey = objectKeyFromPath(mount.mountPath, sessionProviderRow.pathPrefix ?? '', joinPath(targetPath, fileName));
+  const provider = await getProvider(db, sessionProviderRow, c.env as Env);
 
   // 判断是否分片
   const useMultipart = fileSize > MULTIPART_THRESHOLD || (parsed.data.partCount ?? 0) > 1;
@@ -86,6 +98,7 @@ uploadRoutes.post('/upload-session', async (c) => {
       mimeType,
       fileSize,
       quotaReserved: fileSize,
+      providerId: sessionProviderRow.id,
       uploadId,
       totalParts,
       idempotencyKey: parsed.data.idempotencyKey,
@@ -118,6 +131,7 @@ uploadRoutes.post('/upload-session', async (c) => {
     });
   } catch (err) {
     await QuotaRepo.releaseReservation(db, userId, fileSize);
+    await MountQuotaRepo.releaseReservation(db, mount.id, fileSize);
     throw err;
   }
 });
@@ -132,25 +146,33 @@ uploadRoutes.put('/upload/raw/:sessionId', async (c) => {
   if (session.status !== 'pending') throw new ApiError(409, 'OPERATION_FAILED', '会话状态异常');
   if (Date.now() > session.expiresAt) throw new ApiError(410, 'UPLOAD_SESSION_EXPIRED', '上传会话已过期');
 
-  const provider = await providerForMount(db, session.mountId, c.env as Env);
+  const providerRow = await providerRowForMount(db, session.mountId, session.providerId);
   const body = c.req.raw.body as ReadableStream<Uint8Array> | null;
   if (!body) throw ApiError.badRequest('请求体为空');
-  const contentType = c.req.header('content-type') ?? session.mimeType;
+  const contentType = c.req.header('content-type') ?? session.mimeType ?? 'application/octet-stream';
 
   await SessionRepo.updateStatus(db, sessionId, { status: 'uploading' });
-  const res = await provider.putObject(session.objectKey, body, contentType);
-  await SessionRepo.updateStatus(db, sessionId, { status: 'verifying' });
-
-  const head = await provider.headObject(session.objectKey);
-  if (!head || head.size !== session.fileSize) {
+  try {
+    // §F 内容寻址：暂存 + 流式哈希 → 去重复用或复制到内容键；结果记录在会话上供 complete 使用
+    const outcome = await writeContentAddressed(db, c.env as Env, {
+      providerRow,
+      mountId: session.mountId,
+      fallbackKey: session.objectKey,
+      body,
+      mimeType: contentType,
+      declaredSize: session.fileSize,
+    });
+    await SessionRepo.recordContent(db, sessionId, {
+      blobHash: outcome.hash,
+      physicalKey: outcome.objectKey,
+      providerId: outcome.providerId,
+    });
+    await SessionRepo.updateStatus(db, sessionId, { status: 'verifying' });
+    return ok(c, { etag: outcome.etag, size: outcome.size });
+  } catch (err) {
     await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
-    throw new ApiError(422, 'OPERATION_FAILED', '文件大小校验失败');
+    throw err;
   }
-
-  return ok(c, {
-    etag: head.etag,
-    size: head.size,
-  });
 });
 
 // ============ 分片上传：Worker 代理上传分片 ============
@@ -167,7 +189,7 @@ uploadRoutes.put('/upload/multipart/:sessionId/part/:partNumber', async (c) => {
   }
   if (Date.now() > session.expiresAt) throw new ApiError(410, 'UPLOAD_SESSION_EXPIRED', '上传会话已过期');
 
-  const provider = await providerForMount(db, session.mountId, c.env as Env);
+  const provider = await providerForMount(db, session.mountId, c.env as Env, session.providerId);
   const body = c.req.raw.body as ReadableStream<Uint8Array> | null;
   if (!body) throw ApiError.badRequest('分片内容为空');
 
@@ -197,7 +219,7 @@ uploadRoutes.get('/upload/multipart/:sessionId/parts', async (c) => {
   // 支持预签名的 Provider：为缺失分片补发预签名 URL（仅返回缺失部分，支持续传）
   let presigned: Array<{ partNumber: number; url: string }> = [];
   if (missing.length > 0) {
-    const provider = await providerForMount(db, session.mountId, c.env as Env);
+    const provider = await providerForMount(db, session.mountId, c.env as Env, session.providerId);
     if (typeof provider.getMultipartUploadUrl === 'function') {
       for (const partNumber of missing) {
         const url = await provider.getMultipartUploadUrl(session.objectKey, session.uploadId, partNumber, 900);
@@ -227,7 +249,7 @@ uploadRoutes.delete('/upload/multipart/:sessionId', async (c) => {
   const session = await SessionRepo.getSession(db, sessionId);
   if (!session || session.userId !== userId) throw new ApiError(404, 'NOT_FOUND', '上传会话不存在');
   if (session.uploadId) {
-    const provider = await providerForMount(db, session.mountId, c.env as Env);
+    const provider = await providerForMount(db, session.mountId, c.env as Env, session.providerId);
     try {
       await provider.abortMultipartUpload(session.objectKey, session.uploadId);
     } catch {
@@ -235,6 +257,7 @@ uploadRoutes.delete('/upload/multipart/:sessionId', async (c) => {
     }
   }
   await QuotaRepo.releaseReservation(db, userId, session.quotaReserved);
+  await MountQuotaRepo.releaseReservation(db, session.mountId, session.quotaReserved);
   await SessionRepo.updateStatus(db, sessionId, { status: 'aborted', completedAt: Date.now() });
   return ok(c, null);
 });
@@ -263,10 +286,12 @@ uploadRoutes.post('/upload-complete', async (c) => {
     throw new ApiError(410, 'UPLOAD_SESSION_EXPIRED', '上传会话已过期');
   }
 
-  const provider = await providerForMount(db, session.mountId, c.env as Env);
+  const provider = await providerForMount(db, session.mountId, c.env as Env, session.providerId);
+  // §F：/upload/raw 已内容寻址时对象落在内容键；分片/直传会话仍为虚拟路径键
+  const physicalKey = session.physicalKey ?? session.objectKey;
 
   // 1-3. 单文件：HEAD 验证对象真实存在与大小/ETag（分片对象在合并后才存在，跳过前置 HEAD）
-  const head = await provider.headObject(session.objectKey);
+  const head = await provider.headObject(physicalKey);
   let finalEtag: string | undefined = head?.etag;
   if (!session.uploadId) {
     if (!head) {
@@ -313,7 +338,7 @@ uploadRoutes.post('/upload-complete', async (c) => {
     const sorted = [...uploadParts].sort((a, b) => a.partNumber - b.partNumber);
     try {
       const merged = await provider.completeMultipartUpload(
-        session.objectKey,
+        physicalKey,
         session.uploadId,
         sorted.map((p) => ({ partNumber: p.partNumber, etag: p.etag }))
       );
@@ -322,7 +347,7 @@ uploadRoutes.post('/upload-complete', async (c) => {
       await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
       throw new ApiError(422, 'OPERATION_FAILED', `合并分片失败：${err instanceof Error ? err.message : '未知错误'}`);
     }
-    const finalHead = await provider.headObject(session.objectKey);
+    const finalHead = await provider.headObject(physicalKey);
     if (!finalHead || finalHead.size !== session.fileSize) {
       await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
       throw new ApiError(422, 'OPERATION_FAILED', '合并后文件校验失败');
@@ -332,6 +357,7 @@ uploadRoutes.post('/upload-complete', async (c) => {
 
   // 5. 事务提交元数据 + 配额（原子；DB 失败 → 记录孤儿 + 释放预留）
   const mount = await MountRepo.getMountById(db, session.mountId);
+  if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
   const fileId = uuid();
   try {
     await db.transaction(async (tx) => {
@@ -346,11 +372,18 @@ uploadRoutes.post('/upload-complete', async (c) => {
         size: session.fileSize,
         etag: finalEtag,
         ownerId: userId,
+        providerId: session.providerId ?? mount.providerId,
+        physicalKey,
+        blobHash: session.blobHash ?? null,
       });
       await tx.query(
         `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?),
          used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
         [session.fileSize, session.quotaReserved, Date.now(), userId]
+      );
+      await tx.query(
+        `UPDATE mounts SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE id = ?`,
+        [session.fileSize, session.quotaReserved, Date.now(), session.mountId]
       );
       await tx.query(
         `UPDATE upload_sessions SET status = 'completed', completed_at = ? WHERE id = ?`,
@@ -365,16 +398,16 @@ uploadRoutes.post('/upload-complete', async (c) => {
   } catch (err) {
     // H-5：对象已写入/合并，但元数据提交失败 → 释放预留并记录孤儿供对账
     await QuotaRepo.releaseReservation(db, userId, session.quotaReserved);
+    await MountQuotaRepo.releaseReservation(db, session.mountId, session.quotaReserved);
     await ReconciliationRepo.createOrphanObject(db, {
       mountId: session.mountId,
-      objectKey: session.objectKey,
+      objectKey: physicalKey,
       reason: 'upload_commit_failed',
       error: err instanceof Error ? err.message : 'unknown',
     });
     throw err;
   }
 
-  void mount;
   return ok(c, {
     file: {
       id: fileId,
@@ -393,12 +426,17 @@ async function getProviderCfg(db: ReturnType<typeof getDb>, providerId: string) 
 }
 
 /** 通过挂载点解析 provider 实例 */
-async function providerForMount(db: ReturnType<typeof getDb>, mountId: string, env: Env): Promise<StorageProviderInterface> {
+/** 会话落桶 provider 行（§E 存储池：会话选定优先，缺省回退挂载主 provider） */
+async function providerRowForMount(db: Db, mountId: string, providerId?: string | null): Promise<StorageProvider> {
   const mount = await MountRepo.getMountById(db, mountId);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
-  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
+  const providerRow = await ProviderRepo.getProviderById(db, providerId ?? mount.providerId);
   if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-  return getProvider(db, providerRow, env);
+  return providerRow;
+}
+
+async function providerForMount(db: Db, mountId: string, env: Env, providerId?: string | null): Promise<StorageProviderInterface> {
+  return getProvider(db, await providerRowForMount(db, mountId, providerId), env);
 }
 
 function joinPath(base: string, name: string): string {

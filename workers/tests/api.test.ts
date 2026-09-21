@@ -98,7 +98,7 @@ describe('配额', () => {
   it('超配额上传被拒绝（QUOTA_EXCEEDED）', async () => {
     const { authCookie } = await registerAndLogin(ctx, 'biguploader');
     const csrf = await getCsrf(ctx, authCookie);
-    const huge = 15 * 1024 * 1024 * 1024; // 15GB > 默认 10GB 配额（且 < zod 上限 20GB）
+    const huge = 15 * 1024 * 1024 * 1024; // 15GB > 默认 1GB 配额（且 < zod 上限 20GB）
     const res = await request(ctx, '/api/files/upload-session', {
       method: 'POST',
       cookie: authCookie,

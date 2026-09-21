@@ -4,6 +4,8 @@ import { corsHeaders, securityHeaders, initContext, errorHandler } from './middl
 import { authMiddleware, adminMiddleware, optionalAuthMiddleware, apiKeyAuthMiddleware, apiKeyTokenAuthMiddleware } from './middleware/auth';
 import { csrfMiddleware } from './middleware/csrf';
 import { rateLimitMiddleware } from './middleware/rate-limit';
+import { transferConcurrencyMiddleware } from './middleware/concurrency';
+import { downloadRateLimitMiddleware } from './middleware/download-limit';
 import { authRoutes } from './services/auth/handlers';
 import { filesRoutes } from './services/files/handlers';
 import { fileOpsRoutes } from './services/files/operations';
@@ -22,6 +24,7 @@ import { alistRoutes } from './services/alist/handlers';
 import { freeModeRoutes } from './services/free-mode/handlers';
 import { gatewayRoutes } from './services/shares/gateway';
 import { publicRoutes } from './services/public/handlers';
+import { publicFsRoutes } from './services/public/fs';
 import { galleryRoutes } from './services/public/gallery';
 import { pathPublicRoutes } from './services/files/path-serve';
 import { ensureSeed } from './seed';
@@ -38,20 +41,29 @@ app.use('*', securityHeaders);
 
 // 公共 API
 app.route('/api/public', publicRoutes);
-app.route('/api/gateway', gatewayRoutes);
+// 公开目录浏览（§C 游客）：可选认证（区分匿名/登录可见性）+ 限速
+const publicFsApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
+publicFsApi.use('*', optionalAuthMiddleware, rateLimitMiddleware, downloadRateLimitMiddleware);
+publicFsApi.route('/', publicFsRoutes);
+app.route('/api/public', publicFsApi);
+// 下载网关：可选认证（登录态用于分享访问策略实时校验）+ 限速
+const gatewayApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
+gatewayApi.use('*', optionalAuthMiddleware, rateLimitMiddleware, downloadRateLimitMiddleware, transferConcurrencyMiddleware);
+gatewayApi.route('/', gatewayRoutes);
+app.route('/api/gateway', gatewayApi);
 
 // 认证（注册/登录公开，/me 需认证）
 app.use('/api/auth/*', optionalAuthMiddleware, rateLimitMiddleware);
 app.route('/api/auth', authRoutes);
 
 // 兼容上传（PicGo）：Bearer API Key
-app.use('/api/upload', apiKeyAuthMiddleware, rateLimitMiddleware);
+app.use('/api/upload', apiKeyAuthMiddleware, rateLimitMiddleware, transferConcurrencyMiddleware);
 app.route('/api/upload', compatRoutes);
-app.use('/api/compat/*', apiKeyAuthMiddleware, rateLimitMiddleware);
+app.use('/api/compat/*', apiKeyAuthMiddleware, rateLimitMiddleware, transferConcurrencyMiddleware);
 app.route('/api/compat', compatRoutes);
 
 // Lsky Pro V2 兼容壳（PicList 内置 lskyplist 通道）：Bearer/裸 token API Key
-app.use('/api/v1/*', apiKeyTokenAuthMiddleware, rateLimitMiddleware);
+app.use('/api/v1/*', apiKeyTokenAuthMiddleware, rateLimitMiddleware, transferConcurrencyMiddleware);
 app.route('/api/v1', lskyRoutes);
 
 // WebDAV
@@ -77,16 +89,19 @@ app.route('/api/gallery', galleryApi);
 
 // 需登录的 API
 const protectedApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
-protectedApi.use('*', authMiddleware, csrfMiddleware, rateLimitMiddleware);
+protectedApi.use('*', authMiddleware, csrfMiddleware, rateLimitMiddleware, downloadRateLimitMiddleware);
 
-// 文件
+// 文件（上传类接口额外叠传输并发限制：并发数由系统设置 max_concurrent_transfers 控制）
+protectedApi.use('/files/upload-session', transferConcurrencyMiddleware);
+protectedApi.use('/files/upload/*', transferConcurrencyMiddleware);
+protectedApi.use('/files/upload-complete', transferConcurrencyMiddleware);
 protectedApi.route('/files', uploadRoutes);
 protectedApi.route('/files', filesRoutes);
 protectedApi.route('/files', fileOpsRoutes);
 
 // 分享（公开 GET /:id、/:id/download、/:id/preview，其余需登录）
 const sharesApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
-sharesApi.use('*', optionalAuthMiddleware, rateLimitMiddleware);
+sharesApi.use('*', optionalAuthMiddleware, rateLimitMiddleware, downloadRateLimitMiddleware);
 sharesApi.route('/', shareRoutes);
 app.route('/api/shares', sharesApi);
 

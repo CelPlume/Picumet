@@ -12,6 +12,9 @@ import {
 } from '../../db';
 import { getDb, getClientIp, apiKeyAuthMiddleware, assertApiKeyProtocol } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
+import { getProviderForFile } from '../storage/pool';
+import { serveFileObject } from '../storage/failover';
+import { physicalObjectKey } from '../storage/keys';
 import { requirePermission } from '../permissions/principal';
 import { moveWithSaga } from '../files/move';
 import { deleteFileInternal } from '../files/remove';
@@ -242,14 +245,8 @@ webdavRoutes.put('*', async (c) => {
     });
   }
 
-  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
-  if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-  const provider = await getProvider(db, providerRow, c.env as Env);
-
   const result = await upsertFileObject(c, {
     mount,
-    provider,
-    pathPrefix: providerRow.pathPrefix,
     targetPath,
     mimeType,
     size,
@@ -276,9 +273,7 @@ async function resolveDavFile(c: Context<AppBindings>, targetPath: string): Prom
   const file = await FileRepo.getFileAtPath(db, mount.id, parentPath, name, apiKey.userId);
   if (!file || file.type === 'folder') throw new ApiError(404, 'NOT_FOUND', '文件不存在');
 
-  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
-  if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-  const provider = await getProvider(db, providerRow, c.env as Env);
+  const provider = await getProviderForFile(db, file, mount, c.env as Env);
   return { file, provider };
 }
 
@@ -287,7 +282,7 @@ webdavRoutes.get('*', async (c) => {
   const apiKey = c.get('apiKey');
   if (!apiKey) throw new ApiError(401, 'UNAUTHORIZED', '需要 WebDAV 认证');
   const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
-  const { file, provider } = await resolveDavFile(c, targetPath);
+  const { file } = await resolveDavFile(c, targetPath);
 
   await LogRepo.create(db, {
     userId: apiKey.userId,
@@ -299,9 +294,10 @@ webdavRoutes.get('*', async (c) => {
     bytesTransferred: file.size,
   });
 
-  return serveObject({
-    provider,
-    objectKey: file.objectKey,
+  return serveFileObject({
+    db,
+    env: c.env as Env,
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
     name: file.name,
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),
@@ -311,11 +307,13 @@ webdavRoutes.get('*', async (c) => {
 });
 
 webdavRoutes.on(['HEAD'], '*', async (c) => {
+  const db = getDb(c);
   const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
-  const { file, provider } = await resolveDavFile(c, targetPath);
-  const res = await serveObject({
-    provider,
-    objectKey: file.objectKey,
+  const { file } = await resolveDavFile(c, targetPath);
+  const res = await serveFileObject({
+    db,
+    env: c.env as Env,
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
     name: file.name,
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),

@@ -235,3 +235,12 @@ export function splitNestedFileName(rawName: string, customPath?: string): { fil
   if (!dir || !base) return { fileName: base || rawName, customPath };
   return { fileName: base, customPath: customPath ? `${customPath}/${dir}` : dir };
 }
+
+/** 宽容 URL 解码：非法百分号序列原样返回（路径来自 URL，服务端不做二次转义） */
+export function safeDecodePath(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}

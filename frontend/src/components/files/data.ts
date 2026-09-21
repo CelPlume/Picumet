@@ -56,13 +56,18 @@ export interface FileListResponse {
   mount?: { id: string; name: string; sortBy: string; sortOrder: string } | null;
 }
 
-export function useFilesQuery(path: string, opts: { search?: string; sort?: string; order?: string; enabled?: boolean } = {}) {
+export function useFilesQuery(
+  path: string,
+  opts: { search?: string; sort?: string; order?: string; enabled?: boolean; page?: number; limit?: number } = {}
+) {
   const q = new URLSearchParams({ path });
   if (opts.search) q.set('search', opts.search);
   if (opts.sort) q.set('sort', opts.sort);
   if (opts.order) q.set('order', opts.order);
+  if (opts.page !== undefined) q.set('page', String(opts.page));
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit));
   return useQuery({
-    queryKey: ['files', path, opts.search, opts.sort, opts.order],
+    queryKey: ['files', path, opts.search, opts.sort, opts.order, opts.page ?? 1, opts.limit ?? 0],
     queryFn: async () => (await apiFetch<FileListResponse>(`/api/files?${q.toString()}`)).data,
     enabled: opts.enabled,
   });

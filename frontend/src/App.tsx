@@ -1,7 +1,6 @@
 // 路由与页面组织（页面按路由懒加载，降低首屏 JS）
 import { Routes, Route, Navigate, Outlet, useLocation, Link } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
-import { useTranslation } from 'react-i18next';
 import { AppSkeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useAuth } from '@/stores/auth';
@@ -14,14 +13,13 @@ const Register = lazy(() => import('@/pages/Register'));
 const ResetPassword = lazy(() => import('@/pages/ResetPassword'));
 const FreeMode = lazy(() => import('@/pages/FreeMode'));
 const Files = lazy(() => import('@/pages/Files'));
-const MyShares = lazy(() => import('@/pages/MyShares'));
 const SharePage = lazy(() => import('@/pages/SharePage'));
+const Browse = lazy(() => import('@/pages/Browse'));
 const SettingsLayout = lazy(() => import('@/pages/settings/SettingsLayout'));
-const ProfilePage = lazy(() => import('@/pages/settings/Profile'));
-const SecurityPage = lazy(() => import('@/pages/settings/Security'));
+const PersonalizationPage = lazy(() => import('@/pages/settings/Personalization'));
+const SharesPage = lazy(() => import('@/pages/settings/Shares'));
 const ApiKeysPage = lazy(() => import('@/pages/settings/ApiKeys'));
 const AccessRulesPage = lazy(() => import('@/pages/settings/AccessRules'));
-const AppearancePage = lazy(() => import('@/pages/settings/Appearance'));
 const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'));
 const AdminDashboard = lazy(() => import('@/pages/admin/Dashboard'));
 const AdminUsers = lazy(() => import('@/pages/admin/Users'));
@@ -54,17 +52,6 @@ function RequireAdmin() {
     );
   }
   return <Outlet />;
-}
-
-function NotFound() {
-  const { t } = useTranslation();
-  return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3">
-      <h1 className="text-3xl font-bold">404</h1>
-      <p className="text-muted-foreground">{t('err.notFound')}</p>
-      <Link to="/" className="text-sm text-primary">← {t('common.back')}</Link>
-    </div>
-  );
 }
 
 export default function App() {
@@ -100,14 +87,15 @@ export default function App() {
         <Route element={<RequireAuth />}>
           <Route path="/files" element={<Files />} />
           <Route path="/files/*" element={<Files />} />
-          <Route path="/shares" element={<MyShares />} />
+          <Route path="/shares" element={<Navigate to="/settings/shares" replace />} />
           <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
           <Route path="/settings" element={<SettingsLayout />}>
-            <Route path="profile" element={<ProfilePage />} />
-            <Route path="security" element={<SecurityPage />} />
+            <Route path="profile" element={<PersonalizationPage />} />
+            <Route path="shares" element={<SharesPage />} />
+            <Route path="security" element={<Navigate to="/settings/profile" replace />} />
+            <Route path="appearance" element={<Navigate to="/settings/profile" replace />} />
             <Route path="api-keys" element={<ApiKeysPage />} />
             <Route path="access-rules" element={<AccessRulesPage />} />
-            <Route path="appearance" element={<AppearancePage />} />
           </Route>
         </Route>
 
@@ -125,7 +113,8 @@ export default function App() {
           </Route>
         </Route>
 
-        <Route path="*" element={<NotFound />} />
+        {/* 公开浏览（§C 游客）：未知路径按虚拟路径渲染只读文件页；挂载不存在时页内显示 404 态 */}
+        <Route path="*" element={<Browse />} />
       </Routes>
       <Toaster />
     </Suspense>

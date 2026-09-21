@@ -8,6 +8,9 @@ import {
 import { getDb } from '../../middleware/auth';
 import { assertApiKeyProtocol } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
+import { getProviderForFile } from '../storage/pool';
+import { serveFileObject } from '../storage/failover';
+import { physicalObjectKey } from '../storage/keys';
 import { requirePermission } from '../permissions/principal';
 import { serveObject } from '../storage/serve';
 import { ok } from '../../shared/response';
@@ -118,9 +121,7 @@ async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
   const file = await FileRepo.getFileAtPath(db, mount.id, parent, name, apiKey.userId);
   if (!file || file.type !== 'file') throw new ApiError(404, 'NOT_FOUND', '文件不存在');
 
-  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
-  if (!providerRow) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-  const provider = await getProvider(db, providerRow, c.env as Env);
+  // §E 存储池：读路径按文件实际落桶定位
 
   await LogRepo.create(db, {
     userId: apiKey.userId,
@@ -132,9 +133,11 @@ async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
     bytesTransferred: file.size,
   });
 
-  return serveObject({
-    provider,
-    objectKey: file.objectKey,
+  return serveFileObject({
+    db,
+    env: c.env as Env,
+    mount,
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
     name: file.name,
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),

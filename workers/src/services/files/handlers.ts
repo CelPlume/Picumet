@@ -1,11 +1,15 @@
 // 文件路由 A：列表、文件夹、详情、元数据更新、密码验证、下载链接
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
+import type { FileMetadata, Mount } from '@shared/types';
 import { FileRepo, MountRepo, ProviderRepo, LogRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, can, getPrincipal } from '../permissions/principal';
 import { isPasswordExempt } from '../permissions/check';
-import { getProvider } from '../storage/providers';
+import { getProviderForFile } from '../storage/pool';
+import { childMountsOf, ensureMountFolder, isMountPointFile } from '../storage/mount-folders';
+import { physicalObjectKey } from '../storage/keys';
+import { directUrl, loadRoutePrefixes } from '../storage/direct-links';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import {
@@ -16,6 +20,7 @@ import {
 } from '../../utils/path';
 import { hashPassword, verifyPassword } from '../../utils/crypto';
 import { toFileListItem } from '../../db/repos/files';
+import { assertNotBanned } from './ban';
 import type { Env } from '../../shared/types';
 import { CAPABILITIES, type Visibility } from '@shared/types';
 import { decideAccessMode, createDownloadToken, buildGatewayUrl } from '../shares/tokens';
@@ -33,13 +38,9 @@ async function resolveFile(c: Parameters<typeof ok>[0]) {
   return { file, mount, db };
 }
 
-async function providerFor(c: Parameters<typeof ok>[0], mountId: string) {
-  const db = getDb(c);
-  const mount = await MountRepo.getMountById(db, mountId);
-  if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
-  const p = await ProviderRepo.getProviderById(db, mount.providerId);
-  if (!p) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-  return getProvider(db, p, c.env as Env);
+/** §E 存储池：按文件实际落桶定位 provider（缺省回退挂载主 provider） */
+async function providerForFile(c: Parameters<typeof ok>[0], mount: Mount, file: FileMetadata) {
+  return getProviderForFile(getDb(c), file, mount, c.env as Env);
 }
 
 function ipOf(c: Parameters<typeof ok>[0]): string | undefined {
@@ -70,6 +71,10 @@ filesRoutes.get('/', async (c) => {
   }
 
   await requirePermission(c, mount, targetPath, 'read', undefined, undefined, folderVisibility);
+
+  // §H 挂载点皆目录：该目录下的子挂载点若缺目录行（存量数据/新建挂载），列目录时自愈补齐
+  const childMounts = childMountsOf(await MountRepo.listMounts(db), targetPath);
+  for (const child of childMounts) await ensureMountFolder(db, child);
 
   const page = q.page ?? 1;
   const limit = q.limit ?? 100;
@@ -148,7 +153,7 @@ filesRoutes.get('/:id', async (c) => {
   const permPath = filePermPath(file);
   await requirePermission(c, mount, permPath, 'read', file.ownerId, undefined, file.visibility);
 
-  const provider = await providerFor(c, mount.id);
+  const provider = await providerForFile(c, mount, file);
   const accessMode = decideAccessMode(file, provider, false);
 
   const perms = (
@@ -178,7 +183,7 @@ filesRoutes.put('/:id', async (c) => {
   const parsed = UpdateFileSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '参数无效');
 
-  const { name, accessPassword, visibility, ...rest } = parsed.data;
+  const { name, accessPassword, visibility, guestVisibility, cascade = true, ...rest } = parsed.data;
 
   // §4.4a：可见性变更（能力位门禁 + 审核状态 + folder 级联）
   // 已是 public/pending 时重新提交允许升级审核状态（如获得 can_publish 后直接 approved）
@@ -191,7 +196,8 @@ filesRoutes.put('/:id', async (c) => {
     const reviewStatus = visibility === 'public' ? (canPublish ? 'approved' : 'pending') : 'approved';
     if (visibility !== file.visibility || reviewStatus !== file.reviewStatus) {
       await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
-      if (file.type === 'folder') {
+      // cascade=false：只改本项，不牵连子树（用户抱怨"点一个公开连带一串公开"）
+      if (file.type === 'folder' && cascade) {
         // 级联子树：公开相册场景一次置可见
         await db.run(
           `UPDATE file_metadata SET visibility = ?, review_status = ?, updated_at = ?
@@ -216,6 +222,8 @@ filesRoutes.put('/:id', async (c) => {
   if (name) {
     if (!isValidFileName(name)) throw ApiError.badRequest('文件名包含非法字符');
     validateFileType(name, file.mimeType);
+    // §H 挂载点皆目录：挂载点目录行由系统维护，禁止改名（会与 mounts.mount_path 脱节）
+    if (await isMountPointFile(db, file)) throw new ApiError(409, 'OPERATION_FAILED', '挂载点目录由系统维护，请在存储配置中修改挂载路径');
     await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
     const parentPath = file.path.length > file.name.length
       ? file.path.slice(0, -(file.name.length + 1)) || '/'
@@ -242,6 +250,11 @@ filesRoutes.put('/:id', async (c) => {
     await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
     fields.access_password = accessPassword ? hashPassword(accessPassword) : null;
   }
+  // §C 文件级游客可见性：'inherit'（或未传）= NULL（不额外开放）；显式值直接落库
+  if (guestVisibility !== undefined) {
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
+    fields.guest_visibility = guestVisibility === 'inherit' ? null : guestVisibility;
+  }
   if (Object.keys(fields).length > 0) {
     await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
     await FileRepo.updateFile(db, file.id, fields);
@@ -265,7 +278,7 @@ filesRoutes.post('/:id/verify-password', async (c) => {
   const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,
-    objectKey: file.objectKey,
+    objectKey: physicalObjectKey(file),
     name: file.name,
     mimeType: file.mimeType,
     size: file.size,
@@ -285,6 +298,8 @@ filesRoutes.post('/:id/verify-password', async (c) => {
 filesRoutes.get('/:id/download', async (c) => {
   const { file, mount, db } = await resolveFile(c);
   await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility);
+  // §26 违规封禁：内容出口门禁
+  await assertNotBanned(db, [file.id]);
   // §4.4c：密码门禁统一豁免判定——admin 不受限、owner 跳过；其余主体需先验证密码
   const principal = await getPrincipal(c);
   const passwordExempt = isPasswordExempt(principal, file.ownerId);
@@ -294,7 +309,7 @@ filesRoutes.get('/:id/download', async (c) => {
   const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,
-    objectKey: file.objectKey,
+    objectKey: physicalObjectKey(file),
     name: file.name,
     mimeType: file.mimeType,
     size: file.size,
@@ -317,7 +332,7 @@ filesRoutes.get('/:id/download', async (c) => {
 filesRoutes.get('/:id/copy-links', async (c) => {
   const { file, mount, db } = await resolveFile(c);
   await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility);
-  const provider = await providerFor(c, mount.id);
+  const provider = await providerForFile(c, mount, file);
 
   const q = c.req.query();
   const signed = q.signed === 'true';
@@ -327,7 +342,7 @@ filesRoutes.get('/:id/copy-links', async (c) => {
     const token = await createDownloadToken(db, {
       fileId: file.id,
       mountId: file.mountId,
-      objectKey: file.objectKey,
+      objectKey: physicalObjectKey(file),
       name: file.name,
       mimeType: file.mimeType,
       size: file.size,
@@ -336,15 +351,16 @@ filesRoutes.get('/:id/copy-links', async (c) => {
     return buildGatewayUrl(c, token);
   };
 
-  // 公开直链：{origin}{虚拟路径}（文件 path 已含挂载点前缀，如 /drive/text/x.txt）
+  // 公开直链：{origin}{directPrefix}{虚拟路径}（文件 path 已含挂载点前缀，如 /drive/text/x.txt）
+  // directPrefix='' 时与历史形状一致；签名/网关两条分支的 URL 由 provider 或网关生成，不使用该前缀
   const baseOrigin = c.env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
   const fullVirtualPath = file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`;
-  const publicUrl = `${baseOrigin}${fullVirtualPath}`;
+  const publicUrl = directUrl(baseOrigin, (await loadRoutePrefixes(db)).directPrefix, fullVirtualPath);
 
   let baseUrl: string;
   if (signed) {
     // 签名直链：优先 provider 预签名 URL，否则回退网关 token
-    const presigned = await provider.getDownloadUrl(file.objectKey, expiresIn);
+    const presigned = await provider.getDownloadUrl(physicalObjectKey(file), expiresIn);
     baseUrl = presigned ?? (await gatewayUrl());
   } else {
     baseUrl = publicUrl;

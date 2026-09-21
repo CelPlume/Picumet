@@ -116,9 +116,10 @@ describe('网关密钥兼容面（P0/P1 修复）', () => {
     const dl = await fetchDirect(u.pathname + u.search);
     expect(dl.status).toBe(200);
     expect(await dl.text()).toBe(content);
-    // 无签名直取 → 403（签名是能力令牌）
+    // 无签名直取 → 匿名游客闸门：站点未开放游客访问时 401 引导登录（签名是能力令牌，不受此限）
     const noSign = await fetchDirect('/uploads/2024/09/nested%20raw.txt');
-    expect(noSign.status).toBe(403);
+    expect(noSign.status).toBe(401);
+    expect((await json(noSign)).error.code).toBe('LOGIN_REQUIRED');
   });
 
   it('P1-2：protocols 不含 api 的密钥被 403 拒绝上传', async () => {

@@ -1,6 +1,7 @@
 // 定时任务：过期配额释放、移动源对象清理、过期分享标记
-import { Db, SessionRepo, ShareRepo, FileRepo, MountRepo, ProviderRepo, QuotaRepo } from '../db';
+import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, ProviderRepo, QuotaRepo } from '../db';
 import { getProvider } from './storage/providers';
+import { ensureAllMountFolders } from './storage/mount-folders';
 import type { Env } from '../shared/types';
 
 /** 释放过期上传会话的配额预留 */
@@ -13,6 +14,10 @@ export async function releaseExpiredReservations(env: Env): Promise<number> {
       await tx.query(
         `UPDATE user_quotas SET quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE user_id = ?`,
         [session.quota_reserved, Date.now(), session.user_id]
+      );
+      await tx.query(
+        `UPDATE mounts SET quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE id = ?`,
+        [session.quota_reserved, Date.now(), session.mount_id]
       );
       await tx.query(`UPDATE upload_sessions SET status = 'expired' WHERE id = ?`, [session.id]);
     });
@@ -30,7 +35,10 @@ export async function cleanupOldObjects(env: Env): Promise<number> {
     if (!file.oldObjectKey) continue;
     try {
       const mount = await MountRepo.getMountById(db, file.mountId);
-      const providerRow = mount ? await ProviderRepo.getProviderById(db, mount.providerId) : null;
+      // §E 存储池：旧对象清理按文件落桶 provider（可能非主 provider）
+      const providerRow = mount
+        ? await ProviderRepo.getProviderById(db, (file.oldObjectKey ? file.providerId : null) ?? mount.providerId)
+        : null;
       if (mount && providerRow) {
         const provider = await getProvider(db, providerRow, env);
         if (!file.oldObjectKey.startsWith('folder:')) {
@@ -52,7 +60,7 @@ export async function expireDueShares(env: Env): Promise<number> {
   return ShareRepo.expireDueShares(db);
 }
 
-/** 配额对账：纠正 used_storage / used_files */
+/** 配额对账：纠正 used_storage / used_files（用户与挂载点双层） */
 export async function reconcileQuotas(env: Env): Promise<number> {
   const db = Db.fromAny(env.DB);
   const users = await db.all('SELECT id FROM users');
@@ -73,6 +81,82 @@ export async function reconcileQuotas(env: Env): Promise<number> {
       fixed++;
     }
   }
+  // 文件落桶回填（§E 池化前存量行 provider_id 为 NULL → 回退主 provider 落库）
+  await db.run(
+    `UPDATE file_metadata SET provider_id = (
+       SELECT provider_id FROM mounts WHERE mounts.id = file_metadata.mount_id
+     ) WHERE provider_id IS NULL`
+  );
+
+  // 挂载点已用容量对账（跨挂载移动/历史漂移自愈）
+  const mounts = await db.all('SELECT id, used_storage FROM mounts');
+  for (const m of mounts) {
+    const row = await db.first(
+      `SELECT COALESCE(SUM(size), 0) AS s FROM file_metadata WHERE mount_id = ? AND type = 'file'`,
+      [m.id]
+    );
+    const storage = Number(row?.s ?? 0);
+    if (Number(m.used_storage ?? 0) !== storage) {
+      await db.run(
+        `UPDATE mounts SET used_storage = ?, updated_at = ? WHERE id = ?`,
+        [storage, Date.now(), m.id]
+      );
+      fixed++;
+    }
+  }
+  return fixed;
+}
+
+/** 内容对象回收保护期：期满且复查无引用才真正删除（避开在途写入/去重的竞争窗口） */
+const BLOB_GC_GRACE_MS = 60_000;
+const BLOB_GC_BATCH = 100;
+
+/**
+ * 内容对象回收（§F）：处理 blob_gc 队列。
+ * 删除前复查引用——期间被重新引用的对象撤销回收（对象键按内容确定，重写即同一对象）。
+ */
+export async function cleanupBlobObjects(env: Env, now: number = Date.now()): Promise<number> {
+  const db = Db.fromAny(env.DB);
+  const entries = await BlobRepo.listGc(db, BLOB_GC_BATCH);
+  let cleaned = 0;
+  for (const entry of entries) {
+    if (now - entry.createdAt < BLOB_GC_GRACE_MS) continue;
+    if (await BlobRepo.isReferenced(db, entry.hash)) {
+      await BlobRepo.removeGc(db, entry.hash);
+      continue;
+    }
+    try {
+      const providerRow = await ProviderRepo.getProviderById(db, entry.providerId);
+      if (!providerRow) {
+        // provider 已删除：对象不可达，直接出队
+        await BlobRepo.removeGc(db, entry.hash);
+        continue;
+      }
+      const provider = await getProvider(db, providerRow, env);
+      await provider.deleteObject(entry.objectKey);
+      await BlobRepo.removeGc(db, entry.hash);
+      cleaned++;
+    } catch {
+      await BlobRepo.bumpGcAttempts(db, entry.hash); // 下次重试
+    }
+  }
+  return cleaned;
+}
+
+/** 内容索引对账（§F）：补回缺失索引行；无引用且未入队的索引行进入回收队列 */
+export async function reconcileBlobs(env: Env, now: number = Date.now()): Promise<number> {
+  const db = Db.fromAny(env.DB);
+  let fixed = 0;
+  const missing = await BlobRepo.listMissingIndex(db, BLOB_GC_BATCH);
+  for (const m of missing) {
+    await BlobRepo.register(db, { hash: m.hash, providerId: m.providerId, objectKey: m.objectKey, size: m.size, etag: m.etag }, now);
+    fixed++;
+  }
+  const orphans = await BlobRepo.listOrphanIndex(db, now - BLOB_GC_GRACE_MS, BLOB_GC_BATCH);
+  for (const o of orphans) {
+    await BlobRepo.enqueueGc(db, { hash: o.hash, providerId: o.providerId, objectKey: o.objectKey }, now);
+    fixed++;
+  }
   return fixed;
 }
 
@@ -84,5 +168,10 @@ export async function runScheduledTasks(env: Env): Promise<Record<string, number
     expireDueShares(env),
     reconcileQuotas(env),
   ]);
-  return { released, cleaned, expired, reconciled };
+  // §F：内容对象回收与索引对账（依赖上面的配额/落桶回填完成后再跑）
+  const blobsFixed = await reconcileBlobs(env);
+  const blobGc = await cleanupBlobObjects(env);
+  // §H：挂载点目录行自愈（存量挂载点在首次列目录/管理页访问前也能被补齐）
+  const mountFolders = await ensureAllMountFolders(Db.fromAny(env.DB));
+  return { released, cleaned, expired, reconciled, blobsFixed, blobGc, mountFolders };
 }
