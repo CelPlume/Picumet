@@ -264,6 +264,10 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 ### `components/ui/dialog.tsx` — dialogs
 
 - Every modal/drawer shares the enter/exit animation state machine (`mounted/entered` + `EXIT_MS`); overlay darkening and blur animate together; scroll lock = `body overflow hidden` + `html { scrollbar-gutter: stable }` for zero layout shift; do not introduce another lock mechanism.
+- Dialog bodies and drawer panels use `.glass-dialog` (**not** `glass-surface`): behind the body sits the `glass-overlay` (black 50% + half-strength blur), so reusing `--glass-alpha` directly lets the dimmed backdrop bleed through and grays the whole fill. `.glass-dialog` applies three compensations (see `index.css`):
+  - `brightness(1.75)` restores the 50%-brightness backdrop to 87.5% — a full ×2 would turn the dialog into a bright island against the dimmed page;
+  - blur radius ×0.92 subtracts the 1/2.5-strength blur the overlay already contributes (gaussian variances add), so the net blur matches file cards;
+  - the fill alpha drops 0.12 below the tier value (floor 0.6 — the frosted tier stays identical to file cards): the dialog's backdrop is double-blurred low-contrast content, so text keeps more headroom than on wallpaper-mounted cards, and the default tier's 0.92 must open up to show any glass at all.
 - Untitled dialogs skip the header strip (close button pinned to the top right) to avoid a dead band.
 - Destructive actions must go through `ConfirmDialog` (HeroUI AlertDialog layout: icon + title row, description, right-aligned cancel + danger buttons, `max-w-sm`) plus a success/error toast; native `confirm()` is forbidden.
 
@@ -310,6 +314,7 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 
 - Settings/admin content uses `lg:grid-cols-2`; the admin system settings stack "system settings + announcements" in the left column with SMTP on the right.
 - Settings/admin sidebars are sticky with inner scroll; inner scroll areas use `scrollbar-none`, visible scrollbars use `scrollbar-thin` (8px, rounded, muted). Both are plain CSS classes and **do not support `md:` style variants** (`md:scrollbar-none` silently does nothing — a past bug source).
+- The admin content column (`AdminLayout`'s `md:h-[calc(100vh-12rem)]`) uses `md:overflow-clip` + `md:[overflow-clip-margin:4px]`, **not** `overflow-hidden`: the Users/Files toolbar search boxes sit flush with the column's top and left/right edges (Files flush left, Users pushed right by `justify-between`), so their 3px focus rings paint into the clip region — the ring looks cut off on the top and one side. The clip margin grants 4px of paint room with zero layout shift; browsers without support degrade to plain clipping. Watch for the same truncation when adding flush focusable controls.
 
 ## Accessibility
 

@@ -265,6 +265,10 @@ flowchart LR
 ### `components/ui/dialog.tsx` — 对话框
 
 - 全部弹窗/抽屉共用进出动画状态机（`mounted/entered` + `EXIT_MS`），遮罩压暗与模糊同步过渡；锁滚动 = `body overflow hidden` + `html { scrollbar-gutter: stable }`，开合零位移。
+- 窗体/抽屉面板用 `.glass-dialog`（**不是** `glass-surface`）：窗体身后垫着 `glass-overlay`（黑 50% + 半强度模糊），直接沿用 `--glass-alpha` 会透出被压暗的背景而整体发灰。`.glass-dialog` 做三项补偿（见 `index.css`）：
+  - `brightness(1.75)` 把 50% 亮度的背景补回 87.5%——全补（×2）会让弹窗成为比周围压暗页面更亮的发光岛；
+  - blur 半径 ×0.92 扣除遮罩已贡献的 1/2.5 强度模糊（高斯方差可加），净模糊与文件卡片一致；
+  - 填充透明度在档位基础上让 0.12（下限 0.6，frosted 档与文件卡片严格同值）：弹窗背后是双重模糊的低对比内容，文本可读性余量比直接贴壁纸的卡片大，default 档 0.92 的实底观感必须放开才有玻璃感。
 - 无标题弹窗不渲染头部条（X 绝对定位右上角），避免空带。
 - 破坏性操作必须走 `ConfirmDialog`（HeroUI AlertDialog 排版：图标+标题一行、描述、Footer 右对齐取消+危险钮，`max-w-sm`）+ success/error toast；禁止原生 `confirm()`。
 
@@ -311,6 +315,7 @@ flowchart LR
 
 - 设置/管理内容 `lg:grid-cols-2`；admin 系统设置左列堆叠"系统设置+公告"、右列 SMTP。
 - 设置/管理侧栏 sticky + 内滚；内滚区域 `scrollbar-none`，可见滚动条用 `scrollbar-thin`（8px 圆角 muted）。两者是普通 CSS 类，**不支持 `md:` 变体前缀**（写 `md:scrollbar-none` 无效，历史 bug 来源）。
+- admin 内容列（`AdminLayout` 的 `md:h-[calc(100vh-12rem)]`）用 `md:overflow-clip` + `md:[overflow-clip-margin:4px]`，**不用 `overflow-hidden`**：Users/Files 工具栏的搜索框贴着内容列的上缘与左/右缘（Files 贴左、Users 被 `justify-between` 顶到右），3px focus ring 会画进裁切区——表现为环的上边和一侧被截断。clip-margin 外放 4px 绘画余量且零布局位移；不支持的浏览器退化为纯裁切。新增贴边可聚焦控件时警惕同类截断。
 
 ### 验收纪律
 
