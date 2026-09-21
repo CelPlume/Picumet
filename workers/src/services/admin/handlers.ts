@@ -1,60 +1,62 @@
-// 管理员路由：仪表板、用户管理、分享、文件、日志、系统设置、公告
+// 管理员路由：仪表板、用户管理、角色、分享、文件、日志、系统设置、公告
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import {
   UserRepo, QuotaRepo, ShareRepo, LogRepo, SettingsRepo, AnnouncementRepo,
-  ProviderRepo, FileRepo,
+  DashboardRepo, FileRepo, Db,
 } from '../../db';
+import type { FileListItem, Share } from '@shared/types';
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { toFileListItem } from '../../db/repos/files';
+import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
 import { parseJson } from '../../db';
-import { UserUpdateSchema, SettingsSchema, AnnouncementSchema } from './schemas';
+import { UserUpdateSchema, SettingsSchema, AnnouncementSchema, RoleNameSchema, RoleDefaultsSchema, FileBanSchema } from './schemas';
 import { sendMail, type SmtpConfig, resolveSmtpConfig } from '../../utils/smtp';
-import { encryptSecret } from '../../utils/crypto';
+import { encryptSecret, hashPassword } from '../../utils/crypto';
+import { loadRoutePrefixes } from '../storage/direct-links';
+import { AdminUpdateShareSchema } from '../shares/schemas';
+import { encipherSharePassword } from '../shares/handlers';
 import { z } from 'zod';
 
 export const adminRoutes = new Hono<AppBindings>();
 
 // ============ 仪表板 ============
-adminRoutes.get('/dashboard', async (c) => {
-  const db = getDb(c);
-  const users = await UserRepo.countUsers(db);
-  const files = await FileRepo.countFiles(db);
-  const providers = await ProviderRepo.listProviders(db);
-  const storage = await FileRepo.countFilesByProvider(db, providers.map((p) => p.id));
-  const recentActivity = await LogRepo.recentActivity(db, 10);
-  const requests24h = await LogRepo.countRecent(db, Date.now() - 24 * 3600 * 1000);
-  return ok(c, {
+/** /dashboard 与 /stats 共用载荷：stats 七项 + 挂载点关系数组 + 最近动态 */
+async function dashboardPayload(db: Db) {
+  const [users, stats, mounts, recentActivity] = await Promise.all([
+    UserRepo.countUsers(db),
+    DashboardRepo.stats(db),
+    DashboardRepo.mounts(db),
+    LogRepo.recentActivity(db, 10),
+  ]);
+  return {
     stats: {
       users,
-      files,
-      storage: storage.map((s) => {
-        const p = providers.find((x) => x.id === s.providerId);
-        return { providerId: s.providerId, name: p?.name ?? '未知', usedSpace: s.usedSpace, fileCount: s.fileCount };
-      }),
+      userRoles: stats.userRoles,
+      files: stats.files,
+      providers: stats.providers,
+      activeMounts: stats.activeMounts,
+      usedSpace: stats.usedSpace,
+      totalCapacity: stats.totalCapacity,
     },
-    requests24h,
+    mounts,
     recentActivity,
-  });
+  };
+}
+
+adminRoutes.get('/dashboard', async (c) => {
+  const db = getDb(c);
+  const [payload, requests24h] = await Promise.all([
+    dashboardPayload(db),
+    LogRepo.countRecent(db, Date.now() - 24 * 3600 * 1000),
+  ]);
+  return ok(c, { ...payload, requests24h });
 });
 adminRoutes.get('/stats', async (c) => {
   const db = getDb(c);
-  const users = await UserRepo.countUsers(db);
-  const files = await FileRepo.countFiles(db);
-  const providers = await ProviderRepo.listProviders(db);
-  const storage = await FileRepo.countFilesByProvider(db, providers.map((p) => p.id));
-  const recentActivity = await LogRepo.recentActivity(db, 10);
-  return ok(c, {
-    users,
-    files,
-    storage: storage.map((s) => {
-      const p = providers.find((x) => x.id === s.providerId);
-      return { providerId: s.providerId, name: p?.name ?? '未知', usedSpace: s.usedSpace, fileCount: s.fileCount };
-    }),
-    recentActivity,
-  });
+  return ok(c, await dashboardPayload(db));
 });
 
 // ============ 用户管理 ============
@@ -85,7 +87,7 @@ adminRoutes.put('/users/:id', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = UserUpdateSchema.safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('用户参数无效');
-  const { maxStorage, maxFiles, capabilities, ...rest } = parsed.data;
+  const { maxStorage, maxFiles, capabilities, permissions, ...rest } = parsed.data;
   const fields: Record<string, unknown> = {};
   if (rest.role !== undefined) fields.role = rest.role;
   if (rest.status !== undefined) fields.status = rest.status;
@@ -94,6 +96,8 @@ adminRoutes.put('/users/:id', async (c) => {
     fields.default_path = rest.defaultPath;
   }
   if (capabilities !== undefined) fields.capabilities = JSON.stringify(capabilities);
+  // 用户个别默认权限（§4.4 第 8 步）：null = 清除个别设置、跟随角色默认
+  if (permissions !== undefined) fields.permissions = permissions === null ? null : JSON.stringify(permissions);
   // 审计 H-05：禁用/封禁账户时递增会话版本，使其已签发 JWT 立即失效
   const disableChange = rest.status !== undefined && rest.status !== 'active';
   if (Object.keys(fields).length) {
@@ -117,31 +121,136 @@ adminRoutes.delete('/users/:id', async (c) => {
 });
 
 // ============ 全局分享 ============
+
+/** 管理端分享详情视图：全属性 + 项目明细；不下发 object_key / physical_key / password_cipher 等内部字段 */
+interface AdminShareView {
+  id: string;
+  title?: string;
+  creatorId: string;
+  creatorName: string;
+  status: Share['status'];
+  expiresAt?: number;
+  maxViews?: number;
+  viewCount: number;
+  maxDownloads?: number;
+  downloadCount: number;
+  allowPreview: boolean;
+  allowDownload: boolean;
+  requireLogin: boolean;
+  allowedUserCount: number;
+  passwordProtected: boolean;
+  createdAt: number;
+  lastAccessedAt?: number;
+  items: FileListItem[];
+}
+
+function adminShareView(share: Share, creatorName: string, items: FileListItem[]): AdminShareView {
+  return {
+    id: share.id,
+    title: share.title,
+    creatorId: share.creatorId,
+    creatorName,
+    status: share.status,
+    expiresAt: share.expiresAt,
+    maxViews: share.maxViews,
+    viewCount: share.viewCount,
+    maxDownloads: share.maxDownloads,
+    downloadCount: share.downloadCount,
+    allowPreview: share.allowPreview,
+    allowDownload: share.allowDownload,
+    requireLogin: share.requireLogin,
+    allowedUserCount: share.allowedUserIds?.length ?? 0,
+    passwordProtected: !!share.passwordHash,
+    createdAt: share.createdAt,
+    lastAccessedAt: share.lastAccessedAt,
+    items,
+  };
+}
+
+/** 读回管理端分享详情（改后回读同一入口，保证响应结构与 GET 一致） */
+async function loadAdminShareView(db: Db, id: string): Promise<AdminShareView | null> {
+  const info = await ShareRepo.getShareWithItems(db, id);
+  if (!info) return null;
+  return adminShareView(info.share, info.creatorName, info.items.map(toFileListItem));
+}
+
 adminRoutes.get('/shares', async (c) => {
   const db = getDb(c);
   const q = c.req.query();
   const page = Math.max(1, Number(q.page ?? 1) || 1);
   const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
-  const { rows, total } = await ShareRepo.listAllShares(db, { page, limit, status: q.status });
-  const items = await Promise.all(
-    rows.map(async (s) => {
-      const file = await FileRepo.getFileById(db, s.fileId);
-      return {
-        id: s.id,
-        title: s.title,
-        creatorId: s.creatorId,
-        file: file ? toFileListItem(file) : null,
-        viewCount: s.viewCount,
-        maxViews: s.maxViews,
-        downloadCount: s.downloadCount,
-        maxDownloads: s.maxDownloads,
-        status: s.status,
-        createdAt: s.createdAt,
-        expiresAt: s.expiresAt,
-      };
-    })
-  );
+  const { rows, total } = await ShareRepo.listAllSharesWithSummary(db, { page, limit, status: q.status });
+  const items = rows.map(({ share: s, itemCount, firstItem, creatorName }) => ({
+    id: s.id,
+    title: s.title,
+    creatorId: s.creatorId,
+    creatorName,
+    file: firstItem,
+    viewCount: s.viewCount,
+    maxViews: s.maxViews,
+    downloadCount: s.downloadCount,
+    maxDownloads: s.maxDownloads,
+    allowPreview: s.allowPreview,
+    allowDownload: s.allowDownload,
+    passwordProtected: !!s.passwordHash,
+    requireLogin: s.requireLogin,
+    allowedUserCount: s.allowedUserIds?.length ?? 0,
+    status: s.status,
+    createdAt: s.createdAt,
+    expiresAt: s.expiresAt,
+    itemCount,
+  }));
   return ok(c, { items, pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) } });
+});
+
+adminRoutes.get('/shares/:id', async (c) => {
+  const db = getDb(c);
+  const share = await loadAdminShareView(db, c.req.param('id'));
+  if (!share) throw new ApiError(404, 'NOT_FOUND', '分享不存在');
+  return ok(c, { share });
+});
+
+adminRoutes.patch('/shares/:id', async (c) => {
+  const db = getDb(c);
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  const parsed = AdminUpdateShareSchema.safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '分享参数无效');
+  if (!(await ShareRepo.getShare(db, id))) throw new ApiError(404, 'NOT_FOUND', '分享不存在');
+
+  const data = parsed.data;
+  const fields: Record<string, unknown> = {};
+  if (data.status !== undefined) fields.status = data.status;
+  if (data.expiresAt !== undefined) fields.expires_at = data.expiresAt;
+  if (data.maxViews !== undefined) fields.max_views = data.maxViews;
+  if (data.maxDownloads !== undefined) fields.max_downloads = data.maxDownloads;
+  if (data.allowPreview !== undefined) fields.allow_preview = data.allowPreview ? 1 : 0;
+  if (data.allowDownload !== undefined) fields.allow_download = data.allowDownload ? 1 : 0;
+  if (data.requireLogin !== undefined) fields.require_login = data.requireLogin ? 1 : 0;
+  // 指定用户白名单：用户名 → id（未知用户名直接拒绝，与创建分享同口径）；null / 空数组 = 清空
+  if (data.allowedUsers !== undefined) {
+    const ids: string[] = [];
+    for (const username of data.allowedUsers ?? []) {
+      const target = await UserRepo.getUserByUsername(db, username);
+      if (!target) throw ApiError.badRequest(`用户不存在：${username}`);
+      if (!ids.includes(target.id)) ids.push(target.id);
+    }
+    fields.allowed_user_ids = ids.length > 0 ? JSON.stringify(ids) : null;
+  }
+  // 密码：null / 空串 = 清除（哈希与密文一并置 NULL）；非空 = 重置（重算哈希 + 重写可逆密文）
+  if (data.password !== undefined) {
+    if (data.password === null || data.password === '') {
+      fields.password_hash = null;
+      fields.password_cipher = null;
+    } else {
+      fields.password_hash = hashPassword(data.password);
+      fields.password_cipher = (await encipherSharePassword(data.password, c.env.ENCRYPTION_KEY)) ?? null;
+    }
+  }
+  await ShareRepo.updateShare(db, id, fields);
+
+  const share = await loadAdminShareView(db, id);
+  return ok(c, { share });
 });
 
 adminRoutes.delete('/shares/:id', async (c) => {
@@ -198,11 +307,83 @@ adminRoutes.get('/files', async (c) => {
   const q = c.req.query();
   const page = Math.max(1, Number(q.page ?? 1) || 1);
   const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
-  const { rows, total } = await FileRepo.searchFiles(db, { query: q.search ?? '', page, limit });
+  // §26 筛选：bucket=provider 精确、mount=挂载点精确、hash=blob_hash 子串、user=属主精确、
+  // visibility/banned=枚举；非法取值忽略，与既有 search/分页/排序共存
+  const { rows, total } = await FileRepo.searchFiles(db, {
+    query: q.search ?? '',
+    page,
+    limit,
+    mountId: q.mount || undefined,
+    providerId: q.bucket || undefined,
+    blobHashLike: q.hash || undefined,
+    ownerId: q.user || undefined,
+    visibility:
+      q.visibility === 'private' || q.visibility === 'users' || q.visibility === 'public'
+        ? (q.visibility as 'private' | 'users' | 'public')
+        : undefined,
+    banned: q.banned === 'true' ? true : q.banned === 'false' ? false : undefined,
+  });
+  // 上传用户（属主）用户名：一次 IN 查询，避免逐行查用户
+  const ownerIds = [...new Set(rows.map((r) => r.ownerId))];
+  const owners = ownerIds.length
+    ? await db.all(`SELECT id, username FROM users WHERE id IN (${ownerIds.map(() => '?').join(',')})`, ownerIds)
+    : [];
+  const ownerName = new Map(owners.map((o) => [String(o.id), String(o.username)]));
+  // §26 每行富化：挂载点名 / 存储桶名按页 IN 批量补齐（mounts 一条、blob_objects 一条、providers 一条，禁止 N+1）
+  const mountIds = [...new Set(rows.map((r) => r.mountId))];
+  const mountRows = mountIds.length
+    ? await db.all(`SELECT id, name FROM mounts WHERE id IN (${mountIds.map(() => '?').join(',')})`, mountIds)
+    : [];
+  const mountName = new Map(mountRows.map((m) => [String(m.id), String(m.name)]));
+  const hashes = [...new Set(rows.map((r) => r.blobHash).filter((v): v is string => !!v))];
+  const blobRows = hashes.length
+    ? await db.all(`SELECT hash, provider_id FROM blob_objects WHERE hash IN (${hashes.map(() => '?').join(',')})`, hashes)
+    : [];
+  const hashProviderId = new Map(blobRows.map((r) => [String(r.hash), String(r.provider_id)]));
+  const providerIds = [...new Set([
+    ...rows.map((r) => r.providerId).filter((v): v is string => !!v),
+    ...blobRows.map((r) => String(r.provider_id)),
+  ])];
+  const providerRows = providerIds.length
+    ? await db.all(`SELECT id, name FROM storage_providers WHERE id IN (${providerIds.map(() => '?').join(',')})`, providerIds)
+    : [];
+  const providerName = new Map(providerRows.map((p) => [String(p.id), String(p.name)]));
   return ok(c, {
-    items: rows.map(toFileListItem),
+    items: rows.map((r) => {
+      // buckets = 落桶 provider 名 + 内容寻址副本（blob_objects）的 provider 名，去重
+      const bucketNames = new Set<string>();
+      if (r.providerId) {
+        const name = providerName.get(r.providerId);
+        if (name) bucketNames.add(name);
+      }
+      const blobProviderId = r.blobHash ? hashProviderId.get(r.blobHash) : undefined;
+      if (blobProviderId) {
+        const name = providerName.get(blobProviderId);
+        if (name) bucketNames.add(name);
+      }
+      const mount = mountName.get(r.mountId);
+      return {
+        ...toFileListItem(r),
+        ownerName: ownerName.get(r.ownerId) ?? '',
+        buckets: [...bucketNames],
+        mounts: mount ? [mount] : [],
+      };
+    }),
     pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
   });
+});
+
+// ============ 文件封禁（§26） ============
+adminRoutes.put('/files/:id/ban', async (c) => {
+  const db = getDb(c);
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  const parsed = FileBanSchema.safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('封禁参数无效');
+  const file = await FileRepo.getFileById(db, id);
+  if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  await FileRepo.updateFile(db, id, { banned: parsed.data.banned ? 1 : 0 });
+  return ok(c, { id, banned: parsed.data.banned });
 });
 
 // ============ 访问日志 ============
@@ -227,6 +408,7 @@ adminRoutes.get('/logs', async (c) => {
 adminRoutes.get('/settings', async (c) => {
   const db = getDb(c);
   const raw = await SettingsRepo.getAll(db);
+  const prefixes = await loadRoutePrefixes(db);
   const get = (key: string) => {
     const v = raw[key];
     if (v === undefined || v === 'null') return undefined;
@@ -247,6 +429,8 @@ adminRoutes.get('/settings', async (c) => {
     turnstileSiteKey: get('turnstile_site_key'),
     rateLimitEnabled: get('rate_limit_enabled') ?? true,
     rateLimitRequestsPerMinute: Number(get('rate_limit_requests_per_minute') ?? 50),
+    maxConcurrentTransfers: Number(get('max_concurrent_transfers') ?? 4),
+    rateLimitDownloadsPerMinute: Number(get('rate_limit_downloads_per_minute') ?? 120),
     smtpHost: get('smtp_host') ?? '',
     smtpPort: Number(get('smtp_port') ?? 587),
     smtpSecure: get('smtp_secure') ?? true,
@@ -255,6 +439,8 @@ adminRoutes.get('/settings', async (c) => {
     smtpFromName: get('smtp_from_name') ?? 'Picumet',
     smtpFromEmail: get('smtp_from_email') ?? '',
     emailEnabled: get('email_enabled') ?? false,
+    directPrefix: prefixes.directPrefix,
+    rootTarget: prefixes.rootTarget,
   });
 });
 
@@ -262,7 +448,14 @@ adminRoutes.patch('/settings', async (c) => {
   const db = getDb(c);
   const body = await c.req.json().catch(() => null);
   const parsed = SettingsSchema.safeParse(body ?? {});
-  if (!parsed.success) throw ApiError.badRequest('设置参数无效');
+  if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '设置参数无效');
+  // 跨字段约束按「落库后的生效值」校验（PATCH 是部分更新，不能只看本次请求体）
+  const current = await loadRoutePrefixes(db);
+  const nextDirectPrefix = parsed.data.directPrefix ?? current.directPrefix;
+  const nextRootTarget = parsed.data.rootTarget ?? current.rootTarget;
+  if (nextRootTarget === 'direct' && nextDirectPrefix !== '') {
+    throw ApiError.badRequest('根路径指向直链命名空间时，直链前缀必须留空');
+  }
   const map: Record<string, string> = {
     siteTitle: 'site_title',
     siteLogo: 'site_logo',
@@ -274,6 +467,8 @@ adminRoutes.patch('/settings', async (c) => {
     turnstileSiteKey: 'turnstile_site_key',
     rateLimitEnabled: 'rate_limit_enabled',
     rateLimitRequestsPerMinute: 'rate_limit_requests_per_minute',
+    maxConcurrentTransfers: 'max_concurrent_transfers',
+    rateLimitDownloadsPerMinute: 'rate_limit_downloads_per_minute',
     smtpHost: 'smtp_host',
     smtpPort: 'smtp_port',
     smtpSecure: 'smtp_secure',
@@ -282,6 +477,8 @@ adminRoutes.patch('/settings', async (c) => {
     smtpFromName: 'smtp_from_name',
     smtpFromEmail: 'smtp_from_email',
     emailEnabled: 'email_enabled',
+    directPrefix: 'direct_prefix',
+    rootTarget: 'root_target',
   };
   for (const [k, v] of Object.entries(parsed.data)) {
     if (v === undefined) continue;
@@ -364,4 +561,51 @@ adminRoutes.delete('/announcements/:id', async (c) => {
   const db = getDb(c);
   await AnnouncementRepo.delete(db, c.req.param('id'));
   return ok(c, null);
+});
+
+// ============ 角色管理 ============
+adminRoutes.get('/roles', async (c) => {
+  const db = getDb(c);
+  // permissions 由仓库层按 role_defaults.permissions 读取（缺列/读不到时用兜底常量）
+  const roles = await RoleDefaultsRepo.list(db);
+  return ok(c, { roles });
+});
+
+adminRoutes.post('/roles', async (c) => {
+  const db = getDb(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = z
+    .object({ role: RoleNameSchema, alias: z.string().max(32).nullable().optional() })
+    .safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('角色名仅限小写字母、数字、-、_，以字母开头');
+  const existing = await RoleDefaultsRepo.list(db);
+  if (existing.some((r) => r.role === parsed.data.role)) throw ApiError.conflict('角色已存在');
+  const role = await RoleDefaultsRepo.create(db, parsed.data.role, parsed.data.alias);
+  return ok(c, role);
+});
+
+adminRoutes.delete('/roles/:role', async (c) => {
+  const db = getDb(c);
+  const role = c.req.param('role');
+  const target = (await RoleDefaultsRepo.list(db)).find((r) => r.role === role);
+  if (!target) throw new ApiError(404, 'NOT_FOUND', '角色不存在');
+  if (target.isSystem) throw new ApiError(403, 'FORBIDDEN', '内置角色不可删除');
+  if (target.members > 0) throw ApiError.badRequest('请先移除该角色下的用户');
+  await RoleDefaultsRepo.remove(db, target.role);
+  return ok(c, null);
+});
+
+adminRoutes.put('/roles/:role/defaults', async (c) => {
+  const db = getDb(c);
+  const role = c.req.param('role');
+  if (!RoleNameSchema.safeParse(role).success) throw ApiError.badRequest('角色名仅限小写字母、数字、-、_，以字母开头');
+  const body = await c.req.json().catch(() => null);
+  const parsed = RoleDefaultsSchema.safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('默认设置参数无效');
+  // 未提供的可选字段（alias/defaultStatus/capabilities/permissions）保持对应列现状；
+  // permissions 只写 role_defaults（引擎第 8 步读取），不动 users 表
+  const patch = { ...parsed.data };
+  await RoleDefaultsRepo.upsertDefaults(db, role, patch);
+  const affected = await RoleDefaultsRepo.applyToRole(db, role, patch);
+  return ok(c, { message: '已保存并应用到该角色全部用户', affected });
 });

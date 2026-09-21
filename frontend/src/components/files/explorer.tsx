@@ -52,13 +52,14 @@ export function FileCard({
 }) {
   const isFolder = f.type === 'folder';
   const [hovering, setHovering] = useState(false);
+  const { t } = useTranslation();
   const previewUrl = useFilePreviewUrl(f);
   const folderPreview = useTheme((s) => s.folderPreview);
   return (
     <div
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
-      onDoubleClick={onDoubleClick}
+      onDoubleClick={f.banned ? undefined : onDoubleClick}
       onContextMenu={onContext}
       onClick={(e) => {
         e.stopPropagation();
@@ -67,10 +68,13 @@ export function FileCard({
       }}
       data-file-id={f.id}
       data-file-card=""
+      title={f.banned ? t('files.bannedTitle') : undefined}
       className={cn(
         // 三态统一：rest 无填充无轮廓 → hover 轻微填充+轮廓 → selected 主色填充（对齐列表）
         'item-surface group relative cursor-pointer rounded-lg border p-3',
-        selected && 'item-surface-selected'
+        selected && 'item-surface-selected',
+        // 封禁文件：置灰半透明，仅保留删除入口
+        f.banned && 'opacity-40 grayscale'
       )}
       style={selected && f.customColor ? { borderColor: f.customColor } : undefined}
     >
@@ -89,7 +93,7 @@ export function FileCard({
         <div
           className={cn(
             'absolute right-1.5 top-1.5 z-20 transition-opacity',
-            multiSelect || selected || hovering ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            'opacity-100'
           )}
           onClick={(e) => e.stopPropagation()}
         >
@@ -236,10 +240,11 @@ export function FileRow({
   multiSelect?: boolean;
 }) {
   const isFolder = f.type === 'folder';
+  const { t } = useTranslation();
   const previewUrl = useFilePreviewUrl(f);
   return (
     <div
-      onDoubleClick={onDoubleClick}
+      onDoubleClick={f.banned ? undefined : onDoubleClick}
       onContextMenu={onContext}
       onClick={(e) => {
         e.stopPropagation();
@@ -248,12 +253,15 @@ export function FileRow({
       }}
       data-file-id={f.id}
       data-file-row=""
+      title={f.banned ? t('files.bannedTitle') : undefined}
       className={cn(
         // 列顺序：复选框 | 名称(1fr 吸收全部余量) | 大小 | 日期(sm+) | 菜单
         // 大小/日期列由 1fr 名称列推向右侧，位置不随菜单列内容变化，保证行间对齐
         // 三态与卡片共用 item-surface（rest → hover → selected）
         'item-surface group grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border px-3 py-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)_100px_130px_auto]',
-        selected && 'item-surface-selected'
+        selected && 'item-surface-selected',
+        // 封禁文件：置灰半透明，仅保留删除入口
+        f.banned && 'opacity-40 grayscale'
       )}
     >
       {/* 复选框列 */}
@@ -288,6 +296,15 @@ export function FileRowMenuItems({ f, handlers, onClose }: { f: FileListItem; ha
   const { t } = useTranslation();
   const isFolder = f.type === 'folder';
   const close = onClose ?? (() => {});
+  // 封禁文件：菜单直接不渲染除删除外的任何项（而非渲染后禁用）
+  if (f.banned) {
+    if (!handlers?.onDelete) return null;
+    return (
+      <DropdownItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { handlers.onDelete!(f); close(); }}>
+        {t('common.delete')}
+      </DropdownItem>
+    );
+  }
   return (
         <>
           {handlers?.onOpen && (
@@ -352,6 +369,7 @@ export function BulkActionsBar({
   onCopyLink,
   onRename,
   onProperties,
+  onlyDelete,
 }: {
   count: number;
   onMove: () => void;
@@ -362,19 +380,20 @@ export function BulkActionsBar({
   onCopyLink?: () => void;
   onRename?: () => void;
   onProperties?: () => void;
+  onlyDelete?: boolean;
 }) {
   const { t } = useTranslation();
   const isSingle = count === 1;
 
   const actions = [
     { key: 'download', icon: Download, label: t('common.download'), onClick: onDownload, show: !!onDownload },
-    { key: 'share', icon: Share2, label: t('common.share'), onClick: onShare, show: !!onShare && isSingle },
+    { key: 'share', icon: Share2, label: t('common.share'), onClick: onShare, show: !!onShare },
     { key: 'copyLink', icon: Copy, label: t('files.copyLink'), onClick: onCopyLink, show: !!onCopyLink },
     { key: 'move', icon: ArrowRight, label: t('common.move'), onClick: onMove, show: true },
     { key: 'rename', icon: Pencil, label: t('common.rename'), onClick: onRename, show: !!onRename && isSingle },
     { key: 'delete', icon: Trash2, label: t('common.delete'), onClick: onDelete, show: true, danger: true },
     { key: 'properties', icon: Eye, label: t('common.properties'), onClick: onProperties, show: !!onProperties && isSingle },
-  ].filter((a) => a.show);
+  ].filter((a) => a.show && (!onlyDelete || a.key === 'delete'));
 
   return (
     <div className="glass-surface glass-blur animate-slide-in-from-bottom inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-sm shadow-xl sm:gap-1.5">

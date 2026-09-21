@@ -23,19 +23,28 @@ export interface FileInsert {
   accessPassword?: string;
   manualPosition?: number;
   metadata?: string;
+  /** 实际落桶 provider（§E 存储池；NULL/缺省 = 挂载主 provider） */
+  providerId?: string | null;
+  /** 物理对象键（§F 内容寻址；缺省 = object_key） */
+  physicalKey?: string | null;
+  /** 内容 SHA-256（§F；NULL = 未内容寻址） */
+  blobHash?: string | null;
+  /** 显式 id（§H 挂载点目录行用确定性 id，便于诊断与清理；缺省自动生成） */
+  id?: string;
 }
 
 export const FileRepo = {
   async createFile(db: Db, f: FileInsert): Promise<FileMetadata> {
     const now = f.createdAt ?? Date.now();
-    const id = uuid();
+    const id = f.id ?? uuid();
     await db.run(
       `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, mime_type, size, etag, checksum_md5,
-        custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, provider_id,
+        physical_key, blob_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, f.mountId, f.objectKey, f.path, f.name, f.type, f.mimeType ?? null, f.size ?? 0, f.etag ?? null, f.checksumMd5 ?? null,
         f.customTitle ?? null, f.customColor ?? null, f.coverUrl ?? null, f.iconEmoji ?? null, f.accessPassword ?? null,
-        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, now, now]
+        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, now, now]
     );
     return (await this.getFileById(db, id)) as FileMetadata;
   },
@@ -44,11 +53,12 @@ export const FileRepo = {
     const now = f.createdAt ?? Date.now();
     await tx.query(
       `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, mime_type, size, etag, checksum_md5,
-        custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, provider_id,
+        physical_key, blob_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [f.id, f.mountId, f.objectKey, f.path, f.name, f.type, f.mimeType ?? null, f.size ?? 0, f.etag ?? null, f.checksumMd5 ?? null,
         f.customTitle ?? null, f.customColor ?? null, f.coverUrl ?? null, f.iconEmoji ?? null, f.accessPassword ?? null,
-        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, now, now]
+        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, now, now]
     );
   },
   async updateFileTx(tx: Tx, id: string, fields: Record<string, unknown>): Promise<void> {
@@ -154,7 +164,25 @@ export const FileRepo = {
     );
     return rows.map(mapFile);
   },
-  async searchFiles(db: Db, opts: { query: string; mountIds?: string[]; ownerIds?: string[]; page?: number; limit?: number }): Promise<{ rows: FileMetadata[]; total: number }> {
+  async searchFiles(db: Db, opts: {
+    query: string;
+    mountIds?: string[];
+    ownerIds?: string[];
+    page?: number;
+    limit?: number;
+    /** §26 全部文件筛选：挂载点精确 */
+    mountId?: string;
+    /** §26 全部文件筛选：落桶 provider 精确 */
+    providerId?: string;
+    /** §26 全部文件筛选：内容 SHA-256 子串（LIKE） */
+    blobHashLike?: string;
+    /** §26 全部文件筛选：属主精确 */
+    ownerId?: string;
+    /** §26 全部文件筛选：可见性精确 */
+    visibility?: 'private' | 'users' | 'public';
+    /** §26 全部文件筛选：封禁态 */
+    banned?: boolean;
+  }): Promise<{ rows: FileMetadata[]; total: number }> {
     const where: string[] = ['name LIKE ?'];
     const params: unknown[] = [`%${opts.query}%`];
     if (opts.mountIds && opts.mountIds.length) {
@@ -164,6 +192,30 @@ export const FileRepo = {
     if (opts.ownerIds && opts.ownerIds.length) {
       where.push(`owner_id IN (${opts.ownerIds.map(() => '?').join(',')})`);
       params.push(...opts.ownerIds);
+    }
+    if (opts.mountId) {
+      where.push('mount_id = ?');
+      params.push(opts.mountId);
+    }
+    if (opts.providerId) {
+      where.push('provider_id = ?');
+      params.push(opts.providerId);
+    }
+    if (opts.blobHashLike) {
+      where.push('blob_hash LIKE ?');
+      params.push(`%${opts.blobHashLike}%`);
+    }
+    if (opts.ownerId) {
+      where.push('owner_id = ?');
+      params.push(opts.ownerId);
+    }
+    if (opts.visibility) {
+      where.push('visibility = ?');
+      params.push(opts.visibility);
+    }
+    if (opts.banned !== undefined) {
+      where.push('banned = ?');
+      params.push(opts.banned ? 1 : 0);
     }
     const whereSql = where.join(' AND ');
     const page = opts.page ?? 1;
@@ -175,21 +227,6 @@ export const FileRepo = {
       [...params, limit, (page - 1) * limit]
     );
     return { rows: rows.map(mapFile), total };
-  },
-  async countFiles(db: Db): Promise<{ total: number; size: number }> {
-    const row = await db.first(`SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS s FROM file_metadata`);
-    return { total: num(row?.c), size: num(row?.s) };
-  },
-  async countFilesByProvider(db: Db, providerIds: string[]): Promise<Array<{ providerId: string; usedSpace: number; fileCount: number }>> {
-    if (providerIds.length === 0) return [];
-    const rows = await db.all(
-      `SELECT m.provider_id AS providerId, COALESCE(SUM(f.size), 0) AS usedSpace, COUNT(f.id) AS fileCount
-       FROM mounts m LEFT JOIN file_metadata f ON f.mount_id = m.id
-       WHERE m.provider_id IN (${providerIds.map(() => '?').join(',')})
-       GROUP BY m.provider_id`,
-      providerIds
-    );
-    return rows.map((r) => ({ providerId: str(r.providerId)!, usedSpace: num(r.usedSpace), fileCount: num(r.fileCount) }));
   },
   /** 需要清理旧对象的文件（移动后） */
   async listCleanupPending(db: Db, limit = 100): Promise<FileMetadata[]> {
@@ -227,6 +264,8 @@ export const SessionRepo = {
     mimeType?: string;
     fileSize: number;
     quotaReserved: number;
+    /** §E 存储池：会话选定落桶 provider */
+    providerId?: string | null;
     uploadId?: string;
     totalParts?: number;
     idempotencyKey?: string;
@@ -236,10 +275,10 @@ export const SessionRepo = {
     const now = Date.now();
     await db.run(
       `INSERT INTO upload_sessions (id, user_id, mount_id, object_key, path, file_name, mime_type, file_size,
-        quota_reserved, upload_id, total_parts, idempotency_key, status, expires_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        quota_reserved, provider_id, upload_id, total_parts, idempotency_key, status, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
       [id, s.userId, s.mountId, s.objectKey, s.path, s.fileName, s.mimeType ?? null, s.fileSize,
-        s.quotaReserved, s.uploadId ?? null, s.totalParts ?? null, s.idempotencyKey ?? null, s.expiresAt, now]
+        s.quotaReserved, s.providerId ?? null, s.uploadId ?? null, s.totalParts ?? null, s.idempotencyKey ?? null, s.expiresAt, now]
     );
     return id;
   },
@@ -269,6 +308,15 @@ export const SessionRepo = {
     if (sets.length === 0) return;
     await db.run(`UPDATE upload_sessions SET ${sets.join(', ')} WHERE id = ?`, [...params, id]);
   },
+  /** §F 内容寻址结果：Worker 代理单文件上传完成后记录内容哈希与物理键 */
+  async recordContent(db: Db, id: string, content: { blobHash: string | null; physicalKey: string; providerId: string }): Promise<void> {
+    await db.run('UPDATE upload_sessions SET blob_hash = ?, physical_key = ?, provider_id = ? WHERE id = ?', [
+      content.blobHash,
+      content.physicalKey,
+      content.providerId,
+      id,
+    ]);
+  },
   /** 记录已成功上传的分片（断点续传依据，Worker 代理路径服务端留存） */
   async recordPart(db: Db, sessionId: string, partNumber: number, etag: string): Promise<void> {
     const row = await db.first('SELECT parts_completed FROM upload_sessions WHERE id = ?', [sessionId]);
@@ -291,7 +339,7 @@ export const SessionRepo = {
   },
   async listExpired(db: Db): Promise<Row[]> {
     return db.all(
-      `SELECT id, user_id, quota_reserved FROM upload_sessions
+      `SELECT id, user_id, mount_id, quota_reserved FROM upload_sessions
        WHERE status IN ('pending', 'uploading') AND expires_at < ?`,
       [Date.now()]
     );

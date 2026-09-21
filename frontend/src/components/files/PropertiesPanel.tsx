@@ -9,14 +9,21 @@ import { toast } from '@/components/ui/toast';
 import { apiFetch } from '@/lib/api';
 import { formatBytes, formatDateTime } from '@/lib/utils';
 import { useUpdateFile } from './data';
+import FileIcon from './FileIcon';
 
 const COLORS = ['#EF4444', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6', '#EC4899', '#64748B'];
+
+/** 游客（未登录访客）可见性：'inherit' 跟随角色默认，null 等同 'inherit' */
+type GuestVisibility = 'inherit' | 'none' | 'download' | 'view';
+
+/** shared/types 暂未包含该灰度字段：本地扩展读取，不改动共享类型 */
+type PanelFile = FileListItem & { guestVisibility?: GuestVisibility | null };
 
 export function PropertiesPanel({
   file,
   onClose,
 }: {
-  file: FileListItem | null;
+  file: PanelFile | null;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -26,6 +33,7 @@ export function PropertiesPanel({
   const [iconEmoji, setIconEmoji] = useState(file?.iconEmoji ?? '');
   const [password, setPassword] = useState('');
   const [visibility, setVisibility] = useState<'private' | 'users' | 'public'>(file?.visibility ?? 'private');
+  const [guestVisibility, setGuestVisibility] = useState<GuestVisibility>(file?.guestVisibility ?? 'inherit');
   const [ruleEffect, setRuleEffect] = useState('allow');
   const [ruleTargetMode, setRuleTargetMode] = useState('all');
   const [ruleUserId, setRuleUserId] = useState('');
@@ -70,8 +78,8 @@ export function PropertiesPanel({
 
       <div className="flex-1 space-y-3 overflow-y-auto p-3 scrollbar-thin">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-muted text-2xl">
-            {file.iconEmoji ?? (file.type === 'folder' ? '📁' : '📄')}
+          <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-lg bg-muted">
+            <FileIcon name={file.name} type={file.type} iconEmoji={file.iconEmoji} className="h-8 w-8" />
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{file.customTitle ?? file.name}</p>
@@ -140,13 +148,14 @@ export function PropertiesPanel({
           </div>
 
           <div>
-            <Label className="text-xs">{t('files.properties.iconEmoji')}</Label>
+            <Label className="text-xs">{t('files.properties.customIcon')}</Label>
             <div className="mt-1 flex gap-1.5">
-              <Input value={iconEmoji} onChange={(e) => setIconEmoji(e.target.value)} placeholder="📄" maxLength={8} className="h-8 text-sm" />
+              <Input value={iconEmoji} onChange={(e) => setIconEmoji(e.target.value)} placeholder="📄" className="h-8 text-sm" />
               <Button variant="outline" size="sm" onClick={() => void save({ iconEmoji: iconEmoji || null })} className="h-8 shrink-0">
                 {t('common.save')}
               </Button>
             </div>
+            <p className="mt-1 text-xs text-muted-foreground">{t('files.properties.customIconHint')}</p>
           </div>
 
           {file.type === 'file' && (
@@ -191,6 +200,26 @@ export function PropertiesPanel({
             {file.visibility === 'public' && file.reviewStatus === 'rejected' && (
               <p className="mt-1 text-xs text-destructive">{t('files.properties.reviewRejected')}</p>
             )}
+          </div>
+
+          <div>
+            <Label className="text-xs">{t('files.properties.guestAccess')}</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t('files.properties.guestAccessDesc')}</p>
+            <Select
+              className="mt-1"
+              value={guestVisibility}
+              onValueChange={(v) => {
+                if (v !== 'inherit' && v !== 'none' && v !== 'download' && v !== 'view') return;
+                setGuestVisibility(v);
+                void save({ guestVisibility: v });
+              }}
+              options={[
+                { value: 'inherit', label: t('files.properties.guestInherit') },
+                { value: 'none', label: t('files.properties.guestNone') },
+                { value: 'download', label: t('files.properties.guestDownload') },
+                { value: 'view', label: t('files.properties.guestView') },
+              ]}
+            />
           </div>
 
           <div>
