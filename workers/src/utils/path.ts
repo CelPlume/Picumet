@@ -222,3 +222,16 @@ export function validateFileType(fileName: string, mimeType?: string): void {
     throw new PathError('DANGEROUS_MIME_TYPE', `禁止上传 ${mimeType} 类型文件`);
   }
 }
+
+/**
+ * 拆分嵌套文件名（P1-3.6）：PicList `{localFolder:N}` 重命名可让 multipart 文件名 / X-File-Name
+ * 携带 `/`，将其前段并入 customPath、尾段作为受校验的 basename。
+ */
+export function splitNestedFileName(rawName: string, customPath?: string): { fileName: string; customPath?: string } {
+  const idx = rawName.lastIndexOf('/');
+  if (idx < 0) return { fileName: rawName, customPath };
+  const dir = rawName.slice(0, idx);
+  const base = rawName.slice(idx + 1);
+  if (!dir || !base) return { fileName: base || rawName, customPath };
+  return { fileName: base, customPath: customPath ? `${customPath}/${dir}` : dir };
+}

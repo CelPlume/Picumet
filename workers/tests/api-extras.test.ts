@@ -144,7 +144,12 @@ describe('API 密钥与兼容上传', () => {
     });
     expect(upRes.status).toBe(200);
     const upData = await json(upRes);
-    expect(upData.data.url).toContain('/api/files/');
+    // P0-1：返回外部可用的直链（path-serve + 签名），可匿名取回（图床命门）
+    expect(upData.data.url).toContain('/uploads/picgo.png?sign=');
+    const directUrl = new URL(upData.data.url);
+    const directRes = await request(ctx, directUrl.pathname + directUrl.search);
+    expect(directRes.status).toBe(200);
+    expect(await directRes.text()).toBe('picgo-content');
 
     // 撤销
     const keyId = listData.data.keys[0].id;
