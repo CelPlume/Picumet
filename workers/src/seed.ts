@@ -1,5 +1,5 @@
 // 启动种子：默认管理员、演示用户、默认 R2 绑定 Provider + 根挂载、演示文件夹
-import { Db, UserRepo, MountRepo, ProviderRepo, FileRepo, QuotaRepo } from './db';
+import { Db, UserRepo, MountRepo, ProviderRepo, FileRepo, QuotaRepo, MountQuotaRepo } from './db';
 import { hashPassword } from './utils/crypto';
 import { getProvider } from './services/storage/providers';
 import { objectKeyFromPath } from './utils/path';
@@ -161,6 +161,8 @@ async function seedDemoFile(
     size: bytes.byteLength,
     etag: head?.etag,
     ownerId,
+    providerId: providerRow.id,
   });
   await QuotaRepo.commitUsage(db, ownerId, file.size, 0);
+  await MountQuotaRepo.commitUsage(db, mountId, file.size, 0);
 }

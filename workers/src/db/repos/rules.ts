@@ -70,8 +70,9 @@ export const RuleRepo = {
    * 查询所有可能匹配某主体的规则（用户/角色/API密钥）。
    * mountId 可选：传入时只返回该挂载的规则 + 全局规则（mount_id IS NULL）；
    * 不传时返回全部（管理/兼容场景）。
+   * roles：角色的候选名集合（本名 + role_defaults.alias 别名，见 loadPrincipalRules）。
    */
-  async findCandidates(db: Db, principal: { id?: string; role?: string; apiKeyId?: string }, mountId?: string): Promise<PathRule[]> {
+  async findCandidates(db: Db, principal: { id?: string; roles?: string[]; apiKeyId?: string }, mountId?: string): Promise<PathRule[]> {
     // mount 过滤是 AND 关系；主体条件之间是 OR 关系
     const scope: string[] = ['status = \'active\''];
     const scopeParams: unknown[] = [];
@@ -89,9 +90,9 @@ export const RuleRepo = {
       subject.push('user_id = ?');
       subjectParams.push(principal.id);
     }
-    if (principal.role) {
-      subject.push('role = ?');
-      subjectParams.push(principal.role);
+    if (principal.roles && principal.roles.length > 0) {
+      subject.push(`role IN (${principal.roles.map(() => '?').join(',')})`);
+      subjectParams.push(...principal.roles);
     }
     const rows = await db.all(
       `SELECT * FROM path_rules WHERE ${scope.join(' AND ')}${subject.length ? ` AND (${subject.join(' OR ')})` : ''} ORDER BY priority DESC`,

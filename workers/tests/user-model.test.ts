@@ -28,6 +28,11 @@ const mount: Mount = {
   sortOrder: 'asc',
   priority: 0,
   status: 'active',
+  maxStorage: null,
+  usedStorage: 0,
+  quotaReserved: 0,
+  poolStrategy: 'least_used',
+  capacityBytes: null,
 };
 
 function user(id: string, defaultPath: string, capabilities: string[] = []): Principal {
@@ -46,7 +51,7 @@ describe('sortRules origin 防越权排序', () => {
   });
 
   it('user-origin 指定用户 deny 压过 system 合成 allow（公开但禁止某人）', () => {
-    const synthetic = syntheticVisibilityRule('/a/photos', 'users', 'm1')!;
+    const synthetic = syntheticVisibilityRule('/a/photos', 'users', 'm1', user('bob', '/'))!;
     const userDeny = userRule({ id: 'u1', userId: 'bob', effect: 'deny', permissions: ['read', 'download'] });
     const sorted = sortRules([synthetic, userDeny], '/a/photos');
     expect(sorted[0].id).toBe('u1');

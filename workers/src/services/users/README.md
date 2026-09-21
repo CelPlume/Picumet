@@ -6,7 +6,7 @@
 
 ```
 services/users/
-├── handlers.ts    // /me/settings GET/PUT、/me/password PUT
+├── handlers.ts    // /me/settings GET/PUT、/me/password PUT（可选邮箱验证码）、/me/password/send-code POST、/me/email/send-otp POST
 ├── schemas.ts     // ProfileSchema / PasswordSchema
 └── types.ts
 ```

@@ -7,12 +7,18 @@ import type {
   PathRule,
   RuleEffect,
   Visibility,
+  GuestVisibility,
 } from '@shared/types';
+import { DEFAULT_ROLE_PERMISSIONS } from '@shared/types';
 import { Db } from '../../db';
 import { RuleRepo } from '../../db';
+import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
 import { isPathWithinBoundary, normalizePath, pathMatches } from '../../utils/path';
 
 export type PermissionResult = 'allow' | 'deny';
+
+// 角色默认权限兜底表定义在 shared/types.ts（db 层读 role_defaults 时同样需要），此处转出以保持引擎侧单一入口
+export { DEFAULT_ROLE_PERMISSIONS };
 
 /**
  * 核心权限检查函数。
@@ -33,7 +39,8 @@ export function checkPermission(
   allRules: PathRule[],
   fileOwnerId?: string,
   conditions?: Conditions,
-  visibility?: Visibility
+  visibility?: Visibility,
+  guestVisibility?: GuestVisibility | null
 ): PermissionResult {
   const path = normalizePath(canonicalPath);
 
@@ -73,9 +80,10 @@ export function checkPermission(
     }
   }
 
-  // 5. 收集并排序匹配规则（visibility 合成规则并入候选集，§4.4a）
-  const synthetic = syntheticVisibilityRule(path, visibility, mount.id);
-  const candidates = synthetic ? [...allRules, synthetic] : allRules;
+  // 5. 收集并排序匹配规则（visibility / 文件级游客可见性的合成规则并入候选集，§4.4a、§C）
+  const synthetic = syntheticVisibilityRule(path, visibility, mount.id, principal);
+  const guestSynthetic = syntheticGuestRule(path, guestVisibility, mount.id, principal);
+  const candidates = [...allRules, ...(synthetic ? [synthetic] : []), ...(guestSynthetic ? [guestSynthetic] : [])];
   const matching = candidates.filter((r) => r.status === 'active' && pathMatches(path, r.pathPattern));
   const sorted = sortRules(matching, path);
 
@@ -103,10 +111,12 @@ export function checkPermission(
     }
   }
 
-  // 8. 用户默认路径权限（默认权限矩阵：用户在自己的 defaultPath 内拥有全部默认权限）
+  // 8. 用户默认路径权限（角色默认权限矩阵：user.permissions ?? role_defaults.permissions，缺省用兜底常量）
+  // share 不在矩阵内（分享开关是能力位 can_share，§4.4 防线 5），默认路径内保持既有放行语义。
   if (principal.type === 'user' && isPathWithinBoundary(path, principal.defaultPath)) {
-    const defaultPerms: Permission[] = ['read', 'write', 'update', 'delete', 'share', 'download'];
-    if (defaultPerms.includes(action)) {
+    const defaultPerms =
+      principal.defaultPermissions ?? DEFAULT_ROLE_PERMISSIONS[principal.role] ?? DEFAULT_ROLE_PERMISSIONS.user;
+    if (action === 'share' || defaultPerms.includes(action)) {
       return 'allow';
     }
   }
@@ -161,24 +171,61 @@ export function sortRules(rules: PathRule[], canonicalPath: string): PathRule[] 
 }
 
 /**
- * visibility 合成规则（§4.4a）：users/public 可见性注入 role='user' 的
- * read/download allow 规则（origin=system，仅内存存在不入库）。
- * public 的匿名面由 gallery 路由独立处理，不经过本规则引擎（§4.2 权限交互）。
+ * visibility 合成规则（§4.4a）：users/public 可见性注入 read/download allow 规则
+ * （origin=system，仅内存存在不入库）。
+ * 主体感知（§C 游客）：users 仅对登录主体生效；public 对所有人（含匿名访客）生效。
+ * public 的匿名面另由 gallery 路由独立处理（§4.2 权限交互）。
  * pattern 与调用方传入的 canonicalPath 同基准（文件走父目录约定），故为精确匹配。
  */
 export function syntheticVisibilityRule(
   canonicalPath: string,
   visibility: Visibility | undefined,
-  mountId: string
+  mountId: string,
+  principal: Principal
 ): PathRule | null {
   if (visibility !== 'users' && visibility !== 'public') return null;
+  const loggedIn = principal.type === 'user' || principal.type === 'apiKey';
+  if (visibility === 'users' && !loggedIn) return null;
   return {
     id: '__synthetic_visibility__',
     mountId,
     pathPattern: normalizePath(canonicalPath),
     effect: 'allow',
-    role: 'user',
+    role: principal.role,
     permissions: ['read', 'download'],
+    requirePassword: false,
+    priority: 0,
+    origin: 'system',
+    status: 'active',
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+/**
+ * 文件级游客可见性合成规则（§C）：**仅匿名访客**（principal.type === 'guest'）生效，注入 read/download allow。
+ * 有效值直接取目标文件（或目录）的 guest_visibility —— NULL 不额外开放（保持既有语义：
+ * 站点 allow_guest_access 总闸 + role='guest' 规则 / users·public 可见性合成规则）：
+ *   'none'     → 不返回规则（落默认拒绝）；
+ *   'download' → 允许 download；
+ *   'view'     → 允许 read 与 download。
+ * 站点级 allow_guest_access 开关由调用方（公开列表 / path-serve 匿名读）另行把关。
+ */
+export function syntheticGuestRule(
+  canonicalPath: string,
+  guestVisibility: GuestVisibility | null | undefined,
+  mountId: string,
+  principal: Principal
+): PathRule | null {
+  if (principal.type !== 'guest') return null;
+  if (guestVisibility !== 'download' && guestVisibility !== 'view') return null;
+  return {
+    id: '__synthetic_guest__',
+    mountId,
+    pathPattern: normalizePath(canonicalPath),
+    effect: 'allow',
+    role: principal.role,
+    permissions: guestVisibility === 'view' ? ['read', 'download'] : ['download'],
     requirePassword: false,
     priority: 0,
     origin: 'system',
@@ -200,13 +247,16 @@ export function isPasswordExempt(principal: Principal, fileOwnerId?: string): bo
 /**
  * 加载某主体相关的全部候选规则。
  * mountId 可选：传入时只加载该挂载的规则 + 全局规则（审计 H-01 挂载隔离）。
+ * 规则主体支持角色别名：path_rules.role 写 role_defaults.alias（角色显示别名）时，
+ * 命中该别名即视为写给该角色的规则（别名唯一性不做强约束，取到的别名全部并入候选集）。
  */
 export async function loadPrincipalRules(db: Db, principal: Principal, mountId?: string): Promise<PathRule[]> {
+  const aliases = await RoleDefaultsRepo.aliasesOf(db, principal.role);
   return RuleRepo.findCandidates(
     db,
     {
       id: principal.type === 'user' ? principal.id : undefined,
-      role: principal.role,
+      roles: [principal.role, ...aliases],
       apiKeyId: principal.apiKeyId,
     },
     mountId

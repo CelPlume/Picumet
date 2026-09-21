@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import { AnnouncementRepo, SettingsRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
+import { loadRoutePrefixes } from '../storage/direct-links';
 import { ok } from '../../shared/response';
 
 export const publicRoutes = new Hono<AppBindings>();
@@ -10,6 +11,7 @@ export const publicRoutes = new Hono<AppBindings>();
 publicRoutes.get('/settings', async (c) => {
   const db = getDb(c);
   const raw = await SettingsRepo.getAll(db);
+  const prefixes = await loadRoutePrefixes(db);
   const parse = (key: string) => {
     const v = raw[key];
     if (v === undefined || v === 'null') return undefined;
@@ -26,6 +28,9 @@ publicRoutes.get('/settings', async (c) => {
     allowGuestAccess: parse('allow_guest_access') ?? false,
     allowRegistration: parse('allow_registration') ?? true,
     requireEmailVerification: parse('require_email_verification') ?? false,
+    // 路由前缀（公开直链命名空间与根路径语义）：前端据此生成直链、决定 '/' 行为
+    directPrefix: prefixes.directPrefix,
+    rootTarget: prefixes.rootTarget,
   });
 });
 

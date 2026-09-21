@@ -5,6 +5,8 @@ import { mapUser, mapQuota, num, type Row } from '../row';
 import { uuid } from '../../utils/crypto';
 
 export const UserRepo = {
+  /** 新用户默认存储限额：1GiB（存量由迁移统一回填） */
+  DEFAULT_MAX_STORAGE: 1073741824,
   async createUser(db: Db, u: { username: string; email: string; passwordHash: string; role?: Role }): Promise<User> {
     const now = Date.now();
     const id = uuid();
@@ -13,7 +15,7 @@ export const UserRepo = {
        VALUES (?, ?, ?, 0, ?, ?, '/', ?, ?)`,
       [id, u.username, u.email, u.passwordHash, u.role ?? 'user', now, now]
     );
-    await db.run(`INSERT INTO user_quotas (user_id, updated_at) VALUES (?, ?)`, [id, now]);
+    await db.run(`INSERT INTO user_quotas (user_id, max_storage, updated_at) VALUES (?, ?, ?)`, [id, UserRepo.DEFAULT_MAX_STORAGE, now]);
     return (await this.getUserById(db, id)) as User;
   },
   async getUserById(db: Db, id: string): Promise<User | null> {

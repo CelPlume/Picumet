@@ -74,6 +74,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Env; Variables: AppVa
     avatarUrl: user.avatarUrl,
     status: user.status,
     capabilities: user.capabilities,
+    permissions: user.permissions,
   });
   await next();
 });
@@ -152,6 +153,7 @@ export async function applyApiKeyContext(c: AppContext, db: Db, apiKey: ApiKey):
     locale: owner.locale,
     theme: owner.theme,
     status: owner.status,
+    permissions: owner.permissions,
   });
   return null;
 }
@@ -265,6 +267,7 @@ export const optionalAuthMiddleware = createMiddleware<{ Bindings: Env; Variable
           avatarUrl: user.avatarUrl,
           status: user.status,
           capabilities: user.capabilities,
+          permissions: user.permissions,
         });
       }
     }

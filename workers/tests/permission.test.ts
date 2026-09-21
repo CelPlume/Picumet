@@ -23,6 +23,11 @@ const mount: Mount = {
   sortOrder: 'asc',
   priority: 0,
   status: 'active',
+  maxStorage: null,
+  usedStorage: 0,
+  quotaReserved: 0,
+  poolStrategy: 'least_used',
+  capacityBytes: null,
 };
 
 function userPrincipal(overrides: Partial<Principal> = {}): Principal {
@@ -363,8 +368,8 @@ describe('H-01 挂载隔离（findCandidates / loadPrincipalRules）', () => {
       pathPattern: '/private/**', effect: 'allow', mountId: mountB,
       role: 'user', permissions: ['read'], requirePassword: false, priority: 0,
     });
-    const gotForA = await RuleRepo.findCandidates(db, { role: 'user' }, mountA);
-    const gotForB = await RuleRepo.findCandidates(db, { role: 'user' }, mountB);
+    const gotForA = await RuleRepo.findCandidates(db, { roles: ['user'] }, mountA);
+    const gotForB = await RuleRepo.findCandidates(db, { roles: ['user'] }, mountB);
     expect(gotForA.some((r) => r.id === rA.id)).toBe(true);
     // 挂载 A 的规则不应出现在挂载 B 的候选中
     expect(gotForB.some((r) => r.id === rA.id)).toBe(false);
@@ -380,8 +385,8 @@ describe('H-01 挂载隔离（findCandidates / loadPrincipalRules）', () => {
       pathPattern: '/global/**', effect: 'allow', // mountId 省略 → 全局
       role: 'user', permissions: ['read'], requirePassword: false, priority: 0,
     });
-    const gotA = await RuleRepo.findCandidates(db, { role: 'user' }, 'any-mount');
-    const gotB = await RuleRepo.findCandidates(db, { role: 'user' }, 'another-mount');
+    const gotA = await RuleRepo.findCandidates(db, { roles: ['user'] }, 'any-mount');
+    const gotB = await RuleRepo.findCandidates(db, { roles: ['user'] }, 'another-mount');
     expect(gotA.some((r) => r.id === g.id)).toBe(true);
     expect(gotB.some((r) => r.id === g.id)).toBe(true);
   });

@@ -10,7 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from '@/components/ui/toast';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch, ApiError } from '@/lib/api';
-import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
+import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 
 interface Rule {
   id: string;
@@ -140,17 +140,17 @@ export default function AdminPermissions() {
       </div>
 
 
-      <Card className="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto py-0">
+      <Card className="mt-3 max-h-[calc(100vh-12.7rem)] overflow-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2"><SortableHeader title={t('admin.permissions.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('admin.permissions.subject')}</th>
-              <th className="px-4 py-2">{t('admin.permissions.source')}</th>
-              <th className="px-4 py-2">{t('settings.permissions')}</th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.permissions.priority')} sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title={t('admin.permissions.effect')} sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('common.actions')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.permissions.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('admin.permissions.subject')}</th>
+              <th className={'px-4 py-2'}>{t('admin.permissions.source')}</th>
+              <th className={'px-4 py-2'}>{t('settings.permissions')}</th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.permissions.priority')} sortKey="priority" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}><SortableHeader title={t('admin.permissions.effect')} sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-4 py-2'}>{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
