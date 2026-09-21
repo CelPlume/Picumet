@@ -39,7 +39,9 @@ export default function AdminLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className="flex min-w-0 flex-1 flex-col md:h-[calc(100vh-12rem)] md:overflow-hidden">
+        {/* overflow-clip + clip-margin：内容贴边时（如 Users/Files 工具栏的搜索框），
+            3px focus ring 仍可画出裁切边界而不产生布局位移；不支持的浏览器退化为纯裁切 */}
+        <div className="flex min-w-0 flex-1 flex-col md:h-[calc(100vh-12rem)] md:overflow-clip md:[overflow-clip-margin:4px]">
           <Outlet />
         </div>
       </div>
