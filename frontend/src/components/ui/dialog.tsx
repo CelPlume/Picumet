@@ -79,7 +79,7 @@ export function Dialog({
       />
       <div
         className={cn(
-          'glass-surface glass-blur relative z-10 w-full rounded-lg border shadow-lg transition-[opacity,transform] duration-300 ease-out',
+          'glass-dialog relative z-10 w-full rounded-lg border shadow-lg transition-[opacity,transform] duration-300 ease-out',
           'text-card-foreground',
           entered ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-4 scale-95 opacity-0',
           width

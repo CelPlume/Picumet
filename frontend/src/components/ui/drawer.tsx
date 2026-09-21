@@ -95,7 +95,7 @@ export function Drawer({
       {/* Panel */}
       <div
         className={cn(
-          'glass-surface glass-blur fixed z-10 flex flex-col text-card-foreground shadow-xl',
+          'glass-dialog fixed z-10 flex flex-col text-card-foreground shadow-xl',
           sideStyles[side],
           widthCls,
           sideAnim[side]

@@ -103,13 +103,31 @@
     -webkit-backdrop-filter: blur(calc(var(--glass-blur, 20px) / 2.5));
     backdrop-filter: blur(calc(var(--glass-blur, 20px) / 2.5));
   }
+  /* 弹窗/抽屉窗体：身后垫着 glass-overlay（黑 50% + 半强度模糊），半透明填充透出的
+     是被压暗的背景 → 整体发灰。因此 backdrop-filter 做两项补偿，使弹窗与页面上的
+     玻璃表面（侧栏/文件卡片 .item-surface）观感一致：
+     - brightness(1.75)：遮罩把背景压到 50% 亮度，全补回(×2)会形成比周围更亮的发光岛，
+       补到 87.5% 兼顾不灰与不刺眼；
+     - blur ×0.92：遮罩已贡献 1/2.5 强度的模糊（方差可加），扣除后净模糊与单层表面一致。
+     填充透明度在档位基础上再让 0.12（下限 0.6，frosted 档维持与文件卡片相同的 0.6）：
+     弹窗背后是双重模糊的低对比内容，文本可读性余量比直接贴壁纸的文件卡片大，
+     default 档 0.92 的实底观感需要放开才有玻璃感 */
+  .glass-dialog {
+    background-color: hsl(var(--card) / max(0.6, calc(var(--glass-alpha, 0.72) - 0.12)));
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur, 20px) * 0.92)) saturate(1.5) brightness(1.75);
+    backdrop-filter: blur(calc(var(--glass-blur, 20px) * 0.92)) saturate(1.5) brightness(1.75);
+  }
   /* 关闭模糊（.no-blur，theme store off 档）：所有 backdrop-filter 失效，
      含遮罩与文件项磨砂底，全站实底（no-blur 与 has-bg-image 同在根元素上） */
   .no-blur .glass-blur,
   .no-blur .glass-overlay,
+  .no-blur .glass-dialog,
   .no-blur .item-surface {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
+  }
+  .no-blur .glass-dialog {
+    background-color: hsl(var(--card));
   }
   .scrollbar-thin {
     scrollbar-width: thin;
@@ -397,7 +415,8 @@
     background-color: rgba(0, 0, 0, 0.75);
   }
   .glass-surface,
-  .glass-surface-popover {
+  .glass-surface-popover,
+  .glass-dialog {
     background-color: hsl(var(--card));
   }
   .glass-surface-popover {
