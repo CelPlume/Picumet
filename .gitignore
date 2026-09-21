@@ -13,3 +13,7 @@ screenshots/
 
 # build artifacts
 *.tsbuildinfo
+
+# Python 验收脚本缓存
+__pycache__/
+*.pyc
