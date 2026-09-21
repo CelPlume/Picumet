@@ -113,9 +113,31 @@ Run these commands from each package root.
 | Frontend type check | `bun run typecheck` | `frontend/` |
 | Frontend build | `bun run build` | `frontend/` |
 
-The backend suite contains 127 test cases and runs against in-memory `node:sqlite` mocks for D1, KV, and R2 (see `tests/helpers.ts`), so it does not require `workerd`. The frontend suite contains 7 test cases plus a coverage gate that focuses on the security-critical modules `src/lib/escape.ts` and `src/pages/Register.tsx` (80% lines, 60% functions, 40% branches).
+The backend suite runs against in-memory `node:sqlite` mocks for D1, KV, and R2 (see `tests/helpers.ts`), so it does not require `workerd`. The frontend suite adds a coverage gate that focuses on the security-critical modules `src/lib/escape.ts` and `src/pages/Register.tsx` (80% lines, 60% functions, 40% branches).
 
 Continuous integration runs `.github/workflows/ci.yml` on push and pull requests to `main`. The `workers` job runs install, type check, and tests; the `frontend` job adds the coverage gate and a production build. CI never deploys; deploy with `wrangler deploy` manually.
+
+### Local acceptance scripts (cross-system behaviour)
+
+Unit tests run in memory and cannot cover the real "D1 + R2 binding + scheduled task" combination. The repository's `scripts/` directory ships two Python acceptance scripts (standard library plus the `wrangler` CLI) that assert end-to-end behaviour against a **local dev stack**:
+
+| Script | Covers | Key assertions |
+| :--- | :--- | :--- |
+| `scripts/verify-content-addressing.py` | §F content-hash addressing | Uploading the same content twice produces a single physical object with two rows sharing the physical key and content hash, both reading back identical bytes; deleting one file keeps the object, deleting the last one enqueues `blob_gc`; after the grace period a scheduled trigger deletes the object and drains the queue; overwriting enqueues the old content |
+| `scripts/verify-storage-failover.py` | §G read-path failover (pool / secondary buckets) | With the file's recorded bucket set to a "broken primary" (unreachable S3 endpoint), the first read returns 200 from the R2 pool member after the 8 s candidate timeout, and the second read is markedly faster through the `serve:loc` hint |
+
+Prerequisites and usage:
+
+```bash
+# 1) start the local stack (add --test-scheduled to exercise the collection path)
+cd workers && bun run dev -- --test-scheduled
+
+# 2) in another terminal (defaults: http://localhost:8787, admin/admin123456; overridable)
+python3 scripts/verify-content-addressing.py --base-url http://localhost:8787
+python3 scripts/verify-storage-failover.py --base-url http://localhost:8787
+```
+
+Both scripts clean up after themselves (uploaded paths, mount, provider, API key). Shared helpers live in `scripts/_picumet_e2e.py` (HTTP session, multipart body builder, local D1 queries, local R2 key enumeration). `verify-content-addressing.py` waits 65 s for the grace period before triggering the scheduled task; pass `--skip-gc` to skip that wait.
 
 ## Code conventions
 

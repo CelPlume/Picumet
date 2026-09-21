@@ -591,6 +591,7 @@ Renames a file or folder and updates its metadata, including the access password
 | `accessPassword` | `string` | No | A new access password, or `null` to remove it. The server stores only a hash. |
 | `visibility` | `string` | No | The visibility: `private`, `users`, or `public`. Requires the update permission. |
 | `manualPosition` | `integer` | No | The manual sort position. |
+| `guestVisibility` | `string` | No | Guest (anonymous visitor) visibility: `inherit` (clears the file-level setting and follows the role default), `none` (guests cannot see it), `download` (download only), `view` (view and download). Requires the update permission; supported on files and folders, and it is the storage field behind "Default user permissions". |
 
 #### Response
 
@@ -1288,11 +1289,11 @@ curl -X POST https://{domain}/api/upload \
 
 ## Shares
 
-Share endpoints create, list, verify, download, preview, and revoke share links. Creating, listing, and revoking shares require a logged-in session. Reading a share, verifying its password, downloading, and previewing are public.
+Share endpoints create, list, verify, browse, download, preview, and revoke share links. One share carries 1 to 50 items (files and folders mixed). Creating, listing, and revoking shares require a logged-in session. Reading a share, browsing its folders, verifying its password, downloading, and previewing are public.
 
 ### Create a share
 
-Creates a share link for a file. Requires the `share` permission on the file.
+Creates a share link for one or more files/folders. Requires the `share` permission on every item.
 
 `POST /api/shares/`
 
@@ -1300,18 +1301,21 @@ Creates a share link for a file. Requires the `share` permission on the file.
 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `fileId` | `string` | Yes | The file identifier. |
-| `title` | `string` | No | A display title. Defaults to the file name. |
+| `fileIds` | `array` | Yes | Item identifiers (files or folders), 1 to 50. The server deduplicates them, keeps request order, and writes the first one to `shares.file_id`. |
+| `title` | `string` | No | Display title. Defaults to the item name for a single item, `{n} items` otherwise. |
 | `password` | `string` | No | A share password. The server stores only a hash. |
-| `expiresIn` | `integer` | No | The share lifetime in seconds, from 60 to 1 year. |
-| `maxViews` | `integer` | No | The maximum number of views. |
-| `maxDownloads` | `integer` | No | The maximum number of downloads. |
-| `allowPreview` | `boolean` | No | Allow in-page preview. Defaults to `true`. |
+| `expiresIn` | `integer` | No | The share lifetime in seconds, from 60 to 1 year. Mutually exclusive with `expiresAt`. |
+| `expiresAt` | `integer` | No | Absolute expiry as a millisecond timestamp. Mutually exclusive with `expiresIn`. |
+| `maxViews` | `integer` | No | Maximum view count. |
+| `maxDownloads` | `integer` | No | Maximum download count. |
+| `allowPreview` | `boolean` | No | Allow previews. Defaults to `true`. |
 | `allowDownload` | `boolean` | No | Allow downloads. Defaults to `true`. |
+| `requireLogin` | `boolean` | No | Restrict the share to logged-in users. Defaults to `false`. |
+| `allowedUsers` | `array` | No | Usernames allowed to open the share, up to 50. Unknown usernames are rejected. |
 
 #### Response
 
-Returns the share with its short id and public URL with status `201`.
+Returns the short share ID, the public link, and the item list with status `201`.
 
 ```json
 {
@@ -1320,11 +1324,18 @@ Returns the share with its short id and public URL with status `201`.
     "share": {
       "id": "abc123",
       "url": "https://{domain}/share/abc123",
+      "title": "2 items",
       "expiresAt": null,
       "createdAt": 1710000000000,
       "passwordProtected": true,
       "allowPreview": true,
-      "allowDownload": true
+      "allowDownload": true,
+      "requireLogin": false,
+      "allowedUserCount": 0,
+      "items": [
+        { "id": "file-uuid", "rootId": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        { "id": "folder-uuid", "rootId": "folder-uuid", "name": "albums", "path": "/drive/albums", "type": "folder", "size": 0 }
+      ]
     }
   },
   "timestamp": 1710000000000
@@ -1335,10 +1346,10 @@ Returns the share with its short id and public URL with status `201`.
 
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
-| `UNAUTHORIZED` | `401` | No logged-in session. | Log in first. |
-| `VALIDATION_ERROR` | `400` | A share parameter is invalid. | Correct the parameter and retry. |
-| `FORBIDDEN` | `403` | The caller lacks the share permission. | Check the permission rules. |
-| `NOT_FOUND` | `404` | The file does not exist. | Confirm the file identifier. |
+| `UNAUTHORIZED` | `401` | Not logged in. | Log in first. |
+| `VALIDATION_ERROR` | `400` | Invalid share parameters (including an item count outside 1..50). | Fix the parameters and retry. |
+| `FORBIDDEN` | `403` | Missing the `share` permission. | Check the permission rules. |
+| `NOT_FOUND` | `404` | An item or its mount does not exist. | Verify the item identifiers. |
 
 #### Example
 
@@ -1347,7 +1358,7 @@ curl -X POST https://{domain}/api/shares/ \
   -H "Content-Type: application/json" \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
-  -d '{"fileId":"file-uuid","password":"share-pass","expiresIn":604800}'
+  -d '{"fileIds":["file-uuid","folder-uuid"],"password":"share-pass","expiresIn":604800}'
 ```
 
 ### List my shares
@@ -1373,8 +1384,7 @@ Returns the shares created by the current user with pagination.
     "items": [
       {
         "id": "abc123",
-        "title": "photo.jpg",
-        "file": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        "title": "2 items",
         "expiresAt": null,
         "viewCount": 3,
         "maxViews": null,
@@ -1382,8 +1392,15 @@ Returns the shares created by the current user with pagination.
         "maxDownloads": null,
         "allowPreview": true,
         "allowDownload": true,
+        "passwordProtected": false,
+        "requireLogin": false,
+        "allowedUserCount": 0,
         "status": "active",
-        "createdAt": 1710000000000
+        "createdAt": 1710000000000,
+        "itemCount": 2,
+        "totalSize": 1048576,
+        "firstItem": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        "password": "share-pass"
       }
     ],
     "pagination": { "total": 1, "page": 1, "limit": 20, "pages": 1 }
@@ -1391,6 +1408,8 @@ Returns the shares created by the current user with pagination.
   "timestamp": 1710000000000
 }
 ```
+
+This list is the **creator's view**: it is the only place that returns `password` (the plaintext access password, used by "view password" and "copy link with password"); public endpoints never return the plaintext or the ciphertext. Entries with no password, a missing ciphertext, or a failed decryption simply omit the field.
 
 #### Errors
 
@@ -1406,9 +1425,11 @@ curl "https://{domain}/api/shares/?status=active" -b cookies.txt
 
 ### Get share information
 
-Returns public share information without requiring a login. When the share is password-protected, the response includes `requiresPassword: true` and no file data until the visitor verifies the password.
+Returns public share information without requiring a login. When the share is password-protected, the response includes `requiresPassword: true`, an empty `items` array, and `allowPreview` / `allowDownload` set to `false` until the visitor verifies the password.
 
 `GET /api/shares/{id}`
+
+The query parameter `?password={plaintext}` serves "share links with the password built in": a correct password returns the content directly (equivalent to a completed verification), and a wrong one returns `401 INVALID_PASSWORD`. Public responses never contain the password plaintext or ciphertext.
 
 #### Path parameters
 
@@ -1426,9 +1447,12 @@ For a share without a password, or after password verification:
   "data": {
     "share": {
       "id": "abc123",
-      "title": "photo.jpg",
+      "title": "2 items",
       "creatorName": "alice",
-      "file": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576, "mimeType": "image/jpeg" },
+      "items": [
+        { "id": "file-uuid", "rootId": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576, "mimeType": "image/jpeg" },
+        { "id": "folder-uuid", "rootId": "folder-uuid", "name": "albums", "path": "/drive/albums", "type": "folder", "size": 0 }
+      ],
       "allowPreview": true,
       "allowDownload": true,
       "expiresAt": null,
@@ -1443,13 +1467,15 @@ For a share without a password, or after password verification:
 }
 ```
 
-For a password-protected share that is not yet verified, `file`, `allowPreview`, and `allowDownload` are `null` or `false`, and `requiresPassword` is `true`.
+Each item is a `FileListItem` plus `rootId` (the item's identifier within the share). For a password-protected share that is not yet verified, `items` is empty, `allowPreview` and `allowDownload` are `false`, and `requiresPassword` is `true`.
 
 #### Errors
 
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
 | `NOT_FOUND` | `404` | The share does not exist. | Confirm the share id. |
+| `LOGIN_REQUIRED` | `401` | The share is limited to logged-in or named users. | Log in first. |
+| `FORBIDDEN` | `403` | The current user is not in the allowed user list. | Ask the creator. |
 | `SHARE_REVOKED` | `410` | The share link no longer works. | Ask the creator for a new link. |
 | `SHARE_EXPIRED` | `410` | The share expired. | Ask the creator for a new link. |
 | `SHARE_LIMIT_REACHED` | `410` | The share reached its view limit. | Ask the creator to raise the limit. |
@@ -1458,6 +1484,54 @@ For a password-protected share that is not yet verified, `file`, `allowPreview`,
 
 ```sh
 curl https://{domain}/api/shares/abc123
+```
+
+### Browse a shared folder
+
+Lists a directory inside one of the share's folder items by relative path. `root` must be a folder item of this share; `sub` is a path relative to that root folder, and escaping the root subtree returns `403`.
+
+`GET /api/shares/{id}/list?root={itemId}&sub={path}`
+
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `root` | `string` | Yes | The `file_id` of a folder item in this share. |
+| `sub` | `string` | No | Path relative to the root folder. Defaults to `/`. |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "shareId": "abc123",
+    "rootId": "folder-uuid",
+    "path": "/albums",
+    "items": [
+      { "id": "child-uuid", "rootId": "folder-uuid", "name": "trip.jpg", "path": "/drive/albums", "type": "file", "size": 204800 }
+    ]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+`path` is the normalized relative path; every listed item carries the requested root folder item as its `rootId`.
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `VALIDATION_ERROR` | `400` | `root` is missing or is not a folder item. | Pass the `file_id` of a folder item. |
+| `FORBIDDEN` | `403` | `root` is outside this share, or `sub` escapes the root subtree. | Verify the item identifier and relative path. |
+| `NOT_FOUND` | `404` | The share or the target directory does not exist. | Verify the share id and path. |
+| `INVALID_PASSWORD` | `401` | The password is not verified yet. | Call the verify endpoint first. |
+| `SHARE_REVOKED` / `SHARE_EXPIRED` / `SHARE_LIMIT_REACHED` | `410` | The share is unavailable or over its limit. | Ask the creator for a new link. |
+
+#### Example
+
+```sh
+curl "https://{domain}/api/shares/abc123/list?root=folder-uuid&sub=/albums" -b cookies.txt
 ```
 
 ### Verify a share password
@@ -1509,15 +1583,21 @@ curl -X POST https://{domain}/api/shares/abc123/verify \
 
 ### Get a share download link
 
-Returns a single-use gateway download URL for the share. The download count increments only when the gateway consumes the token.
+Returns a single-use gateway download URL for one file in the share. The download count increments only when the gateway consumes the token. `itemId` may be a share item or a descendant file of one of the share's folder items.
 
-`GET /api/shares/{id}/download`
+`GET /api/shares/{id}/download?itemId={itemId}`
 
 #### Path parameters
 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | Yes | The share id. |
+
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | No | Identifier of the target file or of a descendant of a folder item. Defaults to the share's first item. |
 
 #### Response
 
@@ -1533,24 +1613,25 @@ Returns a single-use gateway download URL for the share. The download count incr
 
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
-| `NOT_FOUND` | `404` | The share does not exist. | Confirm the share id. |
+| `NOT_FOUND` | `404` | The share does not exist, or `itemId` is outside the share scope. | Confirm the share id and item identifier. |
 | `SHARE_REVOKED` | `410` | The share is not active. | Ask the creator for a new link. |
 | `SHARE_EXPIRED` | `410` | The share expired. | Ask the creator for a new link. |
 | `FORBIDDEN` | `403` | The share does not allow downloads. | Ask the creator to enable downloads. |
+| `VALIDATION_ERROR` | `400` | `itemId` points at a folder item. | Use the folder browsing endpoint instead. |
 | `INVALID_PASSWORD` | `401` | The password is not verified. | Call the verify endpoint first. |
 | `SHARE_LIMIT_REACHED` | `410` | The share reached its download limit. | Ask the creator to raise the limit. |
 
 #### Example
 
 ```sh
-curl https://{domain}/api/shares/abc123/download -b cookies.txt
+curl "https://{domain}/api/shares/abc123/download?itemId=file-uuid" -b cookies.txt
 ```
 
 ### Preview a shared file
 
-Streams the shared image directly with `Content-Disposition: inline` when the share allows preview. Returns binary image data, not JSON.
+Streams the shared image directly with `Content-Disposition: inline` when the share allows preview. Returns binary image data, not JSON. `itemId` follows the same scope rules as downloads.
 
-`GET /api/shares/{id}/preview`
+`GET /api/shares/{id}/preview?itemId={itemId}`
 
 #### Path parameters
 
@@ -1558,19 +1639,26 @@ Streams the shared image directly with `Content-Disposition: inline` when the sh
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | Yes | The share id. |
 
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | No | Identifier of the target file or of a descendant of a folder item. Defaults to the share's first item. |
+
 #### Errors
 
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
-| `NOT_FOUND` | `404` | The share or the file object does not exist. | Confirm the share id. |
+| `NOT_FOUND` | `404` | The share does not exist, or `itemId` is outside the share scope. | Confirm the share id and item identifier. |
 | `SHARE_EXPIRED` | `410` | The share is not active. | Ask the creator for a new link. |
 | `FORBIDDEN` | `403` | The share does not allow preview. | Ask the creator to enable preview. |
+| `VALIDATION_ERROR` | `400` | `itemId` points at a folder item. | Use the folder browsing endpoint instead. |
 | `INVALID_PASSWORD` | `401` | The password is not verified. | Call the verify endpoint first. |
 
 #### Example
 
 ```sh
-curl https://{domain}/api/shares/abc123/preview -o photo.jpg
+curl "https://{domain}/api/shares/abc123/preview?itemId=file-uuid" -o photo.jpg
 ```
 
 ### Revoke a share
@@ -1697,6 +1785,12 @@ curl -X PUT https://{domain}/api/users/me/settings \
 Changes the password of the current user. The change revokes all existing sessions, so the user must log in again.
 
 `PUT /api/users/me/password`
+
+The body accepts an optional `emailCode`: when the account has an email **and** the site has mail enabled, changing the password requires a 6-digit code obtained from the endpoint below (wrong/expired/used code → `400 INVALID_OTP`; five wrong attempts invalidate it). When mail is not configured or the account has no email the check is skipped and only the current password is verified (users are never locked out). Codes are single-use and valid for 5 minutes.
+
+### Send a password-change code
+
+`POST /api/users/me/password/send-code` (signed in) → `{ "success": true, "expiresIn": 300 }`; `400` when the account has no email or mail is disabled; `500 MAIL_ERROR` when sending fails.
 
 #### Request body
 
@@ -2169,6 +2263,8 @@ Lists all shares and revokes any share.
 
 `GET /api/admin/shares?page={page}&limit={limit}&status={status}`
 
+`GET /api/admin/shares/{id}` (admin share details: creator username, status, limits, switches, password protection, and the `items` list) and `PATCH /api/admin/shares/{id}` (admin edit: `status`, `expiresAt`, `maxViews`, `maxDownloads`, `allowPreview`, `allowDownload`, `requireLogin`, `allowedUsers`, `password` — a non-empty password resets it, writing both the hash and the ciphertext, while `null` or an empty string clears it).
+
 `DELETE /api/admin/shares/{id}`
 
 #### List query parameters
@@ -2185,7 +2281,19 @@ Lists all shares and revokes any share.
 {
   "success": true,
   "data": {
-    "items": [{ "id": "abc123", "title": "photo.jpg", "creatorId": "user-uuid", "status": "active" }],
+    "items": [
+      {
+        "id": "abc123",
+        "title": "2 items",
+        "creatorId": "user-uuid",
+        "file": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        "status": "active",
+        "itemCount": 2,
+        "passwordProtected": false,
+        "requireLogin": false,
+        "allowedUserCount": 0
+      }
+    ],
     "pagination": { "total": 5, "page": 1, "limit": 20, "pages": 1 }
   },
   "timestamp": 1710000000000
@@ -2320,7 +2428,9 @@ All fields are optional.
 | `enableTurnstile` | `boolean` | No | Enable Cloudflare Turnstile. |
 | `turnstileSiteKey` | `string` | No | The Turnstile site key. |
 | `rateLimitEnabled` | `boolean` | No | Enable rate limiting. |
-| `rateLimitRequestsPerMinute` | `integer` | No | Requests per minute, 1 to 10000. |
+| `rateLimitRequestsPerMinute` | `integer` | No | Requests per minute, 1 to 10000. Takes effect in production only: the value applies per IP, signed-in users get ×2, auth endpoints such as sign-in and sign-up are fixed at 5 per minute, and free mode allows 60 per session and 120 per user per minute. |
+| `maxConcurrentTransfers` | `integer` | No | Maximum concurrent transfers, 0 to 1000, default 4, where `0` means unlimited. Caps in-flight requests per user (per IP when signed out) across every upload channel and the download gateway, and returns `429 CONCURRENCY_LIMIT_EXCEEDED` beyond it. |
+| `rateLimitDownloadsPerMinute` | `integer` | No | Download rate limit, 0 to 100000, default 120, where `0` means unlimited. Caps download-type requests per minute per user (per IP when signed out) — download gateway, share download/preview, file download links, and public directory direct links — and returns `429 RATE_LIMIT_EXCEEDED` beyond it. |
 | `smtpHost` | `string` | No | The SMTP host. |
 | `smtpPort` | `integer` | No | The SMTP port. |
 | `smtpSecure` | `boolean` | No | Use a secure SMTP connection. |

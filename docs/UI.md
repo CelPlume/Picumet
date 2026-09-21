@@ -63,11 +63,9 @@ flowchart LR
     subgraph AUTH["Authenticated routes"]
         direction TB
         R8["/files File manager"]
-        R9["/shares My shares"]
-        R10["/settings/profile Profile"]
-        R11["/settings/security Security"]
-        R12["/settings/api-keys API keys"]
-        R13["/settings/appearance Appearance"]
+        R9["/settings/shares Share management"]
+        R10["/settings/profile Personalization"]
+        R10b["/settings/shares Share management"]
     end
 
     subgraph ADMIN["Admin routes"]
@@ -93,14 +91,12 @@ flowchart LR
 | Reset password | `/reset-password` | Public | `ResetPassword` |
 | Free mode | `/free-mode` | Public | `FreeMode` |
 | Share page | `/share/:id` `/i/:id` | Public | `SharePage` |
-| File manager | `/files` `/files/*` | Signed in | `Files` |
-| My shares | `/shares` | Signed in | `MyShares` |
+| File manager | `/files` `/files/*` (fixed prefix) | Signed in | `Files` |
+| Share management | `/settings/shares` | Signed in | `Shares` (settings sidebar, under Personalization) |
 | Settings layout | `/settings/*` | Signed in | `SettingsLayout` |
-| Profile | `/settings/profile` | Signed in | `Profile` |
-| Security | `/settings/security` | Signed in | `Security` |
+| Personalization | `/settings/profile` | Signed in | `Personalization` (left: profile/email/password; right: right-click behavior/theme incl. background) |
 | API keys | `/settings/api-keys` | Signed in | `ApiKeys` |
 | Access rules | `/settings/access-rules` | Signed in | `AccessRules` |
-| Appearance | `/settings/appearance` | Signed in | `Appearance` |
 | Admin layout | `/admin` | Admin | `AdminLayout` |
 | Dashboard | `/admin` | Admin | `Dashboard` |
 | Users | `/admin/users` | Admin | `Users` |
@@ -124,7 +120,7 @@ The `AppShell` component wraps the signed-in pages and provides the common chrom
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ [☰] [Logo] [Files] [Shares] [Settings] [Admin]  [◐] [中] [@]│
+│ [☰] [Logo] [Files] [Settings] [Admin] [◐] [中] [@]           │
 ├─────────────────────────────────────────────────────────────┤
 │   Announcement banner                                       │
 ├─────────────────────────────────────────────────────────────┤
@@ -160,16 +156,23 @@ The file manager (`/files`) arranges content into three regions:
 - **Content**: renders a responsive card grid or a list of rows.
 - **Properties panel**: opens on the right when you select a file or choose **Properties** from a menu.
 - **Bulk actions bar**: sticks to the bottom of the viewport while you select any item.
+- **Create a share**: the row menu's **Share** and the bulk bar's **Share** open the same `ShareDialog`; the selection may be one or more files, one or more folders, or a mix of both (up to 50). The dialog keeps the title, access password, expiry (preset / custom duration / specific deadline), access scope (everyone / signed-in users / specific users), max downloads, allow-preview and allow-download; after creation the same dialog shows the link, the QR code, and copy/open buttons.
 
 ### Share pages
 
-**Public share page.** The route `/share/:id` renders one shared item, and `/i/:id` serves the image short link. Password-protected shares show a password gate before the content loads. After verification, the page shows the title, creator, size, expiry, and view-count badges, plus download, copy-link, and QR actions. The QR code renders locally with the `qrcode` library. The image short link renders the image directly, without the surrounding card.
+**Public share page.** The route `/share/:id` renders the share, and `/i/:id` is the image short link (one image served directly). Password-protected shares show a password gate before the content loads. The header shows the title (share title → single-item file name → "Shared content" fallback chain), the creator, the expiry or "never expires", the view/download counters, and a password badge. **The body is an item list**: each row uses the same visual language as the files page (`FileIcon` + name + size + a trailing download button), and with several items the title reads "N items"; folder items open for browsing (breadcrumb "share root › subfolder" plus an up-level control, and empty folders show an empty state); image items render a large preview when their attributes allow it. **A single Share button** owns forwarding: clicking it expands a dropdown (portalled to body) whose entries are, in order, the locally generated QR code, `Copy link`, `Copy link (with password)` (appends `?password=` to the link), `View password` (reveals the plaintext and lets you copy it), and `Copy share text` — the text is `From <creator>'s <share name/file name/N items>` + `Link: …` + `Password: …` (the password line is omitted when there is none). Opening a link that carries `?password=` auto-fills the field and submits one verification, going straight to the content. If the visitor has not entered the password on this page, `View password` tells them to check share management. Error states (revoked/expired/exhausted/login-only/missing) all use lucide icons (`Ban` / `Lock` / `FileQuestion`) in a centered card instead of emoji.
 
-**Share list.** The route `/shares` lists the links you created. A view toggle switches between a responsive card grid and a row list. Each card shows the file icon, title, status badge, size, expiry, view count, and download count, with quick actions for QR code, open, copy link, and revoke. The list paginates with a configurable page size, 20 by default.
+**Share list.** The settings sidebar's "Share management" (`/settings/shares`) lists the links you created and **only views and manages them — the creation entry point is gone** (sharing starts from the files page). A view toggle switches between a responsive card grid and a row list. Each card shows the file icon, title, size, and expiry plus **every setting of that share**: the status badge (`CheckCircle2` active / `Clock` expired / `Ban` revoked, with localized copy rather than the raw English enum), the access scope (everyone / signed-in / N named users), password protection (lock icon), the on/off state of preview and download, the view and download counters (with their limits), and the item count when one share holds several. Card settings are laid out in **three rows**: the first holds the access scope (everyone / signed-in users / named users · N), the second the `Allow preview` and `Allow download` switch states, the third `{{used}}/{{max}} views` and `{{used}}/{{max}} downloads` (an empty limit reads "unlimited"). Actions remain QR code, open, copy link, and revoke (revoke goes through `ConfirmDialog`), and the share menu also offers "Copy link (with password)", "View password", and "Copy share text". The list paginates with a configurable page size, 20 by default.
 
 ### Settings and admin pages
 
-The settings layout (`/settings/*`) shows a vertical nav with **Profile**, **Security**, **API keys**, **Access rules**, and **Appearance**. The access-rules page lists rules the user authored (target file, effect, subject, permissions) and revokes them behind a confirmation dialog. The admin layout (`/admin`) uses two columns: a vertical nav on the left and the page content on the right. The nav stacks above the content on mobile. Admin pages include the dashboard with stat cards, user management (the edit dialog carries capability checkboxes: publish/share/grant), storage configuration (the provider dialog uses preset options — R2/AWS S3/Oracle/MinIO/custom — that only prefill fields, plus a mount path), permission rules (the table has an "origin" column separating admin rules from user-authored ones), share management, all files (with visibility and review status columns to approve, reject, or override visibility), access logs, and system settings.
+The admin system settings page spells rate limiting out: next to the toggle it shows the per-IP request-per-minute input and the effective rules — signed-in users get ×2, auth endpoints such as sign-in and sign-up are fixed at 5 per minute, free mode allows 60 per session and 120 per user per minute; the same place also carries the **download rate limit** (default 120 per minute, 0 = unlimited, counting download-type requests only) and the **maximum concurrent transfers** (default 4, 0 = unlimited) that caps in-flight requests per user (per IP when signed out) on uploads and the download gateway and answers 429 beyond it.
+
+Admin "Users → Default user settings" shows a **default permission matrix** per role (view/upload/update/delete/share/download): the built-in seeds are admin and user with everything checked and guest with downloads only, and saving takes effect for every member of that role immediately; a role can also show an **alias** (such as "Administrator"), and permission-rule subjects accept either the role name or that alias. The file properties panel gains a "Default user permissions" section that sets **guest visibility** (follow the role default / guests cannot see it / download only / view and download) and applies on save.
+
+Admin "All files" gains a **visibility column** (a private/site/public three-state badge plus icon, with a pending-review marker on public files awaiting approval), and every row offers a **properties** dialog (name, custom title, icon, color, visibility, guest visibility, access password, and the folder-only **"apply to children too"** switch — unchecked by default, so choosing public for one folder never drags a whole subtree with it). The "Shares" table now carries creator, access scope, password protection, preview/download switches, view and download counters, expiry and status columns, and adds a **share settings (admin)** dialog: it edits status (active/revoked), expiry, max view/download counts, preview/download switches, access scope and named users, and can reset or clear the password, while showing the share items, creator and counters read-only.
+
+The settings layout (`/settings/*`) shows a vertical nav with **Personalization**, **API keys**, and **Access rules**. The access-rules page lists rules the user authored (target file, effect, subject, permissions) and revokes them behind a confirmation dialog. The admin layout (`/admin`) uses two columns: a vertical nav on the left and the page content on the right. The nav stacks above the content on mobile. Admin pages include the dashboard with stat cards, user management (the edit dialog carries role/status/capability checkboxes plus default storage path, storage cap and file count on a wide responsive layout; the toolbar "Default user settings" button sets per-role storage defaults with role create/delete, and saving overrides every user of that role), storage configuration (the provider dialog uses preset options — R2/AWS S3/Oracle/MinIO/custom — that only prefill fields, plus a mount path), permission rules (the table has an "origin" column separating admin rules from user-authored ones), share management, all files (with visibility and review status columns to approve, reject, or override visibility), access logs, and system settings. The mount form's "automatic cross-bucket sync" switch is planned — only a Go-backend environment can enable it; the current Workers (Node) backend does not support that capability and renders it disabled; and mount points are directories — creating a mount immediately adds a folder of the same name to the parent directory listing (the row menu's rename and delete are refused with a prompt to use storage configuration), changing a mount path migrates that folder row, and deleting a mount cleans it up.
 
 ### Public pages
 
@@ -205,7 +208,7 @@ Design decisions:
 
 ## Theming
 
-The theme store in `frontend/src/stores/theme.ts` persists appearance in `localStorage` and applies CSS variables on `document.documentElement`.
+The theme store in `frontend/src/stores/theme.ts` persists personalization in `localStorage` and applies CSS variables on `document.documentElement`.
 
 ### Theme mode
 
@@ -217,7 +220,7 @@ Users pick an accent color from presets or with a color picker. The app converts
 
 ### Blur and background
 
-- **Three blur levels**: the appearance settings' **Blur effect** slider sets `blurLevel = 'off' | 'default' | 'frosted'` (default `default`), written to the `--glass-alpha` and `--glass-blur` CSS variables (small controls share the surface token — no separate control tier); `off` adds a `.no-blur` class on the root element and disables every backdrop filter (overlay, file-item frosting, menus) for solid surfaces.
+- **Three blur levels**: the personalization **Blur effect** slider sets `blurLevel = 'off' | 'default' | 'frosted'` (default `default`), written to the `--glass-alpha` and `--glass-blur` CSS variables (small controls share the surface token — no separate control tier); `off` adds a `.no-blur` class on the root element and disables every backdrop filter (overlay, file-item frosting, menus) for solid surfaces.
 - **Unified surfaces**: the following components share the same surface classes (`frontend/src/index.css` + `components/ui/`): the top bar, sidebar (file tree), dropdown menus, context menu, Select popovers, toasts, dialog bodies, file cards and rows, settings and admin panels, and skeletons. Never hardcode blur or opacity — consume `--glass-alpha` / `--glass-blur`. Small controls (Tabs rail, secondary/outline buttons, search boxes, unchecked checkboxes, ⋮ triggers, Switch tracks) use `.glass-control` + `--glass-alpha` — same color and translucency as the cards beside them.
 - **Background image**: users upload an image up to `2MB` (JPG, PNG, or WebP) or leave no background. The image stores as a base64 data URL in `localStorage`. With a wallpaper the default tier raises opacity (dark 0.92 / light 0.82) to keep WCAG AA. A solid-color background option no longer exists.
 
@@ -271,7 +274,7 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 - Untitled dialogs skip the header strip (close button pinned to the top right) to avoid a dead band.
 - Destructive actions must go through `ConfirmDialog` (HeroUI AlertDialog layout: icon + title row, description, right-aligned cancel + danger buttons, `max-w-sm`) plus a success/error toast; native `confirm()` is forbidden.
 
-### `index.css` `.item-surface` + `explorer.tsx` / `MyShares.tsx` — item three-state
+### `index.css` `.item-surface` + `explorer.tsx` / `settings/Shares.tsx` — item three-state
 
 - rest = glass surface + transparent border; hover = **darkening** (an 8% black `background-image` overlay, not a translucent fill — translucency shows the wallpaper through); selected (`.item-surface-selected` / lasso `.lasso-item-selected`) = glass base with a `primary/0.14` gradient + `primary/0.55` border. File cards/rows and share cards/rows share the same effect.
 
@@ -290,9 +293,10 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 
 - Dialog `w-[min(1400px,94vw)]`, media area `h-[min(72vh,780px)]`, responsive to the browser width.
 
-### `pages/MyShares.tsx` — shares
+### `pages/settings/Shares.tsx` — share management
 
-- Compact cards; quick actions consolidated into the three-dot dropdown; list rows darken on hover like the files page.
+- Compact cards; quick actions consolidated into the three-dot dropdown; list rows darken on hover like the files page; cards and rows share one set of "share settings badges".
+- The creation entry point is gone (the `?create=` parameter and its creation dialog were deleted with it); sharing starts from the selection on the files page (see the file manager workspace section).
 
 ### `components/settings/BlurSlider.tsx` — discrete slider
 
@@ -324,6 +328,16 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 - **Wrapper**: always a `Card` (glass surface, tier-gated) with **`py-0`** — the table's own `px-4 py-2` cell rhythm provides the padding; keeping the Card's default `py-5` leaves a blank strip above the header (past bug).
 - **The loading branch lives inside `<tbody>`**: `{loading ? <tr><td colSpan={N}><TableSkeleton/></td></tr> : …}` so the header and card stay visible while loading; never replace the whole table with a skeleton.
 - **Header sorting**: every data table supports header-click sorting via `SortableHeader` + `sortByKey` (covered: users, admin files, shares, logs, permission rules, storage providers/mounts, access rules, API keys).
+- **Unified header form**: the files page's list header and the admin/settings table headers share one constant and one geometry (measured identical: `font-size 14px`, `padding 8px 16px`, `border-radius 0`, background `rgba(255,255,255,0.45)`, `blur(16px)`, `position sticky`); the files list rows now use `px-4` so their columns line up with the header.
+
+**Sticky headers**: every data table keeps its header pinned while the content scrolls (`TABLE_HEAD_CLASS = sticky top-0 z-10 glass-header` plus a 4% darkening overlay, defined once in `components/ui/sortable-header.tsx`). The extra 4% black `background-image` (the same trick the file-row hover uses) makes the band clearly readable on light wallpapers, where pure glass alone shows almost no layering (measured: header `rgba(255,255,255,0.45)` vs rows `0.60` — light grey band above white rows). `.glass-header` sits one tier below the card in opacity (`max(0.45, --glass-alpha - 0.28)`) so scrolling rows stay visible underneath and the blur reads; it consumes the same three-tier `--glass-alpha` / `--glass-blur` gate (the off tier becomes opaque and `.no-blur` disables blur), so it never scrolls away with the rows; the settings tables are now bounded scroll areas (`max-h-[calc(100vh-16rem)] overflow-auto`) so sticky actually engages.
+- **Files list view header**: Name / Size / Modified, all sortable, pinned just below the app bar (`top-14`) while the list scrolls.
+- **Files page pagination**: both card and list views share the bottom `Pagination` component with server-side `limit` defaulting to **50 per page** (20/100 selectable); changing directory, search term or sorting resets to page 1.
+- **Cards per row**: the file page's card view shows **6 cards per row** by default (2 on mobile) and can be tuned to **4–8** with a slider in Personalization (`FilesPerRowSlider`, persisted as `picumet:appearance.filesPerRow`, applied instantly).
+- **OTP input**: the six cells use the same glass recipe as every other control (`glass-control bg-card/[var(--glass-alpha,0.72)]`, the search-box recipe: alpha follows `--glass-alpha`, blur follows `--glass-blur`, the off tier is opaque with blur disabled), digits centred, no cell is focused before the user types, and **extra keystrokes are ignored once six digits are entered** (previously typing in the last cell was treated as a paste and overwrote the whole value with the final two digits, which looked like the digits rotating to the first cell — fixed and covered by `input-otp.test.tsx`). In the password card the cells sit left and the send button is right-aligned.
+- **Log table height**: the logs page carries a search/filter bar, so its table card uses a taller relative cap (`max-h-[calc(100vh-9rem)]` versus `-14rem` elsewhere) to match the all-files page's visible area.
+- **Personalization layout**: theme (3 options, no per-option descriptions so the narrow columns never wrap) sits in a single three-column row, the password-change email code uses the six-cell `InputOTP` component, right-click behaviour (2 options) in one two-column row, and the background choice (none/image) in one two-column row; the cards-per-row slider reuses the blur slider's discrete-slider look (`.discrete-slider-*`: capsule track, gradient fill, tick dots, white round thumb, labels above, description below).
+- **No more page titles** at the top-left of the settings and admin pages (the "Settings" / "Admin console" headings are gone; the sidebar nav and content remain).
 - **Absolutely-positioned icons inside glass fills need `z-10` + `pointer-events-none`**: the search box magnifier painted before the glass-filled input gets sampled away by its backdrop-filter and disappears (past bug: invisible search icon).
 - **Select triggers match plain inputs** (`bg-transparent` + `dark:bg-input/30`, no self-drawn fill): the glass comes from the containing surface (card/dialog/panel body). A self-drawn white fill turns into a flat white block on white surfaces (past bug: the language/preset selects looked solid on light cards). Fields standing directly on the page (the files-page search box) are the ones that use explicit `SEARCH_INPUT_GLASS`.
 
@@ -342,9 +356,10 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 - **Exception — `TableSkeleton` rows are fully transparent with `border-b` separators**, mimicking real table rows; the glass comes from the enclosing card. Never stack `glass-surface` on skeleton rows embedded in a table: nested same-color glass composites into a near-opaque white board (three card/α layers ≈ 0.97 — past bug: table skeletons rendered the whole card solid white).
 - The stripe primitive `Skeleton` uses neutral `bg-foreground/10` (adapts to light/dark themes), not solid `bg-accent`.
 
-### `pages/settings/Appearance.tsx` — appearance
+### `pages/settings/Personalization.tsx` — personalization
 
-- The accent row spans the full width (preset swatches + a trailing rainbow "custom" that opens the native picker); file icon style and folder display share one two-column row; the blur slider row has no border.
+- `lg:grid-cols-2` layout: left column holds profile (avatar row with inline storage/file count progress bars on the right, no default-path field), email management and password; right column holds right-click behavior (own card) and theme (full-width accent row + icon/folder two-column row + blur slider + custom background placed after blur).
+- Custom file icons accept three input forms: emoji, image URL, or SVG code (`FileIcon` auto-detects and renders accordingly; SVG rides in a `data:` URL inside `<img>` so scripts never execute; failed images fall back to the default icon).
 
 ### Layout and scrollbars (AppShell / settings / admin pages / `index.css`)
 

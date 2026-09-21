@@ -19,6 +19,7 @@ This document tracks the product scope and implementation status. The requiremen
 | Phase 2 | Uploads (multipart/resume), previews, shares, admin panels, API keys, WebDAV, free mode | Done |
 | Phase 3 | AWS S3, appearance theming, admin logins, announcement dismissal | Mostly done; Oracle provider pending |
 | Phase 4 | Path-variable DSL (`{year}/{month}`), analytics | Planned |
+| Future | High-performance Go backend: same-path multi-storage replication/DR | Planned |
 
 ## Feature areas
 
@@ -48,7 +49,7 @@ This document tracks the product scope and implementation status. The requiremen
 | Responsive layout | Done | Desktop/tablet/mobile; floating action bar tested at 350-1080 px. |
 | Users | Done | Register, login, email verify, guest role, free mode. |
 | Permissions and quotas | Done | 3 roles, path ACLs, file/path passwords, storage and file-count quotas. Download speed and monthly traffic quotas rejected. |
-| Storage configuration | Done | Mounts, CDN domain, path prefix, sort, signing. Same-path multi-mount and path DSL pending. |
+| Storage configuration | Done | Mounts, CDN domain, path prefix, sort, signing; content-hash addressing (§F) dedupes equal content; storage pool (§E) spreads across providers. Replication/DR and path DSL pending. |
 | Storage core hardening | Done | Ranged reads (206/416 via unified `serveObject`), `ProviderError` classification, batched delete (≤1000/batch with per-object fallback), delimiter listing, `UploadPartCopy` for >5 GB moves. |
 | Provider unification | Done | Type derived from `endpoint` (`r2` / `s3`; `oracle` folded into `s3`); migration `0005`; `upload_domain` removed. |
 | Admin | Done | Dashboard, users, storage, mounts, rules, shares, files, logs. Analytics pending. |
@@ -125,19 +126,149 @@ Implements the user-model and storage-core items from the OpenList comparison re
 
 Verification: workers `tsc --noEmit` clean; scoped suites green (permission 60, user-model 18, user-rules-api 14, api-files 7, fault-injection 3). Full-suite status is tracked together with the parallel gateway work in the section above.
 
+## Content-hash addressing (§F, 2026-09-21)
+
+Object bodies are stored under their content SHA-256 (`<prefix>/picumet:blob/<h2>/<hash>`; the namespace segment contains `:`, which user virtual keys can never contain), and equal content is shared across files.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Content write path | `services/storage/content.ts`: known hash (S3 gateway SigV4 full-body check) skips the object write on a dedupe hit or writes the content key directly; streaming writes stage + hash while streaming, delete the staging object on a hit, otherwise copy to the content key | `content-addressing.test.ts` |
+| File rows | `file_metadata.object_key` stays the unique virtual key; new `physical_key` + `blob_hash` columns carry the provider key and content hash; every provider call resolves `physicalObjectKey(file)` | `content-addressing.test.ts`, gateway suites |
+| Reference release | Deletes/overwrites release references inside the same SQL batch (`NOT EXISTS (SELECT 1 FROM file_metadata WHERE blob_hash = ?)` — no refcount column, no read-modify-write race); the last reference enqueues `blob_gc` | `content-addressing.test.ts` |
+| Collection + reconciliation | `cleanupBlobObjects` deletes after a grace period, re-checks references first, retries on failure (`attempts`); `reconcileBlobs` restores missing index rows and queues unreferenced ones | `fault-injection.test.ts` |
+| Move/rename | Content-addressed files move as pure metadata (no copy, provider and physical key unchanged); multipart/legacy rows keep copy + source cleanup | `content-addressing.test.ts` |
+| Scope | Multipart upload sessions keep path keys (`blob_hash` NULL) — parts go straight to the provider, so the Worker never sees the bytes; they are deleted as exclusive objects | upload-resume suite |
+
+Logical quota accounting is unchanged (each file counts its own size), so capacity gates stay conservative.
+
+## Read-path failover (§G, 2026-09-21)
+
+When the bucket recorded for a file cannot return the object, reads automatically fall back to the other pool members of that mount. Cross-bucket **copy** (actually replicating objects into secondary buckets) remains future Go-backend work; this layer only makes reads survive a missing/unreachable bucket.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Candidate order | `services/storage/failover.ts`: KV location hint (only when its physical-key fingerprint matches) → the file's recorded provider → remaining pool members (weight desc, id asc), capped at 4 | `storage-failover.test.ts` |
+| Trigger conditions | Object missing (404) and upstream failure (502/`ProviderError`) fall through to the next candidate; semantic errors such as 416 propagate immediately | `storage-failover.test.ts` |
+| Bounded attempts | Each candidate attempt is capped at 8 s, so an unreachable bucket cannot stall the read | `storage-failover.test.ts` (real-stack check below) |
+| Location hint | A replica hit writes `serve:loc:<fileId>` = `{providerId, physicalKey}` (1 h TTL) so later reads go straight to the replica; a rewritten file invalidates it via the key fingerprint | `storage-failover.test.ts` |
+| Wiring | `serveFileObject` / `getFileObject` replace raw provider reads in path-serve, share gateway + preview, WebDAV GET/HEAD, S3 gateway GET/HEAD, AList direct links and the compat read endpoint | all gateway suites |
+
+Real-stack check: a file whose recorded bucket was an unreachable S3 endpoint (connection hangs) still returned `200` after the 8 s candidate timeout by serving from the R2 pool member; follow-up requests took ~0.1 s (hint path), and `serve:loc:<fileId>` was present in KV.
+
+Re-runnable acceptance: `scripts/verify-storage-failover.py` (builds the broken-primary mount and asserts both reads; cleans up after itself). See the development guide for prerequisites.
+
+## Mount points are directories (§H, 2026-09-21)
+
+Every non-root mount point is materialised as a real folder row in its **parent mount's namespace**, so the file page, share picker, public browser, WebDAV and AList all see it without any of them implementing mount synthesis.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Materialisation | `services/storage/mount-folders.ts`: row id `mountfolder:<mountId>`, `path` = absolute parent dir, `name` = last path segment, `object_key` = `folder:<absolute path>`, `custom_title` = mount display name | `mount-folders.test.ts` |
+| Self-healing | Ensured on directory listing (child mounts of the listed path), on the admin mounts page, and by the scheduled task — all idempotent | `mount-folders.test.ts` |
+| Mount lifecycle | Admin create/update/delete registers, migrates (path change) and removes the row; mount name changes refresh `custom_title` | `mount-folders.test.ts` |
+| Protection | Renaming/moving/deleting a mount-point row, or a parent directory that contains a mount point, is rejected with 409 | `mount-folders.test.ts` |
+
+Rationale: the earlier behaviour left sub-mounts invisible in the file page (e.g. a mount at `/poolui` simply did not exist for listing code). Making the mount a folder row fixes every consumer at once and keeps a single source of truth.
+
+**Failover candidates are buckets, never folders.** Read failover (§G) only ever considers `mount_providers` → `storage_providers` entries — real, independent buckets. Mount-point folders, user folders such as a "backup" directory, and copies inside the same bucket are not DR: they share the same failure domain. Cross-bucket replication remains the future Go-backend item below.
+
+## Sharing rework: multi-item shares (§I, 2026-09-21)
+
+A share now carries 1..50 items (files, folders, or a mix) and is created **only from the files page**; the share list became read/manage-only and surfaces every setting.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Data model | `share_items` (per-item order, cascades with share/file); `shares.file_id` keeps the first item for single-file compatibility and FK cascade | `share-items.test.ts` |
+| Creation | `POST /api/shares { fileIds[] }`: de-duplicated, per-file `share` permission, `title` defaults to the item name (single) or "N 个项目" | `share-items.test.ts` |
+| Public detail | `GET /api/shares/:id` returns `items` (display names from `file_metadata.name`); object keys and content hashes are never exposed | `share-items.test.ts` |
+| Folder browsing | `GET /api/shares/:id/list?root=&sub=` lists a shared folder; `sub` is normalised and must stay inside the root subtree (403 otherwise) | `share-items.test.ts` |
+| Item-scoped transfers | `download` / `preview` accept `itemId` (defaults to the first item) and accept descendants of a folder item (same mount, same owner, subtree) | `share-items.test.ts` |
+| Creation entry | Files page row menu + bulk bar open `ShareDialog` (multi-select incl. folders); the settings page no longer offers creation and the dead `?create=` route was removed | manual/browser |
+| Share list | Cards and rows show every setting: status (icon + label), access mode (public/login/N users), password protection, preview/download switches, view/download counters, item count | `share-items.test.ts` |
+| Share page | Item list in the file page's visual language, folder breadcrumbs, a single Share button (QR + copy link menu), lucide icons instead of emoji | browser |
+
+Also fixed: the share page previously showed 「分享已撤销」 for shares whose `expires_at` was NULL — that message only reflects `status`; expiry and revocation are independent. The reason a link dies while still reading "永久有效" is an explicit revoke (`DELETE /api/shares/:id`, creator or admin), which the share list now shows as a red `已撤销` badge. Re-runnable acceptance: `scripts/verify-share-items.py`.
+
+## Rate limiting visibility and transfer concurrency (§J, 2026-09-21)
+
+The admin settings page now states the effective limits instead of only offering an on/off switch, and a new concurrency limit protects transfer surfaces.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Stated limits | Settings UI shows requests-per-minute plus a hint listing every effective rule: per-IP value, 2x for signed-in users, 5/min for auth endpoints, 60/120 per minute for free mode, and the concurrency limit | browser |
+| Concurrency | `middleware/concurrency.ts` + `transfer_slots`: at most `max_concurrent_transfers` (default 4, 0 = unlimited) in-flight transfer requests per user (per IP when anonymous) on the upload channels and the download gateway; exceeding it returns 429 `CONCURRENCY_LIMIT_EXCEEDED` | `concurrency-limit.test.ts` |
+| Why D1 | KV has no atomic increment and caches reads for up to 60 s, so an in-flight counter there would read stale values; D1 serialises writes, making the count trustworthy | — |
+| Leak handling | Slots are released in `finally` (errors included); slots older than 30 minutes are ignored and swept opportunistically | `concurrency-limit.test.ts` |
+
+## Role permissions, aliases and guest visibility (§K, 2026-09-21)
+
+The role model became explicit in the database so the admin UI shows what actually governs behaviour.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Role defaults | `role_defaults.permissions` (JSON array of `read`/`write`/`update`/`delete`/`download`; `share` deliberately excluded because sharing is the `can_share` capability). Seeds: `admin` and `user` = all five, `guest` = `download` only; built-in roles also seed `capabilities=['can_share']` so "shareable by default" is visible | `role-permissions.test.ts` |
+| Per-user overrides | `users.permissions` (NULL = follow the role). Precedence: `users.permissions` → `role_defaults.permissions` → `DEFAULT_ROLE_PERMISSIONS`. Saving role defaults overwrites every member's individual value (explicit requirement) | `role-permissions.test.ts` |
+| Aliases | `role_defaults.alias` is a display alias that permission rules may target: `loadPrincipalRules` resolves role + aliases into the rule candidates (`role IN (...)`) | `role-permissions.test.ts` |
+| Guest visibility | `file_metadata.guest_visibility` (`NULL` / `none` / `download` / `view`), edited in the file properties panel under "Default user permissions". Anonymous access additionally requires the site-level `allow_guest_access` switch; `NULL` never opens a file by itself, so private files stay private | `role-permissions.test.ts` |
+
+Terminology note: the **guest role** (a signed-in account with `role='guest'`) defaults to download-only; **anonymous visitors** are governed by the file's `guest_visibility` plus the site switch. The two are independent.
+
+## Share forwarding panel and password recall (§L, 2026-09-21)
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Password recall | Creating a share stores `password_hash` (verification) **and** `password_cipher` (AES-GCM, `enc:` prefix). Only the creator's `GET /api/shares` decrypts and returns `password`; public endpoints never expose the plaintext or the cipher, and a failed decryption simply omits the field | `share-password.test.ts` |
+| Link with password | `GET /api/shares/:id?password=…` grants access directly (401 on a wrong value); the share page auto-fills and submits when the parameter is present | `share-password.test.ts` |
+| Single share button | The share page has one Share button whose menu holds the QR code, copy link, copy link with password, show password (click to copy) and copy share message; the share list menu offers the same items. Message format: `来自<user>的<title>` + `链接：` + `密码：` (password line omitted when unknown) | browser |
+| Card layout | Share cards show settings in three fixed rows: access mode / preview+download switches / view and download counters | browser |
+
+## Download limit and admin-level settings (§M, 2026-09-21)
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Download limit | `middleware/download-limit.ts` counts only download requests (download gateway, share download/preview, file download links, public directory links) per minute per user (per IP when anonymous), `rate_limit_downloads_per_minute` (default 120, 0 = unlimited), 429 on excess; the settings page now also states the effective rate-limit numbers | `download-limit.test.ts` |
+| Transfer concurrency | `max_concurrent_transfers` (default 4) with D1-backed slots (see §J) | `concurrency-limit.test.ts` |
+| Admin share settings | `GET/PATCH /api/admin/shares/:id`: creator name, items, access mode, password protection, limits, preview/download switches, status and expiry; password can be reset (hash + cipher) or cleared | `admin-shares.test.ts` |
+| Admin file properties | `PUT /api/files/:id` accepts `cascade` (default true); the admin files page gained a visibility column and a properties dialog that submits `cascade: false` by default, so publishing one folder no longer cascades the whole subtree by surprise | `admin-shares.test.ts` |
+| Direct-link prefix | `direct_prefix` (`''` / `/d` / `/download` / `/raw`) scopes public and signed direct links, and `root_target` decides whether `/` serves the landing page, the file page or the direct-link namespace — both are selectable in admin → System settings and validated together (a non-empty direct prefix cannot own `/`). The file browser stays at `/files`: a configurable files-page prefix was evaluated and dropped as too risky | `route-prefixes.test.ts` |
+
 ## Current baseline
 
-- Backend: 177 Vitest tests pass; `tsc --noEmit` clean.
-- Frontend: 10 Vitest tests pass; build succeeds; `tsc --noEmit` clean.
+- Backend: 255+ Vitest tests pass; `tsc --noEmit` clean.
+- Frontend: 10 Vitest tests pass; coverage gate passes; build succeeds; `tsc --noEmit` clean.
 - Language: zh + en.
 
 ## What's next
 
 - Oracle Cloud provider implementation.
-- Same-path multi-mount support.
+- Configurable **direct-link prefix** (implemented): the prefix applies to public/signed file direct links only (`direct_prefix`: `''` / `/d` / `/download` / `/raw`) plus a `root_target` choice for what `/` serves — both editable in admin → System settings. The file browser page stays fixed at `/files`; a configurable files-page prefix was evaluated and dropped as too risky (it competes with the landing page, the guest catch-all route and the direct-link namespace).
+- Same-path multi-mount: spread across providers is implemented (`mount_providers`); replication/backup is planned for the future Go backend — see below.
 - Path-variable DSL (`{year}/{month}`).
 - Admin analytics.
 - Hot-file detection and forced signed URLs.
 - Ongoing verification notes for drag interactions and property-panel editing.
+
+## Planned: future high-performance backend (2026-09-21)
+
+Cross-bucket replication (copying objects into secondary buckets) is deferred to a future Go backend ("high-performance version"). The current Workers implementation spreads each object across pool members (`least_used` / `hash` / `round_robin`) and reads fail over across those members (§G), but it never copies objects between buckets.
+
+Planned admin surface for it: a per-mount **"automatic cross-bucket sync"** switch on the admin storage page. The switch is **only selectable in a Go-backend environment**; the current Node/Workers backend does not implement the capability, so the control is documented as environment-gated and must render disabled (not hidden) there. Pooling (§E) and read-path failover (§G) work today without it — the switch only turns on background replication.
+
+| Item | Decision | Target |
+| :--- | :--- | :--- |
+| Same-path multi-storage backup / DR | Same-path multi-mount becomes replication (mirror), not spread | Future Go backend |
+
+### Same-path multi-storage backup / DR
+
+- Today: `mount_providers` spreads each object across members — one copy per file. Reads already fail over across members (§G), but without replication a bucket loss means the objects it held are gone. Two mounts on the same path do not merge: `MountRepo.findMountForPath` picks one by priority then depth, so the second is shadowed.
+- Target model: `file_replicas(file_id, provider_id, etag, size, status, verified_at)` with `file_metadata.provider_id` kept as the primary replica. Write fan-out (primary synchronous, replicas asynchronous through a queue), read failover, per-replica delete and GC, verification/repair job.
+- Prior art to borrow from: rclone's `union` backend (`create_policy=all` mirrors writes to every upstream, `epmfs`/`lus` spread, `:ro`/`:nc`/`:writeback` tags), MinIO site replication (active-active / active-passive with an async scanner that re-queues failed objects), SeaweedFS rack-/DC-aware replication placement.
+- Why this is not a simple switch:
+  - No cross-provider transactions or atomic compare-and-swap: partial replica writes need compensation/repair jobs, and concurrent overwrites can diverge without generation/ETag checks.
+  - Failover reads may serve stale replicas; strict freshness costs a HEAD per read.
+  - Presigned/direct links are bound to a single provider's domain (`buildFileAccessUrl`); switching replicas invalidates them unless every link goes through one proxy domain (R2 worker egress is free; S3/Oracle would incur Worker egress).
+  - Multipart uploads must write every part to every replica, or re-transfer afterwards (CopyObject is same-provider in practice).
+  - N× physical storage cost; pool heuristics such as `least_used` are meaningless for a mirrored mount (every member needs the full data set).
+- Preferred platform-level path: provider-side replication (R2 durability is replication + erasure coding; use bucket replication/versioning where available) plus the existing reconciliation job; application-level fan-out belongs to the future backend, where the write path can be optimized (streaming multi-write, checksums).
 
 Related guides: [architecture](ARCHITECTURE.md), [API reference](API.md), [frontend guide](UI.md), [development guide](DEVELOPMENT.md), [deployment guide](DEPLOYMENT.md).

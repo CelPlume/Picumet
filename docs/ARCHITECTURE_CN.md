@@ -146,11 +146,16 @@ services/permissions/
 6. 文件所有者权限回退。
 7. 默认拒绝。
 
+**角色默认权限（用户权限模型）**：`role_defaults.permissions` 是角色的默认权限清单（`read` / `write` / `update` / `delete` / `download` 五项矩阵；**`share` 不在其中**——分享开关是能力位 `can_share`，避免同一件事两处设置）。内置角色种子：`admin` 与 `user` = 全部五项 + `capabilities=['can_share']`，`guest` = 仅 `download`。**用户级覆盖**：`users.permissions`（NULL = 跟随角色）；优先级 `users.permissions` → `role_defaults.permissions` → 常量表 `DEFAULT_ROLE_PERMISSIONS`。`getPrincipal` 把生效清单装到 `Principal.defaultPermissions`；判定流程里「自有空间回退（用户默认路径权限）」按它放行（`share` 动作在自有空间内沿用既有放行语义）。管理端「默认用户设置」可编辑矩阵、能力位、别名与默认路径/配额，**保存角色默认会覆盖该角色全部成员的个别设置**（含 `users.permissions`）。角色另有**别名**（`role_defaults.alias`，如「管理员」），规则主体除角色名外也接受该别名（`loadPrincipalRules` 解析为角色后并入候选）。
+
+**游客可见性（文件级）**：`file_metadata.guest_visibility` 为 `NULL` / `none` / `download` / `view`，未设置时跟随角色默认——即**游客默认只能下载**。判定时由 `syntheticGuestRule` 把文件的游客可见性合成一条 allow 规则并入候选集：`download` 放行下载，`view` 放行查看（列表/预览）与下载，`none` 不放行任何操作。文件属性面板的「用户权限默认设置」是它的唯一配置入口。
+
 两个关键安全边界：
 
 - `isPathWithinBoundary` 按路径段比较，不用 `startsWith`。
 - API 密钥没有匹配规则时直接拒绝，系统不会默认放行。
 - 可见性只放宽读和下载：所有写入类判定和路径边界不受可见性影响，deny 规则始终压制合成规则。
+- 游客可见性同样只放宽读与下载，并且**不越过挂载边界**；分享链接（`/api/shares/*`）语义独立，不受游客可见性影响。
 
 **依赖**：`utils/path.ts`、规则仓库、`shared/errors.ts`。
 
@@ -210,6 +215,8 @@ services/shares/
 └── types.ts
 ```
 
+**密码可回看**：创建分享时密码同时写 `password_hash`（校验用）与 `password_cipher`（AES-GCM 密文，`enc:` 前缀，与存储凭据同一套加密）；**只有创建者自己的列表接口** `GET /api/shares` 会解密返回 `password` 明文，公开接口（详情/目录/下载/预览）一律不下发明文或密文。密文缺失或解密失败时该字段省略，接口不报错。带密码的分享支持 `?password=<明文>` 直进（等价于已验证，错误 401）。
+
 下载令牌：`consumeDownloadToken` 用 `DELETE ... RETURNING` 做单次原子消费，一次性令牌在并发下也无法重复使用。
 
 **依赖**：`permissions/principal.ts`、`storage/providers.ts`、分享/文件/挂载/提供商/日志仓库、`utils/crypto.ts`。
@@ -235,6 +242,22 @@ services/storage/
 - 其余一律走 `S3Provider`，即 S3 协议客户端。
 
 存储层统一处理跨提供商细节：对象出站统一走 `serveObject`，整体负责 Range 请求（命中返回 `206`，范围无效返回 `416`，上游失败按 `ProviderError` 分类返回 `502`）；批量删除按 S3 约定每批最多 1000 个对象，`Errors` 容器里的失败逐条上抛为 `ProviderError`，调用层回退为逐个删除；超过 5 GB 的复制（移动 Saga 的大文件路径）用 `UploadPartCopy` 分片复制；列表传 `Delimiter` 时把公共前缀聚合成虚拟目录。
+
+**内容哈希寻址（§F）**：写入统一走 `services/storage/content.ts` 与 `services/files/write.ts`，物理对象按内容 SHA-256 命名（`<prefix>/picumet:blob/<h2>/<hash>`，命名空间带 `:` 前缀段，与用户虚拟路径键不可能冲突），同内容在文件之间共享：
+
+- 写入策略：S3 网关整包校验（SigV4）时哈希已知——库内已有内容则完全跳过落对象，否则直写内容键；流式写入（WebDAV/兼容上传/AList/Worker 代理）走暂存键 + 流式哈希，去重命中删除暂存，未命中复制到内容键后删除暂存。
+- 文件行同时保存虚拟对象键 `object_key`（唯一标识/占用判定）与物理键 `physical_key` + 内容哈希 `blob_hash`；读/删/移动按物理键定位，因此重命名与移动是纯元数据操作、不再复制对象。
+- 引用释放：删除/覆盖写在**同一批 SQL** 内用 `NOT EXISTS (SELECT 1 FROM file_metadata WHERE blob_hash = ?)` 判定最后一个引用，归零则把对象写入 `blob_gc` 回收队列；定时任务带保护期删除，删除前复查引用，失败累加 `attempts` 重试。
+- 分片上传（上传会话 multipart）不经内容寻址：分片直传存储商，物理键仍为虚拟路径键（`blob_hash` 为空），删除按独占对象处理。
+- 配额仍按逻辑大小计算（每个文件各计其 size），容量闸门保持保守语义。
+
+**读路径容灾（§G）**：对象读取统一走 `services/storage/failover.ts` 的 `serveFileObject` / `getFileObject`。文件在库内记录的落桶取不到对象（404）或上游故障（502/`ProviderError`）时，按「KV 命中提示 → 文件落桶 → 其余池成员（weight 降序）」依次轮询同一挂载点的其他桶（上限 4 个候选）；每次尝试有 8 秒上限，主桶连接悬挂不会拖死读请求。在副桶命中后写入 `serve:loc:<fileId>`（值含提供方 id 与物理键指纹，1 小时 TTL），后续请求直接优先访问该桶；文件被改写后指纹不匹配，提示自动失效。跨桶「复制」不在此层——把对象真正写进副桶由未来的 Go 后端负责。 管理员界面计划提供每挂载点的「自动跨桶同步」开关——仅在 Go 后端环境可勾选，当前 Node/Workers 后端不支持该能力（界面禁用态），池化（§E）与读容灾（§G）不依赖它即可工作。
+
+**挂载点皆目录（§H）**：非根挂载点在**父挂载点命名空间**内维护一行 folder 记录（`id = 'mountfolder:<mountId>'`、`path` = **自身全路径**（与 `services/files/handlers.ts` 创建文件夹的约定一致）、`name` = 挂载路径末段、`object_key = 'folder:<绝对路径>'`、`custom_title` = 挂载显示名），因此文件页、分享选择器、公开目录、WebDAV、AList 等所有「按路径列目录」的入口都能看到挂载点，无需各自做合成。三处自愈：列目录、管理端挂载页、定时任务（幂等）；管理端的挂载创建/改路径/删除会即时登记、迁移或清理该行。为保护挂载点，`isMountPointFile` / `containsMountPointFile` 会拒绝重命名/移动/删除挂载点目录行以及包含挂载点的父目录（409）。
+
+> 踩坑记录：该行最初把 `path` 写成了**父目录**，而 folder 行的约定是 `path = 自身全路径`——文件树据此把挂载点目录当成根节点、反复展开同一层，导致进入 `/files` 卡死。已修正，并由迁移第 20 段修复存量行（`UPDATE ... SET path = substr(object_key, 8) WHERE type='folder' AND object_key LIKE 'folder:/%' AND path <> substr(object_key, 8)`），回归由 `mount-folders.test.ts` 覆盖。
+
+**容灾候选只认桶**：读回退的候选一律来自 `mount_providers` → `storage_providers`（真正的独立桶），**文件夹（含挂载点目录、`备用文件夹` 这类用户目录）永远不会成为容灾候选**；跨桶复制同样只以桶为单位规划（见 §G）。「文件夹级备份」不构成容灾：同一桶内的副本与目录副本都不提供独立的故障域。
 
 **依赖**：提供商、挂载仓库，`utils/crypto.ts` 负责解密密钥。
 
@@ -368,7 +391,9 @@ services/public/
 | :--- | :--- |
 | `middleware/auth.ts` | `authMiddleware`、`optionalAuthMiddleware`、`apiKeyAuthMiddleware`、`adminMiddleware`，并暴露 `getDb`、`getClientIp`。 |
 | `middleware/csrf.ts` | 对 Cookie 认证的写操作校验 CSRF 令牌。 |
-| `middleware/rate-limit.ts` | KV 固定窗口限流。 |
+| `middleware/rate-limit.ts` | KV 固定窗口限流：全局按 IP（`rate_limit_requests_per_minute`，默认 50 次/分钟）与登录用户（×2）；认证接口独立 5 次/分钟/IP；自由模式另按会话 60 / 用户 120 次/分钟。仅生产环境生效，best-effort（KV 无原子自增）。 |
+| `middleware/concurrency.ts` | 传输并发限制：上传各通道与下载网关按用户（未登录按 IP）限制同时在途请求数（`max_concurrent_transfers`，默认 4，0 = 不限），超限 429 `CONCURRENCY_LIMIT_EXCEEDED`；在途槽位存 `transfer_slots`（D1 串行写，计数可信），响应结束含异常都会释放，超 30 分钟视为泄漏。 |
+| `middleware/download-limit.ts` | 下载限速：只对下载类请求（下载网关、分享下载/预览、文件下载链接、公开目录直链）按用户（未登录按 IP）计每分钟次数（`rate_limit_downloads_per_minute`，默认 120，0 = 不限），超限 429；挂在受保护 API / 分享 API / 网关 / 公开目录四处，中间件内部按路径窄化；非生产环境跳过、存储异常 fail-open。 |
 | `middleware/free-mode.ts` | 自由模式的跨站、CSRF、限流守卫。 |
 | `middleware/global.ts` | 初始化请求上下文、CORS、安全响应头。 |
 
@@ -386,12 +411,17 @@ D1 里存以下核心表：
 | `user_quotas` | 已用和预留的存储、文件数、上限。 |
 | `storage_providers` | S3 协议提供商配置，凭据加密存储。 |
 | `mounts` | 把提供商映射到虚拟路径，带排序偏好。 |
-| `file_metadata` | 文件和文件夹：对象键、路径、大小、etag、属主、可见性、审核状态、自定义属性。 |
+| `file_metadata` | 文件和文件夹：虚拟对象键、物理键（§F 内容寻址）、内容哈希、路径、大小、etag、属主、可见性、审核状态、**游客可见性（`guest_visibility`：NULL/none/download/view）**、自定义属性。 |
+| `blob_objects` | 内容寻址对象索引：内容哈希 → 落桶 provider 与物理键（同内容共享一份）。 |
+| `blob_gc` | 内容对象回收队列：最后一个引用消失后入队，定时任务带保护期删除、失败重试。 |
 | `upload_sessions` | 记录上传进度、分片和预留配额。 |
 | `operation_jobs` | 异步的移动、复制、删除任务。 |
 | `path_rules` | 挂在挂载点上的权限规则，带来源（admin/user/system）与创建者。 |
 | `api_keys` | API 密钥，含权限、协议和上传根目录。 |
-| `shares` | 分享链接，含密码、过期时间和访问限制。 |
+| `shares` | 分享链接，含密码、过期时间和访问限制；`file_id` 为首个项目（兼容单文件语义）。 |
+| `share_items` | 分享项目：一个分享的 1..50 个项目（文件/文件夹混合）与顺序，随分享/文件删除级联。 |
+| `transfer_slots` | 传输并发槽位（在途请求计数，30 分钟泄漏阈值）。 |
+| `role_defaults` | 角色默认设置：默认路径/配额/状态/能力位/别名，以及**角色默认权限**（`permissions`：read/write/update/delete/download 五项，分享由能力位 `can_share` 控制；内置 admin/user = 五项 + `can_share`、guest = 仅 download）。 |
 | `download_tokens` | 一次性下载令牌，原子消费。 |
 | `access_logs` | 上传、下载、删除、分享、密码验证等操作日志。 |
 | `system_settings` | 键值形式的站点设置。 |
@@ -401,12 +431,7 @@ D1 里存以下核心表：
 
 迁移脚本在 `workers/migrations/` 下：
 
-- `0001_initial.sql` 建基础表结构。
-- `0002_add_parts_and_download_tokens.sql` 加分片字段和 `download_tokens` 表。
-- `0003_mount_id_and_session_version.sql` 加挂载隔离和会话撤销字段。
-- `0004_smtp_and_otp.sql` 加 SMTP 和一次性密码（OTP）邮箱验证。
-- `0005_provider_type_unify.sql` 提供商类型收敛为 `r2`/`s3`（oracle 折叠为 s3），移除 `upload_domain` 字段。
-- `0006_user_model.sql` 加文件可见性与审核状态（含索引）、规则来源与创建者、用户能力位（存量回填 `["can_share"]`）。
+- `0001_initial.sql`：单文件迁移。包含基础表结构，以及按时间顺序追加的增量段（分片与下载令牌、挂载隔离与会话版本、SMTP/OTP、提供商类型收敛、用户模型、存储池 §E、内容哈希寻址 §F 等）。历史迁移已合并进该文件；新增变更以新段追加，既有的段不再改写（存量库按缺失段补跑）。
 
 ## 术语表
 
@@ -417,6 +442,8 @@ D1 里存以下核心表：
 | Provider（提供商） | 存储提供商，如 R2、AWS S3、Oracle Cloud。 |
 | Path Rule（路径规则） | 针对特定路径模式的权限策略，挂在挂载点上。 |
 | Object Key（对象键） | 对象在提供商存储桶里的实际存储路径。 |
+| Content Key（内容键） | §F 内容寻址对象的物理键，由内容 SHA-256 决定；同内容跨文件共享同一份对象。 |
+| Physical Key（物理键） | 文件行实际对应的提供商对象键：内容寻址行等于内容键，分片/存量行等于虚拟对象键。 |
 | Canonical Path（规范化路径） | 标准化处理后的虚拟路径。 |
 | Upload Session（上传会话） | 记录一次上传的状态和预留配额。 |
 | Quota Reserved（预留配额） | 上传开始时锁定的存储空间，保证配额够用。 |

@@ -113,9 +113,31 @@ cd frontend && bun run dev
 | 前端类型检查 | `bun run typecheck` | `frontend/` |
 | 前端构建 | `bun run build` | `frontend/` |
 
-后端测试共 127 个用例,跑在内存版 `node:sqlite` 模拟的 D1/KV/R2 上(见 `tests/helpers.ts`),不依赖 `workerd`。前端有 7 个用例,外加覆盖率门禁,聚焦安全关键模块 `src/lib/escape.ts` 与 `src/pages/Register.tsx`(lines 80%、functions 60%、branches 40%)。
+后端测试跑在内存版 `node:sqlite` 模拟的 D1/KV/R2 上(见 `tests/helpers.ts`),不依赖 `workerd`;前端测试外加覆盖率门禁,聚焦安全关键模块 `src/lib/escape.ts` 与 `src/pages/Register.tsx`(lines 80%、functions 60%、branches 40%)。
 
 `.github/workflows/ci.yml` 在推送到 `main` 或发起 PR 时运行。`workers` job 执行安装、类型检查和测试;`frontend` job 在此基础上增加覆盖率门禁和生产构建。CI 只做质量门禁,不自动部署,发布统一手动执行 `wrangler deploy`。
+
+### 本地验收脚本（跨系统行为）
+
+单元测试跑在内存环境里,覆盖不到「真实 D1 + 真实 R2 绑定 + 定时任务」的组合行为。仓库根目录 `scripts/` 提供两个 Python 验收脚本(仅标准库 + `wrangler` CLI),对**本地开发栈**做端到端断言:
+
+| 脚本 | 验收内容 | 关键断言 |
+| :--- | :--- | :--- |
+| `scripts/verify-content-addressing.py` | §F 内容哈希寻址 | 同内容两处上传只产生一份物理对象、两行共享物理键/内容哈希、读回一致;删其一保留对象、删净后入 `blob_gc`;保护期满触发定时任务后对象删除、队列清空;覆盖写把旧内容入队 |
+| `scripts/verify-storage-failover.py` | §G 读路径容灾(拼好桶/副桶) | 文件落桶为「坏主桶」(不可达 S3 端点)时,首次读取在 8s 候选超时后由同挂载点的 R2 成员返回 200;第二次读取走 `serve:loc` 提示显著更快 |
+
+前置与用法:
+
+```bash
+# 1) 启动本地栈（要验收回收链路需带 --test-scheduled）
+cd workers && bun run dev -- --test-scheduled
+
+# 2) 另开终端执行（默认 http://localhost:8787、账号 admin/admin123456，可用参数覆盖）
+python3 scripts/verify-content-addressing.py --base-url http://localhost:8787
+python3 scripts/verify-storage-failover.py --base-url http://localhost:8787
+```
+
+两个脚本都会自行清理验收数据(上传目录、挂载点、provider、密钥)。公共工具在 `scripts/_picumet_e2e.py`(HTTP 会话、multipart 组包、本地 D1 查询、本地 R2 对象枚举)。`verify-content-addressing.py` 默认等待 65 秒保护期后触发定时任务,可用 `--skip-gc` 跳过这段等待。
 
 ## 代码规范
 

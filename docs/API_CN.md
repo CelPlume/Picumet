@@ -591,6 +591,7 @@ curl https://{domain}/api/files/{id} -b cookies.txt
 | `accessPassword` | `string` | 否 | 新的访问密码，传 `null` 可移除。服务端只保存哈希。 |
 | `visibility` | `string` | 否 | 可见性：`private`、`users` 或 `public`，需要 `update` 权限。 |
 | `manualPosition` | `integer` | 否 | 手动排序位置。 |
+| `guestVisibility` | `string` | 否 | 游客（匿名访客）可见性：`inherit`（清除文件级设置，跟随角色默认）、`none`（游客不可见）、`download`（仅可下载）、`view`（可查看并下载）。需要 `update` 权限；文件与文件夹均支持，是「用户权限默认设置」的存储字段。 |
 
 #### 响应
 
@@ -1288,11 +1289,11 @@ curl -X POST https://{domain}/api/upload \
 
 ## 分享
 
-分享端点负责分享链接的创建、列表、密码验证、下载、预览和撤销。创建、列表、撤销需要登录；读取分享信息、验证密码、下载和预览对外开放。
+分享端点负责分享链接的创建、列表、密码验证、目录浏览、下载、预览和撤销。一次分享可包含 1 到 50 个项目（文件与文件夹混合）。创建、列表、撤销需要登录；读取分享信息、目录浏览、验证密码、下载和预览对外开放。
 
 ### 创建分享
 
-为文件创建分享链接，需要文件的 `share` 权限。
+为一个或多个文件/文件夹创建分享链接，需要对每个项目所属路径具备 `share` 权限。
 
 `POST /api/shares/`
 
@@ -1300,18 +1301,21 @@ curl -X POST https://{domain}/api/upload \
 
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `fileId` | `string` | 是 | 文件标识。 |
-| `title` | `string` | 否 | 展示标题，默认取文件名。 |
+| `fileIds` | `array` | 是 | 项目标识（文件或文件夹），1 到 50 个。服务端去重并保持请求顺序，首项写入 `shares.file_id`。 |
+| `title` | `string` | 否 | 展示标题，默认单项目取该项文件名、多项目取 `{n} 个项目`。 |
 | `password` | `string` | 否 | 分享密码，服务端只保存哈希。 |
-| `expiresIn` | `integer` | 否 | 有效期，单位秒，范围 60 到 1 年。 |
+| `expiresIn` | `integer` | 否 | 有效期，单位秒，范围 60 到 1 年。与 `expiresAt` 二选一。 |
+| `expiresAt` | `integer` | 否 | 绝对截止时间（毫秒时间戳）。与 `expiresIn` 二选一。 |
 | `maxViews` | `integer` | 否 | 最大浏览次数。 |
 | `maxDownloads` | `integer` | 否 | 最大下载次数。 |
 | `allowPreview` | `boolean` | 否 | 是否允许预览，默认 `true`。 |
 | `allowDownload` | `boolean` | 否 | 是否允许下载，默认 `true`。 |
+| `requireLogin` | `boolean` | 否 | 是否仅登录用户可见，默认 `false`。 |
+| `allowedUsers` | `array` | 否 | 指定可见的用户名列表，最多 50 个；未知用户名直接拒绝。 |
 
 #### 响应
 
-返回分享的短 ID 和公开链接，状态码 `201`。
+返回分享的短 ID、公开链接与项目列表，状态码 `201`。
 
 ```json
 {
@@ -1320,11 +1324,18 @@ curl -X POST https://{domain}/api/upload \
     "share": {
       "id": "abc123",
       "url": "https://{domain}/share/abc123",
+      "title": "2 个项目",
       "expiresAt": null,
       "createdAt": 1710000000000,
       "passwordProtected": true,
       "allowPreview": true,
-      "allowDownload": true
+      "allowDownload": true,
+      "requireLogin": false,
+      "allowedUserCount": 0,
+      "items": [
+        { "id": "file-uuid", "rootId": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        { "id": "folder-uuid", "rootId": "folder-uuid", "name": "albums", "path": "/drive/albums", "type": "folder", "size": 0 }
+      ]
     }
   },
   "timestamp": 1710000000000
@@ -1336,9 +1347,9 @@ curl -X POST https://{domain}/api/upload \
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
 | `UNAUTHORIZED` | `401` | 没有登录。 | 先登录。 |
-| `VALIDATION_ERROR` | `400` | 分享参数不合法。 | 修正参数后重试。 |
+| `VALIDATION_ERROR` | `400` | 分享参数不合法（含项目数量不在 1..50 内）。 | 修正参数后重试。 |
 | `FORBIDDEN` | `403` | 没有 share 权限。 | 检查权限规则。 |
-| `NOT_FOUND` | `404` | 文件不存在。 | 核对文件标识。 |
+| `NOT_FOUND` | `404` | 项目或挂载点不存在。 | 核对项目标识。 |
 
 #### 示例
 
@@ -1347,7 +1358,7 @@ curl -X POST https://{domain}/api/shares/ \
   -H "Content-Type: application/json" \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
-  -d '{"fileId":"file-uuid","password":"share-pass","expiresIn":604800}'
+  -d '{"fileIds":["file-uuid","folder-uuid"],"password":"share-pass","expiresIn":604800}'
 ```
 
 ### 查看我的分享
@@ -1373,8 +1384,7 @@ curl -X POST https://{domain}/api/shares/ \
     "items": [
       {
         "id": "abc123",
-        "title": "photo.jpg",
-        "file": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        "title": "2 个项目",
         "expiresAt": null,
         "viewCount": 3,
         "maxViews": null,
@@ -1382,8 +1392,15 @@ curl -X POST https://{domain}/api/shares/ \
         "maxDownloads": null,
         "allowPreview": true,
         "allowDownload": true,
+        "passwordProtected": false,
+        "requireLogin": false,
+        "allowedUserCount": 0,
         "status": "active",
-        "createdAt": 1710000000000
+        "createdAt": 1710000000000,
+        "itemCount": 2,
+        "totalSize": 1048576,
+        "firstItem": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        "password": "share-pass"
       }
     ],
     "pagination": { "total": 1, "page": 1, "limit": 20, "pages": 1 }
@@ -1391,6 +1408,8 @@ curl -X POST https://{domain}/api/shares/ \
   "timestamp": 1710000000000
 }
 ```
+
+该列表是**创建者视角**：只有这里会返回 `password`（访问密码明文，用于「查看密码」与「复制含密码链接」）；公开接口永不返回密码明文或密文。未设密码、密文缺失或解密失败的条目不会出现该字段。
 
 #### 错误
 
@@ -1406,9 +1425,11 @@ curl "https://{domain}/api/shares/?status=active" -b cookies.txt
 
 ### 获取分享信息
 
-无需登录即可查看公开分享信息。分享设置了密码时，响应会返回 `requiresPassword: true`，在密码验证通过前不返回文件数据。
+无需登录即可查看公开分享信息。分享设置了密码时，响应会返回 `requiresPassword: true`，在密码验证通过前返回空的 `items`，并将 `allowPreview` / `allowDownload` 置为 `false`。
 
 `GET /api/shares/{id}`
+
+查询参数 `?password={明文}` 可用于「带密码的分享链接」：密码正确时直接返回内容（等价于已通过验证），错误返回 `401 INVALID_PASSWORD`。公开响应永不包含密码明文或密文。
 
 #### 路径参数
 
@@ -1426,9 +1447,12 @@ curl "https://{domain}/api/shares/?status=active" -b cookies.txt
   "data": {
     "share": {
       "id": "abc123",
-      "title": "photo.jpg",
+      "title": "2 个项目",
       "creatorName": "alice",
-      "file": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576, "mimeType": "image/jpeg" },
+      "items": [
+        { "id": "file-uuid", "rootId": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576, "mimeType": "image/jpeg" },
+        { "id": "folder-uuid", "rootId": "folder-uuid", "name": "albums", "path": "/drive/albums", "type": "folder", "size": 0 }
+      ],
       "allowPreview": true,
       "allowDownload": true,
       "expiresAt": null,
@@ -1443,13 +1467,15 @@ curl "https://{domain}/api/shares/?status=active" -b cookies.txt
 }
 ```
 
-分享设置了密码且尚未验证时，`file`、`allowPreview`、`allowDownload` 为 `null` 或 `false`，`requiresPassword` 为 `true`。
+每个项目形如 `FileListItem` 并附带 `rootId`（该项目在分享中的项目标识）。分享设置了密码且尚未验证时，`items` 为空数组，`allowPreview` 与 `allowDownload` 均为 `false`，`requiresPassword` 为 `true`。
 
 #### 错误
 
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
 | `NOT_FOUND` | `404` | 分享不存在。 | 核对分享 ID。 |
+| `LOGIN_REQUIRED` | `401` | 分享仅登录用户/指定用户可见。 | 先登录。 |
+| `FORBIDDEN` | `403` | 当前用户不在指定用户范围内。 | 联系创建者。 |
 | `SHARE_REVOKED` | `410` | 分享已被撤销。 | 请创建者重新生成。 |
 | `SHARE_EXPIRED` | `410` | 分享已过期。 | 请创建者重新生成。 |
 | `SHARE_LIMIT_REACHED` | `410` | 分享达到浏览次数上限。 | 请创建者提高上限。 |
@@ -1458,6 +1484,54 @@ curl "https://{domain}/api/shares/?status=active" -b cookies.txt
 
 ```sh
 curl https://{domain}/api/shares/abc123
+```
+
+### 浏览分享内目录
+
+在分享的某个文件夹项目内按相对路径列目录。`root` 必须是该分享的文件夹项目；`sub` 为根文件夹内的相对路径，越出根子树返回 `403`。
+
+`GET /api/shares/{id}/list?root={itemId}&sub={path}`
+
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `root` | `string` | 是 | 分享内文件夹项目的 `file_id`。 |
+| `sub` | `string` | 否 | 相对根文件夹的路径，默认 `/`。 |
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "shareId": "abc123",
+    "rootId": "folder-uuid",
+    "path": "/albums",
+    "items": [
+      { "id": "child-uuid", "rootId": "folder-uuid", "name": "trip.jpg", "path": "/drive/albums", "type": "file", "size": 204800 }
+    ]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+`path` 为规范化的相对路径；`items` 中每项的 `rootId` 均指向请求的根文件夹项目。
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `VALIDATION_ERROR` | `400` | 缺少 `root` 或 `root` 指向的不是文件夹项目。 | 传入文件夹项目的 `file_id`。 |
+| `FORBIDDEN` | `403` | `root` 不在该分享范围内，或 `sub` 越出根子树。 | 核对项目标识与相对路径。 |
+| `NOT_FOUND` | `404` | 分享或目标目录不存在。 | 核对分享 ID 与路径。 |
+| `INVALID_PASSWORD` | `401` | 密码未验证。 | 先调用验证端点。 |
+| `SHARE_REVOKED` / `SHARE_EXPIRED` / `SHARE_LIMIT_REACHED` | `410` | 分享不可用或已达上限。 | 请创建者重新生成。 |
+
+#### 示例
+
+```sh
+curl "https://{domain}/api/shares/abc123/list?root=folder-uuid&sub=/albums" -b cookies.txt
 ```
 
 ### 验证分享密码
@@ -1509,15 +1583,21 @@ curl -X POST https://{domain}/api/shares/abc123/verify \
 
 ### 获取分享下载链接
 
-返回分享的一次性网关下载链接。下载计数只在网关实际消费令牌时增加一次。
+返回分享内某个文件的一次性网关下载链接。下载计数只在网关实际消费令牌时增加一次。`itemId` 可以是分享项目，也可以是某个文件夹项目的后代文件。
 
-`GET /api/shares/{id}/download`
+`GET /api/shares/{id}/download?itemId={itemId}`
 
 #### 路径参数
 
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | 是 | 分享 ID。 |
+
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | 否 | 目标文件的项目标识或文件夹后代文件标识，默认取分享的第一个项目。 |
 
 #### 响应
 
@@ -1533,24 +1613,25 @@ curl -X POST https://{domain}/api/shares/abc123/verify \
 
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
-| `NOT_FOUND` | `404` | 分享不存在。 | 核对分享 ID。 |
+| `NOT_FOUND` | `404` | 分享不存在，或 `itemId` 不在该分享作用域内。 | 核对分享 ID 与项目标识。 |
 | `SHARE_REVOKED` | `410` | 分享不可用。 | 请创建者重新生成。 |
 | `SHARE_EXPIRED` | `410` | 分享已过期。 | 请创建者重新生成。 |
 | `FORBIDDEN` | `403` | 分享不允许下载。 | 请创建者开启下载。 |
+| `VALIDATION_ERROR` | `400` | `itemId` 指向文件夹项目。 | 文件夹请改用目录浏览端点。 |
 | `INVALID_PASSWORD` | `401` | 密码未验证。 | 先调用验证端点。 |
 | `SHARE_LIMIT_REACHED` | `410` | 分享达到下载次数上限。 | 请创建者提高上限。 |
 
 #### 示例
 
 ```sh
-curl https://{domain}/api/shares/abc123/download -b cookies.txt
+curl "https://{domain}/api/shares/abc123/download?itemId=file-uuid" -b cookies.txt
 ```
 
 ### 预览分享文件
 
-分享允许预览时，直接以 `Content-Disposition: inline` 输出图片。返回二进制图片数据，不是 JSON。
+分享允许预览时，直接以 `Content-Disposition: inline` 输出图片。返回二进制图片数据，不是 JSON。`itemId` 的作用域规则与下载一致。
 
-`GET /api/shares/{id}/preview`
+`GET /api/shares/{id}/preview?itemId={itemId}`
 
 #### 路径参数
 
@@ -1558,19 +1639,26 @@ curl https://{domain}/api/shares/abc123/download -b cookies.txt
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | 是 | 分享 ID。 |
 
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | 否 | 目标文件的项目标识或文件夹后代文件标识，默认取分享的第一个项目。 |
+
 #### 错误
 
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
-| `NOT_FOUND` | `404` | 分享或文件对象不存在。 | 核对分享 ID。 |
+| `NOT_FOUND` | `404` | 分享不存在，或 `itemId` 不在该分享作用域内。 | 核对分享 ID 与项目标识。 |
 | `SHARE_EXPIRED` | `410` | 分享不可用。 | 请创建者重新生成。 |
 | `FORBIDDEN` | `403` | 分享不允许预览。 | 请创建者开启预览。 |
+| `VALIDATION_ERROR` | `400` | `itemId` 指向文件夹项目。 | 文件夹请改用目录浏览端点。 |
 | `INVALID_PASSWORD` | `401` | 密码未验证。 | 先调用验证端点。 |
 
 #### 示例
 
 ```sh
-curl https://{domain}/api/shares/abc123/preview -o photo.jpg
+curl "https://{domain}/api/shares/abc123/preview?itemId=file-uuid" -o photo.jpg
 ```
 
 ### 撤销分享
@@ -1697,6 +1785,12 @@ curl -X PUT https://{domain}/api/users/me/settings \
 修改当前用户的密码。修改后账号已有的会话全部失效，需要重新登录。
 
 `PUT /api/users/me/password`
+
+请求体可选 `emailCode`：当**账号绑定了邮箱且站点启用邮件服务**时，修改密码必须先调用下面的发码端点并带上 6 位验证码（错误/过期/已使用 → `400 INVALID_OTP`，连续 5 次错误该码作废）；未配置邮件服务或账号无邮箱时自动跳过，仅校验当前密码（不会锁死用户）。验证码一次性使用，有效期 5 分钟。
+
+### 发送改密验证码
+
+`POST /api/users/me/password/send-code`（需登录）→ `{ "success": true, "expiresIn": 300 }`；账号无邮箱返回 `400`「账号未绑定邮箱，无法使用验证码改密」；邮件服务未启用返回 `400`「邮件服务未启用，请联系管理员」；发信失败返回 `500 MAIL_ERROR`。
 
 #### 请求体
 
@@ -2169,6 +2263,8 @@ curl -X PUT https://{domain}/api/admin/users/{id} \
 
 `GET /api/admin/shares?page={page}&limit={limit}&status={status}`
 
+`GET /api/admin/shares/{id}`（管理员查看分享详情：创建者用户名、状态、上限、开关、密码保护、项目列表 `items`）与 `PATCH /api/admin/shares/{id}`（管理员修改：`status`、`expiresAt`、`maxViews`、`maxDownloads`、`allowPreview`、`allowDownload`、`requireLogin`、`allowedUsers`、`password`——密码传非空值重置（哈希与密文同写）、传 `null`/空串清除）。
+
 `DELETE /api/admin/shares/{id}`
 
 #### 列表查询参数
@@ -2185,7 +2281,19 @@ curl -X PUT https://{domain}/api/admin/users/{id} \
 {
   "success": true,
   "data": {
-    "items": [{ "id": "abc123", "title": "photo.jpg", "creatorId": "user-uuid", "status": "active" }],
+    "items": [
+      {
+        "id": "abc123",
+        "title": "2 个项目",
+        "creatorId": "user-uuid",
+        "file": { "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576 },
+        "status": "active",
+        "itemCount": 2,
+        "passwordProtected": false,
+        "requireLogin": false,
+        "allowedUserCount": 0
+      }
+    ],
     "pagination": { "total": 5, "page": 1, "limit": 20, "pages": 1 }
   },
   "timestamp": 1710000000000
@@ -2320,7 +2428,9 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 | `enableTurnstile` | `boolean` | 否 | 是否启用 Cloudflare Turnstile。 |
 | `turnstileSiteKey` | `string` | 否 | Turnstile Site Key。 |
 | `rateLimitEnabled` | `boolean` | 否 | 是否启用限流。 |
-| `rateLimitRequestsPerMinute` | `integer` | 否 | 每分钟请求数，范围 1 到 10000。 |
+| `rateLimitRequestsPerMinute` | `integer` | 否 | 每分钟请求数，范围 1 到 10000。仅生产环境生效：按 IP 限制该值、登录用户按 2 倍；登录/注册等认证接口固定 5 次/分钟；自由模式按会话 60、按用户 120 次/分钟。 |
+| `maxConcurrentTransfers` | `integer` | 否 | 同时传输上限，范围 0 到 1000，默认 4，`0` 表示不限。按用户（未登录按 IP）限制上传各通道与下载网关的在途请求数，超限返回 `429 CONCURRENCY_LIMIT_EXCEEDED`。 |
+| `rateLimitDownloadsPerMinute` | `integer` | 否 | 下载限速，范围 0 到 100000，默认 120，`0` 表示不限。按用户（未登录按 IP）限制每分钟下载类请求（下载网关、分享下载/预览、文件下载链接、公开目录直链），超限返回 `429 RATE_LIMIT_EXCEEDED`。 |
 | `smtpHost` | `string` | 否 | SMTP 服务器地址。 |
 | `smtpPort` | `integer` | 否 | SMTP 端口。 |
 | `smtpSecure` | `boolean` | 否 | 是否使用安全连接。 |
