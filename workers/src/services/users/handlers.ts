@@ -1,6 +1,7 @@
 // 用户设置路由：个人资料、外观、修改密码
 import { Hono } from 'hono';
-import type { AppBindings } from '../../shared/types';
+import type { AppBindings, Env } from '../../shared/types';
+import type { Db } from '../../db';
 import { UserRepo, QuotaRepo, SettingsRepo, num, str, parseJson } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
@@ -45,19 +46,103 @@ userRoutes.put('/me/settings', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = ProfileSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest('设置参数无效');
-  const { displayName, avatarUrl, locale, theme, defaultPath } = parsed.data;
+  const { displayName, avatarUrl, locale, theme } = parsed.data;
   const fields: Record<string, unknown> = {};
   if (displayName !== undefined) fields.display_name = displayName || null;
   if (avatarUrl !== undefined) fields.avatar_url = avatarUrl || null;
   if (locale !== undefined) fields.locale = locale;
   if (theme !== undefined) fields.theme = theme;
-  if (defaultPath !== undefined) {
-    if (!defaultPath.startsWith('/')) throw ApiError.badRequest('默认路径必须以 / 开头');
-    fields.default_path = defaultPath;
-  }
   await UserRepo.updateUser(db, userId, fields);
   return ok(c, { message: '已保存' });
 });
+
+// ============ 修改密码（邮箱验证码） ============
+
+const PASSWORD_CODE_PURPOSE = 'password';
+const PASSWORD_CODE_TTL_MS = 5 * 60 * 1000;
+const PASSWORD_CODE_MAX_ATTEMPTS = 5;
+
+interface MailSettings {
+  raw: Record<string, string>;
+  get: (key: string) => unknown;
+  host: string;
+  fromEmail: string;
+  fromName: string;
+  /** 发信条件：管理员开启邮件服务且能解析出 SMTP host（设置 → 环境变量回退） */
+  enabled: boolean;
+}
+
+/** 读取邮件服务设置：system_settings（JSON 值）→ 环境变量回退 */
+async function readMailSettings(db: Db, env: Env): Promise<MailSettings> {
+  const raw = await SettingsRepo.getAll(db);
+  const get = (key: string) => {
+    const v = raw[key];
+    if (v === undefined || v === 'null') return undefined;
+    try {
+      return parseJson<unknown>(v, v);
+    } catch {
+      return v;
+    }
+  };
+  const host = String(get('smtp_host') ?? '') || env.SMTP_HOST || '';
+  return {
+    raw,
+    get,
+    host,
+    fromEmail: String(get('smtp_from_email') ?? '') || env.SMTP_FROM || '',
+    fromName: String(get('smtp_from_name') ?? 'Picumet'),
+    enabled: String(get('email_enabled') ?? 'false') === 'true' && Boolean(host),
+  };
+}
+
+/** 按设置解析 SMTP 配置并发信 */
+async function sendSettingMail(mail: MailSettings, env: Env, to: string, subject: string, html: string): Promise<void> {
+  const smtpConfig = await resolveSmtpConfig(mail.raw, env);
+  await sendMail(
+    {
+      host: smtpConfig?.host ?? mail.host,
+      port: smtpConfig?.port ?? Number(mail.get('smtp_port') ?? 587),
+      user: smtpConfig?.user ?? (String(mail.get('smtp_user') ?? '') || env.SMTP_USER),
+      pass: smtpConfig?.pass ?? (String(mail.get('smtp_password') ?? '') || env.SMTP_PASS),
+      from: mail.fromEmail ? `${mail.fromName} <${mail.fromEmail}>` : mail.fromEmail,
+    },
+    to,
+    subject,
+    html
+  );
+}
+
+/** 生成 6 位改密验证码并落库（作废同用户+邮箱+用途的旧行），返回明文码 */
+async function issuePasswordCode(db: Db, userId: string, email: string): Promise<string> {
+  const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+  const now = Date.now();
+  await db.run(`DELETE FROM email_tokens WHERE user_id = ? AND email = ? AND purpose = ?`, [userId, email, PASSWORD_CODE_PURPOSE]);
+  await db.run(
+    `INSERT INTO email_tokens (id, user_id, email, code, purpose, expires_at, attempts, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+    [uuid(), userId, email, code, PASSWORD_CODE_PURPOSE, now + PASSWORD_CODE_TTL_MS, now]
+  );
+  return code;
+}
+
+/** 校验并一次性消费改密验证码；任何失败一律 400 INVALID_OTP（累计 5 次失败即作废） */
+async function consumePasswordCode(db: Db, userId: string, code: string): Promise<void> {
+  const row = await db.first(
+    `SELECT id, code, attempts, expires_at FROM email_tokens
+     WHERE user_id = ? AND purpose = ?
+     ORDER BY created_at DESC LIMIT 1`,
+    [userId, PASSWORD_CODE_PURPOSE]
+  );
+  if (!row || num(row.expires_at) <= Date.now() || num(row.attempts) >= PASSWORD_CODE_MAX_ATTEMPTS) {
+    if (row) await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
+    throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
+  }
+  if (str(row.code) !== code) {
+    await db.run(`UPDATE email_tokens SET attempts = attempts + 1 WHERE id = ?`, [row.id]);
+    throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
+  }
+  await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
+}
 
 userRoutes.put('/me/password', async (c) => {
   const db = getDb(c);
@@ -70,10 +155,44 @@ userRoutes.put('/me/password', async (c) => {
   if (!verifyPassword(parsed.data.oldPassword, user.passwordHash ?? '')) {
     throw new ApiError(401, 'INVALID_PASSWORD', '当前密码错误');
   }
+  // 邮箱验证码闸门：仅当账号已绑定邮箱且站点启用邮件服务时强制；
+  // 否则保持旧行为（只校验旧密码），避免邮件服务未配置时锁死用户。
+  const mail = await readMailSettings(db, c.env);
+  if (mail.enabled && user.email) {
+    if (!parsed.data.emailCode) throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
+    await consumePasswordCode(db, userId, parsed.data.emailCode);
+  }
   await UserRepo.updateUser(db, userId, { password_hash: hashPassword(parsed.data.newPassword) });
   // 审计 H-05：改密后旧 JWT 立即失效，需重新登录
   await UserRepo.bumpSessionVersion(db, userId);
   return ok(c, { message: '密码已修改，请重新登录' });
+});
+
+userRoutes.post('/me/password/send-code', async (c) => {
+  const db = getDb(c);
+  const userId = c.get('userId');
+  const user = await UserRepo.getUserById(db, userId);
+  if (!user) throw new ApiError(404, 'NOT_FOUND', '用户不存在');
+  if (!user.email) throw ApiError.badRequest('账号未绑定邮箱，无法使用验证码改密');
+
+  const mail = await readMailSettings(db, c.env);
+  if (!mail.enabled) throw ApiError.badRequest('邮件服务未启用，请联系管理员');
+
+  const code = await issuePasswordCode(db, userId, user.email);
+  try {
+    await sendSettingMail(
+      mail,
+      c.env,
+      user.email,
+      'Picumet 修改密码验证码',
+      `<p>您的修改密码验证码是：<strong>${code}</strong></p><p>验证码 5 分钟内有效，请勿泄露给他人。</p>`
+    );
+  } catch {
+    // 发信失败：清理验证码，避免残留
+    await db.run(`DELETE FROM email_tokens WHERE user_id = ? AND purpose = ?`, [userId, PASSWORD_CODE_PURPOSE]);
+    throw new ApiError(500, 'MAIL_ERROR', '验证码发送失败');
+  }
+  return ok(c, { success: true, expiresIn: 300 });
 });
 
 // ============ OTP 邮箱验证 ============
@@ -89,21 +208,8 @@ userRoutes.post('/me/email/send-otp', async (c) => {
   const existing = await UserRepo.getUserByEmail(db, email);
   if (existing && existing.id !== userId) throw ApiError.badRequest('该邮箱已被使用');
 
-  const raw = await SettingsRepo.getAll(db);
-  const get = (key: string) => {
-    const v = raw[key];
-    if (v === undefined || v === 'null') return undefined;
-    try {
-      return parseJson<unknown>(v, v);
-    } catch {
-      return v;
-    }
-  };
-  const emailEnabled = String(get('email_enabled') ?? 'false');
-  const host = String(get('smtp_host') ?? '') || c.env.SMTP_HOST;
-  if (emailEnabled !== 'true' || !host) {
-    throw ApiError.badRequest('邮件服务未启用，请联系管理员');
-  }
+  const mail = await readMailSettings(db, c.env);
+  if (!mail.enabled) throw ApiError.badRequest('邮件服务未启用，请联系管理员');
 
   // 6 位数字验证码
   const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
@@ -118,18 +224,10 @@ userRoutes.post('/me/email/send-otp', async (c) => {
     [uuid(), userId, email, code, expiresAt, now]
   );
 
-  const fromEmail = String(get('smtp_from_email') ?? '') || c.env.SMTP_FROM || '';
-  const fromName = String(get('smtp_from_name') ?? 'Picumet');
   try {
-    const smtpConfig = await resolveSmtpConfig(raw as Record<string, unknown>, c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
-    await sendMail(
-      {
-        host: smtpConfig?.host ?? host,
-        port: smtpConfig?.port ?? Number(get('smtp_port') ?? 587),
-        user: smtpConfig?.user ?? (String(get('smtp_user') ?? '') || c.env.SMTP_USER),
-        pass: smtpConfig?.pass ?? (String(get('smtp_password') ?? '') || c.env.SMTP_PASS),
-        from: fromEmail ? `${fromName} <${fromEmail}>` : fromEmail,
-      },
+    await sendSettingMail(
+      mail,
+      c.env,
       email,
       'Picumet 邮箱验证码',
       `<p>您的邮箱验证码是：<strong>${code}</strong></p><p>验证码 5 分钟内有效，请勿泄露给他人。</p>`

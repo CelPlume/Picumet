@@ -6,9 +6,23 @@ import { MemoryRouter } from 'react-router-dom';
 const navigate = vi.fn();
 const apiFetch = vi.fn();
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
-}));
+vi.mock('react-i18next', async () => {
+  // Register 文案已 i18n 化（cac54b4）：mock 用真实 zh 资源解析 key，使断言文案与界面一致。
+  // 此处必须用动态导入：vi.mock 工厂被提升到文件顶层 import 之前执行，
+  // 静态导入的 zhCN 在工厂内处于 TDZ，无法引用（vitest 既有约束）。
+  const { zhCN } = await import('../lib/i18n/zh');
+  return {
+    useTranslation: () => ({
+      t: (key: string) => {
+        const resolved = key.split('.').reduce<unknown>((node, seg) => {
+          if (node && typeof node === 'object') return (node as Record<string, unknown>)[seg];
+          return undefined;
+        }, zhCN);
+        return typeof resolved === 'string' ? resolved : key;
+      },
+    }),
+  };
+});
 
 vi.mock('@/lib/api', () => ({
   apiFetch: (...args: unknown[]) => apiFetch(...args),
@@ -67,7 +81,7 @@ describe('Register 页面', () => {
     fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'alice' } });
     fireEvent.change(screen.getByPlaceholderText('you@example.com'), { target: { value: 'alice@test.local' } });
     fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'password123' } });
-    fireEvent.click(screen.getByRole('button', { name: 'common.register' }));
+    fireEvent.click(screen.getByRole('button', { name: '注册' }));
 
     await waitFor(() => {
       expect(apiFetch).toHaveBeenCalledWith('/api/auth/register', {
@@ -91,7 +105,7 @@ describe('Register 页面', () => {
     fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'taken' } });
     fireEvent.change(screen.getByPlaceholderText('you@example.com'), { target: { value: 'taken@test.local' } });
     fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'password123' } });
-    fireEvent.click(screen.getByRole('button', { name: 'common.register' }));
+    fireEvent.click(screen.getByRole('button', { name: '注册' }));
 
     await waitFor(() => {
       expect(navigate).not.toHaveBeenCalled();
