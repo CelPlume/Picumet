@@ -2795,13 +2795,82 @@ curl https://{domain}/api/public/health/ready
 
 The API serves files directly from their public virtual path, for example `GET https://{domain}/drive/photos/photo.jpg`. This route runs after all API and WebDAV routes, so it never shadows them.
 
-Files on a public mount serve with no authentication. Files on a private mount require a logged-in session with download permission. Password-protected files return `403 PASSWORD_REQUIRED`. Paths that are not mounted, or that contain `..`, return `404`.
+Files on a public mount serve with no authentication. Files on a private mount require a logged-in session with download permission, or a valid path signature (`?sign=`, see "Gateway access" below). Password-protected files return `403 PASSWORD_REQUIRED`. Paths that are not mounted, or that contain `..`, return `404`.
 
 #### Example
 
 ```sh
 curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 ```
+
+## Gateway access (S3 / Lsky / OpenList compatible)
+
+> Gateway keys (formerly API keys) expose Picumet as a **relay surface** for S3/R2/Oracle/MinIO storage to external tools (PicGo/PicList, rclone, S3 SDKs); image-hosting uploads are just one use case.
+> Keys declare their protocol surfaces via `protocols` at creation: `webdav` / `api` / `s3`. A key with a non-empty `protocols` list can only use the declared surfaces (an empty array allows all, for backward compatibility).
+> **Data-layer owner isolation**: every file read/write/delete through a gateway key is scoped to the key owner (`owner_id`). Even a misconfigured path rule cannot touch another user's data. Directories (prefixes) are a shared namespace within the mount; writing a file whose path is occupied by another user returns `409 CONFLICT`.
+> S3 gateway verification needs a reversible secret: it is stored AES-GCM-encrypted at key creation (migration `0006_s3_gateway.sql`). Legacy keys without that column get `InvalidAccessKeyId` on the S3 gateway — recreate the key. The create-key response `configs` now includes `s3` and `openlist` snippets.
+
+### Lsky Pro V2 compatible upload
+
+`POST /api/v1/upload`, authenticated with `Authorization: Bearer pk_*.sk_*` (a bare token is also accepted). multipart field `file`, optional `path` field (relative paths resolve against the key's upload-path template; absolute paths must stay inside the key's upload root). Path templates, upload-root boundaries, quota, overwrite semantics, and ancestor-folder rows behave exactly like `/api/upload`.
+
+Success response (Lsky V2 contract; pick "Lsky Pro V2" in PicList):
+
+```json
+{
+  "status": true,
+  "message": "success",
+  "data": {
+    "key": "{fileId}",
+    "name": "pic.png",
+    "path": "/uploads/2024/pic.png",
+    "size": 10240,
+    "links": { "url": "https://{domain}/uploads/2024/pic.png?sign=…" }
+  }
+}
+```
+
+Failure response: `{ "status": false, "message": "reason", "data": null }` (HTTP stays 200).
+
+### OpenList / AList compatible endpoints (`/openlist` prefix)
+
+Implements a subset of the AList v3 REST protocol. In PicList pick "AList" with url `https://{domain}/openlist` to get the built-in picbed experience (including delete-by-URL). The separate prefix exists because `/api/auth/login` is already used by Picumet's own login. Responses share the `{code, message, data}` envelope with `message` always `success` (clients check `code === 200`).
+
+| Endpoint | Description |
+| :--- | :--- |
+| `POST /openlist/api/auth/login` | `{username: keyId, password: secret}` → `data.token = pk_*.sk_*` (no server-side session; the token is the key) |
+| `PUT /openlist/api/fs/form` | multipart `file`; headers `Authorization: <bare token>` and `File-Path: encodeURIComponent(full virtual path)` |
+| `POST /openlist/api/fs/list` | `{path, page?, per_page?}` → `data.content[{name,size,is_dir,modified}]` |
+| `POST /openlist/api/fs/get` | `{path}` → `data.sign` (signature for the /d direct link), `data.is_dir`, etc. |
+| `POST /openlist/api/fs/remove` | `{dir, names: [...]}` → delete (same semantics as WebDAV delete) |
+| `GET /openlist/d{encodedPath}?sign=` | Direct download; anonymous on public mounts, signature-gated on private mounts |
+
+### S3 compatible gateway (`/s3` prefix)
+
+A SigV4-verified subset of the S3 REST protocol. Client configuration: endpoint = `https://{domain}/s3`, **path-style addressing (`forcePathStyle=true` / `pathStyleAccess`)**, any region (PicList sends the literal `auto`), `accessKeyId = pk_*`, `secretAccessKey = sk_*`.
+
+**Bucket semantics**: bucket = first segment of the virtual path (mount path or the key's upload root, e.g. uploadPath=`/uploads` → bucket=`uploads`); key = the rest. `GET /s3` lists the buckets reachable by the key (top-level directory names).
+
+| Operation | Request |
+| :--- | :--- |
+| PutObject | `PUT /s3/{bucket}/{key}` (full-body `x-amz-content-sha256` verification; `x-amz-meta-*` stored as object metadata) |
+| GetObject | `GET /s3/{bucket}/{key}` (supports `Range` → 206) |
+| HeadObject | `HEAD /s3/{bucket}/{key}` |
+| DeleteObject | `DELETE /s3/{bucket}/{key}` (deleting a missing key still returns 204) |
+| ListObjectsV2 | `GET /s3/{bucket}?list-type=2&prefix=&delimiter=/&max-keys=` |
+| DeleteObjects | `POST /s3/{bucket}?delete` (XML body, up to 1000 keys) |
+| ListBuckets | `GET /s3` |
+
+Not implemented (returns `501 NotImplemented`): CopyObject, Multipart Upload, DeleteBucket. Requests skewed more than 15 minutes are rejected (`AccessDenied`). Presigned GET URLs are generated client-side and verified server-side via query parameters (`X-Amz-Expires` 1–604800 seconds).
+
+### Direct-link signatures (`?sign=`)
+
+File URLs returned by the compat upload / Lsky V2 / S3 flows:
+
+- If the storage provider has a public domain (`public_domain`) configured → a CDN direct link is returned;
+- Otherwise `{APP_BASE_URL}{virtualPath}?sign={expiresAt}.{hmac}` — path-serve allows an **anonymous GET of exactly that path** when the signature verifies (capability scope = that path). `expiresAt=0` means long-lived.
+
+Signatures are decoupled from key lifecycle: revoking or recreating a gateway key never breaks already-issued direct links.
 
 ## What's next
 

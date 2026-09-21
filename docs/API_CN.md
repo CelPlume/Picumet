@@ -2795,13 +2795,82 @@ curl https://{domain}/api/public/health/ready
 
 API 会直接从文件的公开虚拟路径返回文件，例如 `GET https://{domain}/drive/photos/photo.jpg`。该路由在所有 API 和 WebDAV 路由之后注册，因此不会遮蔽它们。
 
-公开挂载上的文件无需认证即可访问。私有挂载上的文件需要登录且具备下载权限。受密码保护的文件返回 `403 PASSWORD_REQUIRED`。未挂载的路径或包含 `..` 的路径返回 `404`。
+公开挂载上的文件无需认证即可访问。私有挂载上的文件需要登录且具备下载权限，或持有该路径的有效签名（`?sign=`，见「网关接入」一节的直链签名）。受密码保护的文件返回 `403 PASSWORD_REQUIRED`。未挂载的路径或包含 `..` 的路径返回 `404`。
 
 #### 示例
 
 ```sh
 curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 ```
+
+## 网关接入（S3 / Lsky / OpenList 兼容）
+
+> 网关密钥（原 API 密钥）把 Picumet 作为 S3/R2/Oracle/MinIO 存储的**中转面**接入外部工具（PicGo/PicList、rclone、S3 SDK 等），图床上传只是用途之一。
+> 密钥创建时按 `protocols` 声明协议面：`webdav` / `api` / `s3`；`protocols` 非空的密钥只能使用声明过的协议面（空数组视为全量，兼容存量数据）。
+> **数据层所有者隔离**：网关密钥的一切文件读写删均限定在密钥属主名下（`owner_id`），路径规则被误配也无法触达其他用户的数据；目录（前缀）为挂载内共享命名空间，同一路径的文件被他人占用时写入返回 `409 CONFLICT`。
+> S3 网关验签需要可逆 secret：创建密钥时以 AES-GCM 加密落库（迁移 `0006_s3_gateway.sql`），存量密钥（无该列数据）使用 S3 网关会得到 `InvalidAccessKeyId`，请重建密钥。创建密钥响应的 `configs` 新增 `s3` 与 `openlist` 速配信息。
+
+### Lsky Pro V2 兼容上传
+
+`POST /api/v1/upload`，认证 `Authorization: Bearer pk_*.sk_*`（也接受裸 token）。multipart 字段 `file`，可选 `path` 字段（相对路径基于密钥上传路径模板解析，绝对路径须落在密钥上传根内）。路径模板渲染、上传根边界、配额、覆盖语义、目录行补齐与 `/api/upload` 完全一致。
+
+成功响应（Lsky V2 契约，PicList 选「Lsky Pro V2」即用）：
+
+```json
+{
+  "status": true,
+  "message": "success",
+  "data": {
+    "key": "{fileId}",
+    "name": "pic.png",
+    "path": "/uploads/2024/pic.png",
+    "size": 10240,
+    "links": { "url": "https://{domain}/uploads/2024/pic.png?sign=…" }
+  }
+}
+```
+
+失败响应：`{ "status": false, "message": "原因", "data": null }`（HTTP 仍为 200）。
+
+### OpenList / AList 兼容接口（`/openlist` 前缀）
+
+实现 AList v3 REST 协议子集，PicList 选「AList」、url 填 `https://{domain}/openlist` 即获得内置类型体验（含粘贴即删）。使用独立前缀的原因：`/api/auth/login` 已被 Picumet 自有登录占用。响应统一为 `{code, message, data}` 壳，`message` 恒为 `success`（客户端以 code===200 判定）。
+
+| 端点 | 说明 |
+| :--- | :--- |
+| `POST /openlist/api/auth/login` | `{username: keyId, password: secret}` → `data.token = pk_*.sk_*`（无服务端会话，token 即密钥） |
+| `PUT /openlist/api/fs/form` | multipart `file`；头 `Authorization: <裸 token>`、`File-Path: encodeURIComponent(完整虚拟路径)` |
+| `POST /openlist/api/fs/list` | `{path, page?, per_page?}` → `data.content[{name,size,is_dir,modified}]` |
+| `POST /openlist/api/fs/get` | `{path}` → `data.sign`（/d 直链签名）、`data.is_dir` 等 |
+| `POST /openlist/api/fs/remove` | `{dir, names: [...]}` → 删除（复用 WebDAV 删除语义） |
+| `GET /openlist/d{encodedPath}?sign=` | 直链下载；公开挂载匿名，私有挂载凭 `fs/get` 下发的 sign |
+
+### S3 兼容网关（`/s3` 前缀）
+
+SigV4 验签的 S3 REST 子集。客户端配置：endpoint = `https://{domain}/s3`、**路径式寻址（`forcePathStyle=true` / `pathStyleAccess`）**、region 任意（PicList 用字面量 `auto`）、`accessKeyId = pk_*`、`secretAccessKey = sk_*`。
+
+**bucket 语义**：bucket = 虚拟路径首段（挂载路径或密钥上传根的首段，如 uploadPath=`/uploads` → bucket=`uploads`），key = 其余路径。`GET /s3` 返回密钥可达的 bucket 列表（挂载根下的一级目录名）。
+
+| 操作 | 请求 |
+| :--- | :--- |
+| PutObject | `PUT /s3/{bucket}/{key}`（整包 `x-amz-content-sha256` 校验；`x-amz-meta-*` 透传为对象元数据） |
+| GetObject | `GET /s3/{bucket}/{key}`（支持 `Range` → 206） |
+| HeadObject | `HEAD /s3/{bucket}/{key}` |
+| DeleteObject | `DELETE /s3/{bucket}/{key}`（删除不存在的 key 仍 204） |
+| ListObjectsV2 | `GET /s3/{bucket}?list-type=2&prefix=&delimiter=/&max-keys=` |
+| DeleteObjects | `POST /s3/{bucket}?delete`（XML body，≤1000 keys） |
+| ListBuckets | `GET /s3` |
+
+未实现（返回 `501 NotImplemented`）：CopyObject、Multipart Upload、DeleteBucket。请求时间偏差超过 15 分钟拒绝（`AccessDenied`）。预签名 GET 由客户端本地生成，服务端按 query 验签后放行（`X-Amz-Expires` 1~604800 秒）。
+
+### 直链签名（`?sign=`）
+
+兼容上传 / Lsky V2 / S3 场景返回的文件 URL：
+
+- 存储提供商配置了公网域名（`public_domain`）→ 返回 CDN 直链；
+- 否则返回 `{APP_BASE_URL}{虚拟路径}?sign={expiresAt}.{hmac}` —— path-serve 校验通过即允许**匿名 GET 该精确路径**（能力范围 = 该路径），`expiresAt=0` 表示长期有效。
+
+签名与密钥生命周期解耦：撤销/重建网关密钥不会使已发出的直链失效。
 
 ## 相关文档
 
