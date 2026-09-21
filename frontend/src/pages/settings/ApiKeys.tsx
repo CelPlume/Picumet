@@ -1,4 +1,4 @@
-// API 密钥管理
+// 网关密钥管理（对象存储中转 / PicGo / WebDAV / S3 / OpenList 兼容）
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Copy, Trash2, Check } from 'lucide-react';
@@ -24,7 +24,12 @@ interface ApiKeyItem {
 
 interface CreatedKey {
   key: { id: string; keyId: string; secret: string; fullToken: string; name: string; permissions: string[]; protocols: string[]; uploadPath: string };
-  configs: { bearer: { url: string; header: string }; webdav: { url: string; username: string; password: string } };
+  configs: {
+    bearer: { url: string; header: string };
+    webdav: { url: string; username: string; password: string; customUrlHint?: string; webpathHint?: string };
+    s3: { endpoint: string; region: string; accessKeyId: string; secretAccessKey: string; bucketHint?: string; pathStyle: boolean };
+    openlist: { url: string; token: string };
+  };
 }
 
 export default function ApiKeysPage() {
@@ -169,11 +174,11 @@ export default function ApiKeysPage() {
           </div>
           <div>
             <Label>{t('settings.protocols')}</Label>
-            <div className="mt-1 flex gap-3">
-              {['webdav', 'api'].map((p) => (
+            <div className="mt-1 flex flex-wrap gap-3">
+              {(['webdav', 'api', 's3'] as const).map((p) => (
                 <label key={p} className="flex items-center gap-1.5 text-sm">
-                  <Checkbox checked={protocols.includes(p)} onChange={() => toggleProto(p)} label={p === 'webdav' ? t('settings.webdav') : t('settings.customApi')} />
-                  {p === 'webdav' ? t('settings.webdav') : t('settings.customApi')}
+                  <Checkbox checked={protocols.includes(p)} onChange={() => toggleProto(p)} label={p === 'webdav' ? t('settings.webdav') : p === 's3' ? t('settings.s3') : t('settings.customApi')} />
+                  {p === 'webdav' ? t('settings.webdav') : p === 's3' ? t('settings.s3') : t('settings.customApi')}
                 </label>
               ))}
             </div>
@@ -215,10 +220,35 @@ export default function ApiKeysPage() {
               <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.webdav.url}
 用户名: ${created.configs.webdav.username}
-密码: ${created.configs.webdav.password}`}
+密码: ${created.configs.webdav.password}
+customUrl(公开直链域名): ${created.configs.webdav.customUrlHint ?? ''}${created.configs.webdav.webpathHint ? `\nwebpath: ${created.configs.webdav.webpathHint}` : ''}`}
               </pre>
               <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.webdav), 'webdav')}>
                 {copyState === 'webdav' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} 复制
+              </Button>
+            </div>
+            <div className="rounded-md border bg-muted/40 p-3">
+              <p className="mb-2 text-xs font-medium text-muted-foreground">🪣 {t('settings.s3')}（S3 兼容网关）</p>
+              <pre className="overflow-x-auto text-xs">
+{`endpoint: ${created.configs.s3.endpoint}
+region: ${created.configs.s3.region}
+AccessKeyId: ${created.configs.s3.accessKeyId}
+SecretAccessKey: ${created.configs.s3.secretAccessKey}
+bucket: ${created.configs.s3.bucketHint ?? ''}
+路径式寻址(forcePathStyle/pathStyleAccess): ${created.configs.s3.pathStyle}`}
+              </pre>
+              <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.s3), 's3')}>
+                {copyState === 's3' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} 复制
+              </Button>
+            </div>
+            <div className="rounded-md border bg-muted/40 p-3">
+              <p className="mb-2 text-xs font-medium text-muted-foreground">🟦 {t('settings.openlist')}（AList 协议）</p>
+              <pre className="overflow-x-auto text-xs">
+{`URL: ${created.configs.openlist.url}
+Token: ${created.configs.openlist.token}`}
+              </pre>
+              <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.openlist), 'openlist')}>
+                {copyState === 'openlist' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} 复制
               </Button>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
