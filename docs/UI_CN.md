@@ -217,8 +217,8 @@ flowchart LR
 
 ### 模糊与背景
 
-- **模糊三档**：外观设置的「模糊效果」滑块控制 `blurLevel = 'off' | 'default' | 'frosted'`（默认 default），写入 `--glass-alpha` 与 `--glass-blur` 两个 CSS 变量；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩、文件项磨砂底、菜单）失效为实底。
-- **统一表面**：以下组件共享同一套表面类（`frontend/src/index.css` + `components/ui/`）：导航栏、侧栏（文件树）、下拉菜单、右键菜单、Select 弹层、Toast、弹窗窗体、文件卡片与列表、设置和管理面板、骨架屏。禁止硬编码模糊/透明度，一律消费 `--glass-alpha` / `--glass-blur`。
+- **模糊三档**：外观设置的「模糊效果」滑块控制 `blurLevel = 'off' | 'default' | 'frosted'`（默认 default），写入 `--glass-alpha` 与 `--glass-blur` 两个 CSS 变量（小型控件与大表面共用，无独立 token）；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩、文件项磨砂底、菜单）失效为实底。
+- **统一表面**：以下组件共享同一套表面类（`frontend/src/index.css` + `components/ui/`）：导航栏、侧栏（文件树）、下拉菜单、右键菜单、Select 弹层、Toast、弹窗窗体、文件卡片与列表、设置和管理面板、骨架屏。禁止硬编码模糊/透明度，一律消费 `--glass-alpha` / `--glass-blur`。小型控件（Tabs 轨道、secondary/outline 按钮、搜索框、复选框未选态、⋮ 触发钮、Switch 轨道）走 `.glass-control` + `--glass-alpha`，与卡片同色同透。
 - **背景图片**：用户可上传不超过 `2MB` 的图片（JPG/PNG/WebP）或不用背景，图片以 base64 data URL 存于 `localStorage`；有壁纸时 default 档自动提高不透明度（深 0.92 / 浅 0.82）保证 WCAG AA。纯色背景选项已移除。
 
 ### Tabs 与滑动指示器
@@ -301,11 +301,47 @@ flowchart LR
 
 ### `components/ui/checkbox.tsx` — 复选框
 
-- 选中 `border-primary bg-primary`（符合强调色）；未选中 `bg-background/60 backdrop-blur-sm`。
+- 选中 `border-primary bg-primary`（符合强调色）；未选中 `glass-control bg-card/[var(--glass-alpha,0.72)]`（原硬编码 `/60 + backdrop-blur-sm` 已并入统一配方）。
+
+### 小型控件玻璃（Tabs / Button / Select / Switch / 搜索框 / 视图切换器）
+
+- `.glass-control`（`index.css`）只含 backdrop blur（同一 `--glass-blur` token + `saturate(1.5)`），底色透明度由各组件用 Tailwind 任意透明度 `bg-*/[var(--glass-alpha,0.72)]` 消费——**与大表面共用同一 token，无控件独立档**：default 0.92/0.82（有壁纸）/0.8/0.72（无壁纸）、frosted 0.6、off 1；控件与所在页面的卡片同色同透，杜绝灰色割裂（历史 bug：控件独立 0.6/0.75 档在白卡片旁发灰）。off 档双保险（alpha=1 自动实底 + `.no-blur` 关停 blur）。
+- 适用范围：`TabsList` 轨道（`bg-card/[…]`，active 滑块为 `bg-muted` 实底凸起）、`Button` 的 **secondary/outline** 变体、**Dropdown 触发钮**（文件/分享行的 ⋮ 图标钮、文件页排序钮——点开的菜单本身已有玻璃面）、**Switch** 轨道（checked `bg-primary/[…]`、unchecked `bg-input/[…]`）、**搜索框**、复选框未选态。
+- **填色按钮（default/destructive）明确不做模糊**：半透明主色底随背景混色，活动与不可用/相邻状态无法区分——保持实底 `bg-primary` / `bg-destructive`；ghost/link 透明也不参与。
+- **搜索框项目级统一**：`core.tsx` 导出 `SEARCH_INPUT_GLASS`（`glass-control + bg-card/[…]` 含 dark 变体——底色用 `--card` 与卡片精确同色），文件页与管理后台（Users/Files）共用——禁止各自写 bg（历史不一致：文件页实底 `bg-background`、管理页透明）。
+- 文件页**排序下拉触发钮**与 Select 触发器同配方；**视图切换器**（卡片/列表，文件页与分享页同款）：容器 `glass-control bg-muted/[…]`（选中/未选中都有可见底色，未选中不再是透明），选中项 `bg-primary/15 text-primary`（强调色淡化，非玻璃面）。
+- **属性面板访问规则行**（`PropertiesPanel`）：纵向四行——效果 Select 全宽 → 目标 Select 全宽 → 用户 ID Input（仅「指定用户」时）→ 添加按钮全宽。窄抽屉不挤压（历史 bug：横向排布在 ≈250px 抽屉里溢出截断）。
+- **代码编辑框不做玻璃**：跟随普通文本框样式（`bg-transparent` + `dark:bg-input/30`），与表单输入观感一致。
+
+### 空状态（`EmptyState`）
+
+- 全站空数据提示统一 `EmptyState`（圆形图标底 + 标题 + 描述），禁止裸文本「暂无 xx」。
+- 表格空态：**保留表头与卡片背景**，空态渲染在 `<tbody>` 的 colSpan 行内（已覆盖：访问规则、API 密钥、用户、全部文件、分享、日志、权限规则；分享页/文件页列表用整块 EmptyState）。
+- 统计卡/列表内嵌小空态用 `compact` 档（小图标圈 + 单行标题，如仪表盘存储/活动卡）。
+- 空态文案面向用户，不写内部角色/机制（如「管理员规则优先级」这类字样不出现在用户界面）。
+
+### 数据表格规范（设置 / 管理）
+
+- **包裹容器**：一律 `Card`（玻璃面，三档门控）+ **`py-0`**——表格自身的 `px-4 py-2` 单元格节奏提供内边距，保留 Card 默认 `py-5` 会在表头上方留一条空白（历史 bug）。
+- **loading 分支在表体内**：`<tbody>` 内 `{loading ? <tr><td colSpan={N}><TableSkeleton/></td></tr> : …}`，保证 loading 时表头与卡片可见；不要用骨架替换整张表。
+- **表头排序**：所有数据表支持表头点击排序——`SortableHeader` + `sortByKey`（已覆盖：用户、全部文件、分享、日志、权限规则、存储提供商/挂载、访问规则、API 密钥）。
+- **玻璃内绝对定位图标必须 `z-10` + `pointer-events-none`**：搜索框的放大镜画在玻璃填充 input 之前会被其 backdrop-filter 采样消失（历史 bug：搜索图标不可见）。
+- **Select 触发器同普通文本框**（`bg-transparent` + `dark:bg-input/30`，无自绘填充）：玻璃感来自所在容器（卡片/弹窗/面板本体），自身叠白底会在白色表面上变成死白块（历史 bug：语言/预设下拉在浅色卡片上像实底）。独立贴在页面上的字段（文件页搜索框）才用 `SEARCH_INPUT_GLASS` 显式玻璃。
+
+### 滑动选中指示器（`components/ui/indicator.ts` — navbar/Tabs/侧边栏共用适配器）
+
+- `useIndicator(ref, dep, { axis: 'x' | 'y', persistKey? })`：测量容器内 `[data-active="true"]` 元素几何（x=offsetLeft/Width，y=offsetTop/Height），MutationObserver（懒加载/展开收起）+ resize 自动重测；返回 `{ pos, size, ready }`。
+- **persistKey（navbar 专用）**：AppShell 每次换页重挂载，模块级缓存让指示器从旧位置平滑滑出而非跳变；无缓存方（Tabs/侧边栏）同步就位。
+- **语言切换适配**：i18n 换语言是文本节点原地更新（characterData），observer 必须含 `characterData: true` 才能捕获宽度变化；navbar 的 dep 额外含 `i18n.language`（历史 bug：切语言后指示器保持旧宽度）。
+- 接入方：navbar `AppShell`（`bg-primary/10` 实底凸起条）、`TabsList`（`bg-muted shadow-sm ring-1` 凸起滑块，轨道为 `bg-card` 玻璃）、文件树/管理侧栏/设置侧栏（`INDICATOR_CLASS`：`bg-primary/10` 强调色淡化 + `glass-control` 随档位模糊；**颜色固定不随档位/背景漂移**）。
+- 活跃项标记统一为 `data-active="true"`；选中项文字 `text-primary`（±font-medium），底色交给指示器——**Tabs trigger 不再自带 `bg-background` 底**（历史 bug：滑动色块与 trigger 静态底两枚指示器重叠，静止时不可见、滑动时穿帮）。
+- 侧栏项图标加 `shrink-0`：flex 行内长描述文本会把图标压缩（历史 bug：20 字描述把 16px 图标压到 11px）；描述文案保持一句话内。
 
 ### `components/ui/skeleton.tsx` — 骨架屏
 
-- 容器一律 `glass-surface glass-blur` + 圆角边框。
+- 容器一律 `glass-surface glass-blur` + 圆角边框（三档门控）。
+- **例外——`TableSkeleton` 行条完全透明 + `border-b` 分隔**，模仿真实表格行；玻璃由所在卡片承担。禁止给表体内嵌的骨架行再叠 `glass-surface`：同色玻璃嵌套会复合成近不透明白板（三层 card/α 叠加 ≈0.97，历史 bug：表格骨架整卡发白）。
+- 条纹基元 `Skeleton` 用中性 `bg-foreground/10`（亮暗主题自适应），不用实心 `bg-accent`。
 
 ### `pages/settings/Appearance.tsx` — 外观设置
 

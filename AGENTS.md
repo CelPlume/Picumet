@@ -490,6 +490,20 @@ wrangler deploy
 
 ---
 
+## i18n（国际化，强制）
+
+- **所有用户可见文案**（标签、placeholder、title、aria-label、toast、ConfirmDialog、表头、空状态、校验错误、Badge）必须走 react-i18next `t()`；禁止在组件里硬编码中文/英文文案（注释除外）。
+- 语言包：`frontend/src/lib/i18n/zh.ts` + `en.ts`，**新 key 必须两份同时添加**，缺一即显示裸 key。
+- key 规范：camelCase、按页面/区域命名空间（`files.*`、`settings.*`、`admin.*`、`common.*`）；共享 UI 原语一律 `common.*`。
+- ⚠️ `keySeparator` 为 `'.'`：**叶子 key 不能再向下嵌套**——`admin.storage` / `admin.files` / `admin.settings` 已是叶子字符串（导航标签在用），其下禁止再建子层级；相邻命名空间用 `admin.storageMounts.*` / `admin.storageProviders.*` / `admin.allFiles.*` 这类避开。
+- 复用优先：写新 key 前先查语言包已有 key（`common.save/cancel/actions`、`files.name/size` 等大量现成）。
+- 插值用 i18next 语法：译文 `'{{count}}s'`，调用 `t('key', { count })`；禁止 `.replace()` 手工拼接。
+- 侧栏/导航的描述文案一句话内——长描述会在 flex 行里挤压图标（图标需 `shrink-0`）。
+- 切换语言会改变文案宽度：滑动指示器等测量型组件必须响应语言变化（`useIndicator` 已观察 `characterData` + dep 含 `i18n.language`）。
+- 后端枚举值（如 `s.status === 'active'`）直接渲染原值即可，不算硬编码文案。
+
+---
+
 ## Common Pitfalls（常见坑点）
 
 ### 权限系统

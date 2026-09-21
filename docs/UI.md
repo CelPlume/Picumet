@@ -217,8 +217,8 @@ Users pick an accent color from presets or with a color picker. The app converts
 
 ### Blur and background
 
-- **Three blur levels**: the appearance settings' **Blur effect** slider sets `blurLevel = 'off' | 'default' | 'frosted'` (default `default`), written to the `--glass-alpha` and `--glass-blur` CSS variables; `off` adds a `.no-blur` class on the root element and disables every backdrop filter (overlay, file-item frosting, menus) for solid surfaces.
-- **Unified surfaces**: the following components share the same surface classes (`frontend/src/index.css` + `components/ui/`): the top bar, sidebar (file tree), dropdown menus, context menu, Select popovers, toasts, dialog bodies, file cards and rows, settings and admin panels, and skeletons. Never hardcode blur or opacity — consume `--glass-alpha` / `--glass-blur`.
+- **Three blur levels**: the appearance settings' **Blur effect** slider sets `blurLevel = 'off' | 'default' | 'frosted'` (default `default`), written to the `--glass-alpha` and `--glass-blur` CSS variables (small controls share the surface token — no separate control tier); `off` adds a `.no-blur` class on the root element and disables every backdrop filter (overlay, file-item frosting, menus) for solid surfaces.
+- **Unified surfaces**: the following components share the same surface classes (`frontend/src/index.css` + `components/ui/`): the top bar, sidebar (file tree), dropdown menus, context menu, Select popovers, toasts, dialog bodies, file cards and rows, settings and admin panels, and skeletons. Never hardcode blur or opacity — consume `--glass-alpha` / `--glass-blur`. Small controls (Tabs rail, secondary/outline buttons, search boxes, unchecked checkboxes, ⋮ triggers, Switch tracks) use `.glass-control` + `--glass-alpha` — same color and translucency as the cards beside them.
 - **Background image**: users upload an image up to `2MB` (JPG, PNG, or WebP) or leave no background. The image stores as a base64 data URL in `localStorage`. With a wallpaper the default tier raises opacity (dark 0.92 / light 0.82) to keep WCAG AA. A solid-color background option no longer exists.
 
 ### Tabs and sliding indicator
@@ -300,11 +300,47 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 
 ### `components/ui/checkbox.tsx` — checkbox
 
-- Checked `border-primary bg-primary` (accent-colored); unchecked `bg-background/60 backdrop-blur-sm`.
+- Checked `border-primary bg-primary` (accent-colored); unchecked `glass-control bg-card/[var(--glass-alpha,0.72)]` (the hardcoded `/60 + backdrop-blur-sm` was folded into the unified recipe).
+
+### Small-control glass (Tabs / Button / Select / Switch / search boxes / view switcher)
+
+- `.glass-control` (`index.css`) carries only the backdrop blur (the same `--glass-blur` token + `saturate(1.5)`); each component consumes the fill alpha itself with Tailwind arbitrary alpha `bg-*/[var(--glass-alpha,0.72)]` — **shared with the big surfaces, no separate control tier**: default 0.92/0.82 (wallpaper) / 0.8/0.72 (none), frosted 0.6, off 1; controls match the color and translucency of the cards on their page, eliminating the gray mismatch (past bug: a dedicated control tier at 0.6/0.75 looked gray next to white cards); the off tier is doubly safe (alpha=1 turns the fill solid automatically + `.no-blur` kills the blur).
+- Scope: the `TabsList` rail (`bg-card/[…]`; the active pill is a solid raised `bg-muted`), the `Button` **secondary/outline** variants, **Dropdown trigger buttons** (the file/share row ⋮ icon buttons and the files-page sort trigger — the menus they open are already glassed), **Switch** tracks (checked `bg-primary/[…]`, unchecked `bg-input/[…]`), **search boxes**, and the unchecked checkbox.
+- **Filled buttons (default/destructive) are deliberately NOT glassed**: a translucent accent fill blends with the backdrop and makes active vs inactive/adjacent states impossible to tell apart — they stay solid `bg-primary` / `bg-destructive`; ghost/link are transparent and also excluded.
+- **Search boxes are unified project-wide**: `core.tsx` exports `SEARCH_INPUT_GLASS` (`glass-control + bg-card/[…]` with the dark variant — the `--card` base matches card white exactly), shared by the files page and the admin pages (Users/Files) — never write per-page backgrounds again (past inconsistency: the files page was solid `bg-background`, the admin pages transparent).
+- The files-page **sort dropdown trigger** uses the same recipe as the Select trigger; the **view switcher** (grid/list, identical on the files and shares pages) container gets `glass-control bg-muted/[…]` so both states have a visible fill (the unselected side is no longer transparent), and the selected view uses `bg-primary/15 text-primary` (a light accent tint, not a glass surface).
+- The **properties-panel access-rule row** (`PropertiesPanel`) stacks vertically: effect Select full width → target Select full width → user-ID Input (only in "specific user" mode) → add button full width. The narrow drawer must not squeeze them (past bug: the horizontal layout overflowed and clipped in the ≈250px drawer).
+- **Code editor boxes are NOT glassed**: they follow the plain input style (`bg-transparent` + `dark:bg-input/30`) to match form inputs.
+
+### Empty states (`EmptyState`)
+
+- Every no-data hint uses `EmptyState` (icon circle + title + description); bare "no x" text is forbidden.
+- Table empty states **keep the table header and card background**, rendering `EmptyState` inside a colSpan row in `<tbody>` (covered: access rules, API keys, users, admin files, shares, logs, permission rules; the shares/files pages use a full-block EmptyState).
+- Embedded small empty states inside stat cards/lists use the `compact` variant (small icon circle + single-line title, e.g. the dashboard storage/activity cards).
+- Empty-state copy is user-facing — no internal roles or mechanics (e.g. never surface "admin rules take priority" in the UI).
+
+### Data table conventions (settings / admin)
+
+- **Wrapper**: always a `Card` (glass surface, tier-gated) with **`py-0`** — the table's own `px-4 py-2` cell rhythm provides the padding; keeping the Card's default `py-5` leaves a blank strip above the header (past bug).
+- **The loading branch lives inside `<tbody>`**: `{loading ? <tr><td colSpan={N}><TableSkeleton/></td></tr> : …}` so the header and card stay visible while loading; never replace the whole table with a skeleton.
+- **Header sorting**: every data table supports header-click sorting via `SortableHeader` + `sortByKey` (covered: users, admin files, shares, logs, permission rules, storage providers/mounts, access rules, API keys).
+- **Absolutely-positioned icons inside glass fills need `z-10` + `pointer-events-none`**: the search box magnifier painted before the glass-filled input gets sampled away by its backdrop-filter and disappears (past bug: invisible search icon).
+- **Select triggers match plain inputs** (`bg-transparent` + `dark:bg-input/30`, no self-drawn fill): the glass comes from the containing surface (card/dialog/panel body). A self-drawn white fill turns into a flat white block on white surfaces (past bug: the language/preset selects looked solid on light cards). Fields standing directly on the page (the files-page search box) are the ones that use explicit `SEARCH_INPUT_GLASS`.
+
+### Sliding selection indicator (`components/ui/indicator.ts` — shared by navbar/Tabs/sidebars)
+
+- `useIndicator(ref, dep, { axis: 'x' | 'y', persistKey? })`: measures the `[data-active="true"]` element inside the container (x = offsetLeft/Width, y = offsetTop/Height); a MutationObserver (lazy loading, expand/collapse) plus resize re-measure automatically; returns `{ pos, size, ready }`.
+- **persistKey (navbar only)**: AppShell remounts on every route change; the module-level cache lets the indicator slide out from the previous position instead of jumping. Cacheless consumers (Tabs/sidebars) settle synchronously.
+- **Language-switch adaptation**: switching i18n languages updates text nodes in place (characterData); the observer must include `characterData: true` to catch width changes, and the navbar dep also includes `i18n.language` (past bug: the indicator kept its old width after a language switch).
+- Consumers: the navbar `AppShell` (solid raised `bg-primary/10` bar), `TabsList` (raised `bg-muted shadow-sm ring-1` pill on a `bg-card` glass rail), and the file tree / admin sidebar / settings sidebar (`INDICATOR_CLASS`: a fixed `bg-primary/10` accent tint + `glass-control` tier-gated blur; **the tint never shifts with tier or backdrop**).
+- Active items are uniformly marked `data-active="true"`; the selected text is `text-primary` (±font-medium) and the fill belongs to the indicator — **the Tabs trigger no longer carries its own `bg-background` fill** (past bug: the sliding pill and the trigger's static fill were two overlapping indicators, invisible at rest but exposed while sliding).
+- Sidebar item icons get `shrink-0`: in a flex row, long description text squeezes the icon (past bug: a 20-char description crushed a 16px icon down to 11px); keep descriptions to one short sentence.
 
 ### `components/ui/skeleton.tsx` — skeletons
 
-- Containers always use `glass-surface glass-blur` + rounded borders.
+- Containers always use `glass-surface glass-blur` + rounded borders (tier-gated).
+- **Exception — `TableSkeleton` rows are fully transparent with `border-b` separators**, mimicking real table rows; the glass comes from the enclosing card. Never stack `glass-surface` on skeleton rows embedded in a table: nested same-color glass composites into a near-opaque white board (three card/α layers ≈ 0.97 — past bug: table skeletons rendered the whole card solid white).
+- The stripe primitive `Skeleton` uses neutral `bg-foreground/10` (adapts to light/dark themes), not solid `bg-accent`.
 
 ### `pages/settings/Appearance.tsx` — appearance
 
