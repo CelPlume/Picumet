@@ -11,7 +11,7 @@ import { FileGridSkeleton, FileListSkeleton } from '@/components/ui/skeleton';
 import { useLassoSelect } from '@/components/files/lasso';
 import { useTheme } from '@/stores/theme';
 import { FileTree } from '@/components/files/FileTree';
-import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner, Switch } from '@/components/ui/core';
+import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner, Switch, SEARCH_INPUT_GLASS } from '@/components/ui/core';
 import { AppShell } from '@/components/layout/AppShell';
 import { Drawer } from '@/components/ui/drawer';
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
@@ -27,9 +27,9 @@ import type { FileListItem } from '@shared/types';
 
 // 排序字段选项；升序/降序在同一下拉内切换（不再是独立按钮）
 const SORT_FIELDS = [
-  { value: 'name', label: '按名称' },
-  { value: 'time', label: '按时间' },
-  { value: 'size', label: '按大小' },
+  { value: 'name', label: 'files.sortName' },
+  { value: 'time', label: 'files.sortTime' },
+  { value: 'size', label: 'files.sortSize' },
 ] as const;
 
 // ============ 复制链接弹窗（含图片/视频时选择格式与签名） ============
@@ -44,6 +44,7 @@ function CopyLinksDialog({
   onClose: () => void;
   copyLinks: CopyLinksMutator;
 }) {
+  const { t } = useTranslation();
   const [format, setFormat] = useState<'direct' | 'html' | 'markdown'>('direct');
   const [signed, setSigned] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -74,29 +75,29 @@ function CopyLinksDialog({
       );
       await navigator.clipboard.writeText(links.join('\n'));
       setCopied(true);
-      toast('success', signed ? `已复制 ${links.length} 个签名链接` : `已复制 ${links.length} 个链接`);
+      toast('success', signed ? t('files.copiedSignedLinks', { count: links.length }) : t('files.copiedLinks', { count: links.length }));
     } catch {
-      toast('error', '复制链接失败');
+      toast('error', t('files.copyLinkFailed'));
     } finally {
       setLoading(false);
     }
   };
 
   const formatOptions = [
-    { value: 'direct' as const, label: '直链', desc: '直接下载链接' },
-    { value: 'html' as const, label: 'HTML 代码', desc: '<img src="...">' },
-    { value: 'markdown' as const, label: 'Markdown 代码', desc: '![name](url)' },
+    { value: 'direct' as const, label: t('files.copyDirect'), desc: t('files.copyDirectDesc') },
+    { value: 'html' as const, label: t('files.copyHtmlCode'), desc: '<img src="...">' },
+    { value: 'markdown' as const, label: t('files.copyMarkdownCode'), desc: '![name](url)' },
   ];
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="复制链接"
+      title={t('files.copyLink')}
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>{copied ? '关闭' : '取消'}</Button>
-          <Button onClick={() => void doCopy()} loading={loading}>{copied ? '已复制 ✓' : '复制'}</Button>
+          <Button variant="outline" onClick={onClose}>{copied ? t('common.close') : t('common.cancel')}</Button>
+          <Button onClick={() => void doCopy()} loading={loading}>{copied ? `${t('common.copied')} ✓` : t('common.copy')}</Button>
         </>
       }
     >
@@ -133,8 +134,8 @@ function CopyLinksDialog({
         </div>
         <div className="flex items-center justify-between rounded-md border px-3 py-2">
           <div>
-            <p className="text-sm font-medium">签名链接</p>
-            <p className="text-xs text-muted-foreground">带时效的签名 URL（有效期 1 小时）</p>
+            <p className="text-sm font-medium">{t('files.signedLink')}</p>
+            <p className="text-xs text-muted-foreground">{t('files.signedLinkDesc')}</p>
           </div>
           <Switch
             checked={signed}
@@ -275,14 +276,14 @@ export default function Files() {
   const items = data?.items ?? [];
   const breadcrumb = useMemo(() => {
     const parts = path.split('/').filter(Boolean);
-    const crumbs = [{ name: '首页', path: '/' }];
+    const crumbs = [{ name: t('nav.home'), path: '/' }];
     let acc = '';
     for (const p of parts) {
       acc = `${acc}/${p}`;
       crumbs.push({ name: p, path: acc });
     }
     return crumbs;
-  }, [path]);
+  }, [path, t]);
 
   const toggleSelect = useCallback((id: string) => {
     setSelected((prev) => {
@@ -318,13 +319,13 @@ export default function Files() {
         return;
       }
       const res = await fetch(`/api/files/${f.id}/download`, { credentials: 'include' });
-      if (!res.ok) throw new Error('下载失败');
+      if (!res.ok) throw new Error(t('files.downloadFailed'));
       const data = (await res.json()) as { data: { url: string } };
       window.open(data.data.url, '_blank');
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '下载失败');
+      toast('error', err instanceof Error ? err.message : t('files.downloadFailed'));
     }
-  }, []);
+  }, [t]);
 
   const doCopyLink = useCallback(
     async (f: FileListItem, format: 'direct' | 'html' | 'markdown' = 'direct', signed = false) => {
@@ -346,12 +347,12 @@ export default function Files() {
             : window.location.origin + res.formats.direct;
         }
         await navigator.clipboard.writeText(text);
-        toast('success', signed ? '签名链接已复制（有效期 1 小时）' : '链接已复制');
+        toast('success', signed ? t('files.signedLinkCopied') : t('files.linkCopied'));
       } catch {
-        toast('error', '复制链接失败');
+        toast('error', t('files.copyLinkFailed'));
       }
     },
-    [copyLinks]
+    [copyLinks, t]
   );
 
   // 单击单选；Ctrl/Shift/⌘ 或多选模式切换选择；属性由显式操作打开
@@ -403,21 +404,21 @@ export default function Files() {
     if (!deleteTarget) return;
     try {
       await deleteFile.mutateAsync(deleteTarget.id);
-      toast('success', '已删除');
+      toast('success', t('files.deleteSuccess'));
       setDeleteTarget(null);
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '删除失败');
+      toast('error', err instanceof Error ? err.message : t('files.deleteFailed'));
     }
   };
 
   const doBulkDelete = async () => {
     try {
       await batchDelete.mutateAsync([...selected]);
-      toast('success', `已删除 ${selected.size} 项`);
+      toast('success', t('files.deletedCount', { count: selected.size }));
       clearSelection();
       setBulkDelete(false);
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '删除失败');
+      toast('error', err instanceof Error ? err.message : t('files.deleteFailed'));
     }
   };
 
@@ -425,10 +426,10 @@ export default function Files() {
     if (!renameTarget || !renameValue) return;
     try {
       await renameFile.mutateAsync({ id: renameTarget.id, name: renameValue });
-      toast('success', '已重命名');
+      toast('success', t('files.renameSuccess'));
       setRenameTarget(null);
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '重命名失败');
+      toast('error', err instanceof Error ? err.message : t('files.renameFailed'));
     }
   };
 
@@ -436,11 +437,11 @@ export default function Files() {
     if (!folderName) return;
     try {
       await createFolder.mutateAsync({ path, name: folderName });
-      toast('success', '已创建文件夹');
+      toast('success', t('files.folderCreated'));
       setNewFolder(false);
       setFolderName('');
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '创建失败');
+      toast('error', err instanceof Error ? err.message : t('common.createFailed'));
     }
   };
 
@@ -448,10 +449,10 @@ export default function Files() {
     if (!moveTarget) return;
     try {
       await moveFile.mutateAsync({ id: moveTarget.id, targetPath });
-      toast('success', '移动成功');
+      toast('success', t('files.moveSuccess'));
       setMoveTarget(null);
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '移动失败');
+      toast('error', err instanceof Error ? err.message : t('files.moveFailed'));
     }
   };
 
@@ -461,17 +462,17 @@ export default function Files() {
       for (const id of selected) {
         await moveFile.mutateAsync({ id, targetPath: bulkMoveTarget });
       }
-      toast('success', `已移动 ${selected.size} 项`);
+      toast('success', t('files.movedCount', { count: selected.size }));
       clearSelection();
       setBulkMove(false);
       setBulkMoveTarget('');
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '批量移动失败');
+      toast('error', err instanceof Error ? err.message : t('files.bulkMoveFailed'));
     }
   };
 
   const moveOptions = [
-    { label: '根目录 /', path: '/' },
+    { label: t('files.rootDir'), path: '/' },
     ...(data?.items ?? []).filter((i) => i.type === 'folder').map((i) => ({ label: i.name, path: i.path })),
   ];
 
@@ -556,7 +557,7 @@ export default function Files() {
                     <Dropdown
                       align="start"
                       trigger={
-                        <span className="flex cursor-pointer items-center rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent" aria-label="展开路径">
+                        <span className="flex cursor-pointer items-center rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent" aria-label={t('files.expandPath')}>
                           <MoreHorizontal className="h-4 w-4" />
                         </span>
                       }
@@ -591,14 +592,14 @@ export default function Files() {
               </Button>
               {!multiSelect ? (
                 <Button variant="outline" size="sm" onClick={() => setMultiSelect(true)}>
-                  <CheckSquare className="h-4 w-4" /> <span className="hidden sm:inline">选择</span>
+                  <CheckSquare className="h-4 w-4" /> <span className="hidden sm:inline">{t('files.select')}</span>
                 </Button>
               ) : (
                 <>
                   <Dropdown
                     trigger={
                       <Button variant="outline" size="sm">
-                        <CheckSquare className="h-4 w-4" /> <span className="hidden sm:inline">批量选择</span>
+                        <CheckSquare className="h-4 w-4" /> <span className="hidden sm:inline">{t('files.batchSelect')}</span>
                         <ChevronDown className="ml-1 h-3.5 w-3.5" />
                       </Button>
                     }
@@ -612,7 +613,7 @@ export default function Files() {
                             close();
                           }}
                         >
-                          全选
+                          {t('files.selectAll')}
                         </DropdownItem>
                         <DropdownItem
                           icon={<ArrowRightLeft className="h-4 w-4" />}
@@ -625,7 +626,7 @@ export default function Files() {
                             close();
                           }}
                         >
-                          反选
+                          {t('files.invertSelection')}
                         </DropdownItem>
                         <DropdownItem
                           icon={<X className="h-4 w-4" />}
@@ -634,7 +635,7 @@ export default function Files() {
                             close();
                           }}
                         >
-                          清空选择
+                          {t('files.clearSelection')}
                         </DropdownItem>
                       </>
                     )}
@@ -647,22 +648,22 @@ export default function Files() {
                       setMultiSelect(false);
                     }}
                   >
-                    退出
+                    {t('files.exitSelection')}
                   </Button>
                 </>
               )}
-              <div className="ml-1 flex items-center rounded-md border">
+              <div className="glass-control ml-1 flex items-center rounded-md border bg-muted/[var(--glass-alpha,0.72)]">
                 <button
                   onClick={() => setView('grid')}
-                  className={cn('rounded-l-md p-1.5', view === 'grid' ? 'bg-accent' : 'text-muted-foreground')}
-                  aria-label="卡片视图"
+                  className={cn('rounded-l-md p-1.5', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted-foreground')}
+                  aria-label={t('files.viewCards')}
                 >
                   <LayoutGrid className="h-4 w-4" />
                 </button>
                 <button
                   onClick={() => setView('list')}
-                  className={cn('rounded-r-md p-1.5', view === 'list' ? 'bg-accent' : 'text-muted-foreground')}
-                  aria-label="列表视图"
+                  className={cn('rounded-r-md p-1.5', view === 'list' ? 'bg-primary/15 text-primary' : 'text-muted-foreground')}
+                  aria-label={t('files.viewList')}
                 >
                   <ListIcon className="h-4 w-4" />
                 </button>
@@ -673,8 +674,8 @@ export default function Files() {
           {/* 搜索 + 排序 */}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <div className="relative min-w-[140px] max-w-sm flex-1">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className="pl-8 bg-background dark:bg-background" />
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 z-10 h-4 w-4 text-muted-foreground" />
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className={cn('pl-8', SEARCH_INPUT_GLASS)} />
             </div>
             <Dropdown
               align="start"
@@ -682,17 +683,17 @@ export default function Files() {
               trigger={
                 <button
                   type="button"
-                  aria-label="排序"
-                  className="flex h-9 w-36 items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none transition-colors hover:bg-accent/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  aria-label={t('files.sort')}
+                  className="glass-control flex h-9 w-36 items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-card/[var(--glass-alpha,0.72)] px-3 text-sm shadow-sm outline-none transition-colors hover:bg-accent/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 >
-                  <span className="truncate">{SORT_FIELDS.find((o) => o.value === (sort ?? 'name'))?.label}</span>
+                  <span className="truncate">{t(SORT_FIELDS.find((o) => o.value === (sort ?? 'name'))?.label ?? 'files.sortName')}</span>
                   <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
                 </button>
               }
             >
               {(close) => (
                 <>
-                  <DropdownLabel>排序方式</DropdownLabel>
+                  <DropdownLabel>{t('files.sortBy')}</DropdownLabel>
                   {SORT_FIELDS.map((o) => (
                     <DropdownItem
                       key={o.value}
@@ -702,7 +703,7 @@ export default function Files() {
                         close();
                       }}
                     >
-                      {o.label}
+                      {t(o.label)}
                     </DropdownItem>
                   ))}
                   <DropdownSeparator />
@@ -713,7 +714,7 @@ export default function Files() {
                       close();
                     }}
                   >
-                    升序
+                    {t('files.sortAsc')}
                   </DropdownItem>
                   <DropdownItem
                     icon={order === 'desc' ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
@@ -722,7 +723,7 @@ export default function Files() {
                       close();
                     }}
                   >
-                    降序
+                    {t('files.sortDesc')}
                   </DropdownItem>
                 </>
               )}
@@ -732,7 +733,7 @@ export default function Files() {
           {isLoading ? (
             view === 'grid' ? <FileGridSkeleton /> : <FileListSkeleton />
           ) : error ? (
-            <EmptyState title="加载失败" description={(error as Error).message} />
+            <EmptyState title={t('files.loadFailed')} description={(error as Error).message} />
           ) : items.length === 0 ? (
             <EmptyState
               title={t('files.empty')}
@@ -810,9 +811,9 @@ export default function Files() {
                         })
                       );
                       await navigator.clipboard.writeText(links.join('\n'));
-                      toast('success', `已复制 ${links.length} 个链接`);
+                      toast('success', t('files.copiedLinks', { count: links.length }));
                     } catch {
-                      toast('error', '复制链接失败');
+                      toast('error', t('files.copyLinkFailed'));
                     }
                   })();
                 }}
@@ -930,7 +931,7 @@ export default function Files() {
       <Dialog
         open={bulkMove}
         onClose={() => setBulkMove(false)}
-        title="批量移动"
+        title={t('files.bulkMove')}
         footer={
           <>
             <Button variant="outline" onClick={() => setBulkMove(false)}>{t('common.cancel')}</Button>
@@ -961,7 +962,7 @@ export default function Files() {
         onClose={() => setDeleteTarget(null)}
         onConfirm={doDelete}
         title={t('common.delete')}
-        message={t('files.deleteConfirm').replace('{{name}}', deleteTarget?.name ?? '')}
+        message={t('files.deleteConfirm', { name: deleteTarget?.name ?? '' })}
         loading={deleteFile.isPending}
       />
       <ConfirmDialog
@@ -969,7 +970,7 @@ export default function Files() {
         onClose={() => setBulkDelete(false)}
         onConfirm={doBulkDelete}
         title={t('common.delete')}
-        message={`确定要删除选中的 ${selected.size} 项吗？此操作无法撤销。`}
+        message={t('files.bulkDeleteConfirm', { count: selected.size })}
         loading={batchDelete.isPending}
       />
       {lasso.rect && (

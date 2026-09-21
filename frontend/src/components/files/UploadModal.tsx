@@ -7,6 +7,7 @@ import { toast } from '@/components/ui/toast';
 import { initUploadSession, completeUpload } from './data';
 import { getCsrfToken, ApiError } from '@/lib/api';
 import { cn, formatBytes, fileIconEmoji } from '@/lib/utils';
+import i18n from '@/lib/i18n';
 
 interface UploadTask {
   id: string;
@@ -68,7 +69,7 @@ export function UploadModal({
       let etag: string;
       if (session.uploadMode === 'presigned' && session.uploadUrl) {
         const res = await putWithProgress(session.uploadUrl, task.file, task.mime, (p) => update(task.id, { progress: p }));
-        if (!res.ok) throw new ApiError(res.status, 'UPLOAD_FAILED', `上传失败（${res.status}）`);
+        if (!res.ok) throw new ApiError(res.status, 'UPLOAD_FAILED', t('upload.failedStatus', { status: res.status }));
         etag = res.headers.get('etag') ?? 'etag';
       } else {
         // Worker 代理上传
@@ -76,7 +77,7 @@ export function UploadModal({
         const res = await putWithProgress(`/api/files/upload/raw/${session.sessionId}`, task.file, task.mime, (p) =>
           update(task.id, { progress: p * 0.9 })
         );
-        if (!res.ok) throw new ApiError(res.status, 'UPLOAD_FAILED', `上传失败（${res.status}）`);
+        if (!res.ok) throw new ApiError(res.status, 'UPLOAD_FAILED', t('upload.failedStatus', { status: res.status }));
         const body = (await res.json()) as { data?: { etag?: string } };
         etag = body.data?.etag ?? 'etag';
       }
@@ -84,7 +85,7 @@ export function UploadModal({
       await completeUpload({ sessionId: session.sessionId, etag });
       update(task.id, { status: 'completed', progress: 100 });
     } catch (err) {
-      update(task.id, { status: 'failed', error: err instanceof Error ? err.message : '上传失败' });
+      update(task.id, { status: 'failed', error: err instanceof Error ? err.message : t('upload.uploadFailed') });
     }
   };
 
@@ -232,7 +233,7 @@ export function putWithProgress(
       });
       resolve(res);
     };
-    xhr.onerror = () => reject(new Error('网络错误'));
+    xhr.onerror = () => reject(new Error(i18n.t('common.networkError')));
     xhr.send(body);
   });
 }

@@ -1,5 +1,6 @@
 // 视频播放器（DPlayer 风格自定义控制条：播放/后退/前进/进度/时间/静音/音量）
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -11,6 +12,7 @@ function fmt(t: number): string {
 }
 
 export function VideoPreview({ src, poster, onError }: { src: string; poster?: string; onError?: () => void }) {
+  const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -81,13 +83,13 @@ export function VideoPreview({ src, poster, onError }: { src: string; poster?: s
           playing ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'
         )}
       >
-        <button onClick={toggle} className="shrink-0 rounded-full p-1 text-white transition-colors hover:bg-white/20" aria-label={playing ? '暂停' : '播放'}>
+        <button onClick={toggle} className="shrink-0 rounded-full p-1 text-white transition-colors hover:bg-white/20" aria-label={playing ? t('common.pause') : t('common.play')}>
           {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </button>
-        <button onClick={() => seek(-10)} className="shrink-0 rounded p-1 text-white/90 transition-colors hover:bg-white/20" aria-label="后退 10 秒">
+        <button onClick={() => seek(-10)} className="shrink-0 rounded p-1 text-white/90 transition-colors hover:bg-white/20" aria-label={t('common.rewind10')}>
           <RotateCcw className="h-3.5 w-3.5" />
         </button>
-        <button onClick={() => seek(10)} className="shrink-0 rounded p-1 text-white/90 transition-colors hover:bg-white/20" aria-label="前进 10 秒">
+        <button onClick={() => seek(10)} className="shrink-0 rounded p-1 text-white/90 transition-colors hover:bg-white/20" aria-label={t('common.forward10')}>
           <RotateCw className="h-3.5 w-3.5" />
         </button>
         <input
@@ -102,12 +104,12 @@ export function VideoPreview({ src, poster, onError }: { src: string; poster?: s
             setCurrent(Number(e.target.value));
           }}
           className="h-1 min-w-0 flex-1 cursor-pointer accent-white"
-          aria-label="播放进度"
+          aria-label={t('common.playbackProgress')}
         />
         <span className="shrink-0 text-xs tabular-nums text-white/90">
           {fmt(current)} / {fmt(duration)}
         </span>
-        <button onClick={() => { const v = videoRef.current; if (v) { v.muted = !v.muted; setMuted(v.muted); } }} className="shrink-0 rounded p-1 text-white/90 transition-colors hover:bg-white/20" aria-label="静音">
+        <button onClick={() => { const v = videoRef.current; if (v) { v.muted = !v.muted; setMuted(v.muted); } }} className="shrink-0 rounded p-1 text-white/90 transition-colors hover:bg-white/20" aria-label={t('common.mute')}>
           {muted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
         </button>
         <input
@@ -118,7 +120,7 @@ export function VideoPreview({ src, poster, onError }: { src: string; poster?: s
           value={muted ? 0 : volume}
           onChange={(e) => applyVolume(Number(e.target.value))}
           className="h-1 w-16 shrink-0 cursor-pointer accent-white"
-          aria-label="音量"
+          aria-label={t('common.volume')}
         />
       </div>
     </div>

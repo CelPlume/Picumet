@@ -1,5 +1,6 @@
 // 文件展示：卡片 / 列表 / 批量栏 / 右键菜单
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { FileListItem } from '@shared/types';
 import { MoreVertical, Pencil, Trash2, ArrowRight, Link2, Share2, Lock, Download, Eye, Copy, X, Code } from 'lucide-react';
 import { cn, formatBytes, formatDate, isImage, isVideo, isAudio, isCode } from '@/lib/utils';
@@ -284,55 +285,56 @@ export function FileRow({
 
 // ============ 行内菜单 ============
 export function FileRowMenuItems({ f, handlers, onClose }: { f: FileListItem; handlers?: FileActionHandlers; onClose?: () => void }) {
+  const { t } = useTranslation();
   const isFolder = f.type === 'folder';
   const close = onClose ?? (() => {});
   return (
         <>
           {handlers?.onOpen && (
             <DropdownItem icon={<Eye className="h-4 w-4" />} onClick={() => { handlers.onOpen!(f); close(); }}>
-              {isFolder ? '打开' : '预览'}
+              {isFolder ? t('files.open') : t('common.preview')}
             </DropdownItem>
           )}
           {handlers?.onDownload && !isFolder && (
             <DropdownItem icon={<Download className="h-4 w-4" />} onClick={() => { handlers.onDownload!(f); close(); }}>
-              下载
+              {t('common.download')}
             </DropdownItem>
           )}
           {handlers?.onCopyLink && !isFolder && (
             <DropdownItem icon={<Copy className="h-4 w-4" />} onClick={() => { handlers.onCopyLink!(f); close(); }}>
-              复制链接
+              {t('files.copyLink')}
             </DropdownItem>
           )}
           {handlers?.onShare && (
             <DropdownItem icon={<Share2 className="h-4 w-4" />} onClick={() => { handlers.onShare!(f); close(); }}>
-              分享
+              {t('common.share')}
             </DropdownItem>
           )}
           <DropdownSeparator />
           {handlers?.onRename && (
             <DropdownItem icon={<Pencil className="h-4 w-4" />} onClick={() => { handlers.onRename!(f); close(); }}>
-              重命名
+              {t('common.rename')}
             </DropdownItem>
           )}
           {handlers?.onMove && (
             <DropdownItem icon={<ArrowRight className="h-4 w-4" />} onClick={() => { handlers.onMove!(f); close(); }}>
-              移动到...
+              {t('files.moveTo')}
             </DropdownItem>
           )}
           {handlers?.onSetPassword && !isFolder && (
             <DropdownItem icon={<Link2 className="h-4 w-4" />} onClick={() => { handlers.onSetPassword!(f); close(); }}>
-              设置密码
+              {t('files.setPassword')}
             </DropdownItem>
           )}
           {handlers?.onProperties && (
             <DropdownItem icon={<Eye className="h-4 w-4" />} onClick={() => { handlers.onProperties!(f); close(); }}>
-              属性
+              {t('common.properties')}
             </DropdownItem>
           )}
           <DropdownSeparator />
           {handlers?.onDelete && (
             <DropdownItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { handlers.onDelete!(f); close(); }}>
-              删除
+              {t('common.delete')}
             </DropdownItem>
           )}
         </>
@@ -361,23 +363,24 @@ export function BulkActionsBar({
   onRename?: () => void;
   onProperties?: () => void;
 }) {
+  const { t } = useTranslation();
   const isSingle = count === 1;
 
   const actions = [
-    { key: 'download', icon: Download, label: '下载', onClick: onDownload, show: !!onDownload },
-    { key: 'share', icon: Share2, label: '分享', onClick: onShare, show: !!onShare && isSingle },
-    { key: 'copyLink', icon: Copy, label: '复制链接', onClick: onCopyLink, show: !!onCopyLink },
-    { key: 'move', icon: ArrowRight, label: '移动', onClick: onMove, show: true },
-    { key: 'rename', icon: Pencil, label: '重命名', onClick: onRename, show: !!onRename && isSingle },
-    { key: 'delete', icon: Trash2, label: '删除', onClick: onDelete, show: true, danger: true },
-    { key: 'properties', icon: Eye, label: '属性', onClick: onProperties, show: !!onProperties && isSingle },
+    { key: 'download', icon: Download, label: t('common.download'), onClick: onDownload, show: !!onDownload },
+    { key: 'share', icon: Share2, label: t('common.share'), onClick: onShare, show: !!onShare && isSingle },
+    { key: 'copyLink', icon: Copy, label: t('files.copyLink'), onClick: onCopyLink, show: !!onCopyLink },
+    { key: 'move', icon: ArrowRight, label: t('common.move'), onClick: onMove, show: true },
+    { key: 'rename', icon: Pencil, label: t('common.rename'), onClick: onRename, show: !!onRename && isSingle },
+    { key: 'delete', icon: Trash2, label: t('common.delete'), onClick: onDelete, show: true, danger: true },
+    { key: 'properties', icon: Eye, label: t('common.properties'), onClick: onProperties, show: !!onProperties && isSingle },
   ].filter((a) => a.show);
 
   return (
     <div className="glass-surface glass-blur animate-slide-in-from-bottom inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-sm shadow-xl sm:gap-1.5">
       <Badge variant="secondary" className="shrink-0 whitespace-nowrap">
         <span className="sm:hidden">{count}</span>
-        <span className="hidden sm:inline">已选 {count} 项</span>
+        <span className="hidden sm:inline">{t('files.selected', { count })}</span>
       </Badge>
       <div className="mx-1 hidden h-4 w-px bg-border sm:block" />
 
@@ -398,13 +401,13 @@ export function BulkActionsBar({
         );
       })}
 
-      <Tooltip content="取消选择" side="top">
+      <Tooltip content={t('files.deselect')} side="top">
         <Button
           variant="ghost"
           size="icon"
           onClick={onClear}
           className="h-8 w-8 rounded-md"
-          aria-label="取消选择"
+          aria-label={t('files.deselect')}
         >
           <X className="h-4 w-4" />
         </Button>
@@ -419,7 +422,7 @@ export function FileRowMenu({ f, handlers }: { f: FileListItem; handlers?: FileA
     <Dropdown
       align="end"
       trigger={
-        <button className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+        <button className="glass-control rounded bg-card/[var(--glass-alpha,0.72)] p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
           <MoreVertical className="h-4 w-4" />
         </button>
       }

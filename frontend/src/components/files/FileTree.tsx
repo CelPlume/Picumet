@@ -1,7 +1,9 @@
 // 左侧文件树：懒加载子文件夹，点击导航，高亮当前路径
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { INDICATOR_CLASS, useIndicator } from '@/components/ui/indicator';
 import { useFilesQuery } from './data';
 
 function TreeNode({
@@ -36,9 +38,10 @@ function TreeNode({
           if (!root) toggle(path);
           onNavigate(path);
         }}
+        data-active={active ? 'true' : 'false'}
         className={cn(
-          'flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-sm transition-colors',
-          active ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+          'relative flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-sm transition-colors',
+          active ? 'font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'
         )}
         style={{ paddingLeft: 8 + depth * 16 }}
         aria-label={name}
@@ -84,6 +87,7 @@ export function FileTree({ currentPath, onNavigate }: { currentPath: string; onN
     return set;
   };
 
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState<Set<string>>(() => expandSetFor(currentPath));
 
   // 切换目录时自动收起其它分支：只保留当前路径及其祖先展开
@@ -102,11 +106,15 @@ export function FileTree({ currentPath, onNavigate }: { currentPath: string; onN
   };
 
   // 定位与玻璃面板由 Files 页容器负责，这里只输出滚动区
+  const listRef = useRef<HTMLDivElement>(null);
+  const indicator = useIndicator(listRef, currentPath + '|' + expanded.size);
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none">
+    <div ref={listRef} className="relative min-h-0 flex-1 overflow-y-auto scrollbar-none">
+      {/* 选中指示器：强调色淡化 + 随模糊三档门控，active 项之间平滑滑动（含懒加载/展开收起后校准） */}
+      {indicator.ready && <span aria-hidden className={INDICATOR_CLASS} style={{ top: indicator.pos, height: indicator.size }} />}
       <TreeNode
         path="/"
-        name="全部文件"
+        name={t('admin.files')}
         depth={0}
         currentPath={currentPath}
         onNavigate={onNavigate}

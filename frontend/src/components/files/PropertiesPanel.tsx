@@ -35,9 +35,9 @@ export function PropertiesPanel({
   const save = async (fields: Record<string, unknown>) => {
     try {
       await update.mutateAsync({ id: file.id, fields });
-      toast('success', '已保存');
+      toast('success', t('files.properties.saved'));
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '保存失败');
+      toast('error', err instanceof Error ? err.message : t('files.properties.saveFailed'));
     }
   };
 
@@ -52,10 +52,10 @@ export function PropertiesPanel({
           ...(ruleTargetMode === 'all' ? { allUsers: true } : { targetUserId: ruleUserId.trim() }),
         },
       });
-      toast('success', '规则已创建');
+      toast('success', t('files.properties.ruleCreated'));
       setRuleUserId('');
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '创建失败');
+      toast('error', err instanceof Error ? err.message : t('common.createFailed'));
     }
   };
 
@@ -63,7 +63,7 @@ export function PropertiesPanel({
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b px-3 py-2.5">
         <h3 className="text-sm font-medium">{t('files.propertiesTitle')}</h3>
-        <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label="关闭">
+        <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label={t('common.close')}>
           <X className="h-4 w-4" />
         </button>
       </div>
@@ -84,7 +84,7 @@ export function PropertiesPanel({
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div>
             <p className="text-muted-foreground">{t('files.type')}</p>
-            <p className="font-medium">{file.type === 'folder' ? '文件夹' : file.mimeType ?? '文件'}</p>
+            <p className="font-medium">{file.type === 'folder' ? t('files.properties.typeFolder') : file.mimeType ?? t('files.properties.typeFile')}</p>
           </div>
           <div>
             <p className="text-muted-foreground">{t('files.size')}</p>
@@ -104,7 +104,7 @@ export function PropertiesPanel({
 
         <div className="space-y-2.5">
           <div>
-            <Label className="text-xs">{t('files.name')}（自定义标题）</Label>
+            <Label className="text-xs">{t('files.properties.customTitleLabel')}</Label>
             <div className="mt-1 flex gap-1.5">
               <Input value={customTitle} onChange={(e) => setCustomTitle(e.target.value)} placeholder={file.name} className="h-8 text-sm" />
               <Button variant="outline" size="sm" onClick={() => void save({ customTitle: customTitle || null })} className="h-8 shrink-0">
@@ -140,7 +140,7 @@ export function PropertiesPanel({
           </div>
 
           <div>
-            <Label className="text-xs">图标 Emoji</Label>
+            <Label className="text-xs">{t('files.properties.iconEmoji')}</Label>
             <div className="mt-1 flex gap-1.5">
               <Input value={iconEmoji} onChange={(e) => setIconEmoji(e.target.value)} placeholder="📄" maxLength={8} className="h-8 text-sm" />
               <Button variant="outline" size="sm" onClick={() => void save({ iconEmoji: iconEmoji || null })} className="h-8 shrink-0">
@@ -153,21 +153,21 @@ export function PropertiesPanel({
             <div>
               <Label className="text-xs">{t('files.passwordProtected')}</Label>
               <div className="mt-1 flex gap-1.5">
-                <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="设置访问密码" className="h-8 text-sm" />
+                <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t('files.properties.setPasswordPlaceholder')} className="h-8 text-sm" />
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => void save({ accessPassword: password || null })}
                   className="h-8 shrink-0"
                 >
-                  {password ? '设置' : '清除'}
+                  {password ? t('files.properties.setPassword') : t('files.properties.clearPassword')}
                 </Button>
               </div>
             </div>
           )}
 
           <div>
-            <Label className="text-xs">可见性</Label>
+            <Label className="text-xs">{t('files.properties.visibility')}</Label>
             <Select
               className="mt-1"
               value={visibility}
@@ -177,49 +177,49 @@ export function PropertiesPanel({
                 void save({ visibility: v });
               }}
               options={[
-                { value: 'private', label: '私密（仅自己与授权者）' },
-                { value: 'users', label: '站内用户可见' },
-                { value: 'public', label: '公开（进入公开空间）' },
+                { value: 'private', label: t('files.properties.visibilityPrivate') },
+                { value: 'users', label: t('files.properties.visibilityUsers') },
+                { value: 'public', label: t('files.properties.visibilityPublic') },
               ]}
             />
             {file.visibility === 'public' && file.reviewStatus === 'pending' && (
-              <p className="mt-1 text-xs text-amber-600">公开申请审核中，管理员批准后所有人可见</p>
+              <p className="mt-1 text-xs text-amber-600">{t('files.properties.reviewPending')}</p>
             )}
             {file.visibility === 'public' && file.reviewStatus === 'approved' && (
-              <p className="mt-1 text-xs text-emerald-600">已公开，可在公开空间访问</p>
+              <p className="mt-1 text-xs text-emerald-600">{t('files.properties.reviewApproved')}</p>
             )}
             {file.visibility === 'public' && file.reviewStatus === 'rejected' && (
-              <p className="mt-1 text-xs text-destructive">公开申请被驳回</p>
+              <p className="mt-1 text-xs text-destructive">{t('files.properties.reviewRejected')}</p>
             )}
           </div>
 
           <div>
-            <Label className="text-xs">访问规则</Label>
-            <p className="mt-0.5 text-xs text-muted-foreground">授权/禁止其他用户访问此文件（需 can_grant 能力位；管理入口：设置 → 访问规则）</p>
-            <div className="mt-1 flex gap-1.5">
+            <Label className="text-xs">{t('files.properties.accessRules')}</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t('files.properties.accessRulesDesc')}</p>
+            <div className="mt-1 space-y-1.5">
               <Select
-                className="w-24 shrink-0"
+                className="w-full"
                 value={ruleEffect}
                 onValueChange={(v) => setRuleEffect(v)}
                 options={[
-                  { value: 'allow', label: '允许' },
-                  { value: 'deny', label: '禁止' },
+                  { value: 'allow', label: t('files.properties.effectAllow') },
+                  { value: 'deny', label: t('files.properties.effectDeny') },
                 ]}
               />
               <Select
-                className="w-32 shrink-0"
+                className="w-full"
                 value={ruleTargetMode}
                 onValueChange={(v) => setRuleTargetMode(v)}
                 options={[
-                  { value: 'all', label: '全部用户' },
-                  { value: 'user', label: '指定用户' },
+                  { value: 'all', label: t('files.properties.targetAll') },
+                  { value: 'user', label: t('files.properties.targetUser') },
                 ]}
               />
               {ruleTargetMode === 'user' && (
-                <Input value={ruleUserId} onChange={(e) => setRuleUserId(e.target.value)} placeholder="用户 ID" className="h-8 min-w-0 flex-1 text-sm" />
+                <Input value={ruleUserId} onChange={(e) => setRuleUserId(e.target.value)} placeholder={t('files.properties.userIdPlaceholder')} className="h-9 w-full text-sm" />
               )}
-              <Button variant="outline" size="sm" onClick={() => void createRule()} className="h-8 shrink-0">
-                添加
+              <Button variant="outline" onClick={() => void createRule()} className="w-full">
+                {t('files.properties.addRule')}
               </Button>
             </div>
           </div>

@@ -95,7 +95,7 @@ export default function MyShares() {
   };
 
   const createShare = async () => {
-    if (!createFileId) return toast('error', '请选择文件');
+    if (!createFileId) return toast('error', t('myShares.selectFileRequired'));
     try {
       const res = await apiFetch<{ share: { id: string; url: string; qrcode: string } }>('/api/shares', {
         method: 'POST',
@@ -116,24 +116,24 @@ export default function MyShares() {
       const dataUrl = await QRCode.toDataURL(url, { width: 240, margin: 2 }).catch(() => '');
       setCreated((c) => (c ? { ...c, qrcode: dataUrl } : c));
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '创建失败');
+      toast('error', err instanceof ApiError ? err.message : t('common.createFailed'));
     }
   };
 
   const revoke = async (id: string) => {
     try {
       await apiFetch(`/api/shares/${id}`, { method: 'DELETE' });
-      toast('success', '已撤销');
+      toast('success', t('myShares.revoked'));
       await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '操作失败');
+      toast('error', err instanceof ApiError ? err.message : t('myShares.operationFailed'));
     }
     setConfirmRevoke(null);
   };
 
   const copyLink = async (url: string) => {
     await navigator.clipboard.writeText(url.startsWith('http') ? url : window.location.origin + url);
-    toast('success', '链接已复制');
+    toast('success', t('files.linkCopied'));
   };
 
   // 三点菜单：卡片与列表共用（二维码 / 打开 / 复制链接 / 撤销）
@@ -141,7 +141,7 @@ export default function MyShares() {
     <Dropdown
       align="end"
       trigger={
-        <button className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="分享操作" title="更多操作">
+        <button className="glass-control rounded bg-card/[var(--glass-alpha,0.72)] p-1 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t('myShares.shareActions')} title={t('common.moreActions')}>
           <MoreVertical className="h-4 w-4" />
         </button>
       }
@@ -149,17 +149,17 @@ export default function MyShares() {
       {(close) => (
         <>
           <DropdownItem icon={<QrCode className="h-4 w-4" />} onClick={() => { close(); void showQr(s); }}>
-            二维码
+            {t('share.qrcode')}
           </DropdownItem>
           <DropdownItem icon={<ExternalLink className="h-4 w-4" />} onClick={() => { close(); window.open(`/share/${s.id}`, '_blank', 'noreferrer'); }}>
-            打开
+            {t('files.open')}
           </DropdownItem>
           <DropdownItem icon={<Link2 className="h-4 w-4" />} onClick={() => { close(); void copyLink(`/share/${s.id}`); }}>
-            复制链接
+            {t('files.copyLink')}
           </DropdownItem>
           <DropdownSeparator />
           <DropdownItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { close(); setConfirmRevoke(s); }}>
-            撤销分享
+            {t('myShares.revokeShare')}
           </DropdownItem>
         </>
       )}
@@ -172,15 +172,15 @@ export default function MyShares() {
         <h1 className="text-xl font-semibold">{t('share.title')}</h1>
         <div className="flex items-center gap-2">
           {shares.length > 0 && (
-            <div className="flex rounded-md border">
+            <div className="glass-control flex rounded-md border bg-muted/[var(--glass-alpha,0.72)]">
               <button
                 onClick={() => setViewMode('grid')}
                 className={cn(
                   'rounded-l-md px-2.5 py-1.5 transition-colors',
-                  viewMode === 'grid' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60'
+                  viewMode === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent/60'
                 )}
-                title="卡片视图"
-                aria-label="卡片视图"
+                title={t('files.viewCards')}
+                aria-label={t('files.viewCards')}
               >
                 <LayoutGrid className="h-4 w-4" />
               </button>
@@ -188,10 +188,10 @@ export default function MyShares() {
                 onClick={() => setViewMode('list')}
                 className={cn(
                   'rounded-r-md px-2.5 py-1.5 transition-colors',
-                  viewMode === 'list' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60'
+                  viewMode === 'list' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent/60'
                 )}
-                title="列表视图"
-                aria-label="列表视图"
+                title={t('files.viewList')}
+                aria-label={t('files.viewList')}
               >
                 <ListIcon className="h-4 w-4" />
               </button>
@@ -242,22 +242,22 @@ export default function MyShares() {
                   </div>
                   <p
                     className="truncate text-xs text-muted-foreground"
-                    title={s.expiresAt ? `过期: ${formatDateTime(s.expiresAt)}` : '永久有效'}
+                    title={s.expiresAt ? t('myShares.expiresPrefix', { time: formatDateTime(s.expiresAt) }) : t('share.never')}
                   >
-                    {s.expiresAt ? `${formatDateTime(s.expiresAt)} 过期` : '永久有效'} · 查看 {s.viewCount}
-                    {s.maxDownloads ? ` · 下载 ${s.downloadCount}/${s.maxDownloads}` : ''}
+                    {s.expiresAt ? t('myShares.expiresAt', { time: formatDateTime(s.expiresAt) }) : t('share.never')} · {t('myShares.viewCount', { count: s.viewCount })}
+                    {s.maxDownloads ? ` · ${t('myShares.downloadCount', { used: s.downloadCount, max: s.maxDownloads })}` : ''}
                   </p>
                   <div className="mt-auto hidden items-center justify-end gap-0.5 border-t pt-2 sm:flex">
                     <button onClick={() => void showQr(s)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title={t('share.qrcode')}>
                       <QrCode className="h-4 w-4" />
                     </button>
-                    <a href={`/share/${s.id}`} target="_blank" rel="noreferrer" className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title="打开">
+                    <a href={`/share/${s.id}`} target="_blank" rel="noreferrer" className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title={t('files.open')}>
                       <ExternalLink className="h-4 w-4" />
                     </a>
-                    <button onClick={() => copyLink(`/share/${s.id}`)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title="复制链接">
+                    <button onClick={() => copyLink(`/share/${s.id}`)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title={t('files.copyLink')}>
                       <Link2 className="h-4 w-4" />
                     </button>
-                    <button onClick={() => setConfirmRevoke(s)} className="rounded-md p-1.5 text-destructive transition-colors hover:bg-destructive/10" title="撤销">
+                    <button onClick={() => setConfirmRevoke(s)} className="rounded-md p-1.5 text-destructive transition-colors hover:bg-destructive/10" title={t('settings.revoke')}>
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
@@ -317,7 +317,7 @@ export default function MyShares() {
       >
         <div className="space-y-4">
           <div>
-            <Label>分享文件</Label>
+            <Label>{t('myShares.shareFile')}</Label>
             {(() => {
               const pre = myFiles.find((f) => f.id === createFileId);
               return pre ? (
@@ -330,7 +330,7 @@ export default function MyShares() {
                 <Select
                   value={createFileId}
                   onValueChange={setCreateFileId}
-                  placeholder="请选择文件..."
+                  placeholder={t('myShares.selectFilePlaceholder')}
                   className="mt-1"
                   options={myFiles.map((f) => ({ value: f.id, label: f.name }))}
                 />
@@ -361,7 +361,7 @@ export default function MyShares() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>{t('share.maxDownloads')}</Label>
-              <Input type="number" min={0} value={maxDownloads || ''} onChange={(e) => setMaxDownloads(Number(e.target.value))} placeholder="不限" />
+              <Input type="number" min={0} value={maxDownloads || ''} onChange={(e) => setMaxDownloads(Number(e.target.value))} placeholder={t('myShares.noLimit')} />
             </div>
             <div className="flex items-end justify-between pb-1">
               <span className="text-sm">{t('share.allowDownload')}</span>
@@ -375,7 +375,7 @@ export default function MyShares() {
       <Dialog
         open={!!created}
         onClose={() => setCreated(null)}
-        title="✅ 分享已创建"
+        title={t('myShares.createdTitle')}
         footer={
           <Button onClick={() => setCreated(null)}>{t('common.close')}</Button>
         }
@@ -394,9 +394,9 @@ export default function MyShares() {
             <div className="flex items-center gap-3">
               <img src={created.qrcode} alt="QR" className="h-28 w-28 rounded-md border" />
               <div className="space-y-1 text-sm text-muted-foreground">
-                <p className="flex items-center gap-1"><QrCode className="h-4 w-4" /> 扫描二维码访问</p>
+                <p className="flex items-center gap-1"><QrCode className="h-4 w-4" /> {t('myShares.scanQrcode')}</p>
                 <a href={`/share/${created.id}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-primary hover:underline">
-                  <Download className="h-4 w-4" /> 打开分享页
+                  <Download className="h-4 w-4" /> {t('myShares.openSharePage')}
                 </a>
               </div>
             </div>
@@ -420,7 +420,7 @@ export default function MyShares() {
             {qrDialog.dataUrl ? (
               <img src={qrDialog.dataUrl} alt="QR" className="h-48 w-48 rounded-md border-8 border-background" />
             ) : (
-              <p className="text-sm text-muted-foreground">二维码生成失败</p>
+              <p className="text-sm text-muted-foreground">{t('myShares.qrcodeFailed')}</p>
             )}
             <div className="flex w-full items-center gap-2">
               <Input readOnly value={qrDialog.url} className="flex-1 font-mono text-xs" />
@@ -429,7 +429,7 @@ export default function MyShares() {
               </Button>
             </div>
             <p className="text-center text-xs text-muted-foreground">
-              使用手机扫描二维码即可打开分享链接
+              {t('myShares.scanHint')}
             </p>
           </div>
         )}
@@ -439,8 +439,8 @@ export default function MyShares() {
         open={!!confirmRevoke}
         onClose={() => setConfirmRevoke(null)}
         onConfirm={() => confirmRevoke && void revoke(confirmRevoke.id)}
-        title="撤销分享"
-        message={`确定撤销分享「${confirmRevoke?.title || confirmRevoke?.file?.name || confirmRevoke?.id}」？撤销后链接立即失效。`}
+        title={t('myShares.revokeShare')}
+        message={t('myShares.revokeConfirm', { name: confirmRevoke?.title || confirmRevoke?.file?.name || confirmRevoke?.id })}
       />
     </AppShell>
   );

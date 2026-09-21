@@ -109,9 +109,9 @@ export function PreviewModal({
         const highlighted = hljs.highlightAuto(escapeHtml(text)).value;
         setContent(highlighted);
       })
-      .catch(() => setContent('<span>无法加载</span>'))
+      .catch(() => setContent(`<span>${t('common.loadFailed')}</span>`))
       .finally(() => setLoadingContent(false));
-  }, [file, url]);
+  }, [file, url, t]);
 
   const doVerify = async () => {
     if (!shown) return;
@@ -160,14 +160,14 @@ export function PreviewModal({
                 />
                 {/* 控件固定于底部且置于图片之上，避免被放大后的图片遮挡 */}
                 <div className="glass-surface glass-blur absolute bottom-2 left-1/2 z-20 -translate-x-1/2 flex items-center gap-1 rounded-md border p-1 shadow">
-                  <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))} aria-label="缩小">
+                  <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))} aria-label={t('common.zoomOut')}>
                     <ZoomOut className="h-4 w-4" />
                   </Button>
                   <span className="w-12 text-center text-xs">{Math.round(zoom * 100)}%</span>
-                  <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.min(3, z + 0.1))} aria-label="放大">
+                  <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.min(3, z + 0.1))} aria-label={t('common.zoomIn')}>
                     <ZoomIn className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => setRotation((r) => (r + 90) % 360)} aria-label="旋转">
+                  <Button variant="ghost" size="sm" onClick={() => setRotation((r) => (r + 90) % 360)} aria-label={t('common.rotate')}>
                     <RotateCw className="h-4 w-4" />
                   </Button>
                 </div>
@@ -189,7 +189,7 @@ export function PreviewModal({
               )
             ) : (
               <div className="text-center text-muted-foreground">
-                <p className="mb-2">无法预览此文件类型</p>
+                <p className="mb-2">{t('common.cannotPreview')}</p>
                 <Button variant="outline" onClick={() => onDownload?.(shown)}>
                   <Download className="h-4 w-4" /> {t('common.download')}
                 </Button>
