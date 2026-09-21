@@ -1,29 +1,32 @@
 // 设置 → 访问规则（§4.4b UI）：管理自己创建的授权/禁止规则
 // 创建入口在文件属性面板（选中文件上下文）；本页负责列表与撤销。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Users, User as UserIcon, Trash2 } from 'lucide-react';
 import type { PathRule } from '@shared/types';
-import { Card, Button, Badge, ConfirmDialog } from '@/components/ui/core';
+import { Card, Button, Badge, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { formatDateTime } from '@/lib/utils';
+import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
 
 interface UserRule extends PathRule {
   createdBy?: string;
 }
 
-function targetLabel(rule: UserRule): string {
-  if (rule.role === 'user') return '全部用户';
-  if (rule.userId) return `用户 ${rule.userId.slice(0, 8)}`;
-  if (rule.apiKeyId) return `API 密钥 ${rule.apiKeyId.slice(0, 8)}`;
-  return '未知';
-}
-
 export default function AccessRulesPage() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [confirmDelete, setConfirmDelete] = useState<UserRule | null>(null);
+
+  const targetLabel = (rule: UserRule): string => {
+    if (rule.role === 'user') return t('settings.accessRules.allUsers');
+    if (rule.userId) return t('settings.accessRules.targetUser', { id: rule.userId.slice(0, 8) });
+    if (rule.apiKeyId) return t('settings.accessRules.targetApiKey', { id: rule.apiKeyId.slice(0, 8) });
+    return t('settings.accessRules.unknown');
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ['user-rules'],
@@ -36,32 +39,38 @@ export default function AccessRulesPage() {
   const del = async (rule: UserRule) => {
     try {
       await apiFetch(`/api/users/rules/${rule.id}`, { method: 'DELETE' });
-      toast('success', '已撤销规则');
+      toast('success', t('settings.accessRules.revoked'));
       await qc.invalidateQueries({ queryKey: ['user-rules'] });
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : '撤销失败');
+      toast('error', err instanceof Error ? err.message : t('settings.accessRules.revokeFailed'));
     }
     setConfirmDelete(null);
   };
 
   const rules = data ?? [];
+  const [sort, setSort] = useState<string | null>('createdAt');
+  const [order, setOrder] = useState<SortOrder>('desc');
+  const sortedRules = useMemo(
+    () => sortByKey(rules, sort as keyof UserRule, order),
+    [rules, sort, order]
+  );
 
   return (
     <div>
       <p className="text-sm text-muted-foreground">
-        允许或禁止其他用户访问你的文件。创建入口：文件详情 → 属性面板 →「访问规则」。管理员规则优先级恒高于用户规则。
+        {t('settings.accessRules.intro')}
       </p>
 
-      <Card className="mt-3 overflow-x-auto">
+      <Card className="mt-3 overflow-x-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2">路径</th>
-              <th className="px-4 py-2">效果</th>
-              <th className="px-4 py-2">目标</th>
-              <th className="px-4 py-2">权限</th>
-              <th className="px-4 py-2">创建时间</th>
-              <th className="px-4 py-2">操作</th>
+              <th className="px-4 py-2"><SortableHeader title={t('settings.accessRules.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2"><SortableHeader title={t('admin.ruleEffect')} sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('settings.accessRules.target')}</th>
+              <th className="px-4 py-2">{t('settings.permissions')}</th>
+              <th className="px-4 py-2"><SortableHeader title={t('settings.accessRules.createdAt')} sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className="px-4 py-2">{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -69,17 +78,21 @@ export default function AccessRulesPage() {
               <tr><td colSpan={6}><TableSkeleton rows={4} cols={5} /></td></tr>
             ) : rules.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  暂无规则
+                <td colSpan={6}>
+                  <EmptyState
+                    icon={<Users className="h-7 w-7" />}
+                    title={t('settings.accessRules.noRules')}
+                    description={t('settings.accessRules.noRulesDesc')}
+                  />
                 </td>
               </tr>
             ) : (
-              rules.map((r) => (
+              sortedRules.map((r) => (
                 <tr key={r.id} className="border-b last:border-0 hover:bg-accent/50">
                   <td className="px-4 py-2 font-mono text-xs">{r.pathPattern}</td>
                   <td className="px-4 py-2">
                     <Badge variant={r.effect === 'allow' ? 'success' : 'warning'}>
-                      {r.effect === 'allow' ? '允许' : '禁止'}
+                      {r.effect === 'allow' ? t('settings.accessRules.allow') : t('settings.accessRules.deny')}
                     </Badge>
                   </td>
                   <td className="px-4 py-2">
@@ -94,7 +107,7 @@ export default function AccessRulesPage() {
                     <button
                       onClick={() => setConfirmDelete(r)}
                       className="rounded-md p-1.5 text-destructive hover:bg-destructive/10"
-                      title="撤销"
+                      title={t('settings.revoke')}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -110,9 +123,12 @@ export default function AccessRulesPage() {
         open={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
         onConfirm={() => confirmDelete && void del(confirmDelete)}
-        title="撤销访问规则"
-        message={`确认撤销针对「${confirmDelete ? targetLabel(confirmDelete) : ''}」的${confirmDelete?.effect === 'allow' ? '允许' : '禁止'}规则？该路径将立即恢复默认访问行为。`}
-        confirmText="撤销"
+        title={t('settings.accessRules.revokeTitle')}
+        message={t('settings.accessRules.revokeMessage', {
+          target: confirmDelete ? targetLabel(confirmDelete) : '',
+          effect: confirmDelete?.effect === 'allow' ? t('settings.accessRules.allow') : t('settings.accessRules.deny'),
+        })}
+        confirmText={t('settings.revoke')}
         variant="destructive"
       />
     </div>

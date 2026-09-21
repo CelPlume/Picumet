@@ -48,10 +48,10 @@ export default function ProfilePage() {
     try {
       await apiFetch('/api/users/me/settings', { method: 'PUT', body: { displayName, avatarUrl, locale } });
       setLocale(locale);
-      toast('success', '已保存');
+      toast('success', t('settings.profile.saved'));
       await useAuth.getState().fetchMe();
     } catch {
-      toast('error', '保存失败');
+      toast('error', t('settings.profile.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -65,7 +65,7 @@ export default function ProfilePage() {
     <div className="max-w-2xl space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>{t('settings.profile')}</CardTitle>
+          <CardTitle>{t('settings.nav.profile')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center gap-4">
@@ -100,8 +100,8 @@ export default function ProfilePage() {
               onValueChange={setLocaleState}
               className="mt-1"
               options={[
-                { value: 'zh-CN', label: '中文' },
-                { value: 'en-US', label: 'English' },
+                { value: 'zh-CN', label: t('settings.langZh') },
+                { value: 'en-US', label: t('settings.langEn') },
               ]}
             />
           </div>
@@ -120,14 +120,14 @@ export default function ProfilePage() {
         <CardContent className="space-y-4">
           <div>
             <div className="mb-1 flex justify-between text-sm">
-              <span className="text-muted-foreground">存储空间</span>
+              <span className="text-muted-foreground">{t('settings.profile.storageSpace')}</span>
               <span>{formatBytes(q.usedStorage)} / {formatBytes(q.maxStorage)}</span>
             </div>
             <Progress value={q.storagePercent} />
           </div>
           <div>
             <div className="mb-1 flex justify-between text-sm">
-              <span className="text-muted-foreground">文件数量</span>
+              <span className="text-muted-foreground">{t('settings.filesUsed')}</span>
               <span>{q.usedFiles} / {q.maxFiles}</span>
             </div>
             <Progress value={q.filesPercent} />

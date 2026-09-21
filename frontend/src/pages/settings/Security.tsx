@@ -45,7 +45,7 @@ export default function SecurityPage() {
 
   const change = async () => {
     if (newPassword !== confirm) return toast('error', t('settings.passwordMismatch'));
-    if (newPassword.length < 8) return toast('error', '密码至少 8 位');
+    if (newPassword.length < 8) return toast('error', t('login.newPasswordShort'));
     setSaving(true);
     try {
       await apiFetch('/api/users/me/password', { method: 'PUT', body: { oldPassword, newPassword } });
@@ -54,29 +54,29 @@ export default function SecurityPage() {
       setNewPassword('');
       setConfirm('');
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '修改失败');
+      toast('error', err instanceof ApiError ? err.message : t('settings.security.changeFailed'));
     } finally {
       setSaving(false);
     }
   };
 
   const sendOtp = async () => {
-    if (!newEmail) return toast('error', '请输入新邮箱');
+    if (!newEmail) return toast('error', t('settings.security.newEmailRequired'));
     setOtpSending(true);
     try {
       await apiFetch('/api/users/me/email/send-otp', { method: 'POST', body: { email: newEmail } });
-      toast('success', '验证码已发送');
+      toast('success', t('settings.security.otpSent'));
       setOtpSent(true);
       setCountdown(60);
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '发送失败');
+      toast('error', err instanceof ApiError ? err.message : t('settings.security.sendFailed'));
     } finally {
       setOtpSending(false);
     }
   };
 
   const verifyOtp = async () => {
-    if (!verificationCode) return toast('error', '请输入验证码');
+    if (!verificationCode) return toast('error', t('settings.security.codeRequired'));
     setVerifying(true);
     try {
       await apiFetch('/api/users/me/email/verify-otp', { method: 'POST', body: { email: newEmail, code: verificationCode } });
@@ -86,9 +86,9 @@ export default function SecurityPage() {
       setVerificationCode('');
       setOtpSent(false);
       setCountdown(0);
-      toast('success', '邮箱已验证');
+      toast('success', t('settings.security.emailVerified'));
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '验证失败');
+      toast('error', err instanceof ApiError ? err.message : t('settings.security.verifyFailed'));
     } finally {
       setVerifying(false);
     }
@@ -100,14 +100,14 @@ export default function SecurityPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Mail className="h-4 w-4 text-primary" /> 邮箱管理
+            <Mail className="h-4 w-4 text-primary" /> {t('settings.security.emailManagement')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <Label>当前邮箱</Label>
+            <Label>{t('settings.security.currentEmail')}</Label>
             <div className="mt-1 flex items-center gap-2">
-              <Input readOnly value={email || '未设置'} className="flex-1 bg-muted/50" />
+              <Input readOnly value={email || t('settings.security.notSet')} className="flex-1 bg-muted/50" />
               {emailVerified ? (
                 <Badge variant="success">{t('settings.verified')}</Badge>
               ) : (
@@ -115,11 +115,11 @@ export default function SecurityPage() {
               )}
             </div>
             <p className="mt-1.5 text-xs text-muted-foreground">
-              用于接收系统通知和找回密码
+              {t('settings.security.emailHint')}
             </p>
           </div>
           <div>
-            <Label>修改邮箱</Label>
+            <Label>{t('settings.security.changeEmail')}</Label>
             <div className="mt-1 flex gap-2">
               <Input
                 type="email"
@@ -130,19 +130,19 @@ export default function SecurityPage() {
                 disabled={otpSent}
               />
               <Button onClick={sendOtp} loading={otpSending} variant="outline" disabled={countdown > 0}>
-                {countdown > 0 ? `${countdown}s` : '发送验证码'}
+                {countdown > 0 ? `${countdown}s` : t('settings.security.sendOtp')}
               </Button>
             </div>
             {otpSent && (
               <div className="mt-2 flex flex-col gap-2">
                 <InputOTP value={verificationCode} onChange={setVerificationCode} />
                 <Button onClick={verifyOtp} loading={verifying} variant="outline">
-                  验证邮箱
+                  {t('settings.security.verifyEmail')}
                 </Button>
               </div>
             )}
             <p className="mt-1.5 text-xs text-muted-foreground">
-              验证码将发送到新邮箱，5 分钟内有效
+              {t('settings.security.otpHint')}
             </p>
           </div>
         </CardContent>

@@ -2,21 +2,22 @@
 // 原生 range 透明化（appearance:none）承担拖拽与键盘交互；胶囊轨道 + 半透明到强调色的
 // 渐变填充 + 白色圆形滑块（hover 放大）+ 切到最高档那一刻的单次粒子迸发
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import type { BlurLevel } from '@/stores/theme';
 
 const LEVELS: BlurLevel[] = ['off', 'default', 'frosted'];
 
-const LABELS: Record<BlurLevel, string> = {
-  off: '关闭模糊',
-  default: '默认模糊',
-  frosted: '毛玻璃',
+const LABEL_KEYS: Record<BlurLevel, string> = {
+  off: 'common.blurOff',
+  default: 'common.blurDefault',
+  frosted: 'common.blurFrosted',
 };
 
-const DESCRIPTIONS: Record<BlurLevel, string> = {
-  off: '全部表面为实底，不使用模糊',
-  default: '导航、侧栏、弹窗与文件卡片统一为项目默认模糊强度',
-  frosted: '全部组件使用文件卡片的磨砂玻璃效果',
+const DESCRIPTION_KEYS: Record<BlurLevel, string> = {
+  off: 'common.blurDescOff',
+  default: 'common.blurDescDefault',
+  frosted: 'common.blurDescFrosted',
 };
 
 /** 滑块直径 24px：轨道 36px 胶囊，圆心两端内缩 12px，刻度点/标签严格对齐圆心 */
@@ -117,6 +118,7 @@ export function BlurSlider({
   onChange: (level: BlurLevel) => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const idx = Math.max(LEVELS.indexOf(value), 0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -153,7 +155,7 @@ export function BlurSlider({
             )}
             style={{ left: stopLeft(i) }}
           >
-            {LABELS[level]}
+            {t(LABEL_KEYS[level])}
           </button>
         ))}
       </div>
@@ -192,12 +194,12 @@ export function BlurSlider({
           step={1}
           value={idx}
           onChange={(e) => onChange(LEVELS[Number(e.target.value)])}
-          aria-label="模糊强度"
-          aria-valuetext={LABELS[LEVELS[idx]]}
+          aria-label={t('common.blurStrength')}
+          aria-valuetext={t(LABEL_KEYS[LEVELS[idx]])}
           className="discrete-slider absolute inset-0 h-full w-full cursor-pointer bg-transparent"
         />
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">{DESCRIPTIONS[LEVELS[idx]]}</p>
+      <p className="mt-2 text-xs text-muted-foreground">{t(DESCRIPTION_KEYS[LEVELS[idx]])}</p>
     </div>
   );
 }

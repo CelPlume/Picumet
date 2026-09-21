@@ -1,5 +1,5 @@
 // 网关密钥管理（对象存储中转 / PicGo / WebDAV / S3 / OpenList 兼容）
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Copy, Trash2, Check } from 'lucide-react';
 import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
@@ -8,6 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { timeAgo } from '@/lib/utils';
+import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
 
 interface ApiKeyItem {
   id: string;
@@ -35,6 +36,12 @@ interface CreatedKey {
 export default function ApiKeysPage() {
   const { t } = useTranslation();
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
+  const [sort, setSort] = useState<string | null>('name');
+  const [order, setOrder] = useState<SortOrder>('asc');
+  const sortedKeys = useMemo(
+    () => sortByKey(keys, sort as keyof ApiKeyItem, order),
+    [keys, sort, order]
+  );
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
@@ -67,7 +74,7 @@ export default function ApiKeysPage() {
   };
 
   const create = async () => {
-    if (!name) return toast('error', '请输入名称');
+    if (!name) return toast('error', t('settings.apiKeys.nameRequired'));
     try {
       const res = await apiFetch<CreatedKey>('/api/keys', {
         method: 'POST',
@@ -77,7 +84,7 @@ export default function ApiKeysPage() {
       setShowCreate(false);
       await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '创建失败');
+      toast('error', err instanceof ApiError ? err.message : t('settings.apiKeys.createFailed'));
     }
   };
 
@@ -87,7 +94,7 @@ export default function ApiKeysPage() {
       toast('success', t('settings.keyRevoked'));
       await load();
     } catch {
-      toast('error', '操作失败');
+      toast('error', t('settings.apiKeys.operationFailed'));
     }
     setConfirmRevoke(null);
   };
@@ -99,9 +106,9 @@ export default function ApiKeysPage() {
     setProtocols((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">{t('settings.apiKeys')}</h2>
+        <h2 className="text-lg font-semibold">{t('settings.nav.apiKeys')}</h2>
         <Button onClick={() => setShowCreate(true)}>
           <KeyRound className="h-4 w-4" /> {t('settings.createKey')}
         </Button>
@@ -109,39 +116,64 @@ export default function ApiKeysPage() {
 
       {loading ? (
         <FormCardSkeleton />
-      ) : keys.length === 0 ? (
-        <EmptyState
-          title={t('settings.noKeys')}
-          description={t('settings.noKeysDesc')}
-          action={<Button onClick={() => setShowCreate(true)}><KeyRound className="h-4 w-4" /> {t('settings.createKey')}</Button>}
-        />
       ) : (
-        <div className="space-y-3">
-          {keys.map((k) => (
-            <Card key={k.id} className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                  <KeyRound className="h-5 w-5 text-primary" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">{k.name}</p>
-                  <p className="font-mono text-xs text-muted-foreground">{k.keyId.slice(0, 12)}...{k.keyId.slice(-6)}</p>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {k.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
-                    {k.protocols.map((p) => <Badge key={p} variant="outline">{p}</Badge>)}
-                    {k.status !== 'active' && <Badge variant="destructive">{k.status}</Badge>}
-                  </div>
-                </div>
-                <div className="text-right text-xs text-muted-foreground">
-                  <p>{t('settings.lastUsed')}: {k.lastUsedAt ? timeAgo(k.lastUsedAt) : t('settings.neverUsed')}</p>
-                  <button onClick={() => setConfirmRevoke(k.id)} className="mt-1 flex items-center gap-1 rounded-md px-2 py-1 text-destructive hover:bg-destructive/10">
-                    <Trash2 className="h-3.5 w-3.5" /> {t('settings.revoke')}
-                  </button>
-                </div>
-              </div>
-            </Card>
-          ))}
-        </div>
+        <Card className="overflow-x-auto py-0">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="px-4 py-2"><SortableHeader title={t('files.name')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+                <th className="px-4 py-2">{t('settings.keyId')}</th>
+                <th className="px-4 py-2">{t('settings.permissions')} / {t('settings.protocols')}</th>
+                <th className="px-4 py-2">{t('admin.userStatus')}</th>
+                <th className="px-4 py-2"><SortableHeader title={t('settings.lastUsed')} sortKey="lastUsedAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+                <th className="px-4 py-2">{t('common.actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedKeys.length === 0 ? (
+                <tr>
+                  <td colSpan={6}>
+                    <EmptyState
+                      icon={<KeyRound className="h-7 w-7" />}
+                      title={t('settings.noKeys')}
+                      description={t('settings.noKeysDesc')}
+                      action={<Button onClick={() => setShowCreate(true)}><KeyRound className="h-4 w-4" /> {t('settings.createKey')}</Button>}
+                    />
+                  </td>
+                </tr>
+              ) : (
+                sortedKeys.map((k) => (
+                  <tr key={k.id} className="border-b last:border-0 hover:bg-accent/50">
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                          <KeyRound className="h-4 w-4 text-primary" />
+                        </div>
+                        <span className="font-medium">{k.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{k.keyId.slice(0, 12)}...{k.keyId.slice(-6)}</td>
+                    <td className="px-4 py-2">
+                      <div className="flex flex-wrap gap-1">
+                        {k.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
+                        {k.protocols.map((p) => <Badge key={p} variant="outline">{p}</Badge>)}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2">
+                      {k.status === 'active' ? <Badge variant="success">{k.status}</Badge> : <Badge variant="destructive">{k.status}</Badge>}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-muted-foreground">{k.lastUsedAt ? timeAgo(k.lastUsedAt) : t('settings.neverUsed')}</td>
+                    <td className="px-4 py-2">
+                      <button onClick={() => setConfirmRevoke(k.id)} className="rounded-md p-1.5 text-destructive hover:bg-destructive/10" title={t('settings.revoke')}>
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </Card>
       )}
 
       {/* 创建密钥 */}
@@ -194,7 +226,7 @@ export default function ApiKeysPage() {
       <Dialog
         open={!!created}
         onClose={() => setCreated(null)}
-        title="✅ 密钥已创建"
+        title={`✅ ${t('settings.createKeySuccess')}`}
         footer={<Button onClick={() => setCreated(null)}>{t('common.close')}</Button>}
       >
         {created && (
@@ -216,49 +248,49 @@ export default function ApiKeysPage() {
               </div>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">📦 WebDAV 配置</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">📦 {t('settings.apiKeys.webdavConfig')}</p>
               <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.webdav.url}
-用户名: ${created.configs.webdav.username}
-密码: ${created.configs.webdav.password}
-customUrl(公开直链域名): ${created.configs.webdav.customUrlHint ?? ''}${created.configs.webdav.webpathHint ? `\nwebpath: ${created.configs.webdav.webpathHint}` : ''}`}
+${t('login.username')}: ${created.configs.webdav.username}
+${t('login.password')}: ${created.configs.webdav.password}
+${t('settings.apiKeys.customUrlHint')}: ${created.configs.webdav.customUrlHint ?? ''}${created.configs.webdav.webpathHint ? `\nwebpath: ${created.configs.webdav.webpathHint}` : ''}`}
               </pre>
               <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.webdav), 'webdav')}>
-                {copyState === 'webdav' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} 复制
+                {copyState === 'webdav' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
               </Button>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">🪣 {t('settings.s3')}（S3 兼容网关）</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">🪣 {t('settings.s3')}{t('settings.apiKeys.s3Compat')}</p>
               <pre className="overflow-x-auto text-xs">
 {`endpoint: ${created.configs.s3.endpoint}
 region: ${created.configs.s3.region}
 AccessKeyId: ${created.configs.s3.accessKeyId}
 SecretAccessKey: ${created.configs.s3.secretAccessKey}
 bucket: ${created.configs.s3.bucketHint ?? ''}
-路径式寻址(forcePathStyle/pathStyleAccess): ${created.configs.s3.pathStyle}`}
+${t('settings.apiKeys.pathStyleAddressing')}: ${created.configs.s3.pathStyle}`}
               </pre>
               <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.s3), 's3')}>
-                {copyState === 's3' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} 复制
+                {copyState === 's3' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
               </Button>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">🟦 {t('settings.openlist')}（AList 协议）</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">🟦 {t('settings.openlist')}{t('settings.apiKeys.alistProto')}</p>
               <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.openlist.url}
 Token: ${created.configs.openlist.token}`}
               </pre>
               <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.openlist), 'openlist')}>
-                {copyState === 'openlist' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} 复制
+                {copyState === 'openlist' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
               </Button>
             </div>
             <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground">🔧 自定义 API</p>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">🔧 {t('settings.customApi')}</p>
               <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.bearer.url}/api/upload
 Header: ${created.configs.bearer.header}`}
               </pre>
               <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(created.configs.bearer.header, 'bearer')}>
-                {copyState === 'bearer' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} 复制
+                {copyState === 'bearer' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
               </Button>
             </div>
           </div>
@@ -269,8 +301,8 @@ Header: ${created.configs.bearer.header}`}
         open={!!confirmRevoke}
         onClose={() => setConfirmRevoke(null)}
         onConfirm={() => confirmRevoke && void revoke(confirmRevoke)}
-        title="撤销密钥"
-        message="确定撤销该密钥？使用此密钥的客户端将立即失去访问权限，该操作不可恢复。"
+        title={t('settings.apiKeys.revokeTitle')}
+        message={t('settings.apiKeys.revokeMessage')}
       />
     </div>
   );
