@@ -148,3 +148,70 @@ export async function decryptSecret(payload: string, encryptionKey: string): Pro
   const decrypted = await cryptoApi.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
   return new TextDecoder().decode(decrypted);
 }
+
+// ============ HMAC-SHA256 与常量时间比较（S3 SigV4 网关 / 路径直链签名） ============
+
+export function toHex(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+  return out;
+}
+
+/** 常量时间字符串比较（签名比对防时序侧信道） */
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function importHmacKey(key: Uint8Array | string): Promise<CryptoKey> {
+  const cryptoApi = webCrypto();
+  if (!cryptoApi?.subtle) {
+    throw new Error('WebCrypto unavailable: HMAC requires a secure runtime');
+  }
+  const raw = typeof key === 'string' ? encoder.encode(key) : key;
+  return cryptoApi.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+}
+
+/** HMAC-SHA256 → 原始字节（SigV4 密钥派生链需要逐级 HMAC 字节输出） */
+export async function hmacSha256Raw(key: Uint8Array | string, message: string): Promise<Uint8Array> {
+  const cryptoApi = webCrypto();
+  const k = await importHmacKey(key);
+  const sig = await cryptoApi.subtle.sign('HMAC', k, encoder.encode(message));
+  return new Uint8Array(sig);
+}
+
+export async function hmacSha256Hex(key: Uint8Array | string, message: string): Promise<string> {
+  return toHex(await hmacSha256Raw(key, message));
+}
+
+/** 任意字节流的 SHA-256 十六进制（SigV4 payload 完整性校验） */
+export async function sha256HexBytes(data: Uint8Array): Promise<string> {
+  const cryptoApi = webCrypto();
+  if (!cryptoApi?.subtle?.digest) {
+    throw new Error('WebCrypto unavailable: SHA-256 requires a secure runtime');
+  }
+  const buf = await cryptoApi.subtle.digest('SHA-256', data as BufferSource);
+  return toHex(new Uint8Array(buf));
+}
+
+// ============ 路径直链签名（P0-1：私有挂载的持久可嵌 URL 能力令牌） ============
+// sign = `${expiresAt}.${hmacHex(secret, `${path}:${expiresAt}`)}`；expiresAt=0 表示长期有效。
+// 能力范围：仅该精确路径的匿名 GET（与 AList sign 语义对齐）。
+
+export async function signPath(path: string, secret: string, expiresAt = 0): Promise<string> {
+  const sig = await hmacSha256Hex(secret, `${path}:${expiresAt}`);
+  return `${expiresAt}.${sig}`;
+}
+
+export async function verifyPathSign(path: string, secret: string, sign: string): Promise<boolean> {
+  const dot = sign.indexOf('.');
+  if (dot <= 0) return false;
+  const expiresAt = Number(sign.slice(0, dot));
+  const sig = sign.slice(dot + 1);
+  if (!Number.isFinite(expiresAt) || expiresAt < 0) return false;
+  if (expiresAt !== 0 && Date.now() > expiresAt) return false;
+  const expected = await hmacSha256Hex(secret, `${path}:${expiresAt}`);
+  return timingSafeEqualStr(expected, sig);
+}

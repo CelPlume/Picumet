@@ -77,7 +77,8 @@ export const corsHeaders = async (c: Context, next: Next) => {
     c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
     c.header('Vary', 'Origin');
   }
-  if (c.req.method === 'OPTIONS') {
+  // 仅拦截浏览器预检（带 Origin）；无 Origin 的 OPTIONS（WebDAV/S3 能力探测）放行到具体路由
+  if (c.req.method === 'OPTIONS' && origin) {
     return c.body(null, 204);
   }
   await next();

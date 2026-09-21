@@ -5,7 +5,7 @@ import { ApiKeyRepo, RuleRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
-import { randomString, sha256Hex } from '../../utils/crypto';
+import { randomString, sha256Hex, encryptSecret } from '../../utils/crypto';
 import { normalizePath } from '../../utils/path';
 import { CreateKeySchema } from './schemas';
 
@@ -37,6 +37,8 @@ keyRoutes.post('/', async (c) => {
   const secret = 'sk_' + randomString(48);
   const fullToken = `${keyId}.${secret}`;
   const tokenHash = await sha256Hex(fullToken);
+  // S3 SigV4 网关需要可逆 secret：AES-GCM 加密落库（密钥派生自 ENCRYPTION_KEY），任何响应不回传
+  const secretCipher = 'enc:' + (await encryptSecret(secret, c.env.ENCRYPTION_KEY));
 
   await ApiKeyRepo.createKey(db, {
     userId,
@@ -48,9 +50,11 @@ keyRoutes.post('/', async (c) => {
     uploadPath,
     allowedIps: parsed.data.allowedIps,
     expiresAt: parsed.data.expiresIn ? Date.now() + parsed.data.expiresIn * 1000 : undefined,
+    secretCipher,
   });
 
   const base = c.env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
+  const rootSegment = uploadPath === '/' ? undefined : uploadPath.split('/').filter(Boolean)[0];
   return ok(c, {
     key: {
       id: keyId,
@@ -71,8 +75,25 @@ keyRoutes.post('/', async (c) => {
       },
       webdav: {
         url: `${base}/webdav`,
+        // PicList webdavplist 的 imgUrl = (customUrl||host)+webpath+fileName：
+        // 不配 customUrl 时公开直链会指向 WebDAV host（带 Basic 认证的 URL 不应外贴）
         username: keyId,
         password: secret,
+        customUrlHint: base,
+        webpathHint: uploadPath === '/' ? '/' : `${uploadPath}/`,
+      },
+      s3: {
+        endpoint: `${base}/s3`,
+        region: 'auto',
+        accessKeyId: keyId,
+        secretAccessKey: secret,
+        // bucket = 虚拟路径首段（挂载路径首段或密钥上传根首段）；寻址必须用路径式（forcePathStyle）
+        bucketHint: rootSegment ?? '(挂载根目录下的一级文件夹名)',
+        pathStyle: true,
+      },
+      openlist: {
+        url: `${base}/openlist`,
+        token: fullToken,
       },
     },
   }, undefined, 201);
