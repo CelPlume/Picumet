@@ -66,22 +66,22 @@ export default function AdminSettings() {
     if (!settings) return;
     try {
       await apiFetch('/api/admin/settings', { method: 'PATCH', body: settings });
-      toast('success', '已保存');
+      toast('success', t('admin.systemSettings.saved'));
     } catch {
-      toast('error', '保存失败');
+      toast('error', t('admin.systemSettings.saveFailed'));
     }
   };
 
   const addAnnouncement = async () => {
-    if (!newTitle || !newContent) return toast('error', '请填写标题与内容');
+    if (!newTitle || !newContent) return toast('error', t('admin.systemSettings.titleContentRequired'));
     try {
       await apiFetch('/api/admin/announcements', { method: 'POST', body: { title: newTitle, content: newContent, level: 'info' } });
-      toast('success', '已发布');
+      toast('success', t('admin.systemSettings.published'));
       setNewTitle('');
       setNewContent('');
       await load();
     } catch {
-      toast('error', '发布失败');
+      toast('error', t('admin.systemSettings.publishFailed'));
     }
   };
 
@@ -91,13 +91,13 @@ export default function AdminSettings() {
   };
 
   const sendTestEmail = async () => {
-    if (!testEmail) return toast('error', '请输入测试邮箱');
+    if (!testEmail) return toast('error', t('admin.systemSettings.testEmailRequired'));
     setTestSending(true);
     try {
       await apiFetch('/api/admin/settings/test-email', { method: 'POST', body: { to: testEmail } });
-      toast('success', '测试邮件已发送');
+      toast('success', t('admin.systemSettings.testEmailSent'));
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '发送失败');
+      toast('error', err instanceof ApiError ? err.message : t('admin.systemSettings.sendFailed'));
     } finally {
       setTestSending(false);
     }
@@ -164,7 +164,7 @@ export default function AdminSettings() {
               <div key={a.id} className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
                 <Badge variant={a.level === 'danger' ? 'destructive' : a.level === 'warning' ? 'warning' : 'secondary'}>{a.level}</Badge>
                 <span className="min-w-0 flex-1 truncate font-medium">{a.title}</span>
-                <span className="text-xs text-muted-foreground">{a.active ? '启用' : '停用'}</span>
+                <span className="text-xs text-muted-foreground">{a.active ? t('admin.active') : t('admin.disabled')}</span>
                 <button onClick={() => delAnnouncement(a.id)} className="rounded p-1 text-destructive hover:bg-destructive/10">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -179,45 +179,45 @@ export default function AdminSettings() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Mail className="h-4 w-4 text-primary" /> SMTP 邮件
+            <Mail className="h-4 w-4 text-primary" /> {t('admin.systemSettings.smtp')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>SMTP 服务器</Label>
+              <Label>{t('admin.systemSettings.smtpHost')}</Label>
               <Input className="mt-1" value={settings.smtpHost} onChange={(e) => set('smtpHost', e.target.value)} placeholder="smtp.example.com" />
             </div>
             <div>
-              <Label>端口</Label>
+              <Label>{t('admin.systemSettings.port')}</Label>
               <Input className="mt-1" type="number" value={settings.smtpPort} onChange={(e) => set('smtpPort', Number(e.target.value))} />
             </div>
           </div>
           <div>
-            <Label>用户名</Label>
+            <Label>{t('login.username')}</Label>
             <Input className="mt-1" value={settings.smtpUser} onChange={(e) => set('smtpUser', e.target.value)} />
           </div>
           <div>
-            <Label>密码</Label>
-            <Input className="mt-1" type="password" value={settings.smtpPassword} onChange={(e) => set('smtpPassword', e.target.value)} placeholder="留空则保持原配置" />
+            <Label>{t('login.password')}</Label>
+            <Input className="mt-1" type="password" value={settings.smtpPassword} onChange={(e) => set('smtpPassword', e.target.value)} placeholder={t('admin.systemSettings.passwordPlaceholder')} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>发件人名称</Label>
+              <Label>{t('admin.systemSettings.fromName')}</Label>
               <Input className="mt-1" value={settings.smtpFromName} onChange={(e) => set('smtpFromName', e.target.value)} />
             </div>
             <div>
-              <Label>发件人邮箱</Label>
+              <Label>{t('admin.systemSettings.fromEmail')}</Label>
               <Input className="mt-1" type="email" value={settings.smtpFromEmail} onChange={(e) => set('smtpFromEmail', e.target.value)} placeholder="noreply@example.com" />
             </div>
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-sm">启用 TLS/SSL</span>
+              <span className="text-sm">{t('admin.systemSettings.enableTls')}</span>
               <Switch checked={settings.smtpSecure} onChange={(v) => set('smtpSecure', v)} />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm">启用邮件服务</span>
+              <span className="text-sm">{t('admin.systemSettings.enableEmail')}</span>
               <Switch checked={settings.emailEnabled} onChange={(v) => set('emailEnabled', v)} />
             </div>
           </div>
@@ -227,11 +227,11 @@ export default function AdminSettings() {
               type="email"
               value={testEmail}
               onChange={(e) => setTestEmail(e.target.value)}
-              placeholder="输入测试邮箱"
+              placeholder={t('admin.systemSettings.testEmailPlaceholder')}
               className="flex-1"
             />
             <Button variant="outline" onClick={sendTestEmail} loading={testSending}>
-              <Send className="h-4 w-4" /> 发送测试邮件
+              <Send className="h-4 w-4" /> {t('admin.systemSettings.sendTestEmail')}
             </Button>
           </div>
         </CardContent>
