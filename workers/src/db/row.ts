@@ -1,5 +1,6 @@
 // 行映射辅助：DB 行（snake_case）→ TS 类型（camelCase）
-import type { User, Quota, FileMetadata, FileListItem, PathRule, ApiKey, Share, Mount, StorageProvider, Role, Permission, ShareStatus, Announcement } from '@shared/types';
+import type { User, Quota, FileMetadata, FileListItem, PathRule, ApiKey, Share, Mount, StorageProvider, Role, Permission, ShareStatus, Announcement, ShareItemView, GuestVisibility } from '@shared/types';
+import { PERMISSION_MATRIX } from '@shared/types';
 
 export type Row = Record<string, unknown>;
 
@@ -20,6 +21,25 @@ export function parseJson<T>(v: unknown, fallback: T): T {
 }
 export const toJson = (v: unknown): string => JSON.stringify(v ?? null);
 
+/**
+ * 文件级游客可见性（§C）：列值仅接受 none/download/view，其余（NULL/脏值）一律按未设置处理。
+ */
+export function mapGuestVisibility(v: unknown): GuestVisibility | null {
+  const s = str(v);
+  return s === 'none' || s === 'download' || s === 'view' ? s : null;
+}
+
+/**
+ * 默认权限 JSON 列 → 权限矩阵（§4.4）子集：非矩阵项（如历史值 share）一律过滤，非法/缺值 → []。
+ * 矩阵只含 read/write/update/delete/download，分享由能力位 can_share 表达。
+ */
+export function parseMatrixPermissions(v: unknown): Permission[] {
+  const parsed = parseJson<unknown>(v, []);
+  if (!Array.isArray(parsed)) return [];
+  const matrix: readonly Permission[] = PERMISSION_MATRIX;
+  return parsed.map(String).filter((p): p is Permission => matrix.includes(p as Permission));
+}
+
 export function mapUser(row: Row): User {
   return {
     id: str(row.id)!,
@@ -39,6 +59,9 @@ export function mapUser(row: Row): User {
     passwordHash: str(row.password_hash),
     sessionVersion: row.session_version === null || row.session_version === undefined ? 0 : num(row.session_version),
     capabilities: row.capabilities ? parseJson<string[]>(row.capabilities, []) : undefined,
+    // NULL/缺列 = 跟随角色默认；显式数组（含 []）= 用户个别设置
+    permissions:
+      row.permissions === null || row.permissions === undefined ? null : parseMatrixPermissions(row.permissions),
   };
 }
 
@@ -85,10 +108,18 @@ export function mapMount(row: Row): Mount {
     sortOrder: (str(row.sort_order) ?? 'asc') as Mount['sortOrder'],
     priority: num(row.priority),
     status: (str(row.status) ?? 'active') as Mount['status'],
+    maxStorage: row.max_storage == null ? null : num(row.max_storage),
+    usedStorage: num(row.used_storage),
+    quotaReserved: num(row.quota_reserved),
+    poolStrategy: (str(row.pool_strategy) ?? 'least_used') as Mount['poolStrategy'],
+    capacityBytes: row.capacity_bytes == null ? null : num(row.capacity_bytes),
   };
 }
 
-export function mapFile(row: Row): FileMetadata {
+/** §26 违规封禁：file_metadata.banned 随行映射（不进共享 FileMetadata 类型；列表展示与内容门禁使用） */
+export type FileMetadataRow = FileMetadata & { banned?: boolean };
+
+export function mapFile(row: Row): FileMetadataRow {
   return {
     id: str(row.id)!,
     mountId: str(row.mount_id)!,
@@ -110,15 +141,20 @@ export function mapFile(row: Row): FileMetadata {
     metadata: str(row.metadata),
     visibility: (str(row.visibility) ?? 'private') as FileMetadata['visibility'],
     reviewStatus: (str(row.review_status) ?? 'approved') as FileMetadata['reviewStatus'],
+    guestVisibility: mapGuestVisibility(row.guest_visibility),
     ownerId: str(row.owner_id)!,
     createdAt: num(row.created_at),
     updatedAt: num(row.updated_at),
     sourceCleanupPending: b(row.source_cleanup_pending),
     oldObjectKey: str(row.old_object_key),
+    providerId: str(row.provider_id),
+    physicalKey: str(row.physical_key),
+    blobHash: str(row.blob_hash),
+    banned: b(row.banned),
   };
 }
 
-export function toFileListItem(f: FileMetadata): FileListItem {
+export function toFileListItem(f: FileMetadataRow): FileListItem {
   return {
     id: f.id,
     name: f.name,
@@ -134,10 +170,22 @@ export function toFileListItem(f: FileMetadata): FileListItem {
     manualPosition: f.manualPosition,
     visibility: f.visibility,
     reviewStatus: f.reviewStatus,
+    guestVisibility: f.guestVisibility,
     ownerId: f.ownerId,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
+    banned: !!f.banned,
+    hash: f.blobHash ?? null,
   };
+}
+
+/**
+ * 分享项目视图：文件列表项 + 所属根项目 id。
+ * rootId 为该条目所属的 share_items.file_id —— 分享根项目取其自身 id，
+ * 目录浏览（/:id/list）的子项取所属根文件夹项目 id。
+ */
+export function toShareItemView(f: FileMetadata, rootId: string): ShareItemView {
+  return { ...toFileListItem(f), rootId };
 }
 
 export function mapPathRule(row: Row): PathRule {
@@ -187,6 +235,7 @@ export function mapShare(row: Row): Share {
     creatorId: str(row.creator_id)!,
     title: str(row.title),
     passwordHash: str(row.password_hash),
+    passwordCipher: str(row.password_cipher),
     expiresAt: row.expires_at ? num(row.expires_at) : undefined,
     maxViews: row.max_views !== null && row.max_views !== undefined ? num(row.max_views) : undefined,
     viewCount: num(row.view_count),
@@ -194,6 +243,8 @@ export function mapShare(row: Row): Share {
     downloadCount: num(row.download_count),
     allowPreview: b(row.allow_preview),
     allowDownload: b(row.allow_download),
+    requireLogin: b(row.require_login),
+    allowedUserIds: row.allowed_user_ids ? parseJson<string[]>(row.allowed_user_ids, []) : null,
     createdAt: num(row.created_at),
     lastAccessedAt: row.last_accessed_at ? num(row.last_accessed_at) : undefined,
     status: (str(row.status) ?? 'active') as ShareStatus,
@@ -210,6 +261,11 @@ export interface UploadSessionRow {
   mimeType?: string;
   fileSize: number;
   quotaReserved: number;
+  /** §E 存储池：会话选定落桶 provider */
+  providerId?: string | null;
+  /** §F 内容寻址：内容 SHA-256 与实际物理键（/upload/raw 后写入） */
+  blobHash?: string | null;
+  physicalKey?: string | null;
   uploadId?: string;
   totalParts?: number;
   partsCompleted?: Array<{ partNumber: number; etag: string }>;
@@ -234,6 +290,9 @@ export function mapUploadSession(row: Row): UploadSessionRow {
     mimeType: str(row.mime_type),
     fileSize: num(row.file_size),
     quotaReserved: num(row.quota_reserved),
+    providerId: str(row.provider_id),
+    blobHash: str(row.blob_hash),
+    physicalKey: str(row.physical_key),
     uploadId: str(row.upload_id),
     totalParts: row.total_parts !== null && row.total_parts !== undefined ? num(row.total_parts) : undefined,
     partsCompleted: row.parts_completed

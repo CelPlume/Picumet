@@ -3,10 +3,18 @@
 
 // ============ 用户与认证 ============
 
-export type Role = 'admin' | 'user' | 'guest';
+export type Role = 'admin' | 'user' | 'guest' | (string & {});
 
 /** 三级可见性（§4.4a）：private 仅 owner/授权者；users 全部登录用户可读；public 另进 gallery 匿名面 */
 export type Visibility = 'private' | 'users' | 'public';
+
+/**
+ * 文件级游客可见性（§C）：显式授予**匿名访客**的能力；
+ * none = 一律拒绝；download = 可下载；view = 可查看（列表/预览）+ 下载。
+ * NULL（未设置）不额外开放——匿名访客仍由站点 allow_guest_access 总闸、
+ * role='guest' 规则与 visibility 合成规则决定（见 syntheticGuestRule）。
+ */
+export type GuestVisibility = 'none' | 'download' | 'view';
 
 /** 公开审核状态（§4.2）：public 提交默认 pending，管理员 approved 后进 gallery */
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
@@ -41,6 +49,12 @@ export interface User {
   sessionVersion: number;
   /** 能力位 JSON（can_publish/can_share/can_grant）；NULL = 空集 */
   capabilities?: string[];
+  /**
+   * 用户个别默认权限（users.permissions，§4.4 第 8 步）：
+   * NULL/缺省 = 跟随角色默认（role_defaults.permissions）；空数组 = 显式不放行。
+   * 保存角色默认设置时会被角色权限值覆盖（RoleDefaultsRepo.applyToRole）。
+   */
+  permissions: Permission[] | null;
 }
 
 export interface Quota {
@@ -82,15 +96,38 @@ export type Permission =
   | 'download'
   | 'admin';
 
+/**
+ * 默认权限矩阵（5 项）：查看/上传/修改/删除/下载。
+ * 分享**不在矩阵内**——分享/发布/授权的唯一开关是能力位 can_share / can_publish / can_grant
+ * （§4.4 防线 5），故矩阵与能力位互不重复。
+ */
+export const PERMISSION_MATRIX = ['read', 'write', 'update', 'delete', 'download'] as const satisfies readonly Permission[];
+
+/**
+ * 角色默认权限兜底表（role_defaults.permissions 读不到/缺列时使用，与迁移种子一致）：
+ * admin/user = 矩阵全量；guest 仅 download（匿名访客另有文件级 guest_visibility）。
+ * 未登记的自定义角色按 user 语义处理。
+ */
+export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  admin: [...PERMISSION_MATRIX],
+  user: [...PERMISSION_MATRIX],
+  guest: ['download'],
+};
+
 export type RuleEffect = 'allow' | 'deny';
 
 export interface Principal {
-  type: 'user' | 'apiKey';
+  type: 'user' | 'apiKey' | 'guest';
   id: string;
   role: Role;
   apiKeyId?: string;
   defaultPath: string;
   allowedPermissions?: Permission[];
+  /**
+   * 角色默认权限（role_defaults.permissions）：权限引擎第 8 步在用户默认路径内按此放行；
+   * 缺省（未装载/存量库缺列）由引擎常量 DEFAULT_ROLE_PERMISSIONS 兜底。
+   */
+  defaultPermissions?: Permission[];
   /** 能力位（can_publish/can_share/can_grant）；admin 天然全量 */
   capabilities?: string[];
 }
@@ -104,7 +141,20 @@ export interface Mount {
   sortOrder: 'asc' | 'desc';
   priority: number;
   status: string;
+  /** 挂载容量上限（字节）；null = 不限 */
+  maxStorage: number | null;
+  /** 已用容量（字节），以 file_metadata 聚合为准 */
+  usedStorage: number;
+  /** 上传会话在途预留（字节） */
+  quotaReserved: number;
+  /** 存储池写入选桶策略（§E）；池成员见 mount_providers */
+  poolStrategy: PoolStrategy;
+  /** 挂载点展示容量（字节，§26 仪表盘占用率）；null = 未设置 */
+  capacityBytes: number | null;
 }
+
+/** 存储池写入选桶策略 */
+export type PoolStrategy = 'least_used' | 'round_robin' | 'hash';
 
 export interface Conditions {
   ip?: string;
@@ -159,11 +209,19 @@ export interface FileMetadata {
   visibility: Visibility;
   /** 公开审核状态：仅 visibility=public 时进入 gallery 需 approved */
   reviewStatus: ReviewStatus;
+  /** 文件级游客可见性（§C）；null = 未设置（匿名访客不额外开放） */
+  guestVisibility: GuestVisibility | null;
   ownerId: string;
   createdAt: number;
   updatedAt: number;
   sourceCleanupPending?: boolean;
   oldObjectKey?: string;
+  /** 实际落桶 provider（§E 存储池）；NULL = 存量数据，读路径回退 mounts.provider_id */
+  providerId?: string | null;
+  /** 物理对象键（§F 内容寻址）：<prefix>/picumet:blob/<h2>/<hash>；未内容寻址行 = object_key */
+  physicalKey?: string | null;
+  /** 内容 SHA-256（§F）；NULL = 未内容寻址（分片上传/存量数据） */
+  blobHash?: string | null;
 }
 
 export interface FileListItem {
@@ -181,9 +239,19 @@ export interface FileListItem {
   manualPosition?: number;
   visibility: Visibility;
   reviewStatus: ReviewStatus;
+  /** 文件级游客可见性（§C）；null = 未设置（匿名访客不额外开放） */
+  guestVisibility: GuestVisibility | null;
   ownerId: string;
   createdAt: number;
   updatedAt: number;
+  /** §26 违规封禁：true = 已封禁（前端半透明禁用态，仅可删除） */
+  banned?: boolean;
+  /** 数据所在存储桶名（§26 管理端全部文件列表按页批量补齐；用户端列表不返回） */
+  buckets?: string[];
+  /** 所在挂载点名（§26 管理端全部文件列表按页批量补齐；用户端列表不返回） */
+  mounts?: string[];
+  /** 内容 SHA-256（§F）；null = 未内容寻址 */
+  hash?: string | null;
 }
 
 export interface FileListData {
@@ -226,6 +294,11 @@ export interface UploadSession {
   mimeType?: string;
   fileSize: number;
   quotaReserved: number;
+  /** §E 存储池：会话选定落桶 provider（NULL = 回退挂载主 provider） */
+  providerId?: string | null;
+  /** §F 内容寻址：/upload/raw 阶段算出的内容 SHA-256 与物理键 */
+  blobHash?: string | null;
+  physicalKey?: string | null;
   uploadId?: string;
   totalParts?: number;
   status: UploadSessionStatus;
@@ -245,6 +318,8 @@ export interface Share {
   creatorId: string;
   title?: string;
   passwordHash?: string;
+  /** 分享密码的 AES-GCM 密文（`enc:` 前缀）；服务端内部字段，仅创建者列表接口解密回看，公开响应一律不下发 */
+  passwordCipher?: string;
   expiresAt?: number;
   maxViews?: number;
   viewCount: number;
@@ -252,22 +327,33 @@ export interface Share {
   downloadCount: number;
   allowPreview: boolean;
   allowDownload: boolean;
+  /** 仅登录用户可查看/下载 */
+  requireLogin: boolean;
+  /** 指定用户白名单（用户 id）；null = 不限 */
+  allowedUserIds: string[] | null;
   createdAt: number;
   lastAccessedAt?: number;
   status: ShareStatus;
+}
+
+/** 分享项目视图（多项目分享）：文件列表项 + 所属根项目 id（share_items.file_id） */
+export interface ShareItemView extends FileListItem {
+  rootId: string;
 }
 
 export interface SharePublicInfo {
   id: string;
   title: string;
   creatorName: string;
-  file: FileListItem;
+  items: ShareItemView[];
   allowPreview: boolean;
   allowDownload: boolean;
   expiresAt?: number;
   requiresPassword: boolean;
   viewCount: number;
   maxViews?: number;
+  downloadCount: number;
+  maxDownloads?: number;
 }
 
 // ============ API密钥 ============

@@ -27,3 +27,7 @@ id = "local-picumet-kv-0000000000000000000000"
 binding = "R2"
 bucket_name = "picumet-storage"
 preview_bucket_name = "picumet-storage"
+
+# 定时任务：过期上传预留释放、内容对象回收（§F 保护期后删除）、孤立对象与内容索引对账、分享过期标记
+[triggers]
+crons = ["*/10 * * * *"]
