@@ -1,5 +1,6 @@
 // 可排序表头（点击切换 asc/desc）
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 export type SortOrder = 'asc' | 'desc';
@@ -19,6 +20,7 @@ export function SortableHeader({
   onSort: (key: string) => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const active = sort === sortKey;
   return (
     <button
@@ -29,7 +31,7 @@ export function SortableHeader({
         active ? 'text-foreground' : 'text-muted-foreground',
         className
       )}
-      aria-label={`按 ${title} 排序`}
+      aria-label={t('common.sortBy', { field: title })}
     >
       {title}
       {active ? (

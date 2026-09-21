@@ -1,6 +1,7 @@
 // 抽屉组件（shadcn 风格）
 // 进出动画统一收敛在本组件：进入=滑入关键帧+淡入，退出=整体淡出后延迟卸载
 import { useEffect, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -23,6 +24,7 @@ export function Drawer({
   title?: string;
   width?: string;
 }) {
+  const { t } = useTranslation();
   const [mounted, setMounted] = useState(open);
   const [entered, setEntered] = useState(false);
 
@@ -107,7 +109,7 @@ export function Drawer({
             <button
               onClick={onClose}
               className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-              aria-label="关闭"
+              aria-label={t('common.close')}
             >
               <X className="h-4 w-4" />
             </button>

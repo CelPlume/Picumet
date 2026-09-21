@@ -1,5 +1,6 @@
 // 分页组件（交互式：页码跳转 + 每页条数均可点击填写）
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight, MoreHorizontal, CornerDownLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -34,6 +35,7 @@ export function Pagination({
   pageSizeOptions?: number[];
   className?: string;
 }) {
+  const { t } = useTranslation();
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const items = buildPages(page, pages);
   const [editingSize, setEditingSize] = useState(false);
@@ -68,7 +70,7 @@ export function Pagination({
     <div className={cn('glass-surface glass-blur mx-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5', className)}>
       {onPageSizeChange && (
         <div className="mr-2 flex items-center gap-1.5 text-sm text-muted-foreground">
-          每页
+          {t('common.perPage')}
           {editingSize ? (
             <form
               onSubmit={(e) => {
@@ -85,9 +87,9 @@ export function Pagination({
                 onKeyDown={(e) => e.key === 'Escape' && setEditingSize(false)}
                 inputMode="numeric"
                 className="h-7 w-14 rounded-md border bg-background px-1.5 text-center text-xs tabular-nums outline-none ring-1 ring-ring focus-visible:ring-2"
-                aria-label="每页条数"
+                aria-label={t('common.perPageCount')}
               />
-              <button type="submit" className="rounded-md p-1 text-muted-foreground hover:bg-accent" aria-label="确定">
+              <button type="submit" className="rounded-md p-1 text-muted-foreground hover:bg-accent" aria-label={t('common.confirmText')}>
                 <CornerDownLeft className="h-3.5 w-3.5" />
               </button>
             </form>
@@ -98,12 +100,12 @@ export function Pagination({
                 setEditingSize(true);
               }}
               className="cursor-pointer rounded-md px-2 py-0.5 font-medium tabular-nums text-foreground transition-colors hover:bg-secondary/60"
-              title="点击修改每页条数"
+              title={t('common.perPageHint')}
             >
               {pageSize}
             </button>
           )}
-          条
+          {t('common.itemsUnit')}
         </div>
       )}
 
@@ -111,7 +113,7 @@ export function Pagination({
         onClick={() => onPageChange(page - 1)}
         disabled={page <= 1}
         className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-        aria-label="上一页"
+        aria-label={t('common.prevPage')}
       >
         <ChevronLeft className="h-4 w-4" />
       </button>
@@ -141,7 +143,7 @@ export function Pagination({
         onClick={() => onPageChange(page + 1)}
         disabled={page >= pages}
         className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-        aria-label="下一页"
+        aria-label={t('common.nextPage')}
       >
         <ChevronRight className="h-4 w-4" />
       </button>
@@ -164,7 +166,7 @@ export function Pagination({
               onKeyDown={(e) => e.key === 'Escape' && setEditingJump(false)}
               inputMode="numeric"
               className="h-7 w-12 rounded-md border bg-background px-1.5 text-center text-xs tabular-nums outline-none ring-1 ring-ring focus-visible:ring-2"
-              aria-label="跳转到页"
+              aria-label={t('common.jumpToPage')}
             />
             <button type="submit" className="rounded-md px-1.5 py-0.5 text-xs font-bold uppercase tracking-tighter text-primary hover:bg-accent" aria-label="GO">
               GO
@@ -177,13 +179,13 @@ export function Pagination({
               setEditingJump(true);
             }}
             className="flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 transition-colors hover:bg-secondary/60"
-            title="点击输入页码"
+            title={t('common.pageHint')}
           >
             <span className="font-semibold tabular-nums text-foreground">{page}</span>
-            <span className="text-xs font-medium uppercase tracking-wider">/ {pages} 页</span>
+            <span className="text-xs font-medium uppercase tracking-wider">/ {pages} {t('common.pageUnit')}</span>
           </button>
         )}
-        <span className="text-sm text-muted-foreground">共 {total} 条</span>
+        <span className="text-sm text-muted-foreground">{t('common.totalItems', { count: total })}</span>
       </div>
     </div>
   );

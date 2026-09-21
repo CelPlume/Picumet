@@ -10,11 +10,8 @@ import { Logo } from './Logo';
 import { ThemeToggle, LanguageSwitcher, UserMenu } from './widgets';
 import { AnnouncementBanner } from './AnnouncementBanner';
 import { Drawer } from '@/components/ui/drawer';
-import { useEffect, useRef, useState } from 'react';
-
-// 指示器位置跨 AppShell 重挂载持久化：页面各自包裹 AppShell，导航切换时组件重挂载，
-// 若直接初始化 {0,0} 会导致指示器先跳回起点。保留上一次位置作为 transition 起点。
-let lastNavInd = { left: 0, width: 0 };
+import { useRef, useState } from 'react';
+import { useIndicator } from '@/components/ui/indicator';
 
 export function AppShell({ children, activeNav }: { children: ReactNode; activeNav?: 'files' | 'shares' | 'settings' | 'admin' }) {
   const { t } = useTranslation();
@@ -22,37 +19,28 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
   const location = useLocation();
   const freeMode = useAuth((s) => s.freeMode);
   const site = useSite();
-  useEffect(() => {
-    const nav = navRef.current;
-    if (!nav) return;
-    const key = location.pathname.startsWith('/admin') ? 'admin' : location.pathname.startsWith('/shares') ? 'shares' : location.pathname.startsWith('/settings') ? 'settings' : 'files';
-    const active = nav.querySelector<HTMLElement>(`[data-nav-key="${key}"]`);
-    if (!active) return;
-    const target = { left: active.offsetLeft, width: active.offsetWidth };
-    lastNavInd = target;
-    // rAF：等浏览器绘制旧位置后再应用新位置，transition 才能从旧值平滑过渡（双向）
-    const raf = requestAnimationFrame(() => setNavInd(target));
-    return () => cancelAnimationFrame(raf);
-  }, [location.pathname]);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const navRef = useRef<HTMLElement>(null);
-  const [navInd, setNavInd] = useState(lastNavInd);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  // 导航指示器：persistKey 缓存跨 AppShell 重挂载的位置（换页重挂载时从旧位置平滑滑出），
+  // 活跃项以 data-active 标记（与 Tabs/侧边栏共用同一测量 hook）
+  const navInd = useIndicator(navRef, location.pathname, { axis: 'x', persistKey: 'appshell-nav' });
 
-  const navItem = (key: 'files' | 'shares' | 'settings', to: string, icon: ReactNode, label: string) => (
-    <Link
-      to={to}
-      data-nav-key={key}
-      className={cn(
-        'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-        activeNav === key || location.pathname.startsWith(to)
-          ? 'font-medium text-primary'
-          : 'text-foreground/80 hover:bg-foreground/5 hover:text-foreground'
-      )}
-    >
-      {icon}
-      {label}
-    </Link>
-  );
+  const navItem = (key: 'files' | 'shares' | 'settings', to: string, icon: ReactNode, label: string) => {
+    const active = activeNav === key || location.pathname.startsWith(to);
+    return (
+      <Link
+        to={to}
+        data-active={active ? 'true' : 'false'}
+        className={cn(
+          'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+          active ? 'font-medium text-primary' : 'text-foreground/80 hover:bg-foreground/5 hover:text-foreground'
+        )}
+      >
+        {icon}
+        {label}
+      </Link>
+    );
+  };
 
   const mobileLinks = [
     { to: '/files', icon: <FolderOpen className="h-5 w-5" />, label: t('nav.files') },
@@ -70,7 +58,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
             <button
               className="rounded-md p-2 text-muted-foreground hover:bg-accent md:hidden"
               onClick={() => setMobileOpen(true)}
-              aria-label="打开菜单"
+              aria-label={t('common.openMenu')}
             >
               <Menu className="h-5 w-5" />
             </button>
@@ -84,19 +72,20 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
             )}
           </div>
           <nav ref={navRef} className="relative hidden items-center gap-1 rounded-lg p-1 md:flex">
-            <span
-              data-nav-indicator
-              aria-hidden
-              className="pointer-events-none absolute inset-y-1 rounded-md bg-primary/10 transition-all duration-300 ease-out"
-              style={{ left: navInd.left, width: navInd.width }}
-            />
+            {navInd.ready && (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-1 rounded-md bg-primary/10 transition-all duration-300 ease-out"
+                style={{ left: navInd.pos, width: navInd.size }}
+              />
+            )}
             {navItem('files', '/files', <FolderOpen className="h-4 w-4" />, t('nav.files'))}
             {navItem('shares', '/shares', <Share2 className="h-4 w-4" />, t('nav.shares'))}
             {navItem('settings', '/settings/profile', <Settings className="h-4 w-4" />, t('nav.settings'))}
             {user?.role === 'admin' && (
               <Link
                 to="/admin"
-                data-nav-key="admin"
+                data-active={activeNav === 'admin' || location.pathname.startsWith('/admin') ? 'true' : 'false'}
                 className={cn(
                   'relative z-10 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                   activeNav === 'admin' || location.pathname.startsWith('/admin')
@@ -125,10 +114,10 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
       <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-4">{children}</main>
 
       {/* 移动端抽屉菜单 */}
-      <Drawer open={mobileOpen} onClose={() => setMobileOpen(false)} side="left" title="菜单">
+      <Drawer open={mobileOpen} onClose={() => setMobileOpen(false)} side="left" title={t('common.menu')}>
         <nav className="flex flex-col gap-1 p-2">
           <Link to="/" className="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm hover:bg-accent" onClick={() => setMobileOpen(false)}>
-            <Home className="h-5 w-5" /> 首页
+            <Home className="h-5 w-5" /> {t('nav.home')}
           </Link>
           {mobileLinks.map((l) => (
             <Link

@@ -16,8 +16,8 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const btnVariants: Record<ButtonVariant, string> = {
   default: 'bg-primary text-primary-foreground hover:bg-primary/90',
-  secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-  outline: 'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
+  secondary: 'glass-control bg-secondary/[var(--glass-alpha,0.72)] text-secondary-foreground hover:bg-secondary/80',
+  outline: 'glass-control border border-input bg-card/[var(--glass-alpha,0.72)] hover:bg-accent hover:text-accent-foreground',
   ghost: 'hover:bg-accent hover:text-accent-foreground',
   destructive: 'bg-destructive text-white hover:bg-destructive/90',
   link: 'text-primary underline-offset-4 hover:underline',
@@ -56,6 +56,12 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 
 // ============ Input ============
 export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {}
+
+/** 项目级统一搜索框玻璃处理（文件页与管理后台共用，避免各自写 bg 造成不统一）：
+    透明度随 --glass-alpha 三档门控（与大表面同值），
+    tw-merge 会覆盖 Input 基类的 bg-transparent 与 dark:bg-input/30 */
+export const SEARCH_INPUT_GLASS =
+  'glass-control bg-card/[var(--glass-alpha,0.72)] dark:bg-card/[var(--glass-alpha,0.72)]';
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input({ className, ...props }, ref) {
   return (
@@ -204,7 +210,9 @@ export function Switch({
         'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
         'disabled:cursor-not-allowed disabled:opacity-50',
         s.container,
-        checked ? 'bg-primary' : 'bg-input dark:bg-input/80'
+        checked
+          ? 'glass-control bg-primary/[var(--glass-alpha,0.72)]'
+          : 'glass-control bg-input/[var(--glass-alpha,0.72)] dark:bg-input/[var(--glass-alpha,0.72)]'
       )}
     >
       <span
@@ -230,19 +238,22 @@ export function EmptyState({
   description,
   action,
   icon,
+  compact = false,
 }: {
   title: string;
   description?: string;
   action?: ReactNode;
   icon?: ReactNode;
+  /** 紧凑档：统计卡/列表内嵌的小尺寸空态 */
+  compact?: boolean;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        {icon ?? <Inbox className="h-7 w-7" />}
+    <div className={cn('flex flex-col items-center justify-center gap-2 text-center', compact ? 'py-6' : 'py-16')}>
+      <div className={cn('flex items-center justify-center rounded-full bg-muted text-muted-foreground', compact ? 'h-9 w-9' : 'h-14 w-14')}>
+        {icon ?? <Inbox className={compact ? 'h-4 w-4' : 'h-7 w-7'} />}
       </div>
-      <h3 className="mt-2 text-sm font-medium">{title}</h3>
-      {description && <p className="max-w-sm text-sm text-muted-foreground">{description}</p>}
+      <h3 className={cn('mt-2 font-medium', compact ? 'text-xs' : 'text-sm')}>{title}</h3>
+      {description && <p className={cn('max-w-sm text-muted-foreground', compact ? 'text-xs' : 'text-sm')}>{description}</p>}
       {action && <div className="mt-2">{action}</div>}
     </div>
   );

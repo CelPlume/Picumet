@@ -44,7 +44,7 @@ export default function FreeMode() {
         body: { endpoint, region, bucket, accessKeyId, secretAccessKey, sessionHours: hours },
       });
       useAuth.getState().setFreeMode(true, res.data.expiresAt);
-      toast('success', '自由模式已开启');
+      toast('success', t('freeMode.enabled'));
       navigate('/files');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : t('err.network'));
@@ -68,23 +68,23 @@ export default function FreeMode() {
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
               <Cloud className="h-6 w-6 text-primary" />
             </div>
-            <h1 className="text-xl font-semibold">自由模式</h1>
-            <p className="mt-1 text-sm text-muted-foreground">使用你自己的对象存储凭据临时访问，凭据仅保存在服务端内存中。</p>
+            <h1 className="text-xl font-semibold">{t('login.freeMode')}</h1>
+            <p className="mt-1 text-sm text-muted-foreground">{t('freeMode.description')}</p>
           </div>
 
           <div className="glass-surface glass-blur space-y-3 rounded-lg border p-4">
             <div>
-              <Label>预设</Label>
+              <Label>{t('freeMode.preset')}</Label>
               <Select className="mt-1" value={presetId} onValueChange={pickPreset}
                 options={STORAGE_PRESETS.map((p) => ({ value: p.id, label: p.label }))} />
             </div>
 
             {preset.needsAccountId && (
               <div>
-                <Label>R2 Account ID 快捷</Label>
+                <Label>{t('freeMode.r2Shortcut')}</Label>
                 <Input className="mt-1" value={endpoint.match(/^https:\/\/(.+)\.r2\.cloudflarestorage\.com$/)?.[1] ?? ''}
                   onChange={(e) => setEndpoint(e.target.value ? r2S3Endpoint(e.target.value) : '')}
-                  placeholder="填入 Account ID 自动拼接端点" />
+                  placeholder={t('freeMode.r2Placeholder')} />
               </div>
             )}
 
@@ -113,7 +113,7 @@ export default function FreeMode() {
               <Input className="mt-1" type="password" value={secretAccessKey} onChange={(e) => setSecretAccessKey(e.target.value)} />
             </div>
             <div>
-              <Label>会话时长</Label>
+              <Label>{t('freeMode.sessionDuration')}</Label>
               <div className="mt-1 flex gap-2">
                 {[1, 4, 8].map((h) => (
                   <button
@@ -123,7 +123,7 @@ export default function FreeMode() {
                       hours === h ? 'border-primary bg-primary/5 text-primary' : 'hover:bg-accent'
                     }`}
                   >
-                    {h} 小时
+                    {t('freeMode.hours', { count: h })}
                   </button>
                 ))}
               </div>
@@ -132,11 +132,11 @@ export default function FreeMode() {
             {error && <p className="text-sm text-destructive">{error}</p>}
 
             <Button className="w-full" onClick={submit} loading={loading}>
-              连接并进入
+              {t('freeMode.connect')}
             </Button>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant="warning">安全提示</Badge>
-              凭据不会保存到本地或数据库，会话过期后自动清除。
+              <Badge variant="warning">{t('freeMode.securityNote')}</Badge>
+              {t('freeMode.securityDesc')}
             </div>
           </div>
         </div>

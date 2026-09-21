@@ -2,7 +2,7 @@ import { cn } from '@/lib/utils';
 
 // ============ Skeleton 基元（shadcn 风格） ============
 export function Skeleton({ className }: { className?: string }) {
-  return <div data-slot="skeleton" className={cn('animate-pulse rounded-md bg-accent', className)} />;
+  return <div data-slot="skeleton" className={cn('animate-pulse rounded-md bg-foreground/10', className)} />;
 }
 
 // ============ 文件卡片网格骨架 ============
@@ -67,11 +67,13 @@ export function FormCardSkeleton({ rows = 4 }: { rows?: number }) {
 }
 
 // ============ 表格骨架 ============
+// 行条完全透明 + border-b 分隔——与真实表格行一致；玻璃由所在卡片承担（三层卡上卡
+// 叠同色玻璃会复合成近不透明白板，历史 bug：骨架行自带 glass-surface 导致整卡发白不透明）
 export function TableSkeleton({ rows = 6, cols = 4 }: { rows?: number; cols?: number }) {
   return (
-    <div className="space-y-2">
+    <div>
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="glass-surface glass-blur flex items-center gap-4 rounded-md border px-3 py-2.5">
+        <div key={i} className={cn('flex items-center gap-4 px-4 py-3', i < rows - 1 && 'border-b')}>
           {Array.from({ length: cols }).map((__, j) => (
             <Skeleton key={j} className={cn('h-4', j === 0 ? 'w-1/4' : 'flex-1')} />
           ))}

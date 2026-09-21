@@ -8,12 +8,13 @@ import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/comp
 import { Button } from '@/components/ui/core';
 
 const THEME_OPTIONS = [
-  { value: 'light', label: '浅色', icon: <Sun className="h-4 w-4" /> },
-  { value: 'dark', label: '深色', icon: <Moon className="h-4 w-4" /> },
-  { value: 'system', label: '跟随系统', icon: <Monitor className="h-4 w-4" /> },
+  { value: 'light', labelKey: 'settings.themeLight', icon: <Sun className="h-4 w-4" /> },
+  { value: 'dark', labelKey: 'settings.themeDark', icon: <Moon className="h-4 w-4" /> },
+  { value: 'system', labelKey: 'settings.themeSystem', icon: <Monitor className="h-4 w-4" /> },
 ];
 
 export function ThemeToggle() {
+  const { t } = useTranslation();
   const theme = useTheme((s) => s.theme);
   const set = useTheme((s) => s.set);
   const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -22,14 +23,14 @@ export function ThemeToggle() {
     <Dropdown
       align="end"
       trigger={
-        <Button variant="ghost" size="icon" title="主题" aria-label="切换主题">
+        <Button variant="ghost" size="icon" title={t('settings.theme')} aria-label={t('common.toggleTheme')}>
           {currentIcon}
         </Button>
       }
     >
       {(close) => (
         <>
-          <DropdownLabel>外观主题</DropdownLabel>
+          <DropdownLabel>{t('common.themeMenu')}</DropdownLabel>
           {THEME_OPTIONS.map((opt) => (
             <DropdownItem
               key={opt.value}
@@ -40,7 +41,7 @@ export function ThemeToggle() {
               }}
             >
               <span className="flex w-full items-center justify-between gap-8">
-                <span>{opt.label}</span>
+                <span>{t(opt.labelKey)}</span>
                 {theme === opt.value && <Check className="h-4 w-4 text-primary" />}
               </span>
             </DropdownItem>
@@ -52,20 +53,19 @@ export function ThemeToggle() {
 }
 
 export function LanguageSwitcher() {
-  const { i18n } = useTranslation();
-  const current = i18n.language?.startsWith('zh') ? '中文' : 'English';
+  const { t, i18n } = useTranslation();
   return (
     <Dropdown
       align="end"
       trigger={
-        <Button variant="ghost" size="icon" title="语言" aria-label="切换语言">
+        <Button variant="ghost" size="icon" title={t('settings.language')} aria-label={t('common.toggleLanguage')}>
           <Languages className="h-4 w-4" />
         </Button>
       }
     >
       {(close) => (
         <>
-          <DropdownLabel>语言 / Language</DropdownLabel>
+          <DropdownLabel>{t('common.languageMenu')}</DropdownLabel>
           <DropdownItem
             onClick={() => {
               setLocale('zh-CN');
@@ -73,7 +73,7 @@ export function LanguageSwitcher() {
             }}
           >
             <span className="flex w-full items-center justify-between gap-8">
-              <span>中文</span>
+              <span>{t('common.langChinese')}</span>
               {i18n.language?.startsWith('zh') && <Check className="h-4 w-4 text-primary" />}
             </span>
           </DropdownItem>

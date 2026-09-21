@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { create } from 'zustand';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 export type ToastType = 'success' | 'error' | 'info';
@@ -110,6 +111,7 @@ function ToastCard({
   els: { current: Map<number, HTMLElement> };
   onClose: () => void;
 }) {
+  const { t: translate } = useTranslation();
   const [entered, setEntered] = useState(false);
   useEffect(() => {
     let raf2 = 0;
@@ -177,7 +179,7 @@ function ToastCard({
           'absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-opacity duration-150 hover:text-foreground',
           reveal && !t.leaving ? 'opacity-0 group-hover:opacity-100' : 'pointer-events-none opacity-0'
         )}
-        aria-label="关闭"
+        aria-label={translate('common.close')}
       >
         <X className="h-3 w-3" />
       </button>

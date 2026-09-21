@@ -3,6 +3,7 @@
 // 脱离弹窗/面板等 backdrop-filter 祖先（嵌套会建立 backdrop root 使模糊失效），
 // 任何场景（弹窗内、抽屉内、面板内）都与主页下拉菜单完全一致。
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -18,7 +19,7 @@ export function Select({
   value,
   onValueChange,
   options,
-  placeholder = '请选择...',
+  placeholder,
   disabled,
   className,
 }: {
@@ -29,6 +30,7 @@ export function Select({
   disabled?: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const portalRef = useRef<HTMLDivElement>(null);
@@ -76,7 +78,7 @@ export function Select({
         )}
       >
         <span className={cn('truncate', !selected && 'text-muted-foreground')}>
-          {selected?.label ?? placeholder}
+          {selected?.label ?? placeholder ?? t('common.selectPlaceholder')}
         </span>
         <ChevronDown className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
@@ -140,7 +142,8 @@ export function SelectTrigger({ children, className, ...rest }: { children: Reac
 }
 
 export function SelectValue({ placeholder, children }: { placeholder?: string; children?: React.ReactNode }) {
-  return <span className={cn(!children && 'text-muted-foreground')}>{children ?? placeholder ?? '请选择'}</span>;
+  const { t } = useTranslation();
+  return <span className={cn(!children && 'text-muted-foreground')}>{children ?? placeholder ?? t('common.select')}</span>;
 }
 
 export function SelectContent({ children, className }: { children: React.ReactNode; className?: string }) {

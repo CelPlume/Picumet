@@ -112,6 +112,8 @@ function applyTheme(s: AppearanceSettings) {
   // off：全站实底无模糊（.no-blur 类使所有 backdrop-filter 失效，文件卡片也不再有磨砂底）
   // default：项目默认强度（blur 20px）；毛玻璃：文件卡片磨砂配方（blur 16px + alpha 0.6）全局化
   // 有背景图时提高 default 档不透明度：深色下背景混入会破坏文字对比度，保住 WCAG AA
+  // 小型控件（Tabs 轨道/按钮/搜索框/复选框未选态/视图切换器/⋮ 触发钮）与大表面共用
+  // --glass-alpha：与所在页面的卡片同色同透，杜绝控件发灰与卡片割裂
   const glass =
     s.blurLevel === 'off'
       ? { alpha: '1', blur: '0px' }

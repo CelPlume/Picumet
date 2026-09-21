@@ -21,11 +21,11 @@ export default function ResetPassword() {
   const submit = async () => {
     setError('');
     if (password.length < 8) {
-      setError(t('login.newPasswordShort', '密码至少 8 位'));
+      setError(t('login.newPasswordShort'));
       return;
     }
     if (password !== confirm) {
-      setError(t('login.passwordMismatch', '两次输入的密码不一致'));
+      setError(t('login.passwordMismatch'));
       return;
     }
     setLoading(true);

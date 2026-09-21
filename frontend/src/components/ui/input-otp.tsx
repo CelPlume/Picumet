@@ -1,5 +1,6 @@
 // InputOTP（shadcn input-otp 风格：分组输入、自动跳格、粘贴拆分）
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 export function InputOTP({
@@ -13,6 +14,7 @@ export function InputOTP({
   length?: number;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const [focused, setFocused] = useState(0);
   const refs = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -69,7 +71,7 @@ export function InputOTP({
           inputMode="numeric"
           autoComplete="one-time-code"
           maxLength={length}
-          aria-label={`第 ${i + 1} 位验证码`}
+          aria-label={t('common.otpDigit', { index: i + 1 })}
           className={cn(
             'relative flex h-9 w-9 items-center justify-center border-y border-r border-input text-sm shadow-sm transition-all outline-none',
             'first:rounded-l-md first:border-l last:rounded-r-md',

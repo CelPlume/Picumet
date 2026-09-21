@@ -28,7 +28,7 @@ export default function Register() {
   useEffect(() => () => clearInterval(countdownTimerRef.current ?? undefined), []);
 
   const sendOtp = async () => {
-    if (!email) return setError('请输入邮箱');
+    if (!email) return setError(t('auth.emailRequired'));
     setOtpSending(true);
     try {
       await apiFetch('/api/auth/register/send-otp', { method: 'POST', body: { email } });
@@ -41,7 +41,7 @@ export default function Register() {
           return c - 1;
         });
       }, 1000);
-      toast('success', '验证码已发送');
+      toast('success', t('auth.codeSent'));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : t('err.network'));
     } finally {
@@ -97,13 +97,13 @@ export default function Register() {
               <div className="mt-2 flex gap-2">
                 <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
                 <Button type="button" variant="outline" onClick={sendOtp} loading={otpSending} disabled={countdown > 0} className="shrink-0">
-                  {countdown > 0 ? `${countdown}s` : '发送验证码'}
+                  {countdown > 0 ? `${countdown}s` : t('auth.sendCode')}
                 </Button>
               </div>
             </div>
             {otpSent && (
               <div>
-                <Label className="text-sm font-medium text-foreground">邮箱验证码</Label>
+                <Label className="text-sm font-medium text-foreground">{t('auth.emailCode')}</Label>
                 <InputOTP value={emailCode} onChange={setEmailCode} className="mt-2" />
               </div>
             )}

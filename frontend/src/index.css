@@ -103,6 +103,15 @@
     -webkit-backdrop-filter: blur(calc(var(--glass-blur, 20px) / 2.5));
     backdrop-filter: blur(calc(var(--glass-blur, 20px) / 2.5));
   }
+  /* 小型控件模糊（Tabs 轨道、outline/secondary 按钮、搜索框、复选框未选态、视图切换器、⋮ 触发钮）：
+     本类只含 backdrop blur（同一 --glass-blur token），底色透明度由各组件用
+     Tailwind 任意透明度语法消费 --glass-alpha（与大表面同 token：default 0.92/0.82、
+     frosted 0.6、off 1），控件与所在页面的卡片同色同透，杜绝灰色割裂；
+     off 档双保险：alpha=1 自动实底 + .no-blur 关停 blur */
+  .glass-control {
+    -webkit-backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
+    backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
+  }
   /* 弹窗/抽屉窗体：身后垫着 glass-overlay（黑 50% + 半强度模糊），半透明填充透出的
      是被压暗的背景 → 整体发灰。因此 backdrop-filter 做两项补偿，使弹窗与页面上的
      玻璃表面（侧栏/文件卡片 .item-surface）观感一致：
@@ -122,6 +131,7 @@
   .no-blur .glass-blur,
   .no-blur .glass-overlay,
   .no-blur .glass-dialog,
+  .no-blur .glass-control,
   .no-blur .item-surface {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

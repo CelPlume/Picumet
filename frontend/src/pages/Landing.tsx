@@ -46,7 +46,7 @@ export default function Landing() {
           <div className="absolute left-1/3 top-1/4 h-[300px] w-[400px] rounded-full bg-sky-500/10 blur-2xl" />
           <div className="grid-pattern radial-mask absolute inset-0" />
         </div>
-        <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-4 py-1.5 text-sm font-medium text-primary shadow-sm backdrop-blur-sm">
+        <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-4 py-1.5 text-sm font-medium text-primary shadow-sm">
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/75 opacity-75" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />

@@ -14,6 +14,7 @@ import type { FileListItem } from '@shared/types';
 
 // M-5：本地生成二维码 data URL，不依赖第三方 qrserver
 function LocalQr({ data }: { data: string }) {
+  const { t } = useTranslation();
   const [src, setSrc] = useState('');
   useEffect(() => {
     let alive = true;
@@ -29,7 +30,7 @@ function LocalQr({ data }: { data: string }) {
     };
   }, [data]);
   if (!src) {
-    return <div className="h-[190px] w-[190px] animate-pulse rounded-md bg-muted" aria-label="二维码加载中" />;
+    return <div className="h-[190px] w-[190px] animate-pulse rounded-md bg-muted" aria-label={t('sharePage.qrLoading')} />;
   }
   return <img src={src} alt="QR" className="rounded-md border" />;
 }
@@ -64,7 +65,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       const res = await apiFetch<{ share: ShareInfo }>(`/api/shares/${id}`);
       setInfo(res.data.share);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : '加载失败');
+      setError(err instanceof ApiError ? err.message : t('sharePage.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -86,7 +87,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       setPassword('');
       await load();
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '密码错误');
+      toast('error', err instanceof ApiError ? err.message : t('err.invalidPassword'));
     }
   };
 
@@ -97,13 +98,13 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       const res = await apiFetch<{ url: string }>(`/api/shares/${id}/download`);
       window.open(res.data.url, '_blank');
     } catch (err) {
-      toast('error', err instanceof ApiError ? err.message : '下载失败');
+      toast('error', err instanceof ApiError ? err.message : t('common.downloadFailed'));
     }
   };
 
   const copyLink = async () => {
     await navigator.clipboard.writeText(window.location.href);
-    toast('success', '链接已复制');
+    toast('success', t('sharePage.linkCopied'));
   };
 
   const previewUrl = info?.file ? `/api/shares/${id}/preview` : null;
@@ -163,7 +164,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
               <div className="mt-2 flex items-center justify-center gap-2 text-xs text-muted-foreground">
                 <Badge variant="secondary">{t('share.viewCount')}: {info.viewCount}</Badge>
                 {info.maxViews && <Badge variant="outline">{info.viewCount}/{info.maxViews}</Badge>}
-                {info.requiresPassword && <Badge variant="warning"><Lock className="mr-1 h-3 w-3" /> 密码保护</Badge>}
+                {info.requiresPassword && <Badge variant="warning"><Lock className="mr-1 h-3 w-3" /> {t('sharePage.passwordProtected')}</Badge>}
               </div>
             </div>
 
@@ -204,7 +205,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       </main>
 
       <footer className="border-t py-4 text-center text-xs text-muted-foreground">
-        Powered by Picumet · <Share2 className="inline h-3 w-3" /> 多云对象存储管理平台
+        Powered by Picumet · <Share2 className="inline h-3 w-3" /> {t('landing.badge')}
       </footer>
     </div>
   );

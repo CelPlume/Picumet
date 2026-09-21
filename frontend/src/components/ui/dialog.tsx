@@ -2,6 +2,7 @@
 // 弹出/关闭动画与毛玻璃表面统一收敛在本组件内：
 // 无论调用方常驻挂载还是条件挂载，进出动画表现一致（遮罩压暗+模糊同步淡入，面板缩放淡入）。
 import { useEffect, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from './core';
@@ -25,6 +26,7 @@ export function Dialog({
   footer?: ReactNode;
   width?: string;
 }) {
+  const { t } = useTranslation();
   // mounted：是否渲染在 DOM（延迟卸载以播放退出动画）；entered：是否处于打开样式（驱动过渡）
   const [mounted, setMounted] = useState(open);
   const [entered, setEntered] = useState(false);
@@ -89,7 +91,7 @@ export function Dialog({
         <button
           onClick={onClose}
           className="absolute right-4 top-4 z-10 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="关闭"
+          aria-label={t('common.close')}
         >
           <X className="h-4 w-4" />
         </button>
@@ -113,8 +115,8 @@ export function ConfirmDialog({
   onConfirm,
   title,
   message,
-  confirmText = '删除',
-  cancelText = '取消',
+  confirmText,
+  cancelText,
   variant = 'destructive',
   loading,
 }: {
@@ -128,6 +130,7 @@ export function ConfirmDialog({
   variant?: 'destructive' | 'default';
   loading?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <Dialog
       open={open}
@@ -136,10 +139,10 @@ export function ConfirmDialog({
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
-            {cancelText}
+            {cancelText ?? t('common.cancel')}
           </Button>
           <Button variant={variant} onClick={onConfirm} loading={loading}>
-            {confirmText}
+            {confirmText ?? t('common.delete')}
           </Button>
         </>
       }
