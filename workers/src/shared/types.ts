@@ -1,4 +1,4 @@
-import type { Role } from '@shared/types';
+import type { Permission, Role } from '@shared/types';
 
 // Cloudflare Workers 运行时绑定
 export interface Env {
@@ -52,6 +52,8 @@ export interface AppVariables {
     avatarUrl?: string;
     status: string;
     capabilities?: string[];
+    /** 用户个别默认权限（users.permissions）：NULL = 跟随角色默认 */
+    permissions?: Permission[] | null;
   };
   apiKey?: {
     id: string;
