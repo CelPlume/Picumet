@@ -457,6 +457,39 @@ curl -X POST https://{domain}/api/auth/forgot-password \
 ```sh
 curl "https://{domain}/api/files?path=/drive&limit=50" -b cookies.txt
 ```
+### 获取文件树
+
+返回文件页树视图使用的扁平行：`path` 所属挂载点内每个文件与文件夹各一行。文件夹行的 `path` 是自身全路径，文件行的 `path` 是父目录路径。
+
+权限在建树之前生效：入口 `path` 需要读取权限，服务端逐个复核嵌套挂载点的挂载根并丢弃调用方读不了的子树；非管理员视角下，本人非属主的私密文件夹连同其后代一并不返回。响应最多 5000 行并给出 `truncated`。
+
+`GET /api/files/tree?path={path}`
+
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `path` | `string` | 否 | 挂载点内的任意路径；服务端按它校验读取权限。默认 `/`。树始终覆盖该路径所属的整个挂载点。 |
+
+#### 响应
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `items` | `array` | 父先于子的扁平行：`id`、`name`、`path`、`type`、`size`、`visibility`、`guestVisibility`、`banned`、`hash`。 |
+| `truncated` | `boolean` | 树触及 5000 行上限。 |
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理方式 |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | 该路径不属于任何挂载点。 | 核对路径。 |
+| `FORBIDDEN` | `403` | 调用方对该路径没有读取权限。 | 检查权限规则。 |
+
+#### 示例
+
+```sh
+curl "https://{domain}/api/files/tree?path=/" -b cookies.txt
+```
 
 ### 创建文件夹
 
@@ -2171,6 +2204,18 @@ curl -X DELETE https://{domain}/api/keys/{id} \
         "standbys": [{ "id": "provider-uuid-2", "name": "R2 备桶", "bucket": "picumet-standby", "weight": 1 }]
       }
     ],
+    "buckets": [
+      {
+        "id": "provider-uuid", "name": "R2 主桶", "bucket": "picumet-primary", "type": "s3",
+        "fileCount": 300, "usedSpace": 9437184,
+        "mounts": [
+          { "id": "mount-uuid", "name": "Drive", "mountPath": "/drive", "status": "active", "capacityBytes": 10737418240, "fileCount": 180, "usedSpace": 5242880, "role": "primary" }
+        ],
+        "standbys": [
+          { "mountId": "mount-uuid-2", "mountName": "相册", "mountPath": "/gallery", "primaryProviderId": "provider-uuid-2", "primaryProviderName": "R2 备桶" }
+        ]
+      }
+    ],
     "requests24h": 1200,
     "recentActivity": [{ "action": "upload", "path": "/drive/a.txt", "userId": "user-uuid", "createdAt": 1710000000000 }]
   },
@@ -2186,9 +2231,11 @@ curl -X DELETE https://{domain}/api/keys/{id} \
 curl https://{domain}/api/admin/dashboard -b cookies.txt
 ```
 
+> `buckets` 驱动仪表盘的桶泳道图与管理端挂载点视图：每个桶一条，列出存有其文件的挂载点（`role` 为 `primary` 或 `member`），桶级合计按 `file_metadata.provider_id` 统计，`standbys` 是该桶零文件备用的挂载点。
+
 ### 获取统计数据
 
-返回与仪表板相同的 `stats` 顶层统计、每挂载点 `mounts` 用量总览与 `recentActivity`（不含 `requests24h`）。
+返回与 **获取仪表板** 完全相同的载荷（`stats`、`mounts`、`buckets`），不含 `requests24h`。
 
 `GET /api/admin/stats`
 
@@ -2207,6 +2254,7 @@ curl https://{domain}/api/admin/dashboard -b cookies.txt
       "totalCapacity": 10737418240
     },
     "mounts": [],
+    "buckets": [],
     "recentActivity": []
   },
   "timestamp": 1710000000000
@@ -2218,6 +2266,83 @@ curl https://{domain}/api/admin/dashboard -b cookies.txt
 ```sh
 curl https://{domain}/api/admin/stats -b cookies.txt
 ```
+### 获取桶挂载点树
+
+返回存储桶以及它们承载的挂载点。这份数据驱动仪表盘的桶泳道图与管理端挂载点视图：每个桶列出存有其文件的挂载点，以及该桶作为零文件备用的挂载点。
+
+`GET /api/admin/mount-tree`
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "buckets": [
+      {
+        "id": "provider-uuid", "name": "R2 主桶", "bucket": "picumet-primary", "type": "s3",
+        "fileCount": 300, "usedSpace": 9437184,
+        "mounts": [
+          { "id": "mount-uuid", "name": "Drive", "mountPath": "/drive", "status": "active", "capacityBytes": 10737418240, "fileCount": 180, "usedSpace": 5242880, "role": "primary" }
+        ],
+        "standbys": [
+          { "mountId": "mount-uuid-2", "mountName": "相册", "mountPath": "/gallery", "primaryProviderId": "provider-uuid-2", "primaryProviderName": "R2 备桶" }
+        ]
+      }
+    ]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### 响应字段
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `buckets` | `array` | 每个存储提供商（桶）一条。 |
+| `buckets[].fileCount` | `integer` | 该桶在全部挂载点上存储的对象数；计数来自 `file_metadata.provider_id`。 |
+| `buckets[].mounts[].role` | `string` | 桶是挂载点主 provider 时为 `primary`；桶存储拼好桶的一部分时为 `member`。 |
+| `buckets[].standbys` | `array` | 该桶在此挂载点上是零文件备用：含挂载点 id/名称/路径与主桶 id/名称。 |
+
+#### 示例
+
+```sh
+curl https://{domain}/api/admin/mount-tree -b cookies.txt
+```
+
+### 获取挂载点的文件夹计数
+
+返回某个挂载点的顶层文件夹与递归文件计数。传 `providerId` 只统计该桶存储的文件——拼好桶由此按桶展示自己的份额——匹配文件数为零的文件夹不再返回。
+
+`GET /api/admin/dashboard/mount-folders?mountId={mountId}&providerId={providerId}`
+
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `mountId` | `string` | 是 | 要统计的挂载点 id。 |
+| `providerId` | `string` | 否 | 只统计 `provider_id` 等于该桶的文件。 |
+
+#### 响应
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `rootFiles` | `object` | 挂载点根目录直置文件：`count` 与字节数 `size`。 |
+| `folders` | `array` | 顶层文件夹：`id`、`name`、`path`、`fileCount`、`usedSpace`。 |
+| `truncated` | `boolean` | 扫描触及 20000 文件上限。 |
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理方式 |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | 该 id 不属于任何挂载点。 | 核对挂载点 id。 |
+
+#### 示例
+
+```sh
+curl "https://{domain}/api/admin/dashboard/mount-folders?mountId={mount_id}&providerId={provider_id}" -b cookies.txt
+```
+
 
 ### 管理用户
 
@@ -2382,6 +2507,42 @@ curl -X DELETE https://{domain}/api/admin/shares/abc123 \
 curl "https://{domain}/api/admin/files?search=photo&banned=false" -b cookies.txt
 ```
 
+### 列出全部文件的扁平树
+
+返回横跨全部挂载点的扁平行，供管理端树视图渲染，并带上上传用户昵称。文件夹行的 `path` 是自身全路径，文件行的 `path` 是父目录路径。「列出全部文件」的五个筛选全部可用；`bucket` 与 `hash` 只筛文件行，文件夹骨架原样保留。响应最多 5000 行并给出 `truncated`。
+
+`GET /api/admin/files/tree?mount={mount}&bucket={bucket}&user={user}&visibility={visibility}&hash={hash}`
+
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `mount` | `string` | 否 | 挂载点 id 精确匹配。 |
+| `bucket` | `string` | 否 | 存储提供商（桶）id 精确匹配；文件夹行直接通过该筛选。 |
+| `user` | `string` | 否 | 上传用户（属主）id 精确匹配。 |
+| `visibility` | `string` | 否 | `private`、`users` 或 `public`。 |
+| `hash` | `string` | 否 | 内容哈希（`blob_hash`）子串匹配；文件夹行直接通过该筛选。 |
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [{ "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576, "ownerName": "alice", "banned": false, "hash": "9f2c…" }],
+    "truncated": false
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### 示例
+
+```sh
+curl "https://{domain}/api/admin/files/tree?bucket={provider_id}" -b cookies.txt
+```
+
+
 ### 封禁/解封文件
 
 设置或解除文件封禁。封禁只拦截内容出口（文件下载、公开路径直服、分享下载/预览、下载网关），**不拦截删除**——被封禁的文件仍可由用户或管理员删除。被封禁的文件对属主呈幽灵态：文件页半透明显示、菜单收敛为仅可删除，任何内容出口返回 `429 FILE_BANNED`。
@@ -2498,6 +2659,8 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 | `rateLimitRequestsPerMinute` | `integer` | 否 | 每分钟请求数，范围 1 到 10000。仅生产环境生效：按 IP 限制该值、登录用户按 2 倍；登录/注册等认证接口固定 5 次/分钟；自由模式按会话 60、按用户 120 次/分钟。 |
 | `maxConcurrentTransfers` | `integer` | 否 | 同时传输上限，范围 0 到 1000，默认 4，`0` 表示不限。按用户（未登录按 IP）限制上传各通道与下载网关的在途请求数，超限返回 `429 CONCURRENCY_LIMIT_EXCEEDED`。 |
 | `rateLimitDownloadsPerMinute` | `integer` | 否 | 下载限速，范围 0 到 100000，默认 120，`0` 表示不限。按用户（未登录按 IP）限制每分钟下载类请求（下载网关、分享下载/预览、文件下载链接、公开目录直链），超限返回 `429 RATE_LIMIT_EXCEEDED`。 |
+| `directPrefix` | `string` | 否 | 公开直链前缀：`''`（站点根）、`/d`、`/download` 或 `/raw`。服务端先归一化（补前导斜杠、去尾斜杠）再校验枚举，其余取值拒绝；`rootTarget` 为 `direct` 时前缀必须是 `''`。 |
+| `rootTarget` | `string` | 否 | 根路径 `/` 的语义：`landing`、`files` 或 `direct`。取 `direct` 时须与 `directPrefix` 的 `''` 搭配。 |
 | `smtpHost` | `string` | 否 | SMTP 服务器地址。 |
 | `smtpPort` | `integer` | 否 | SMTP 端口。 |
 | `smtpSecure` | `boolean` | 否 | 是否使用安全连接。 |
@@ -2564,8 +2727,23 @@ curl -X POST https://{domain}/api/admin/settings/test-email \
 | :--- | :--- | :--- | :--- |
 | `title` | `string` | 是 | 公告标题，最多 200 个字符。 |
 | `content` | `string` | 是 | 公告内容，最多 5000 个字符。 |
-| `level` | `string` | 否 | `info`、`warning` 或 `danger`。 |
-| `expiresIn` | `integer` | 否 | 有效期，单位秒，至少 60。 |
+| `displayMode` | `string` | 否 | 显示策略：`always`（默认）、`daily`、`interval`、`until`、`duration`；弹窗另可 `once`。 |
+| `intervalSeconds` | `integer` | 否 | 间隔或时长秒数，范围 60 到 31536000。配 `interval` 或 `duration` 时必填。 |
+| `endsAt` | `integer` | 否 | 绝对截止时间（毫秒时间戳）。配 `until` 时必填。 |
+| `kind` | `string` | 否 | `banner`（默认）显示在顶部横幅；`toast` 显示为会自动关闭的临时弹窗。 |
+
+显示策略（`displayMode`）语义：
+
+- `always`：显示到用户关闭为止。
+- `daily`：用户关闭后，次日再次显示。
+- `interval`：用户关闭后，间隔 `intervalSeconds` 秒再次显示。
+- `until`：超过 `endsAt` 后不再显示。
+- `duration`：`createdAt + intervalSeconds` 之后不再显示。
+- `once`（仅弹窗）：每用户只显示一次。
+
+临时弹窗（`toast`）在用户本地记录的是展示时间而非关闭时间；横幅（`kind: banner`）去掉左侧色条渲染。
+
+`PUT /api/admin/announcements/{id}` 只接受 `title`、`content`、`level`、`active`——显示策略在创建时设置。
 
 #### 示例
 
@@ -2574,7 +2752,7 @@ curl -X POST https://{domain}/api/admin/announcements \
   -H "Content-Type: application/json" \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
-  -d '{"title":"维护通知","content":"周六停机维护","level":"warning"}'
+  -d '{"title":"维护通知","content":"周六停机维护","level":"warning","displayMode":"daily","kind":"banner"}'
 ```
 
 ### 管理存储提供商
@@ -3035,10 +3213,28 @@ curl https://{domain}/api/public/settings
 ```json
 {
   "success": true,
-  "data": { "items": [{ "id": "announcement-uuid", "title": "维护通知", "content": "周六停机维护", "level": "warning" }] },
+  "data": {
+    "items": [{
+      "id": "announcement-uuid", "title": "维护通知", "content": "周六停机维护",
+      "level": "warning", "active": true, "createdAt": 1710000000000, "expiresAt": null,
+      "displayMode": "always", "intervalSeconds": null, "kind": "banner"
+    }]
+  },
   "timestamp": 1710000000000
 }
 ```
+
+#### 响应字段
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `displayMode` | `string` | 显示策略：`always`、`daily`、`interval`、`until`、`duration` 或 `once`。 |
+| `intervalSeconds` | `integer` | 间隔或时长秒数；策略不用时为 `null`。 |
+| `expiresAt` | `integer` | `until` 的绝对截止时间戳；未设置时为 `null`。 |
+| `kind` | `string` | `banner` 为横幅条；`toast` 为临时弹窗。 |
+| `active` | `boolean` | 管理员的启用开关。 |
+
+列表只含生效且未过期的公告；客户端按用户应用显示策略，关闭或展示时间戳保存在本地存储。
 
 #### 示例
 

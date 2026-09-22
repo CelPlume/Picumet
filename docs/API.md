@@ -101,7 +101,7 @@ Failed requests return an error envelope with an HTTP status code and a machine-
 | `QUOTA_EXCEEDED` | `413` | The storage or file-count quota has run out. | Free up space or raise the quota. |
 | `PAYLOAD_TOO_LARGE` | `413` | The upload exceeds the 1 GB free-mode limit. | Split the file or use a smaller file. |
 | `RATE_LIMIT_EXCEEDED` | `429` | The caller exceeded a rate limit. | Wait and retry, or raise the limit. |
-| `FILE_BANNED` | `429` | An administrator banned the target file (all content outlets block it; deletion is unaffected). | Contact an administrator. |
+| `FILE_BANNED` | `429` | An administrator banned the target file (all content outlets block it; deletion still works). | Contact an administrator. |
 | `INTERNAL_ERROR` | `500` | An unexpected server error occurred. | Retry later or report the issue. |
 
 ## Authentication
@@ -457,6 +457,39 @@ Lists the children of a directory with pagination, sorting, filtering, and searc
 ```sh
 curl "https://{domain}/api/files?path=/drive&limit=50" -b cookies.txt
 ```
+### Get the file tree
+
+Returns the flat rows that back the file manager's tree view: one row per file and folder in the mount that owns `path`. Folder rows carry their own full path in `path`; file rows carry their parent directory path.
+
+Access rules apply before the server builds the tree: the entry `path` needs read permission, the server re-checks every nested mount root and drops subtrees the caller cannot read, and for non-admin callers the server hides private folders the caller does not own together with their descendants. The response caps at 5000 rows and sets `truncated`.
+
+`GET /api/files/tree?path={path}`
+
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `path` | `string` | No | Any path inside the mount; the server checks read permission against it. Defaults to `/`. The tree always covers the whole mount that owns the path. |
+
+#### Response
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `items` | `array` | Flat rows with parents before children: `id`, `name`, `path`, `type`, `size`, `visibility`, `guestVisibility`, `banned`, `hash`. |
+| `truncated` | `boolean` | The tree hit the 5000-row cap. |
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | No mount owns the path. | Confirm the path. |
+| `FORBIDDEN` | `403` | The caller lacks read permission on the path. | Check the permission rules. |
+
+#### Example
+
+```sh
+curl "https://{domain}/api/files/tree?path=/" -b cookies.txt
+```
 
 ### Create a folder
 
@@ -596,7 +629,7 @@ Renames a file or folder and updates its metadata, including the access password
 
 #### Response
 
-Returns the updated file. When setting `visibility`: `users` takes effect immediately; `public` requires the account to hold the `can_publish` capability, otherwise the file enters the `pending` review queue for admin approval; setting it on a folder cascades to everything inside. Visibility changes are recorded as a `visibility_change` audit log.
+Returns the updated file. When setting `visibility`: `users` takes effect immediately; `public` requires the account to hold the `can_publish` capability, otherwise the file enters the `pending` review queue for admin approval; setting it on a folder cascades to everything inside. The server records visibility changes as a `visibility_change` audit log.
 
 ```json
 {
@@ -1312,7 +1345,7 @@ Creates a share link for one or more files/folders. Requires the `share` permiss
 | `allowPreview` | `boolean` | No | Allow previews. Defaults to `true`. |
 | `allowDownload` | `boolean` | No | Allow downloads. Defaults to `true`. |
 | `requireLogin` | `boolean` | No | Restrict the share to logged-in users. Defaults to `false`. |
-| `allowedUsers` | `array` | No | Usernames allowed to open the share, up to 50. Unknown usernames are rejected. |
+| `allowedUsers` | `array` | No | Usernames allowed to open the share, up to 50. The server rejects unknown usernames. |
 
 #### Response
 
@@ -1410,7 +1443,7 @@ Returns the shares created by the current user with pagination.
 }
 ```
 
-This list is the **creator's view**: it is the only place that returns `password` (the plaintext access password, used by "view password" and "copy link with password"); public endpoints never return the plaintext or the ciphertext. Entries with no password, a missing ciphertext, or a failed decryption simply omit the field.
+This list is the **creator's view**: it is the only place that returns `password` (the plaintext access password, used by "view password" and "copy link with password"); public endpoints never return the plaintext or the ciphertext. Entries with no password, a missing ciphertext, or a failed decryption omit the field.
 
 #### Errors
 
@@ -1475,7 +1508,7 @@ Each item is a `FileListItem` plus `rootId` (the item's identifier within the sh
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
 | `NOT_FOUND` | `404` | The share does not exist. | Confirm the share id. |
-| `LOGIN_REQUIRED` | `401` | The share is limited to logged-in or named users. | Log in first. |
+| `LOGIN_REQUIRED` | `401` | The share allows only logged-in or named users. | Log in first. |
 | `FORBIDDEN` | `403` | The current user is not in the allowed user list. | Ask the creator. |
 | `SHARE_REVOKED` | `410` | The share link no longer works. | Ask the creator for a new link. |
 | `SHARE_EXPIRED` | `410` | The share expired. | Ask the creator for a new link. |
@@ -1787,11 +1820,11 @@ Changes the password of the current user. The change revokes all existing sessio
 
 `PUT /api/users/me/password`
 
-The body accepts an optional `emailCode`: when the account has an email **and** the site has mail enabled, changing the password requires a 6-digit code obtained from the endpoint below (wrong/expired/used code → `400 INVALID_OTP`; five wrong attempts invalidate it). When mail is not configured or the account has no email the check is skipped and only the current password is verified (users are never locked out). Codes are single-use and valid for 5 minutes.
+The body accepts an optional `emailCode`: when the account has an email **and** the site has mail enabled, changing the password requires a 6-digit code obtained from the endpoint below (wrong/expired/used code → `400 INVALID_OTP`; five wrong attempts invalidate it). When mail is not configured or the account has no email the server skips the check and verifies only the current password (users are never locked out). Codes are single-use and valid for 5 minutes.
 
 ### Send a password-change code
 
-`POST /api/users/me/password/send-code` (signed in) → `{ "success": true, "expiresIn": 300 }`; `400` when the account has no email or mail is disabled; `500 MAIL_ERROR` when sending fails.
+`POST /api/users/me/password/send-code` (signed in) → `{ "success": true, "expiresIn": 300 }`; `400` for an account with no email or a site with mail off; the endpoint answers `500 MAIL_ERROR` on send failure.
 
 #### Request body
 
@@ -1960,7 +1993,7 @@ Returns every rule the current user created with `user` origin.
 
 ### Revoke an access rule
 
-Only `user`-origin rules you created yourself can be revoked here; admin rules are managed in the admin panel.
+You can revoke only the `user`-origin rules you created yourself here; the admin panel manages admin rules.
 
 `DELETE /api/users/rules/{id}`
 
@@ -2171,6 +2204,18 @@ Returns top-level statistics, per-mount usage, recent activity, and the request 
         "standbys": [{ "id": "provider-uuid-2", "name": "R2 standby", "bucket": "picumet-standby", "weight": 1 }]
       }
     ],
+    "buckets": [
+      {
+        "id": "provider-uuid", "name": "R2 primary", "bucket": "picumet-primary", "type": "s3",
+        "fileCount": 300, "usedSpace": 9437184,
+        "mounts": [
+          { "id": "mount-uuid", "name": "Drive", "mountPath": "/drive", "status": "active", "capacityBytes": 10737418240, "fileCount": 180, "usedSpace": 5242880, "role": "primary" }
+        ],
+        "standbys": [
+          { "mountId": "mount-uuid-2", "mountName": "Gallery", "mountPath": "/gallery", "primaryProviderId": "provider-uuid-2", "primaryProviderName": "R2 standby" }
+        ]
+      }
+    ],
     "requests24h": 1200,
     "recentActivity": [{ "action": "upload", "path": "/drive/a.txt", "userId": "user-uuid", "createdAt": 1710000000000 }]
   },
@@ -2186,9 +2231,11 @@ Returns top-level statistics, per-mount usage, recent activity, and the request 
 curl https://{domain}/api/admin/dashboard -b cookies.txt
 ```
 
+> `buckets` drives the dashboard bucket-lane graph and the admin mount view: one entry per bucket with the mounts that store files in it (`role` is `primary` or `member`), bucket-level totals counted from `file_metadata.provider_id`, and `standbys` for mounts where the bucket backs up with zero stored files.
+
 ### Get statistics
 
-Returns the same `stats` top-level totals, per-mount `mounts` usage, and `recentActivity` as the dashboard, without `requests24h`.
+Returns the same payload as **Get the dashboard** — `stats`, `mounts`, and `buckets` — without `requests24h`.
 
 `GET /api/admin/stats`
 
@@ -2207,6 +2254,7 @@ Returns the same `stats` top-level totals, per-mount `mounts` usage, and `recent
       "totalCapacity": 10737418240
     },
     "mounts": [],
+    "buckets": [],
     "recentActivity": []
   },
   "timestamp": 1710000000000
@@ -2218,6 +2266,83 @@ Returns the same `stats` top-level totals, per-mount `mounts` usage, and `recent
 ```sh
 curl https://{domain}/api/admin/stats -b cookies.txt
 ```
+### Get the bucket mount tree
+
+Returns the storage buckets together with the mounts they back. Use this payload to render the dashboard bucket-lane graph and the admin mount view: each bucket lists the mounts that store files in it, plus the mounts where the bucket acts as a zero-file standby.
+
+`GET /api/admin/mount-tree`
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "buckets": [
+      {
+        "id": "provider-uuid", "name": "R2 primary", "bucket": "picumet-primary", "type": "s3",
+        "fileCount": 300, "usedSpace": 9437184,
+        "mounts": [
+          { "id": "mount-uuid", "name": "Drive", "mountPath": "/drive", "status": "active", "capacityBytes": 10737418240, "fileCount": 180, "usedSpace": 5242880, "role": "primary" }
+        ],
+        "standbys": [
+          { "mountId": "mount-uuid-2", "mountName": "Gallery", "mountPath": "/gallery", "primaryProviderId": "provider-uuid-2", "primaryProviderName": "R2 standby" }
+        ]
+      }
+    ]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### Response fields
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `buckets` | `array` | One entry per storage provider (bucket). |
+| `buckets[].fileCount` | `integer` | Objects the bucket stores across all mounts; the count uses `file_metadata.provider_id`. |
+| `buckets[].mounts[].role` | `string` | Set to `primary` when the bucket is the mount's main provider and to `member` when the bucket stores part of a pooled mount. |
+| `buckets[].standbys` | `array` | Mounts where this bucket is a backup that stores zero files; each entry carries the mount id/name/path and the primary provider id/name. |
+
+#### Example
+
+```sh
+curl https://{domain}/api/admin/mount-tree -b cookies.txt
+```
+
+### Get folder counts for a mount
+
+Returns the top-level folders of one mount with recursive file counts. Pass `providerId` to count only the files this bucket stores — pooled mounts then show their share per bucket — and folders with zero matching files drop out of the list.
+
+`GET /api/admin/dashboard/mount-folders?mountId={mountId}&providerId={providerId}`
+
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `mountId` | `string` | Yes | The mount id to summarize. |
+| `providerId` | `string` | No | Count only files whose `provider_id` matches this bucket. |
+
+#### Response
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `rootFiles` | `object` | Files directly in the mount root: `count` and `size` in bytes. |
+| `folders` | `array` | Top-level folders: `id`, `name`, `path`, `fileCount`, `usedSpace`. |
+| `truncated` | `boolean` | The scan hit its 20000-file cap. |
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | No mount owns the id. | Confirm the mount id. |
+
+#### Example
+
+```sh
+curl "https://{domain}/api/admin/dashboard/mount-folders?mountId={mount_id}&providerId={provider_id}" -b cookies.txt
+```
+
 
 ### Manage users
 
@@ -2355,7 +2480,7 @@ Searches every file across all mounts; results carry visibility, review status, 
 | `visibility` | `string` | No | `private`, `users`, or `public`. |
 | `banned` | `string` | No | `true` or `false`, filtering by ban state. |
 
-> Invalid enum values are ignored and coexist with `search` and pagination. Each row's mount names, bucket names, and content-addressed replica locations are filled in server-side with one batched `IN` query per page (no N+1).
+> The server ignores invalid enum values; the filters coexist with `search` and pagination. One batched `IN` query per page fills each row's mount names, bucket names, and content-addressed replica locations (no N+1).
 
 #### Response
 
@@ -2382,9 +2507,45 @@ Searches every file across all mounts; results carry visibility, review status, 
 curl "https://{domain}/api/admin/files?search=photo&banned=false" -b cookies.txt
 ```
 
+### Get the flat file tree
+
+Returns every file and folder across all mounts as flat rows for the admin tree view, enriched with the uploading user's name. Folder rows carry their own full path in `path`; file rows carry their parent directory path. The five filters from **List all files** apply; `bucket` and `hash` filter file rows only, so matching trees keep their folder skeleton. The response caps at 5000 rows and sets `truncated`.
+
+`GET /api/admin/files/tree?mount={mount}&bucket={bucket}&user={user}&visibility={visibility}&hash={hash}`
+
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `mount` | `string` | No | Exact match on the mount id. |
+| `bucket` | `string` | No | Exact match on the storage provider (bucket) id; folder rows pass this filter. |
+| `user` | `string` | No | Exact match on the uploading user (owner) id. |
+| `visibility` | `string` | No | `private`, `users`, or `public`. |
+| `hash` | `string` | No | Substring match on the content hash (`blob_hash`); folder rows pass this filter. |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [{ "id": "file-uuid", "name": "photo.jpg", "path": "/drive/photos", "type": "file", "size": 1048576, "ownerName": "alice", "banned": false, "hash": "9f2c…" }],
+    "truncated": false
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### Example
+
+```sh
+curl "https://{domain}/api/admin/files/tree?bucket={provider_id}" -b cookies.txt
+```
+
+
 ### Ban or unban a file
 
-Sets or clears the file ban. A ban blocks only content outlets (file download, public path serving, share download/preview, and the download gateway) and **does not block deletion** — banned files can still be deleted by their owner or an admin. To its owner a banned file appears as a ghost: translucent on the files page with the menu collapsed to delete only, and any content outlet answers `429 FILE_BANNED`.
+Sets or clears the file ban. A ban blocks only content outlets (file download, public path serving, share download/preview, and the download gateway) and **does not block deletion** — their owner or an admin can still delete banned files. To its owner a banned file appears as a ghost: translucent on the files page with the menu collapsed to delete only, and any content outlet answers `429 FILE_BANNED`.
 
 `PUT /api/admin/files/{id}/ban`
 
@@ -2495,9 +2656,11 @@ All fields are optional.
 | `enableTurnstile` | `boolean` | No | Enable Cloudflare Turnstile. |
 | `turnstileSiteKey` | `string` | No | The Turnstile site key. |
 | `rateLimitEnabled` | `boolean` | No | Enable rate limiting. |
-| `rateLimitRequestsPerMinute` | `integer` | No | Requests per minute, 1 to 10000. Takes effect in production only: the value applies per IP, signed-in users get ×2, auth endpoints such as sign-in and sign-up are fixed at 5 per minute, and free mode allows 60 per session and 120 per user per minute. |
+| `rateLimitRequestsPerMinute` | `integer` | No | Requests per minute, 1 to 10000. Takes effect in production only: the value applies per IP, signed-in users get ×2, the server pins auth endpoints such as sign-in and sign-up at 5 per minute, and free mode allows 60 per session and 120 per user per minute. |
 | `maxConcurrentTransfers` | `integer` | No | Maximum concurrent transfers, 0 to 1000, default 4, where `0` means unlimited. Caps in-flight requests per user (per IP when signed out) across every upload channel and the download gateway, and returns `429 CONCURRENCY_LIMIT_EXCEEDED` beyond it. |
 | `rateLimitDownloadsPerMinute` | `integer` | No | Download rate limit, 0 to 100000, default 120, where `0` means unlimited. Caps download-type requests per minute per user (per IP when signed out) — download gateway, share download/preview, file download links, and public directory direct links — and returns `429 RATE_LIMIT_EXCEEDED` beyond it. |
+| `directPrefix` | `string` | No | Public direct-link prefix: `''` (site root), `/d`, `/download`, or `/raw`. The server normalizes the value (adds a leading slash, drops the trailing one) and rejects anything else; `rootTarget` `direct` requires `''`. |
+| `rootTarget` | `string` | No | What `/` serves: `landing`, `files`, or `direct`. Set it to `direct` only together with `directPrefix` `''`. |
 | `smtpHost` | `string` | No | The SMTP host. |
 | `smtpPort` | `integer` | No | The SMTP port. |
 | `smtpSecure` | `boolean` | No | Use a secure SMTP connection. |
@@ -2565,7 +2728,23 @@ Lists, creates, updates, and deletes announcements.
 | `title` | `string` | Yes | The announcement title, at most 200 characters. |
 | `content` | `string` | Yes | The announcement content, at most 5000 characters. |
 | `level` | `string` | No | `info`, `warning`, or `danger`. |
-| `expiresIn` | `integer` | No | The announcement lifetime in seconds, at least 60. |
+| `displayMode` | `string` | No | Display policy: `always` (default), `daily`, `interval`, `until`, `duration`; toasts also accept `once`. |
+| `intervalSeconds` | `integer` | No | Interval or duration length in seconds, from 60 to 31536000. Required with `interval` or `duration`. |
+| `endsAt` | `integer` | No | Absolute end as a millisecond timestamp. Required with `until`. |
+| `kind` | `string` | No | `banner` (default) shows the announcement in the banner strip; `toast` shows a temporary popup that closes on its own. |
+
+Display policy semantics (`displayMode`):
+
+- `always`: shows until the viewer dismisses it.
+- `daily`: after a dismissal the announcement returns the next day.
+- `interval`: after a dismissal the announcement returns once `intervalSeconds` elapses.
+- `until`: hides once the clock passes `endsAt`.
+- `duration`: hides once `createdAt + intervalSeconds` passes.
+- `once` (toast only): shows once per viewer.
+
+For `toast` announcements the viewer's local record stores the display time instead of a dismissal; the banner strip renders `kind: banner` announcements without a left color bar.
+
+`PUT /api/admin/announcements/{id}` accepts only `title`, `content`, `level`, and `active` — set the display policy when you create the announcement.
 
 #### Example
 
@@ -2574,7 +2753,7 @@ curl -X POST https://{domain}/api/admin/announcements \
   -H "Content-Type: application/json" \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
-  -d '{"title":"Maintenance","content":"Downtime on Saturday","level":"warning"}'
+  -d '{"title":"Maintenance","content":"Downtime on Saturday","level":"warning","displayMode":"daily","kind":"banner"}'
 ```
 
 ### Manage storage providers
@@ -2596,8 +2775,8 @@ Lists, creates, updates, tests, and deletes storage providers. The server stores
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `name` | `string` | Yes | A label for the provider. |
-| `type` | `string` | No | `r2` or `s3` (`oracle` is folded into `s3`). When omitted it is derived from `endpoint`: empty means the R2 binding, non-empty means the S3 protocol. |
-| `endpoint` | `string` | No | The S3 endpoint. Leave empty for a bound R2 provider. Public http(s) addresses only. `endpoint`, `accessKeyId`, and `secretAccessKey` must be provided together or left empty together. |
+| `type` | `string` | No | `r2` or `s3` (`s3` absorbs `oracle`). When omitted, `endpoint` derives it: empty means the R2 binding, non-empty means the S3 protocol. |
+| `endpoint` | `string` | No | The S3 endpoint. Leave empty for a bound R2 provider. Public http(s) addresses only. `endpoint`, `accessKeyId`, and `secretAccessKey` must arrive together or stay empty together. |
 | `region` | `string` | No | The region. Defaults to `auto` for R2. |
 | `bucket` | `string` | Yes | The bucket name. |
 | `accessKeyId` | `string` | No | The access key. Leave empty for a bound R2 provider. |
@@ -3035,10 +3214,28 @@ Returns the currently active announcements.
 ```json
 {
   "success": true,
-  "data": { "items": [{ "id": "announcement-uuid", "title": "Maintenance", "content": "Downtime on Saturday", "level": "warning" }] },
+  "data": {
+    "items": [{
+      "id": "announcement-uuid", "title": "Maintenance", "content": "Downtime on Saturday",
+      "level": "warning", "active": true, "createdAt": 1710000000000, "expiresAt": null,
+      "displayMode": "always", "intervalSeconds": null, "kind": "banner"
+    }]
+  },
   "timestamp": 1710000000000
 }
 ```
+
+#### Response fields
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `displayMode` | `string` | Display policy: `always`, `daily`, `interval`, `until`, `duration`, or `once`. |
+| `intervalSeconds` | `integer` | Interval or duration length in seconds. The value is `null` when the policy does not use one. |
+| `expiresAt` | `integer` | Absolute end timestamp for `until`. The value is `null` when unset. |
+| `kind` | `string` | `banner` for the banner strip; `toast` for a temporary popup. |
+| `active` | `boolean` | The admin enable switch for the announcement. |
+
+The list contains only active, unexpired rows; the client applies the display policy per viewer, with dismissal or display timestamps in local storage.
 
 #### Example
 
@@ -3086,7 +3283,7 @@ Files with `visibility=public` and an `approved` review status enter the public 
 
 ### Browse the public gallery
 
-Returns approved public files with pagination. Only files are returned (no folders).
+Returns approved public files with pagination. The list includes files only (no folders).
 
 `GET /api/gallery?page={page}&limit={limit}`
 
@@ -3156,8 +3353,8 @@ Verifies the access password anonymously and returns the same single-use gateway
 
 > Gateway keys (formerly API keys) expose Picumet as a **relay surface** for S3/R2/Oracle/MinIO storage to external tools (PicGo/PicList, rclone, S3 SDKs); image-hosting uploads are just one use case.
 > Keys declare their protocol surfaces via `protocols` at creation: `webdav` / `api` / `s3`. A key with a non-empty `protocols` list can only use the declared surfaces (an empty array allows all, for backward compatibility).
-> **Data-layer owner isolation**: every file read/write/delete through a gateway key is scoped to the key owner (`owner_id`). Even a misconfigured path rule cannot touch another user's data. Directories (prefixes) are a shared namespace within the mount; writing a file whose path is occupied by another user returns `409 CONFLICT`.
-> S3 gateway verification needs a reversible secret: it is stored AES-GCM-encrypted at key creation (migration `0006_s3_gateway.sql`). Legacy keys without that column get `InvalidAccessKeyId` on the S3 gateway — recreate the key. The create-key response `configs` now includes `s3` and `openlist` snippets.
+> **Data-layer owner isolation**: every file read/write/delete through a gateway key binds to the key owner (`owner_id`). Even a misconfigured path rule cannot touch another user's data. Directories (prefixes) are a shared namespace within the mount; writing a file into a path another user occupies returns `409 CONFLICT`.
+> S3 gateway verification needs a reversible secret: key creation stores it AES-GCM-encrypted (migration `0006_s3_gateway.sql`). Legacy keys without that column get `InvalidAccessKeyId` on the S3 gateway — recreate the key. The create-key response `configs` now includes `s3` and `openlist` snippets.
 
 ### Lsky Pro V2 compatible upload
 
@@ -3210,16 +3407,16 @@ A SigV4-verified subset of the S3 REST protocol. Client configuration: endpoint 
 | DeleteObjects | `POST /s3/{bucket}?delete` (XML body, up to 1000 keys) |
 | ListBuckets | `GET /s3` |
 
-Not implemented (returns `501 NotImplemented`): CopyObject, Multipart Upload, DeleteBucket. Requests skewed more than 15 minutes are rejected (`AccessDenied`). Presigned GET URLs are generated client-side and verified server-side via query parameters (`X-Amz-Expires` 1–604800 seconds).
+Not implemented (returns `501 NotImplemented`): CopyObject, Multipart Upload, DeleteBucket. The gateway rejects requests skewed more than 15 minutes (`AccessDenied`). The client generates presigned GET URLs and the server verifies them via query parameters (`X-Amz-Expires` 1–604800 seconds).
 
 ### Direct-link signatures (`?sign=`)
 
 File URLs returned by the compat upload / Lsky V2 / S3 flows:
 
-- If the storage provider has a public domain (`public_domain`) configured → a CDN direct link is returned;
+- If the storage provider has a public domain (`public_domain`) configured → the response carries a CDN direct link;
 - Otherwise `{APP_BASE_URL}{virtualPath}?sign={expiresAt}.{hmac}` — path-serve allows an **anonymous GET of exactly that path** when the signature verifies (capability scope = that path). `expiresAt=0` means long-lived.
 
-Signatures are decoupled from key lifecycle: revoking or recreating a gateway key never breaks already-issued direct links.
+Direct links outlive the key lifecycle: revoking or recreating a gateway key never breaks already-issued direct links.
 
 ## What's next
 
