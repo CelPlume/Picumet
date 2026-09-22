@@ -59,6 +59,16 @@ const MAX_BG_SIZE = 2 * 1024 * 1024; // 2MB
 export default function PersonalizationPage() {
   const { t } = useTranslation();
   const theme = useTheme();
+  // 手机/桌面各自记忆「每行卡片数」：按当前设备展示对应滑杆
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 639px)');
+    const onChange = () => setIsMobile(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   // 个人资料
   const [data, setData] = useState<SettingsData | null>(null);
@@ -270,11 +280,11 @@ export default function PersonalizationPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
               {data.profile.avatarUrl ? (
-                <img src={data.profile.avatarUrl} alt="" className="h-16 w-16 rounded-full object-cover" />
+                <img src={data.profile.avatarUrl} alt="" className="h-16 w-16 shrink-0 rounded-full object-cover" />
               ) : (
-                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-xl font-bold text-primary-foreground">
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-primary text-xl font-bold text-primary-foreground">
                   {(displayName || data.profile.username).slice(0, 1).toUpperCase()}
                 </div>
               )}
@@ -285,7 +295,7 @@ export default function PersonalizationPage() {
                   {data.profile.role === 'admin' ? t('admin.admin') : t('admin.user')}
                 </Badge>
               </div>
-              <div className="ml-auto w-44 space-y-2">
+            <div className="ml-auto w-44 min-w-0 flex-1 space-y-2 sm:w-auto sm:max-w-md lg:max-w-lg">
                 <div>
                   <div className="mb-1 flex justify-between text-xs text-muted-foreground">
                     <span>{t('settings.profile.storageSpace')}</span>
@@ -530,8 +540,12 @@ export default function PersonalizationPage() {
             </div>
 
             <div>
-              <Label>{t('settings.filesPerRow')}</Label>
-              <FilesPerRowSlider value={theme.filesPerRow} onChange={(n) => theme.set({ filesPerRow: n })} className="mt-3" />
+              <Label>{isMobile ? t('settings.filesPerRowMobile') : t('settings.filesPerRowDesktop')}</Label>
+              {isMobile ? (
+                <FilesPerRowSlider min={2} max={4} value={theme.filesPerRowMobile} onChange={(n) => theme.set({ filesPerRowMobile: n })} className="mt-3" />
+              ) : (
+                <FilesPerRowSlider value={theme.filesPerRow} onChange={(n) => theme.set({ filesPerRow: n })} className="mt-3" />
+              )}
             </div>
 
             {/* 自定义背景（置于模糊效果之后） */}

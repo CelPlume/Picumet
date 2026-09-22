@@ -14,8 +14,10 @@ export interface AppearanceSettings {
   backgroundColor?: string;
   fileIcons: 'iconify' | 'emoji';
   folderPreview: 'icon' | 'contents';
-  /** 文件页卡片视图每行卡片数（4–8，默认 6） */
+  /** 文件页卡片视图每行卡片数（桌面 4–8，默认 6） */
   filesPerRow: number;
+  /** 文件页卡片视图每行卡片数（手机 2–5，默认 3）；与桌面值分开记忆 */
+  filesPerRowMobile: number;
   rightClickAction: 'properties' | 'menu';
   rightClickMultiSelect: boolean;
 }
@@ -28,6 +30,7 @@ const DEFAULT: AppearanceSettings = {
   fileIcons: 'iconify',
   folderPreview: 'icon',
   filesPerRow: 6,
+  filesPerRowMobile: 3,
   rightClickAction: 'properties',
   rightClickMultiSelect: false,
 };

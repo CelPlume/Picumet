@@ -4,30 +4,32 @@
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
-const MIN = 4;
-const MAX = 8;
-const STEPS = MAX - MIN;
-const VALUES = Array.from({ length: STEPS + 1 }, (_, i) => MIN + i);
+const DEFAULT_MIN = 4;
+const DEFAULT_MAX = 8;
 
 /** 滑块直径 24px：轨道 36px 胶囊，圆心两端内缩 12px，标签/刻度点按圆心对齐 */
 const KNOB = 24;
-
-function stopLeft(index: number): string {
-  return `calc(${KNOB / 2}px + (100% - ${KNOB}px) * ${index / STEPS})`;
-}
 
 export function FilesPerRowSlider({
   value,
   onChange,
   className,
+  min = DEFAULT_MIN,
+  max = DEFAULT_MAX,
 }: {
   value: number;
   onChange: (n: number) => void;
   className?: string;
+  /** 离散区间（桌面 4–8 / 手机 2–5） */
+  min?: number;
+  max?: number;
 }) {
   const { t } = useTranslation();
-  const current = Math.min(MAX, Math.max(MIN, Math.round(value)));
-  const index = current - MIN;
+  const STEPS = max - min;
+  const VALUES = Array.from({ length: STEPS + 1 }, (_, i) => min + i);
+  const stopLeft = (index: number): string => `calc(${KNOB / 2}px + (100% - ${KNOB}px) * ${index / STEPS})`;
+  const current = Math.min(max, Math.max(min, Math.round(value)));
+  const index = current - min;
 
   return (
     <div className={cn('select-none', className)}>
@@ -72,8 +74,8 @@ export function FilesPerRowSlider({
         />
         <input
           type="range"
-          min={MIN}
-          max={MAX}
+          min={min}
+          max={max}
           step={1}
           value={current}
           onChange={(e) => onChange(Number(e.target.value))}

@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Upload, FolderPlus, LayoutGrid, List as ListIcon, ChevronRight,
   Folder, Search, CheckSquare, ChevronDown, ArrowRightLeft, X, Check, MoreHorizontal,
+  FolderTree,
 } from 'lucide-react';
 import { FileGridSkeleton, FileListSkeleton } from '@/components/ui/skeleton';
 import { useLassoSelect } from '@/components/files/lasso';
@@ -18,14 +19,15 @@ import { Pagination } from '@/components/ui/pagination';
 import { Drawer } from '@/components/ui/drawer';
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
 import { toast } from '@/components/ui/toast';
-import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks, type CopyLinksMutator } from '@/components/files/data';
+import { useFilesQuery, useCreateFolder, useRenameFile, useDeleteFile, useMoveFile, useBatchDelete, useCopyLinks, useFilesTreeQuery, type CopyLinksMutator } from '@/components/files/data';
+import { TreeView } from '@/components/files/TreeView';
 import { FileCard, FileRow, BulkActionsBar, FileRowMenuItems, type ViewMode, type FileActionHandlers } from '@/components/files/explorer';
 import { UploadModal } from '@/components/files/UploadModal';
 import { ShareDialog } from '@/components/files/ShareDialog';
 import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
-import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode } from '@/lib/utils';
+import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, formatBytes } from '@/lib/utils';
 import type { FileListItem } from '@shared/types';
 
 // 排序字段选项；升序/降序在同一下拉内切换（不再是独立按钮）
@@ -153,6 +155,117 @@ function CopyLinksDialog({
   );
 }
 
+/** 面包屑：按容器实测宽度决定收进省略号的中段数量——不超宽则全量展示；
+    超宽时从最老的中段开始逐个收起（末段尽量长），直到放得下或只剩首尾 */
+function BreadcrumbNav({ crumbs, hidden }: { crumbs: Array<{ name: string; path: string }>; hidden: boolean }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  /** 隐藏段宽度缓存：段被收起后 DOM 移除，靠缓存重算窗口缩放等场景 */
+  const widthCache = useRef<Map<string, number>>(new Map());
+  const [hiddenCount, setHiddenCount] = useState(0);
+
+  const measure = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || hidden) return;
+    const widths = crumbs.map((c, i) => {
+      const el = itemRefs.current[i];
+      const w = el ? el.getBoundingClientRect().width : (widthCache.current.get(c.path) ?? 0);
+      if (el) widthCache.current.set(c.path, w);
+      return w;
+    });
+    const available = container.clientWidth;
+    const total = widths.reduce((a, b) => a + b, 0);
+    let target = 0;
+    if (total > available) {
+      const SEP_W = 18; // ChevronRight 分隔
+      const MORE_W = 32; // 省略号触发器
+      const maxHidden = Math.max(0, crumbs.length - 2);
+      let n = 0;
+      while (n < maxHidden) {
+        n += 1;
+        const saved = widths.slice(1, 1 + n).reduce((a, b) => a + b, 0) + SEP_W * n;
+        if (total - saved + MORE_W <= available) break;
+      }
+      target = n;
+    }
+    setHiddenCount((prev) => (prev === target ? prev : target));
+  }, [crumbs, hidden]);
+
+  // crumbs 变化 → 清缓存先全量渲染一帧再实测（useLayoutEffect 保证绘制前收敛，无闪烁）
+  useLayoutEffect(() => {
+    widthCache.current.clear();
+    setHiddenCount(0);
+  }, [crumbs]);
+  useLayoutEffect(() => {
+    measure();
+  }, [measure, hiddenCount]);
+  // 容器宽度变化（窗口/侧栏折叠）重算
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [measure]);
+
+  const crumbButton = (c: (typeof crumbs)[number], isLast: boolean) => (
+    <button
+      onClick={() => navigate(`/files${c.path === '/' ? '' : c.path}`)}
+      className={cn(
+        'truncate rounded px-1.5 py-0.5 hover:bg-accent',
+        isLast ? 'font-medium' : 'text-muted-foreground'
+      )}
+    >
+      {c.name}
+    </button>
+  );
+  const hiddenCrumbCount = hiddenCount;
+  const visibleTail = crumbs.slice(1 + hiddenCrumbCount);
+  return (
+    <div ref={containerRef} className={cn('min-w-0 flex-1 items-center text-sm', hidden ? 'hidden' : 'flex')}>
+      {crumbs.length > 0 && (
+        <span ref={(el) => { itemRefs.current[0] = el; }} className="flex items-center">
+          {crumbButton(crumbs[0], false)}
+        </span>
+      )}
+      {hiddenCrumbCount > 0 && (
+        <Dropdown
+          align="start"
+          trigger={
+            <span className="flex cursor-pointer items-center rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent" aria-label={t('files.expandPath')}>
+              <MoreHorizontal className="h-4 w-4" />
+            </span>
+          }
+        >
+          {(close) => (
+            <>
+              {crumbs.slice(1, 1 + hiddenCrumbCount).map((c) => (
+                <DropdownItem
+                  key={c.path}
+                  onClick={() => {
+                    close();
+                    navigate(`/files${c.path === '/' ? '' : c.path}`);
+                  }}
+                >
+                  {c.name}
+                </DropdownItem>
+              ))}
+            </>
+          )}
+        </Dropdown>
+      )}
+      {visibleTail.map((c, i) => (
+        <span key={c.path} ref={(el) => { itemRefs.current[1 + hiddenCrumbCount + i] = el; }} className="flex items-center">
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+          {crumbButton(c, i === visibleTail.length - 1)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function Files() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -165,8 +278,9 @@ export default function Files() {
 
   const [path, setPath] = useState(routePath);
   const [view, setView] = useState<ViewMode>(() => (localStorage.getItem('picumet:view') as ViewMode) || 'grid');
-  // 卡片视图每行卡片数（个性化设置，4–8，默认 6）
+  // 卡片视图每行卡片数（手机 2–5 默认 3 / 桌面 4–8 默认 6，分别记忆）
   const filesPerRow = useTheme((st) => st.filesPerRow);
+  const filesPerRowMobile = useTheme((st) => st.filesPerRowMobile);
   const [sort, setSort] = useState<string | undefined>();
   // 服务端分页：默认每页 50（路径/筛选/排序变化时回到第一页）
   const [page, setPage] = useState(1);
@@ -305,6 +419,10 @@ export default function Files() {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
+  // 卡片视图每行卡片数：手机 2–4（默认 3）/ 桌面 4–8（默认 6），分别记忆
+  const perRow = isMobile
+    ? Math.min(4, Math.max(2, filesPerRowMobile))
+    : Math.min(8, Math.max(4, filesPerRow));
 
   useEffect(() => setPath(routePath), [routePath]);
   // 换目录、改搜索词或排序后回到第一页（否则可能停在超出范围的页码上）
@@ -318,6 +436,9 @@ export default function Files() {
     page,
     limit: pageSize,
   });
+  // 树视图数据源：当前挂载点整棵子树（仅 tree 视图启用）
+  const treeQuery = useFilesTreeQuery(path, view === 'tree');
+  const selectedId = selected.size === 1 ? [...selected][0] : null;
   const createFolder = useCreateFolder();
   const renameFile = useRenameFile();
   const deleteFile = useDeleteFile();
@@ -536,11 +657,11 @@ export default function Files() {
         ref={rowRef}
         // 拖拽监听绑定在 AppShell main 元素上（见上方 effect），覆盖整行与四周留白
         // 文件页禁止选中文本：拖拽多选时原生文本选择会污染侧栏/树（select-none 常驻）
-        className={cn('flex select-none', lasso.rect && 'lasso-hint')}
+        className={cn('flex h-full min-h-0 select-none', lasso.rect && 'lasso-hint')}
       >
         {/* 左侧文件树（桌面）：玻璃面板，与内容间距归文件区 */}
         <div className="hidden w-56 shrink-0 pl-2 pr-1 lg:block">
-          <div className="glass-surface glass-blur sticky top-20 flex h-[calc(100vh-6rem)] flex-col rounded-xl border">
+          <div className="glass-surface glass-blur flex h-full flex-col rounded-xl border">
             <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none p-2">
               <FileTree currentPath={path} onNavigate={(p) => navigate(`/files${p === '/' ? '' : p}`)} />
             </div>
@@ -557,92 +678,74 @@ export default function Files() {
             setMultiSelect(false);
             setMenuPos(null);
           }}
-          className={cn('min-w-0 flex-1 px-3')}
+          className={cn('flex h-full min-w-0 flex-1 flex-col px-3')}
         >
-          {/* 面包屑 + 工具栏 */}
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <div className="flex min-w-0 flex-1 items-center text-sm">
-              {(() => {
-                // 长路径折叠：超过 4 段时，中间段收进省略号下拉
-                const MAX = 4;
-                if (breadcrumb.length <= MAX) {
-                  return breadcrumb.map((c, i) => (
-                    <span key={c.path} className="flex items-center">
-                      {i > 0 && <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-                      <button
-                        onClick={() => navigate(`/files${c.path === '/' ? '' : c.path}`)}
-                        className={cn(
-                          'truncate rounded px-1.5 py-0.5 hover:bg-accent',
-                          i === breadcrumb.length - 1 ? 'font-medium' : 'text-muted-foreground'
-                        )}
-                      >
-                        {c.name}
-                      </button>
-                    </span>
-                  ));
+          {/* 面包屑 + 工具栏（shrink-0：高度链中固定） */}
+          <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
+            {/* 搜索 + 排序：与上传/新建/选择同一行，高度对齐（h-8） */}
+            <div className="flex items-center gap-2">
+              <div className="relative w-64 sm:w-80">
+                <Search className="pointer-events-none absolute left-2.5 top-2 z-10 h-4 w-4 text-muted-foreground" />
+                <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className={cn('h-8 pl-8', SEARCH_INPUT_GLASS)} />
+              </div>
+              <Dropdown
+                align="start"
+                contentClass="min-w-36"
+                trigger={
+                  <button
+                    type="button"
+                    aria-label={t('files.sort')}
+                    className="glass-control flex h-8 w-36 items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-card/[var(--glass-alpha,0.72)] px-3 text-sm shadow-sm outline-none transition-colors hover:bg-accent/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  >
+                    <span className="truncate">{t(SORT_FIELDS.find((o) => o.value === (sort ?? 'name'))?.label ?? 'files.sortName')}</span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </button>
                 }
-                const first = breadcrumb[0];
-                const last = breadcrumb.slice(-2);
-                const hidden = breadcrumb.slice(1, -2);
-                const renderCrumb = (c: (typeof breadcrumb)[number], isLast: boolean) => (
-                  <span key={c.path} className="flex items-center">
-                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                    <button
-                      onClick={() => navigate(`/files${c.path === '/' ? '' : c.path}`)}
-                      className={cn(
-                        'truncate rounded px-1.5 py-0.5 hover:bg-accent',
-                        isLast ? 'font-medium' : 'text-muted-foreground'
-                      )}
-                    >
-                      {c.name}
-                    </button>
-                  </span>
-                );
-                return (
+              >
+                {(close) => (
                   <>
-                    <span className="flex items-center">
-                      <button
-                        onClick={() => navigate(`/files${first.path === '/' ? '' : first.path}`)}
-                        className="truncate rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent"
+                    <DropdownLabel>{t('files.sortBy')}</DropdownLabel>
+                    {SORT_FIELDS.map((o) => (
+                      <DropdownItem
+                        key={o.value}
+                        icon={(sort ?? 'name') === o.value ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
+                        onClick={() => {
+                          setSort(o.value === 'name' ? undefined : o.value);
+                          close();
+                        }}
                       >
-                        {first.name}
-                      </button>
-                    </span>
-                    <Dropdown
-                      align="start"
-                      trigger={
-                        <span className="flex cursor-pointer items-center rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent" aria-label={t('files.expandPath')}>
-                          <MoreHorizontal className="h-4 w-4" />
-                        </span>
-                      }
+                        {t(o.label)}
+                      </DropdownItem>
+                    ))}
+                    <DropdownSeparator />
+                    <DropdownItem
+                      icon={order === 'asc' ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
+                      onClick={() => {
+                        setOrder('asc');
+                        close();
+                      }}
                     >
-                      {(close) => (
-                        <>
-                          {hidden.map((c) => (
-                            <DropdownItem
-                              key={c.path}
-                              onClick={() => {
-                                close();
-                                navigate(`/files${c.path === '/' ? '' : c.path}`);
-                              }}
-                            >
-                              {c.name}
-                            </DropdownItem>
-                          ))}
-                        </>
-                      )}
-                    </Dropdown>
-                    {last.map((c, i) => renderCrumb(c, i === last.length - 1))}
+                      {t('files.sortAsc')}
+                    </DropdownItem>
+                    <DropdownItem
+                      icon={order === 'desc' ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
+                      onClick={() => {
+                        setOrder('desc');
+                        close();
+                      }}
+                    >
+                      {t('files.sortDesc')}
+                    </DropdownItem>
                   </>
-                );
-              })()}
+                )}
+              </Dropdown>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
               <Button variant="outline" size="sm" onClick={() => setShowUpload(true)}>
                 <Upload className="h-4 w-4" /> <span className="hidden sm:inline">{t('files.upload')}</span>
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setNewFolder(true)} className="hidden sm:inline-flex">
-                <FolderPlus className="h-4 w-4" /> {t('files.newFolder')}
+              <Button variant="outline" size="sm" onClick={() => setNewFolder(true)}>
+                <FolderPlus className="h-4 w-4" /> <span className="hidden sm:inline">{t('files.newFolder')}</span>
               </Button>
               {!multiSelect ? (
                 <Button variant="outline" size="sm" onClick={() => setMultiSelect(true)}>
@@ -716,75 +819,61 @@ export default function Files() {
                 </button>
                 <button
                   onClick={() => setView('list')}
-                  className={cn('rounded-r-md p-1.5', view === 'list' ? 'bg-primary/15 text-primary' : 'text-muted-foreground')}
+                  className={cn('p-1.5', view === 'list' ? 'bg-primary/15 text-primary' : 'text-muted-foreground')}
                   aria-label={t('files.viewList')}
                 >
                   <ListIcon className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => setView('tree')}
+                  className={cn('rounded-r-md p-1.5', view === 'tree' ? 'bg-primary/15 text-primary' : 'text-muted-foreground')}
+                  aria-label={t('files.viewTree')}
+                >
+                  <FolderTree className="h-4 w-4" />
                 </button>
               </div>
             </div>
           </div>
 
-          {/* 搜索 + 排序 */}
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[140px] max-w-[432px] flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 z-10 h-4 w-4 text-muted-foreground" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('files.searchPlaceholder')} className={cn('pl-8', SEARCH_INPUT_GLASS)} />
-            </div>
-            <Dropdown
-              align="start"
-              contentClass="min-w-36"
-              trigger={
-                <button
-                  type="button"
-                  aria-label={t('files.sort')}
-                  className="glass-control flex h-9 w-36 items-center justify-between gap-2 whitespace-nowrap rounded-md border border-input bg-card/[var(--glass-alpha,0.72)] px-3 text-sm shadow-sm outline-none transition-colors hover:bg-accent/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                >
-                  <span className="truncate">{t(SORT_FIELDS.find((o) => o.value === (sort ?? 'name'))?.label ?? 'files.sortName')}</span>
-                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </button>
-              }
-            >
-              {(close) => (
+          {/* 面包屑：紧贴文件列表上方（不在按钮行内）；树视图隐藏 */}
+          <div className="mb-2 flex shrink-0">
+            <BreadcrumbNav crumbs={breadcrumb} hidden={view === 'tree'} />
+          </div>
+
+          {/* 内容：树视图独立取数（treeQuery），不受当前文件夹列表加载/空态影响；高度链内滚动 */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-none">
+          {view === 'tree' ? (
+            /* 扁平化树视图：单子目录链合并、缩进引导线、虚拟滚动（pierre trees 风格） */
+            <div className="flex h-full min-h-0 flex-col gap-1">
+              {treeQuery.isLoading ? (
+                <FileListSkeleton />
+              ) : treeQuery.error ? (
+                <EmptyState title={t('files.loadFailed')} description={(treeQuery.error as Error).message} />
+              ) : (
                 <>
-                  <DropdownLabel>{t('files.sortBy')}</DropdownLabel>
-                  {SORT_FIELDS.map((o) => (
-                    <DropdownItem
-                      key={o.value}
-                      icon={(sort ?? 'name') === o.value ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
-                      onClick={() => {
-                        setSort(o.value === 'name' ? undefined : o.value);
-                        close();
-                      }}
-                    >
-                      {t(o.label)}
-                    </DropdownItem>
-                  ))}
-                  <DropdownSeparator />
-                  <DropdownItem
-                    icon={order === 'asc' ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
-                    onClick={() => {
-                      setOrder('asc');
-                      close();
-                    }}
-                  >
-                    {t('files.sortAsc')}
-                  </DropdownItem>
-                  <DropdownItem
-                    icon={order === 'desc' ? <Check className="h-4 w-4 text-primary" /> : <span className="h-4 w-4" />}
-                    onClick={() => {
-                      setOrder('desc');
-                      close();
-                    }}
-                  >
-                    {t('files.sortDesc')}
-                  </DropdownItem>
+                  {treeQuery.data?.truncated && (
+                    <p className="text-xs text-amber-600">{t('files.treeTruncated')}</p>
+                  )}
+                  <TreeView
+                    rows={treeQuery.data?.items ?? []}
+                    currentPath={path}
+                    selectedId={selectedId}
+                    onSelect={(f) => setSelected(new Set([f.id]))}
+                    onOpenFile={openItem}
+                    onRowContext={(e, f) => contextMenu(e, f)}
+                    renderRight={(f) =>
+                      f.type === 'file' ? (
+                        <span className="shrink-0 text-xs text-muted-foreground">{formatBytes(f.size)}</span>
+                      ) : null
+                    }
+                    className="glass-surface glass-blur min-h-0 flex-1 rounded-xl border p-2"
+                    emptyTitle={t('files.empty')}
+                    emptyDesc={t('files.emptyDesc')}
+                  />
                 </>
               )}
-            </Dropdown>
-          </div>
-          {/* 内容 */}
-          {isLoading ? (
+            </div>
+          ) : isLoading ? (
             view === 'grid' ? <FileGridSkeleton /> : <FileListSkeleton />
           ) : error ? (
             <EmptyState title={t('files.loadFailed')} description={(error as Error).message} />
@@ -800,8 +889,8 @@ export default function Files() {
             />
           ) : view === 'grid' ? (
             <div
-              className="grid grid-cols-2 gap-3 sm:[grid-template-columns:repeat(var(--files-cols),minmax(0,1fr))]"
-              style={{ '--files-cols': String(Math.min(8, Math.max(4, filesPerRow))) } as React.CSSProperties}
+              className="grid grid-cols-[repeat(var(--files-cols),minmax(0,1fr))] gap-3"
+              style={{ '--files-cols': String(perRow) } as React.CSSProperties}
             >
               {items.map((f) => (
                 <FileCard
@@ -820,7 +909,7 @@ export default function Files() {
               ))}
             </div>
           ) : (
-            <div className="flex flex-col gap-0.5">
+            <div className="flex h-full min-h-0 flex-col gap-0.5">
               {/* 表头：与文件行同一 item-surface 玻璃（同底色 token、同模糊、同边框圆角），
                   固定在滚动区上方——数据行只在下方容器内滚动，不会滑到表头下面造成叠加；
                   两侧预留相同滚动条槽位保证列对齐 */}
@@ -862,7 +951,7 @@ export default function Files() {
                 </span>
                 <span aria-hidden />
               </div>
-              <div className="max-h-[calc(100vh-18.625rem)] space-y-0.5 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+              <div className="min-h-0 flex-1 space-y-0.5 scrollbar-thin overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
                 {items.map((f) => (
                   <FileRow
                     key={f.id}
@@ -879,22 +968,26 @@ export default function Files() {
               </div>
             </div>
           )}
-
-          <div className="mt-auto pt-2">
-          {(data?.pagination?.total ?? 0) > 0 && (
-            <Pagination
-              page={page}
-              total={data?.pagination?.total ?? 0}
-              pageSize={pageSize}
-              onPageChange={setPage}
-              onPageSizeChange={(size) => {
-                setPageSize(size);
-                setPage(1);
-              }}
-              className="mt-3"
-            />
-          )}
           </div>
+
+          {/* 列表/卡片视图的分页（高度链固定在底部）；树视图整树呈现，无分页语义 */}
+          {view !== 'tree' && (
+            <div className="mt-auto shrink-0 pt-2">
+            {(data?.pagination?.total ?? 0) > 0 && (
+              <Pagination
+                page={page}
+                total={data?.pagination?.total ?? 0}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
+                className="mt-3"
+              />
+            )}
+            </div>
+          )}
 
           {selected.size > 0 && (
             <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
@@ -961,18 +1054,11 @@ export default function Files() {
           )}
         </div>
 
-        {/* 属性侧栏 - 平板/桌面始终紧贴右侧，仅在有文件时显示（手机用右侧抽屉避免压垮内容） */}
-        {propsFile && (
-          <aside className="glass-surface glass-blur hidden w-72 shrink-0 border-l pl-3 pr-1 sticky top-20 self-start h-[calc(100vh-6rem)] overflow-y-auto scrollbar-thin sm:block">
-            <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
-          </aside>
-        )}
+        {/* 属性面板：右缘抽屉（桌面/手机同一形态）——覆盖层不挤压文件区，避免点属性引发布局重排 */}
+        <Drawer open={!!propsFile} onClose={() => setPropsFile(null)} side="right">
+          <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
+        </Drawer>
       </div>
-
-      {/* 手机（<sm）：右侧抽屉 */}
-      <Drawer open={!!propsFile && isMobile} onClose={() => setPropsFile(null)} side="right" className="sm:hidden">
-        <PropertiesPanel file={propsFile} onClose={() => setPropsFile(null)} />
-      </Drawer>
 
       {/* ===== 弹窗（常驻挂载：进出动画由 Dialog 统一处理） ===== */}
       <UploadModal open={showUpload} onClose={() => setShowUpload(false)} targetPath={path} onDone={() => setShowUpload(false)} />

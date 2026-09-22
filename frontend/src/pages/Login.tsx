@@ -25,6 +25,12 @@ export default function Login() {
   const [resetSending, setResetSending] = useState(false);
 
   const redirect = params.get('redirect') || '/files';
+  // 已持有有效会话（JWT Cookie）：登录页直接跳转，无需重复输密码
+  const authUser = useAuth((s) => s.user);
+  const authLoading = useAuth((s) => s.loading);
+  useEffect(() => {
+    if (!authLoading && authUser) navigate(redirect, { replace: true });
+  }, [authUser, authLoading, navigate, redirect]);
 
   useEffect(() => {
     if (params.get('registered') === '1') {
