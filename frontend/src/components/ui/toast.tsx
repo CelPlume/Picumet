@@ -18,6 +18,8 @@ export interface ToastAction {
 interface ToastItem {
   id: number;
   type: ToastType;
+  /** 可选标题（加粗首行）；message 为正文 */
+  title?: string;
   message: string;
   action?: ToastAction;
   duration?: number;
@@ -91,9 +93,9 @@ export function resumeToastTimers(): void {
 export function toast(
   type: ToastType,
   message: string,
-  opts?: { action?: ToastAction; duration?: number }
+  opts?: { title?: string; action?: ToastAction; duration?: number }
 ) {
-  useToastStore.getState().push({ type, message, action: opts?.action, duration: opts?.duration });
+  useToastStore.getState().push({ type, message, title: opts?.title, action: opts?.action, duration: opts?.duration });
 }
 
 // 单条 Toast 的进出场：entered 由双 rAF 翻转；顶部放置时新 Toast 从上方 -105% 滑入，
@@ -156,7 +158,8 @@ function ToastCard({
         {t.type === 'error' && <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />}
         {t.type === 'info' && <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />}
         <div className="min-w-0 flex-1">
-          <p className={cn('text-sm font-medium leading-5', t.type === 'success' && 'text-emerald-600 dark:text-emerald-400', t.type === 'error' && 'text-destructive')}>
+          {t.title && <p className="text-sm font-semibold leading-5">{t.title}</p>}
+          <p className={cn('text-sm leading-5', !t.title && 'font-medium', t.type === 'success' && 'text-emerald-600 dark:text-emerald-400', t.type === 'error' && 'text-destructive')}>
             {t.message}
           </p>
           {t.action && (
