@@ -12,7 +12,7 @@ import { useTheme } from '@/stores/theme';
 import { useFilePreviewUrl, useFolderPreviewFiles } from './data';
 import FileIcon from './FileIcon';
 
-export type ViewMode = 'grid' | 'list';
+export type ViewMode = 'grid' | 'list' | 'tree';
 
 export interface FileActionHandlers {
   onOpen: (f: FileListItem) => void;
