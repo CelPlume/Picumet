@@ -114,12 +114,15 @@ export function DropdownItem({
   danger,
   icon,
   disabled,
+  selected,
 }: {
   onClick?: () => void;
   children: ReactNode;
   danger?: boolean;
   icon?: ReactNode;
   disabled?: boolean;
+  /** 当前选中项：更浅的强调色底（hover 为强调色） */
+  selected?: boolean;
 }) {
   return (
     <button
@@ -129,7 +132,9 @@ export function DropdownItem({
         DROPDOWN_ITEM_CLASS,
         danger
           ? 'text-destructive hover:bg-destructive/10'
-          : 'hover:bg-accent hover:text-accent-foreground',
+          : selected
+            ? 'bg-primary/5 hover:bg-primary/10 hover:text-primary'
+            : 'hover:bg-primary/10 hover:text-primary',
         disabled && 'pointer-events-none opacity-50'
       )}
     >

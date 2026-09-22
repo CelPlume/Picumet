@@ -123,9 +123,9 @@ export function Select({
                 className={cn(
                   DROPDOWN_ITEM_CLASS,
                   'justify-between',
-                  'hover:bg-accent hover:text-accent-foreground',
+                  'hover:bg-primary/10 hover:text-primary',
                   'disabled:pointer-events-none disabled:opacity-50',
-                  value === opt.value && 'bg-accent text-accent-foreground'
+                  value === opt.value && 'bg-primary/5 text-primary'
                 )}
               >
                 <span className="truncate">{opt.label}</span>
