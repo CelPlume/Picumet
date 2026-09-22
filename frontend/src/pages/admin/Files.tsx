@@ -1,7 +1,8 @@
-// 管理员：全部文件（含公开审核，§4.2）
+// 管理员：全部文件（含公开审核，§4.2）——列表 / 挂载点视图（桶→挂载点→文件）/ 扁平化树视图
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Search, Check, X, Files, Settings2, Lock, Users, Globe, Ban, RotateCcw, FilterX } from 'lucide-react';
+import { Search, Check, X, Files, Settings2, Lock, Users, Globe, Ban, RotateCcw, FilterX, List as ListIcon, FolderTree, GitBranch, SlidersHorizontal } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Card, Input, Badge, Button, EmptyState, ConfirmDialog, SEARCH_INPUT_GLASS } from '@/components/ui/core';
 import { Select } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
@@ -12,6 +13,9 @@ import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortabl
 import { formatBytes, formatDateTime } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
 import FileIcon from '@/components/files/FileIcon';
+import { TreeView } from '@/components/files/TreeView';
+import { useAdminTreeQuery, type TreeFileRow } from '@/components/files/data';
+import { MountView } from '@/components/admin/BucketMountGraph';
 import { AdminFileSettingsDialog } from '@/components/files/AdminFileSettingsDialog';
 import type { FileListItem } from '@shared/types';
 
@@ -46,6 +50,53 @@ function VisibilityBadge({ file }: { file: FileListItem }) {
   return <span className="flex items-center gap-1 text-xs text-emerald-600"><Globe className="h-3.5 w-3.5" />{t('admin.allFiles.published')}</span>;
 }
 
+/** 树行客户端搜索：命中行（按名）保留祖先与（文件夹命中的）后代，其余裁剪 */
+function filterTreeRows(rows: TreeFileRow[], query: string): TreeFileRow[] {
+  if (!query.trim()) return rows;
+  const q = query.trim().toLowerCase();
+  const fullPath = (r: TreeFileRow) => (r.type === 'folder' ? r.path : r.path === '/' ? `/${r.name}` : `${r.path}/${r.name}`);
+  const keep = new Set<string>();
+  const addAncestors = (full: string) => {
+    const segs = full.split('/').filter(Boolean);
+    for (let i = 1; i < segs.length; i++) keep.add(`/${segs.slice(0, i).join('/')}`);
+  };
+  for (const r of rows) {
+    if (!r.name.toLowerCase().includes(q)) continue;
+    keep.add(fullPath(r));
+    addAncestors(fullPath(r));
+  }
+  if (keep.size === 0) return [];
+  // 文件夹命中 → 其后代整段保留（保持上下文）
+  const matchedFolders = rows.filter((r) => r.type === 'folder' && keep.has(r.path)).map((r) => r.path);
+  return rows.filter((r) => {
+    const full = fullPath(r);
+    if (keep.has(full)) return true;
+    return matchedFolders.some((p) => full.startsWith(p + '/'));
+  });
+}
+
+/** 视图切换器：与文件页同一 glass-control 玻璃配方（同 token、同模糊、同激活态）；所有视图常显 */
+function ViewSwitcher({ view, onChange }: { view: 'list' | 'tree' | 'mount'; onChange: (v: 'list' | 'tree' | 'mount') => void }) {
+  const { t } = useTranslation();
+  const btn = (v: 'list' | 'tree' | 'mount', position: string, label: string, Icon: typeof ListIcon) => (
+    <button
+      onClick={() => onChange(v)}
+      className={cn(position, 'p-1.5', view === v ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground')}
+      aria-label={label}
+      title={label}
+    >
+      <Icon className="h-4 w-4" />
+    </button>
+  );
+  return (
+    <div className="glass-control flex w-fit items-center rounded-md border bg-muted/[var(--glass-alpha,0.72)]">
+      {btn('list', 'rounded-l-md', t('files.viewList'), ListIcon)}
+      {btn('mount', '', t('admin.allFiles.viewMount'), GitBranch)}
+      {btn('tree', 'rounded-r-md', t('files.viewTree'), FolderTree)}
+    </div>
+  );
+}
+
 export default function AdminFiles() {
   const { t } = useTranslation();
   const [files, setFiles] = useState<AdminFileRow[]>([]);
@@ -74,6 +125,19 @@ export default function AdminFiles() {
   /** 封禁确认弹窗目标；null = 关闭 */
   const [banTarget, setBanTarget] = useState<AdminFileRow | null>(null);
   const [banLoading, setBanLoading] = useState(false);
+  /** 视图：列表 / 挂载点（桶泳道）/ 扁平化树；挂载点视图的文件行在保存后按 refreshKey 重取 */
+  const [view, setView] = useState<'list' | 'tree' | 'mount'>(
+    () => (localStorage.getItem('picumet:admin-files-view') as 'list' | 'tree' | 'mount') || 'list'
+  );
+  const [refreshKey, setRefreshKey] = useState(0);
+  /** 筛选模式（列表/树）：展开 5 项筛选 + 清空/关闭 */
+  const [filterOpen, setFilterOpen] = useState(false);
+  const treeQuery = useAdminTreeQuery(
+    { mount: mountFilter, bucket: bucketFilter, user: userFilter, visibility: visibilityFilter, hash: hashFilter },
+    view === 'tree'
+  );
+  const queryClient = useQueryClient();
+  useEffect(() => localStorage.setItem('picumet:admin-files-view', view), [view]);
 
   useEffect(() => {
     void apiFetch<{ mounts: Array<{ id: string; name: string }> }>('/api/admin/mounts').then((r) => setMountList(r.data.mounts));
@@ -118,6 +182,11 @@ export default function AdminFiles() {
     return () => clearTimeout(t);
   }, [hashInput]);
 
+  // 树行客户端搜索（搜索框仅树视图展示；筛选为服务端参数）
+  const filteredTreeRows = useMemo(
+    () => filterTreeRows(treeQuery.data?.items ?? [], search),
+    [treeQuery.data, search]
+  );
   const sortedRows = useMemo(() => {
     if (!sort) return files;
     return sortByKey(files, sort as keyof FileListItem, order);
@@ -186,13 +255,40 @@ export default function AdminFiles() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="relative w-72">
-          <Search className="pointer-events-none absolute left-2.5 top-2.5 z-10 h-4 w-4 text-muted-foreground" />
-          <Input className={cn('pl-8', SEARCH_INPUT_GLASS)} value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder={t('files.searchPlaceholder')} />
+      {/* 顶栏（表格/树统一）：左 = 搜索框 + 筛选开关（紧邻搜索框）；右 = 视图切换器（筛选模式下不消失）。
+          挂载点视图无搜索与筛选，仅提示 + 视图切换器。筛选行在搜索框下方，再点筛选开关收起 */}
+      {(view === 'list' || view === 'tree') && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="relative w-72">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 z-10 h-4 w-4 text-muted-foreground" />
+              <Input className={cn('pl-8', SEARCH_INPUT_GLASS)} value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder={t('files.searchPlaceholder')} />
+            </div>
+            <button
+              onClick={() => setFilterOpen((v) => !v)}
+              className={cn(
+                'glass-control flex h-9 w-9 items-center justify-center rounded-md border border-input bg-card/[var(--glass-alpha,0.72)] shadow-sm transition-colors hover:bg-accent/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
+                filterOpen && 'border-ring bg-primary/10 text-primary'
+              )}
+              aria-label={t('admin.allFiles.filterToggle')}
+              aria-expanded={filterOpen}
+              title={t('admin.allFiles.filterToggle')}
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </button>
+          </div>
+          {/* 视图切换器：与文件页同一 glass-control 玻璃配方（同 token、同模糊、同激活态）；筛选模式下不消失 */}
+          <ViewSwitcher view={view} onChange={setView} />
         </div>
-        {/* 筛选组：任一变化重置 page=1 重新拉取 */}
-        <div className="flex flex-wrap items-center gap-2">
+      )}
+      {view === 'mount' && (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{t('admin.allFiles.viewMountHint')}</p>
+          <ViewSwitcher view={view} onChange={setView} />
+        </div>
+      )}
+      {(view === 'list' || view === 'tree') && filterOpen && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <Select className="w-32" triggerClassName={SEARCH_INPUT_GLASS} value={mountFilter} onValueChange={(v) => { setMountFilter(v); setPage(1); }} options={mountSelectOptions} placeholder={t('admin.allFiles.mounts')} />
           <Select className="w-32" triggerClassName={SEARCH_INPUT_GLASS} value={bucketFilter} onValueChange={(v) => { setBucketFilter(v); setPage(1); }} options={bucketSelectOptions} placeholder={t('admin.allFiles.buckets')} />
           <Select className="w-32" triggerClassName={SEARCH_INPUT_GLASS} value={userFilter} onValueChange={(v) => { setUserFilter(v); setPage(1); }} options={userSelectOptions} placeholder={t('admin.user')} />
@@ -203,10 +299,52 @@ export default function AdminFiles() {
             {t('admin.allFiles.clearFilters')}
           </Button>
         </div>
-      </div>
+      )}
+      {view === 'mount' ? (
+        <Card className="mt-3 min-h-0 flex-1 flex-col overflow-y-auto py-0 scrollbar-thin">
+          <MountView
+            refreshKey={refreshKey}
+            onOpenSettings={(f) => setSettingsTarget(f)}
+          />
+        </Card>
+      ) : view === 'tree' ? (
+        <Card className="mt-3 min-h-0 flex-1 flex-col overflow-hidden py-0">
+          {treeQuery.isLoading ? (
+            <div className="p-4"><TableSkeleton rows={8} cols={4} /></div>
+          ) : treeQuery.error ? (
+            <div className="p-4"><EmptyState title={t('files.loadFailed')} description={(treeQuery.error as Error).message} /></div>
+          ) : (
+            <TreeView
+              rows={filteredTreeRows}
+              selectedId={null}
+              className="min-h-[240px] flex-1 p-1.5"
+              renderRight={(f: TreeFileRow) => (
+                <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  {f.ownerName && <span className="hidden w-20 truncate text-right sm:block">{f.ownerName}</span>}
+                  {f.type === 'file' && <span className="w-16 text-right">{formatBytes(f.size)}</span>}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSettingsTarget(f);
+                    }}
+                    className="rounded p-1 hover:bg-accent hover:text-foreground"
+                    title={t('admin.allFiles.settings')}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              )}
+              emptyTitle={t('admin.allFiles.emptyTitle')}
+              emptyDesc={t('admin.allFiles.emptyDesc')}
+            />
+          )}
+        </Card>
+      ) : (
+        <>
       {/* 表头固定在滚动区上方：表头与数据行同在卡片玻璃上、同为透明层（观感一致），
           行只在下方容器内滚动，不会滑到表头下面造成叠加 */}
-      <Card className="mt-3 flex max-h-[calc(100vh-12.7rem)] flex-col py-0 overflow-hidden">
+      <Card className="mt-3 flex min-h-0 flex-1 flex-col py-0 overflow-hidden">
         <table className="block w-full shrink-0 overflow-hidden text-sm [scrollbar-gutter:stable]">
           <thead className="block">
             <tr className={ROW_GRID + ' whitespace-nowrap border-b text-left text-muted-foreground'}>
@@ -223,7 +361,7 @@ export default function AdminFiles() {
             </tr>
           </thead>
         </table>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
           <table className="block w-full text-sm">
             <tbody className="block">
               {loading ? (
@@ -290,13 +428,17 @@ export default function AdminFiles() {
         />
   </div>
       )}
+        </>
+      )}
 
-      {/* 属性设置（常驻挂载：进出动画由 Dialog 统一处理） */}
+      {/* 属性设置（常驻挂载：进出动画由 Dialog 统一处理；保存后按当前视图刷新对应数据源） */}
       <AdminFileSettingsDialog
         file={settingsTarget}
         onClose={() => setSettingsTarget(null)}
         onSaved={() => {
           setSettingsTarget(null);
+          if (view === 'tree') void queryClient.invalidateQueries({ queryKey: ['admin-files-tree'] });
+          if (view === 'mount') setRefreshKey((k) => k + 1);
           void load();
         }}
       />
