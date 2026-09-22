@@ -103,6 +103,60 @@ filesRoutes.get('/', async (c) => {
   });
 });
 
+// ============ 扁平化树视图（树视图数据源） ============
+// 返回当前挂载点整棵子树的行（文件行 path=父目录、文件夹行 path=自身全路径）。
+// 权限：入口 requirePermission(请求路径)；子挂载点（§H 嵌套挂载）逐个以其挂载根复核 read，
+// 未通过的子树整段丢弃；非管理员再按 §4.4a 过滤「不可列出」的私有文件夹自身与后代。
+filesRoutes.get('/tree', async (c) => {
+  const db = getDb(c);
+  const q = c.req.query();
+  const targetPath = normalizePath(q.path ?? '/');
+  const mount = await MountRepo.findMountForPath(db, targetPath);
+  if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  await requirePermission(c, mount, targetPath, 'read');
+
+  const { rows, truncated } = await FileRepo.listTree(db, { rootPath: mount.mountPath, limit: 5000 });
+
+  // 子挂载点权限复核：行可能属于嵌套挂载（mount_id ≠ 入口挂载）
+  const byMount = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const list = byMount.get(r.mountId) ?? [];
+    list.push(r);
+    byMount.set(r.mountId, list);
+  }
+  const kept: typeof rows = [];
+  for (const [mountId, list] of byMount) {
+    if (mountId === mount.id) {
+      kept.push(...list);
+      continue;
+    }
+    const child = await MountRepo.getMountById(db, mountId);
+    if (!child) continue;
+    try {
+      await requirePermission(c, child, child.mountPath, 'read');
+      kept.push(...list);
+    } catch {
+      // 无读取权限的子挂载点：整段隐藏（树中仅保留其挂载点目录行所在父级视角）
+    }
+  }
+
+  // §4.4a：私有文件夹仅 owner/管理员可见 → 隐藏其自身与后代（users/public 文件夹不受限）
+  const role = c.get('userRole');
+  const userId = c.get('userId');
+  let visible = kept;
+  if (role !== 'admin') {
+    const hiddenPrefixes: string[] = [];
+    for (const r of kept) {
+      if (r.type === 'folder' && r.visibility === 'private' && r.ownerId !== userId) hiddenPrefixes.push(r.path);
+    }
+    if (hiddenPrefixes.length) {
+      visible = kept.filter((r) => !hiddenPrefixes.some((p) => r.path === p || r.path.startsWith(p + '/')));
+    }
+  }
+
+  return ok(c, { items: visible.map(toFileListItem), truncated });
+});
+
 // ============ 创建文件夹 ============
 filesRoutes.post('/folder', async (c) => {
   const db = getDb(c);
