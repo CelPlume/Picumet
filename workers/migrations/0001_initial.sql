@@ -738,3 +738,14 @@ ALTER TABLE shares ADD COLUMN password_cipher TEXT;
 ALTER TABLE file_metadata ADD COLUMN banned INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_file_metadata_banned ON file_metadata(banned);
 ALTER TABLE mounts ADD COLUMN capacity_bytes INTEGER;
+
+-- ============ 27. 公告显示时长（display policy） ============
+-- display_mode：always 总是显示（默认，关闭后永久隐藏）| daily 当日显示（当日关闭次日复现）|
+--   interval 每 x 间隔显示（关闭后一个间隔期内隐藏，interval_seconds 为秒）|
+--   until 显示到 expires_at（绝对时间，到期自动隐藏）| duration 发布后 interval_seconds 内显示。
+-- expires_at 沿用既有列承载 until 的绝对截止时间。
+ALTER TABLE announcements ADD COLUMN display_mode TEXT NOT NULL DEFAULT 'always';
+ALTER TABLE announcements ADD COLUMN interval_seconds INTEGER;
+-- kind：banner 常驻横幅（默认）| toast 临时弹窗（toast 样式展示片刻自动关闭；
+--   display_mode 复用为频率/窗口语义：once 单次、interval 每 x 间隔、until 到期、duration 发布后 x）。
+ALTER TABLE announcements ADD COLUMN kind TEXT NOT NULL DEFAULT 'banner';

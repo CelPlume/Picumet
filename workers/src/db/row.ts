@@ -315,5 +315,8 @@ export function mapAnnouncement(row: Row): Announcement {
     active: b(row.active),
     createdAt: num(row.created_at),
     expiresAt: row.expires_at ? num(row.expires_at) : undefined,
+    displayMode: (str(row.display_mode) ?? 'always') as Announcement['displayMode'],
+    intervalSeconds: row.interval_seconds ? num(row.interval_seconds) : undefined,
+    kind: (str(row.kind) ?? 'banner') as Announcement['kind'],
   };
 }

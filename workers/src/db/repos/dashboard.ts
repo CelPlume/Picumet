@@ -29,6 +29,40 @@ export interface DashboardMount {
   standbys: Array<{ id: string; name: string; bucket: string; weight: number }>;
 }
 
+/** 桶视角的挂载点节点：主桶节点，或本桶持有文件的拼好桶成员节点 */
+export interface DashboardBucketMount {
+  id: string;
+  name: string;
+  mountPath: string;
+  status: string;
+  capacityBytes: number | null;
+  /** 本桶内该挂载点的物理文件数/字节（file_metadata.provider_id = 本桶） */
+  fileCount: number;
+  usedSpace: number;
+  /** primary = 本桶是该挂载点主桶；member = 拼好桶成员（主桶在别处） */
+  role: 'primary' | 'member';
+}
+
+/** 桶泳道：挂载点节点 + 仅作备用的挂载点（badge 跳主桶） */
+export interface DashboardBucket {
+  id: string;
+  name: string;
+  bucket: string;
+  type: string;
+  /** 本桶物理存储合计（所有挂载点） */
+  fileCount: number;
+  usedSpace: number;
+  mounts: DashboardBucketMount[];
+  /** 备份桶参与：本桶为该挂载点备用成员且 0 文件 → 前端渲染跳主桶 badge */
+  standbys: Array<{
+    mountId: string;
+    mountName: string;
+    mountPath: string;
+    primaryProviderId: string;
+    primaryProviderName: string;
+  }>;
+}
+
 function roleCountsOf(rows: Array<Record<string, unknown>>): DashboardStats['userRoles'] {
   const roles: DashboardStats['userRoles'] = { admin: 0, user: 0, guest: 0 };
   for (const r of rows) {
@@ -115,5 +149,153 @@ export const DashboardRepo = {
         standbys: standbys.get(String(m.id)) ?? [],
       };
     });
+  },
+
+  /**
+   * 桶 → 挂载点树（活跃挂载点泳道图 + 全部文件挂载点视图共用，一次查询禁止 N+1）：
+   * 每桶列出「持有该挂载点文件」的挂载点节点（主桶或拼好桶成员，计数按 file_metadata.provider_id
+   * 落桶统计）；仅作备用（该桶内 0 文件）的池成员进入 standbys，前端给出跳主桶的备用桶 badge。
+   */
+  async bucketTree(db: Db): Promise<DashboardBucket[]> {
+    const [providerRows, mountRows, memberRows, usageRows] = await Promise.all([
+      db.all('SELECT id, name, bucket, type FROM storage_providers ORDER BY created_at ASC, id ASC'),
+      db.all('SELECT id, name, mount_path, status, capacity_bytes, provider_id FROM mounts ORDER BY priority DESC, mount_path ASC'),
+      db.all('SELECT mount_id, provider_id FROM mount_providers'),
+      db.all(
+        `SELECT mount_id, provider_id, COUNT(*) AS c, COALESCE(SUM(size), 0) AS s
+         FROM file_metadata WHERE type = 'file' AND provider_id IS NOT NULL
+         GROUP BY mount_id, provider_id`
+      ),
+    ]);
+    // key: `${mountId}:${providerId}` → 本桶物理存储的文件数/字节
+    const perBucket = new Map<string, { fileCount: number; usedSpace: number }>();
+    for (const r of usageRows) {
+      perBucket.set(`${String(r.mount_id)}:${String(r.provider_id)}`, { fileCount: num(r.c), usedSpace: num(r.s) });
+    }
+    // mount_id → 池成员 provider id 集（含主桶）
+    const members = new Map<string, Set<string>>();
+    for (const r of memberRows) {
+      const set = members.get(String(r.mount_id)) ?? new Set<string>();
+      set.add(String(r.provider_id));
+      members.set(String(r.mount_id), set);
+    }
+    const mountById = new Map(mountRows.map((m) => [String(m.id), m]));
+
+    return providerRows.map((p) => {
+      const providerId = String(p.id);
+      const nodeMounts: DashboardBucket['mounts'] = [];
+      const standbyEntries: DashboardBucket['standbys'] = [];
+      let bucketFiles = 0;
+      let bucketSpace = 0;
+      for (const m of mountRows) {
+        const mountId = String(m.id);
+        if (!members.get(mountId)?.has(providerId)) continue;
+        const u = perBucket.get(`${mountId}:${providerId}`) ?? { fileCount: 0, usedSpace: 0 };
+        bucketFiles += u.fileCount;
+        bucketSpace += u.usedSpace;
+        const isPrimary = String(m.provider_id) === providerId;
+        if (isPrimary || u.fileCount > 0) {
+          nodeMounts.push({
+            id: mountId,
+            name: String(m.name),
+            mountPath: String(m.mount_path),
+            status: String(m.status),
+            capacityBytes: m.capacity_bytes == null ? null : num(m.capacity_bytes),
+            fileCount: u.fileCount,
+            usedSpace: u.usedSpace,
+            role: isPrimary ? 'primary' : 'member',
+          });
+        } else {
+          // 备份桶：该挂载点的备用成员且本桶 0 文件 → badge 跳主桶
+          const primary = mountById.get(mountId);
+          const primaryRow = providerRows.find((pp) => String(pp.id) === String(primary?.provider_id));
+          if (primaryRow) {
+            standbyEntries.push({
+              mountId,
+              mountName: String(m.name),
+              mountPath: String(m.mount_path),
+              primaryProviderId: String(primaryRow.id),
+              primaryProviderName: String(primaryRow.name),
+            });
+          }
+        }
+      }
+      return {
+        id: providerId,
+        name: String(p.name),
+        bucket: String(p.bucket),
+        type: String(p.type),
+        fileCount: bucketFiles,
+        usedSpace: bucketSpace,
+        mounts: nodeMounts,
+        standbys: standbyEntries,
+      };
+    });
+  },
+
+  /**
+   * 挂载点展开层（仪表盘泳道节点按需加载）：顶层文件夹行 + 每夹递归文件计数。
+   * providerId 传入时文件计数只统计该桶物理存储（拼好桶「只显示本桶存储的文件」），
+   * 且隐藏 0 文件的文件夹。两条查询 + 内存聚合，禁止逐夹 N+1。
+   */
+  async mountFolderSummary(
+    db: Db,
+    mount: { id: string; mountPath: string },
+    providerId?: string
+  ): Promise<{
+    mountId: string;
+    providerId: string | null;
+    rootFiles: { count: number; size: number };
+    folders: Array<{ id: string; name: string; path: string; fileCount: number; usedSpace: number }>;
+    truncated: boolean;
+  }> {
+    const root = mount.mountPath;
+    // 顶层文件夹 = 挂载点根下一级（文件夹行 path=自身全路径 → LIKE root/% 且不含更深一层）
+    const esc = root.replace(/([\\%_])/g, '\\$1');
+    const [folderRows, fileRows] = await Promise.all([
+      db.all(
+        `SELECT id, name, path FROM file_metadata
+         WHERE mount_id = ? AND type = 'folder' AND path LIKE ? ESCAPE '\\' AND path NOT LIKE ? ESCAPE '\\'
+         ORDER BY name COLLATE NOCASE ASC LIMIT 200`,
+        [mount.id, `${esc}/%`, `${esc}/%/%`]
+      ),
+      db.all(
+        `SELECT path, size FROM file_metadata
+         WHERE mount_id = ? AND type = 'file'${providerId ? ' AND provider_id = ?' : ''}
+         LIMIT 20000`,
+        providerId ? [mount.id, providerId] : [mount.id]
+      ),
+    ]);
+    // 顶层片段 → 计数聚合（path = 根为根目录直置文件；否则取根后第一段）
+    const rootFiles = { count: 0, size: 0 };
+    const agg = new Map<string, { fileCount: number; usedSpace: number }>();
+    for (const r of fileRows) {
+      const p = String(r.path);
+      if (p === root) {
+        rootFiles.count += 1;
+        rootFiles.size += num(r.size);
+        continue;
+      }
+      const rest = p.startsWith(root + '/') ? p.slice(root.length + 1) : p;
+      const top = rest.split('/')[0];
+      const cur = agg.get(top) ?? { fileCount: 0, usedSpace: 0 };
+      cur.fileCount += 1;
+      cur.usedSpace += num(r.size);
+      agg.set(top, cur);
+    }
+    const folders = folderRows
+      .map((f) => {
+        const name = String(f.name);
+        const a = agg.get(name) ?? { fileCount: 0, usedSpace: 0 };
+        return { id: String(f.id), name, path: String(f.path), fileCount: a.fileCount, usedSpace: a.usedSpace };
+      })
+      .filter((f) => f.fileCount > 0);
+    return {
+      mountId: mount.id,
+      providerId: providerId ?? null,
+      rootFiles,
+      folders,
+      truncated: fileRows.length >= 20000,
+    };
   },
 };

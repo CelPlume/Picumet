@@ -426,6 +426,12 @@ export interface Announcement {
   active: boolean;
   createdAt: number;
   expiresAt?: number;
+  /** 显示时长策略（§27）：always 总是 / daily 当日 / interval 每 x 间隔 / until 到指定时间 / duration 发布后 x 间隔；toast 临时弹窗另支持 once 单次 */
+  displayMode?: 'always' | 'daily' | 'interval' | 'until' | 'duration' | 'once';
+  /** interval/duration 模式的间隔秒数 */
+  intervalSeconds?: number;
+  /** 呈现形态：banner 常驻横幅（默认）/ toast 临时弹窗（展示片刻自动关闭） */
+  kind?: 'banner' | 'toast';
 }
 
 // ============ 管理统计 ============

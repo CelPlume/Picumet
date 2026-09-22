@@ -141,6 +141,66 @@ export const FileRepo = {
     const rows = await db.all(sql, ownerId ? [mountId, path, `${path}/%`, ownerId] : [mountId, path, `${path}/%`]);
     return rows.map(mapFile);
   },
+
+  /**
+   * 扁平化树视图数据源：按路径前缀取整棵子树的行（文件行 path=父目录、文件夹行 path=自身全路径，
+   * 同一谓词同时命中两类）。mountId 传入时限定单挂载点（用户端树只展开当前挂载点，子挂载点
+   * 由前端点击目录行导航）；rootPath='/' 且不传 mountId = 全命名空间（管理端树）。
+   * withOwner 时 LEFT JOIN users 带出属主用户名（管理端树显示上传用户，避免按页 IN 补齐）。
+   * LIMIT+1 探测截断：树行数可能很大，前端按 5000 封顶并提示。
+   */
+  async listTree(
+    db: Db,
+    opts: {
+      rootPath?: string;
+      mountId?: string;
+      withOwner?: boolean;
+      limit?: number;
+      /** 管理端树筛选（与 /admin/files 列表同语义）：挂载点/落桶/属主/可见性/哈希子串 */
+      filters?: { mountId?: string; providerId?: string; ownerId?: string; visibility?: string; blobHashLike?: string };
+    }
+  ): Promise<{ rows: Array<FileMetadata & { ownerName?: string }>; truncated: boolean }> {
+    const root = opts.rootPath && opts.rootPath !== '/' ? opts.rootPath : null;
+    // LIKE 通配符转义（目录名可含 % _ \）；root 为空 = 全命名空间（管理端树）
+    const where: string[] = root ? ["(f.path = ? OR f.path LIKE ? ESCAPE '\\')"] : ['1=1'];
+    const params: unknown[] = root ? [root, `${root.replace(/([\\%_])/g, '\\$1')}/%`] : [];
+    const f = opts.filters;
+    if (opts.mountId || f?.mountId) {
+      where.push('f.mount_id = ?');
+      params.push(opts.mountId ?? f!.mountId);
+    }
+    // 结构性筛选（落桶/哈希）只作用于文件行：文件夹行是树的骨架，须整段保留
+    if (f?.providerId) {
+      where.push("(f.type = 'folder' OR f.provider_id = ?)");
+      params.push(f.providerId);
+    }
+    if (f?.ownerId) {
+      where.push('f.owner_id = ?');
+      params.push(f.ownerId);
+    }
+    if (f?.visibility === 'private' || f?.visibility === 'users' || f?.visibility === 'public') {
+      where.push('f.visibility = ?');
+      params.push(f.visibility);
+    }
+    if (f?.blobHashLike) {
+      where.push("(f.type = 'folder' OR f.blob_hash LIKE ?)");
+      params.push(`%${f.blobHashLike}%`);
+    }
+    const limit = opts.limit ?? 5000;
+    const sql = `SELECT f.*${opts.withOwner ? ', u.username AS owner_name' : ''}
+       FROM file_metadata f${opts.withOwner ? ' LEFT JOIN users u ON u.id = f.owner_id' : ''}
+       WHERE ${where.join(' AND ')}
+       ORDER BY f.path ASC, f.type = 'folder' DESC, f.name ASC
+       LIMIT ?`;
+    const raw = await db.all(sql, [...params, limit + 1]);
+    const truncated = raw.length > limit;
+    const rows = raw.slice(0, limit).map((r) => {
+      const mapped = mapFile(r) as FileMetadata & { ownerName?: string };
+      if (opts.withOwner && r.owner_name != null) mapped.ownerName = String(r.owner_name);
+      return mapped;
+    });
+    return { rows, truncated };
+  },
   async updateFile(db: Db, id: string, fields: Record<string, unknown>): Promise<void> {
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
     if (entries.length === 0) return;

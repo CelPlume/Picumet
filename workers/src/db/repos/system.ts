@@ -433,13 +433,13 @@ export const AnnouncementRepo = {
     const rows = await db.all('SELECT * FROM announcements ORDER BY created_at DESC');
     return rows.map(mapAnnouncement);
   },
-  async create(db: Db, a: { title: string; content: string; level?: string; expiresAt?: number }): Promise<string> {
+  async create(db: Db, a: { title: string; content: string; level?: string; expiresAt?: number; displayMode?: string; intervalSeconds?: number; kind?: string }): Promise<string> {
     const id = uuid();
     const now = Date.now();
     await db.run(
-      `INSERT INTO announcements (id, title, content, level, active, created_at, updated_at, expires_at)
-       VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
-      [id, a.title, a.content, a.level ?? 'info', now, now, a.expiresAt ?? null]
+      `INSERT INTO announcements (id, title, content, level, active, created_at, updated_at, expires_at, display_mode, interval_seconds, kind)
+       VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+      [id, a.title, a.content, a.level ?? 'info', now, now, a.expiresAt ?? null, a.displayMode ?? 'always', a.intervalSeconds ?? null, a.kind ?? 'banner']
     );
     return id;
   },
