@@ -41,7 +41,7 @@ function TreeNode({
         data-active={active ? 'true' : 'false'}
         className={cn(
           'relative flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-sm transition-colors',
-          active ? 'font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+          active ? 'font-medium text-primary' : 'text-muted-foreground hover:bg-primary/10'
         )}
         style={{ paddingLeft: 8 + depth * 16 }}
         aria-label={name}

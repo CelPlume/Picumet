@@ -51,8 +51,8 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
   ];
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="glass-surface glass-blur sticky top-0 z-30 border-b shadow-sm">
+    <div className="flex h-screen flex-col overflow-hidden">
+      <header className="glass-surface glass-blur z-30 border-b shadow-sm shrink-0">
         <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-4">
           <div className="flex items-center gap-2">
             {/* 移动端汉堡菜单 */}
@@ -107,12 +107,12 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
         </div>
       </header>
 
-      {/* 公告横幅 */}
-      <div className="mx-auto w-full max-w-[1400px] px-4 pt-2">
+      {/* 公告横幅（无公告时整体隐藏，不影响 flex 高度链） */}
+      <div className="mx-auto w-full max-w-[1400px] shrink-0 px-4 pt-2 empty:hidden">
         <AnnouncementBanner />
       </div>
 
-      <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-3">{children}</main>
+      <main className="scrollbar-none mx-auto w-full max-w-[1400px] min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</main>
 
       {/* 移动端抽屉菜单 */}
       <Drawer open={mobileOpen} onClose={() => setMobileOpen(false)} side="left" title={t('common.menu')}>

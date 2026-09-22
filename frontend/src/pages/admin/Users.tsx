@@ -95,7 +95,7 @@ function RoleDefaultsForm({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <div>
         <Label>{t('admin.roles.alias')}</Label>
         <Input className="mt-1" value={alias} onChange={(e) => setAlias(e.target.value)} placeholder={t('admin.roles.aliasPlaceholder')} />
@@ -351,14 +351,14 @@ export default function AdminUsers() {
             <Settings2 className="h-4 w-4" />
             {t('admin.users.defaultSettings')}
           </Button>
-          <div className="relative w-64">
+          <div className="relative w-64 shrink-0">
             <Search className="pointer-events-none absolute left-2.5 top-2.5 z-10 h-4 w-4 text-muted-foreground" />
             <Input className={cn('pl-8', SEARCH_INPUT_GLASS)} value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder={t('admin.users.searchPlaceholder')} />
           </div>
         </div>
       </div>
 
-      <Card className="mt-3 max-h-[calc(100vh-12.7rem)] overflow-auto py-0">
+      <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">

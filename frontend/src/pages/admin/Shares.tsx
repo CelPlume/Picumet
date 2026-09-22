@@ -105,7 +105,7 @@ export default function AdminShares() {
   return (
     <div className="flex h-full min-h-0 flex-col">
 
-      <Card className="mt-3 max-h-[calc(100vh-10.45rem)] overflow-auto py-0">
+      <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">

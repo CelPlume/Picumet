@@ -269,7 +269,7 @@ export default function MyShares() {
               ))}
             </div>
           ) : (
-          <Card className="max-h-[calc(100vh-11.7rem)] overflow-auto py-0">
+          <Card className="min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">

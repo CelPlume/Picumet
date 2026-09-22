@@ -60,6 +60,7 @@ export function useIndicator(
 }
 
 /** 侧边栏指示器色块：强调色淡化（固定 10% primary，不随档位/背景漂移——颜色不变），
-    blur 随三档门控（.no-blur 关停）。navbar/Tabs 用各自的实底凸起样式，不走此类 */
+    blur 随三档门控（.no-blur 关停）。inset-x-0 与 hover 高亮同宽（避免激活/悬停宽度不一致）。
+    navbar/Tabs 用各自的实底凸起样式，不走此类 */
 export const INDICATOR_CLASS =
-  'glass-control pointer-events-none absolute inset-x-1 z-0 rounded-md bg-primary/10 transition-[top,height] duration-300 ease-out';
+  'glass-control pointer-events-none absolute inset-x-0 z-0 rounded-md bg-primary/10 transition-[top,height] duration-300 ease-out';

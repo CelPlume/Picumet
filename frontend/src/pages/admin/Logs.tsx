@@ -65,7 +65,7 @@ export default function AdminLogs() {
 
       {/* 表头固定在滚动区上方：表头与数据行同在卡片玻璃上、同为透明层（观感一致），
           行只在下方容器内滚动，不会滑到表头下面造成叠加 */}
-      <Card className="mt-3 flex max-h-[calc(100vh-10.45rem)] flex-col py-0 overflow-hidden">
+      <Card className="mt-3 flex min-h-0 flex-1 flex-col py-0 overflow-hidden">
         <table className="block w-full shrink-0 overflow-hidden text-sm [scrollbar-gutter:stable]">
           <thead className="block">
             <tr className={LOG_ROW_GRID + ' border-b text-left text-muted-foreground'}>
@@ -78,7 +78,7 @@ export default function AdminLogs() {
             </tr>
           </thead>
         </table>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
           <table className="block w-full text-sm">
             <tbody className="block">
               {loading ? (

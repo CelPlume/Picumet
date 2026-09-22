@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Copy, Trash2, Check , AlertTriangle, Boxes, Database, Link2 , Wrench } from 'lucide-react';
 import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
@@ -46,6 +47,8 @@ export default function ApiKeysPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedKey | null>(null);
+  /** 密钥已创建弹窗：协议配置 Tab（webdav/s3/openlist/bearer） */
+  const [protoTab, setProtoTab] = useState('webdav');
   const [name, setName] = useState('');
   const [permissions, setPermissions] = useState<string[]>(['write']);
   const [protocols, setProtocols] = useState<string[]>(['webdav', 'api']);
@@ -81,6 +84,7 @@ export default function ApiKeysPage() {
         body: { name, permissions, protocols, uploadPath: uploadPath || '/uploads' },
       });
       setCreated(res.data);
+      setProtoTab('webdav');
       setShowCreate(false);
       await load();
     } catch (err) {
@@ -117,7 +121,7 @@ export default function ApiKeysPage() {
       {loading ? (
         <FormCardSkeleton />
       ) : (
-        <Card className="max-h-[calc(100vh-12.9rem)] overflow-auto py-0">
+        <Card className="min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
@@ -160,7 +164,7 @@ export default function ApiKeysPage() {
                       </div>
                     </td>
                     <td className="px-4 py-2">
-                      {k.status === 'active' ? <Badge variant="success">{k.status}</Badge> : <Badge variant="destructive">{k.status}</Badge>}
+                      {k.status === 'active' ? <Badge variant="success">{t('settings.apiKeys.statusActive')}</Badge> : <Badge variant="destructive">{t('settings.apiKeys.statusDisabled')}</Badge>}
                     </td>
                     <td className="px-4 py-2 text-xs text-muted-foreground">{k.lastUsedAt ? timeAgo(k.lastUsedAt) : t('settings.neverUsed')}</td>
                     <td className="px-4 py-2">
@@ -247,52 +251,73 @@ export default function ApiKeysPage() {
                 </Button>
               </div>
             </div>
-            <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground"><Boxes className="inline h-4 w-4 shrink-0" /> {t('settings.apiKeys.webdavConfig')}</p>
-              <pre className="overflow-x-auto text-xs">
+            {/* 协议接入配置：Tab 切换（不纵向堆叠） */}
+            <Tabs value={protoTab} onValueChange={setProtoTab}>
+              <TabsList>
+                <TabsTrigger value="webdav">
+                  <Boxes className="h-4 w-4" /> WebDAV
+                </TabsTrigger>
+                <TabsTrigger value="s3">
+                  <Database className="h-4 w-4" /> S3
+                </TabsTrigger>
+                <TabsTrigger value="openlist">
+                  <Link2 className="h-4 w-4" /> OpenList
+                </TabsTrigger>
+                <TabsTrigger value="bearer">
+                  <Wrench className="h-4 w-4" /> {t('settings.customApi')}
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="webdav">
+                <div className="rounded-md border bg-muted/40 p-3">
+                  <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.webdav.url}
 ${t('login.username')}: ${created.configs.webdav.username}
 ${t('login.password')}: ${created.configs.webdav.password}
 ${t('settings.apiKeys.customUrlHint')}: ${created.configs.webdav.customUrlHint ?? ''}${created.configs.webdav.webpathHint ? `\nwebpath: ${created.configs.webdav.webpathHint}` : ''}`}
-              </pre>
-              <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.webdav), 'webdav')}>
-                {copyState === 'webdav' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
-              </Button>
-            </div>
-            <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground"><Database className="inline h-4 w-4 shrink-0" /> {t('settings.s3')}{t('settings.apiKeys.s3Compat')}</p>
-              <pre className="overflow-x-auto text-xs">
+                  </pre>
+                  <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.webdav), 'webdav')}>
+                    {copyState === 'webdav' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
+                  </Button>
+                </div>
+              </TabsContent>
+              <TabsContent value="s3">
+                <div className="rounded-md border bg-muted/40 p-3">
+                  <pre className="overflow-x-auto text-xs">
 {`endpoint: ${created.configs.s3.endpoint}
 region: ${created.configs.s3.region}
 AccessKeyId: ${created.configs.s3.accessKeyId}
 SecretAccessKey: ${created.configs.s3.secretAccessKey}
 bucket: ${created.configs.s3.bucketHint ?? ''}
 ${t('settings.apiKeys.pathStyleAddressing')}: ${created.configs.s3.pathStyle}`}
-              </pre>
-              <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.s3), 's3')}>
-                {copyState === 's3' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
-              </Button>
-            </div>
-            <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground"><Link2 className="inline h-4 w-4 shrink-0" /> {t('settings.openlist')}{t('settings.apiKeys.alistProto')}</p>
-              <pre className="overflow-x-auto text-xs">
+                  </pre>
+                  <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.s3), 's3')}>
+                    {copyState === 's3' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
+                  </Button>
+                </div>
+              </TabsContent>
+              <TabsContent value="openlist">
+                <div className="rounded-md border bg-muted/40 p-3">
+                  <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.openlist.url}
 Token: ${created.configs.openlist.token}`}
-              </pre>
-              <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.openlist), 'openlist')}>
-                {copyState === 'openlist' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
-              </Button>
-            </div>
-            <div className="rounded-md border bg-muted/40 p-3">
-              <p className="mb-2 text-xs font-medium text-muted-foreground"><Wrench className="inline h-4 w-4 shrink-0" /> {t('settings.customApi')}</p>
-              <pre className="overflow-x-auto text-xs">
+                  </pre>
+                  <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(JSON.stringify(created.configs.openlist), 'openlist')}>
+                    {copyState === 'openlist' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
+                  </Button>
+                </div>
+              </TabsContent>
+              <TabsContent value="bearer">
+                <div className="rounded-md border bg-muted/40 p-3">
+                  <pre className="overflow-x-auto text-xs">
 {`URL: ${created.configs.bearer.url}/api/upload
 Header: ${created.configs.bearer.header}`}
-              </pre>
-              <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(created.configs.bearer.header, 'bearer')}>
-                {copyState === 'bearer' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
-              </Button>
-            </div>
+                  </pre>
+                  <Button size="sm" variant="outline" className="mt-2" onClick={() => copy(created.configs.bearer.header, 'bearer')}>
+                    {copyState === 'bearer' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('common.copy')}
+                  </Button>
+                </div>
+              </TabsContent>
+            </Tabs>
           </div>
         )}
       </Dialog>
