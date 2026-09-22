@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import {
   UserRepo, QuotaRepo, ShareRepo, LogRepo, SettingsRepo, AnnouncementRepo,
-  DashboardRepo, FileRepo, Db,
+  DashboardRepo, FileRepo, MountRepo, Db,
 } from '../../db';
 import type { FileListItem, Share } from '@shared/types';
 import { getDb } from '../../middleware/auth';
@@ -25,10 +25,11 @@ export const adminRoutes = new Hono<AppBindings>();
 // ============ 仪表板 ============
 /** /dashboard 与 /stats 共用载荷：stats 七项 + 挂载点关系数组 + 最近动态 */
 async function dashboardPayload(db: Db) {
-  const [users, stats, mounts, recentActivity] = await Promise.all([
+  const [users, stats, mounts, buckets, recentActivity] = await Promise.all([
     UserRepo.countUsers(db),
     DashboardRepo.stats(db),
     DashboardRepo.mounts(db),
+    DashboardRepo.bucketTree(db),
     LogRepo.recentActivity(db, 10),
   ]);
   return {
@@ -42,6 +43,7 @@ async function dashboardPayload(db: Db) {
       totalCapacity: stats.totalCapacity,
     },
     mounts,
+    buckets,
     recentActivity,
   };
 }
@@ -58,6 +60,23 @@ adminRoutes.get('/stats', async (c) => {
   const db = getDb(c);
   return ok(c, await dashboardPayload(db));
 });
+
+// 桶 → 挂载点树（全部文件挂载点视图骨架；仪表盘已含同数据，无需重复拉全量 dashboard）
+adminRoutes.get('/mount-tree', async (c) => {
+  const db = getDb(c);
+  return ok(c, { buckets: await DashboardRepo.bucketTree(db) });
+});
+
+// 挂载点展开层：顶层文件夹 + 递归文件计数（可选按落桶 provider 过滤，仪表盘只显示计数）
+adminRoutes.get('/dashboard/mount-folders', async (c) => {
+  const db = getDb(c);
+  const mountId = c.req.query('mountId') ?? '';
+  const providerId = c.req.query('providerId') || undefined;
+  const mount = await MountRepo.getMountById(db, mountId);
+  if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+  return ok(c, await DashboardRepo.mountFolderSummary(db, mount, providerId));
+});
+
 
 // ============ 用户管理 ============
 adminRoutes.get('/users', async (c) => {
@@ -301,6 +320,30 @@ adminRoutes.patch('/files/:id/review', async (c) => {
   return ok(c, { message: '已更新' });
 });
 
+// ============ 全部文件：扁平化树视图 ============
+// 全命名空间按路径前缀取行（文件行 path=父目录、文件夹行 path=自身全路径），带属主用户名。
+// 与列表视图共用 5 项筛选（挂载点/存储桶/用户/可见性/哈希）；5000 行封顶 + truncated 标记；
+// 管理端不做 §4.4a 可见性过滤（管理员全量可见）。
+adminRoutes.get('/files/tree', async (c) => {
+  const db = getDb(c);
+  const q = c.req.query();
+  const { rows, truncated } = await FileRepo.listTree(db, {
+    withOwner: true,
+    limit: 5000,
+    filters: {
+      mountId: q.mount || undefined,
+      providerId: q.bucket || undefined,
+      ownerId: q.user || undefined,
+      visibility: q.visibility || undefined,
+      blobHashLike: q.hash || undefined,
+    },
+  });
+  return ok(c, {
+    items: rows.map((r) => ({ ...toFileListItem(r), ownerName: r.ownerName ?? '' })),
+    truncated,
+  });
+});
+
 // ============ 全部文件 ============
 adminRoutes.get('/files', async (c) => {
   const db = getDb(c);
@@ -539,7 +582,11 @@ adminRoutes.post('/announcements', async (c) => {
     title: parsed.data.title,
     content: parsed.data.content,
     level: parsed.data.level,
-    expiresAt: parsed.data.expiresIn ? Date.now() + parsed.data.expiresIn * 1000 : undefined,
+    displayMode: parsed.data.displayMode,
+    intervalSeconds: parsed.data.intervalSeconds,
+    kind: parsed.data.kind,
+    // until 模式的绝对截止时间复用既有 expires_at 列
+    expiresAt: parsed.data.endsAt,
   });
   return ok(c, { id }, undefined, 201);
 });

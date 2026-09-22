@@ -85,7 +85,14 @@ export const AnnouncementSchema = z.object({
   title: z.string().min(1).max(200),
   content: z.string().min(1).max(5000),
   level: z.enum(['info', 'warning', 'danger']).optional(),
-  expiresIn: z.number().int().min(60).optional(),
+  /** 显示时长策略：always/daily/interval/until/duration + toast 专用 once（§27） */
+  displayMode: z.enum(['always', 'daily', 'interval', 'until', 'duration', 'once']).optional(),
+  /** interval/duration 的间隔秒数 */
+  intervalSeconds: z.number().int().min(60).max(31536000).optional(),
+  /** until 模式的绝对截止时间（ms） */
+  endsAt: z.number().int().positive().optional(),
+  /** 呈现形态：banner 常驻横幅 / toast 临时弹窗 */
+  kind: z.enum(['banner', 'toast']).optional(),
 });
 
 // 文件封禁（§26）：PUT /api/admin/files/:id/ban —— true = 封禁、false = 解封

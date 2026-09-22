@@ -128,8 +128,8 @@ describe('baseline：种子态的 stats 与 null 容量兜底', () => {
     expect(data.stats.activeMounts).toBe(1);
     expect(data.stats.totalCapacity).toBeNull(); // 全部挂载点未设置容量
 
-    // 顶层键：dashboard 保留 requests24h
-    expect(Object.keys(data).sort()).toEqual(['mounts', 'recentActivity', 'requests24h', 'stats']);
+    // 顶层键：dashboard 保留 requests24h；buckets = 桶泳道树（活跃挂载点图/挂载点视图共用）
+    expect(Object.keys(data).sort()).toEqual(['buckets', 'mounts', 'recentActivity', 'requests24h', 'stats']);
     expect(Object.keys(data.stats).sort()).toEqual([
       'activeMounts', 'files', 'providers', 'totalCapacity', 'usedSpace', 'userRoles', 'users',
     ]);
@@ -153,7 +153,7 @@ describe('baseline：种子态的 stats 与 null 容量兜底', () => {
 
   it('/stats 输出同一契约但不带 requests24h', async () => {
     const data = await getStats();
-    expect(Object.keys(data).sort()).toEqual(['mounts', 'recentActivity', 'stats']);
+    expect(Object.keys(data).sort()).toEqual(['buckets', 'mounts', 'recentActivity', 'stats']);
     expect(Object.keys(data.stats).sort()).toEqual([
       'activeMounts', 'files', 'providers', 'totalCapacity', 'usedSpace', 'userRoles', 'users',
     ]);
