@@ -284,7 +284,7 @@ bunx wrangler pages deploy dist --project-name=picumet
 | :--- | :--- | :--- | :--- |
 | `ENVIRONMENT` | 变量 | 必需 | `development` 或 `production`,控制 fail-closed 的 seed 与限流。 |
 | `rate_limit_enabled` | `system_settings` | 可选 | 关闭后不限制请求速率（生产环境默认启用）。 |
-| `rate_limit_requests_per_minute` | `system_settings` | 可选 | 每 IP 每分钟请求数（默认 50）；已登录用户按 2 倍；登录/注册等认证接口固定 5 次/分钟；自由模式按会话 60、按用户 120 次/分钟。 |
+| `rate_limit_requests_per_minute` | `system_settings` | 可选 | 每 IP 每分钟请求数（默认 50）；已登录用户按 2 倍；服务端把登录/注册等认证接口固定为 5 次/分钟；自由模式按会话 60、按用户 120 次/分钟。 |
 | `max_concurrent_transfers` | `system_settings` | 可选 | 同时传输上限（默认 4，0 = 不限）；按用户（未登录按 IP）限制上传与下载网关的在途请求数，超限 429。 |
 | `rate_limit_downloads_per_minute` | `system_settings` | 可选 | 下载限速（默认 120，0 = 不限）；按用户（未登录按 IP）限制每分钟下载类请求，超限 429。 |
 | `direct_prefix` / `root_target` | `system_settings` | 可选 | **只作用于文件直链**：直链前缀（`''`/`/d`/`/download`/`/raw`）与 `/` 的语义（落地页/文件页/直链）。文件浏览页固定 `/files`。 |

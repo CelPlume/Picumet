@@ -284,7 +284,7 @@ Concurrent runs for the same branch cancel each other (`concurrency.cancel-in-pr
 | :--- | :--- | :--- | :--- |
 | `ENVIRONMENT` | var | Yes | `development` or `production`; gates fail-closed seeding and rate limiting. |
 | `rate_limit_enabled` | `system_settings` | No | Turning it off removes request-rate limits (enabled by default in production). |
-| `rate_limit_requests_per_minute` | `system_settings` | No | Requests per IP per minute (default 50); signed-in users get ×2; auth endpoints such as sign-in and sign-up are fixed at 5 per minute; free mode allows 60 per session and 120 per user per minute. |
+| `rate_limit_requests_per_minute` | `system_settings` | No | Requests per IP per minute (default 50); signed-in users get ×2; the server pins auth endpoints such as sign-in and sign-up at 5 per minute; free mode allows 60 per session and 120 per user per minute. |
 | `max_concurrent_transfers` | `system_settings` | No | Maximum concurrent transfers (default 4, 0 = unlimited); caps in-flight requests per user (per IP when signed out) on uploads and the download gateway and returns 429 beyond it. |
 | `rate_limit_downloads_per_minute` | `system_settings` | No | Download rate limit (default 120, 0 = unlimited); caps download-type requests per minute per user (per IP when signed out) and returns 429 beyond it. |
 | `direct_prefix` / `root_target` | `system_settings` | No | **Applies to direct file links only**: the direct-link prefix (`''`/`/d`/`/download`/`/raw`) and the meaning of `/` (landing page / files page / direct links). The file browser page stays on `/files`. |
