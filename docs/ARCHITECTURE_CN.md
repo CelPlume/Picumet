@@ -316,7 +316,7 @@ services/admin/
 └── types.ts
 ```
 
-仪表板与统计（`GET /api/admin/dashboard`、`/stats`）由 `db/repos/dashboard.ts` 聚合：顶层 `stats`（角色计数、文件数、占用空间、桶数、活跃挂载点、容量合计）+ 每挂载点 `mounts`（主桶/备用池成员/用量/文件数），共 8 条聚合查询 + 内存组装，禁止 N+1；全部文件列表的挂载点/桶/哈希富化同样按页批量 `IN` 查询。
+仪表板与统计（`GET /api/admin/dashboard`、`/stats`）由 `db/repos/dashboard.ts` 聚合：顶层 `stats`（角色计数、文件数、占用空间、桶数、活跃挂载点、容量合计）+ 每挂载点 `mounts`（主桶/备用池成员/用量/文件数）+ `buckets` 桶泳道树（`bucketTree()`：按 `file_metadata.provider_id` 分桶的挂载点节点与零文件备用清单）+ `mountFolderSummary()`（挂载点展开层的顶层文件夹递归计数，按桶过滤），内存组装，禁止 N+1；全部文件列表的挂载点/桶/哈希富化同样按页批量 `IN` 查询。
 
 **依赖**：用户、分享、日志、设置、公告、提供商、挂载、规则等仓库，`storage/providers.ts`，`utils/ssrf.ts`。
 
@@ -401,7 +401,7 @@ services/public/
 | `middleware/free-mode.ts` | 自由模式的跨站、CSRF、限流守卫。 |
 | `middleware/global.ts` | 初始化请求上下文、CORS、安全响应头。 |
 
-`db/` 是唯一的数据访问层。`Db` 类要么包 D1 后端（生产环境 Workers），要么包 `node:sqlite` 后端（本地测试），业务代码不感知用的是哪个。领域仓库在 `db/repos/` 下：用户、配额、提供商、挂载、文件、会话、任务、规则、API 密钥、分享、日志、设置、公告、对账。
+`db/` 是唯一的数据访问层。`Db` 类要么包 D1 后端（生产环境 Workers），要么包 `node:sqlite` 后端（本地测试），业务代码不感知用的是哪个。领域仓库在 `db/repos/` 下：用户、配额、提供商、挂载、文件、会话、任务、规则、API 密钥、分享、日志、设置、公告、仪表板聚合、内容对象、角色默认、对账。
 
 `utils/` 下有 `path.ts`（规范化、边界判断、模式匹配）、`crypto.ts`（JWT、bcrypt、AES-GCM）、`ssrf.ts`（endpoint 校验）、`smtp.ts`、`base64.ts`。
 
@@ -429,13 +429,13 @@ D1 里存以下核心表：
 | `download_tokens` | 一次性下载令牌，原子消费。 |
 | `access_logs` | 上传、下载、删除、分享、密码验证等操作日志。 |
 | `system_settings` | 键值形式的站点设置。 |
-| `announcements` | 站点公告，以及每用户关闭记录。 |
+| `announcements` | 站点公告、每用户关闭记录，外加显示策略列（§27）：`display_mode`（`always`/`daily`/`interval`/`until`/`duration`/`once`）、`interval_seconds` 与 `kind`（`banner`/`toast`）。 |
 | `reconciliation_reports` | 对象与数据库对账产生的报告。 |
 | `orphan_objects` | 删除失败的对象，等待重试。 |
 
 迁移脚本在 `workers/migrations/` 下：
 
-- `0001_initial.sql`：单文件迁移。包含基础表结构，以及按时间顺序追加的增量段（分片与下载令牌、挂载隔离与会话版本、SMTP/OTP、提供商类型收敛、用户模型、存储池 §E、内容哈希寻址 §F 等）。历史迁移已合并进该文件；新增变更以新段追加，既有的段不再改写（存量库按缺失段补跑）。
+- `0001_initial.sql`：单文件迁移。包含基础表结构，以及按时间顺序追加的增量段（分片与下载令牌、挂载隔离与会话版本、SMTP/OTP、提供商类型收敛、用户模型、存储池 §E、内容哈希寻址 §F、公告显示时长 §27 等）。历史迁移已合并进该文件；新增变更以新段追加，既有的段不再改写（存量库按缺失段补跑）。
 
 ## 术语表
 

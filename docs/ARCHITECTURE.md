@@ -146,7 +146,7 @@ The evaluation order runs from highest to lowest priority:
 6. Owner-permission fallback.
 7. Default deny.
 
-**Role default permissions (the user permission model).** `role_defaults.permissions` holds each role's default permission list (a five-item matrix: `read` / `write` / `update` / `delete` / `download`; **`share` is not part of it** — sharing is toggled by the `can_share` capability bit, so one concern is never configured in two places). Built-in role seeds: `admin` and `user` = all five plus `capabilities=['can_share']`, `guest` = `download` only. **User-level override**: `users.permissions` (NULL = follow the role), with precedence `users.permissions` → `role_defaults.permissions` → the constant table `DEFAULT_ROLE_PERMISSIONS`. `getPrincipal` loads the effective list into `Principal.defaultPermissions`, which the own-space fallback in the decision order allows through (`share` actions keep their existing allow semantics inside the own space). Admin "Default user settings" edits the matrix, capability bits, alias, and default path/quota, and **saving a role default overrides the individual settings of every member of that role** (including `users.permissions`). A role also has an **alias** (`role_defaults.alias`, such as "Administrator"), and rule subjects accept that alias in addition to the role name (`loadPrincipalRules` resolves it to the role and merges it into the candidate set).
+**Role default permissions (the user permission model).** `role_defaults.permissions` holds each role's default permission list (a five-item matrix: `read` / `write` / `update` / `delete` / `download`; **`share` is not part of it** — the `can_share` capability bit controls sharing, so one concern is never configured in two places). Built-in role seeds: `admin` and `user` = all five plus `capabilities=['can_share']`, `guest` = `download` only. **User-level override**: `users.permissions` (NULL = follow the role), with precedence `users.permissions` → `role_defaults.permissions` → the constant table `DEFAULT_ROLE_PERMISSIONS`. `getPrincipal` loads the effective list into `Principal.defaultPermissions`, which the own-space fallback in the decision order allows through (`share` actions keep their existing allow semantics inside the own space). Admin "Default user settings" edits the matrix, capability bits, alias, and default path/quota, and **saving a role default overrides the individual settings of every member of that role** (including `users.permissions`). A role also has an **alias** (`role_defaults.alias`, such as "Administrator"), and rule subjects accept that alias in addition to the role name (`loadPrincipalRules` resolves it to the role and merges it into the candidate set).
 
 **Guest visibility (per file).** `file_metadata.guest_visibility` is `NULL` / `none` / `download` / `view`; when unset it follows the role default, so **guests can only download by default**. On evaluation `syntheticGuestRule` synthesizes the file's guest visibility into one allow rule and merges it into the candidate set: `download` allows downloads, `view` allows viewing (list/preview) plus downloads, and `none` allows nothing. The "Default user permissions" section of the file properties panel is its only configuration entry point.
 
@@ -154,7 +154,7 @@ Two security boundaries matter:
 
 - `isPathWithinBoundary` compares path segments rather than using `startsWith`.
 - An API key with no matching rule receives a deny; the system never defaults to allow.
-- Visibility only relaxes reads and downloads: no write decision or path boundary is affected by it, and `deny` rules always override synthesized rules.
+- Visibility only relaxes reads and downloads: it touches no write decision or path boundary, and `deny` rules always override synthesized rules.
 - Guest visibility likewise only relaxes reads and downloads, and it **never crosses a mount boundary**; share links (`/api/shares/*`) are semantically independent and unaffected by guest visibility.
 
 **Dependencies**: `utils/path.ts`, the rule repository, and `shared/errors.ts`.
@@ -217,7 +217,7 @@ services/shares/
 └── types.ts
 ```
 
-**Password retrievability.** Creating a share writes the password to both `password_hash` (for verification) and `password_cipher` (an AES-GCM ciphertext with an `enc:` prefix, using the same encryption as stored provider credentials); **only the creator's own list endpoint** `GET /api/shares` decrypts and returns the plaintext `password` — public endpoints (details/directory/download/preview) never hand out the plaintext or the ciphertext. When the ciphertext is missing or decryption fails, the field is simply omitted and the endpoint does not error. Password-protected shares also accept a direct `?password=<plaintext>` entry (equivalent to verified; a wrong password returns 401).
+**Password retrievability.** Creating a share writes the password to both `password_hash` (for verification) and `password_cipher` (an AES-GCM ciphertext with an `enc:` prefix, using the same encryption as stored provider credentials); **only the creator's own list endpoint** `GET /api/shares` decrypts and returns the plaintext `password` — public endpoints (details/directory/download/preview) never hand out the plaintext or the ciphertext. When the ciphertext is missing or decryption fails, the field disappears and the endpoint does not error. Password-protected shares also accept a direct `?password=<plaintext>` entry (equivalent to verified; a wrong password returns 401).
 
 Download tokens: `consumeDownloadToken` uses `DELETE ... RETURNING` for a single atomic consumption, so concurrent requests cannot reuse a one-time token.
 
@@ -245,12 +245,12 @@ Provider selection:
 
 The storage layer also normalizes cross-provider details: object egress goes through `serveObject`, which owns Range handling (`206` on hit, `416` on invalid ranges, upstream failures classified via `ProviderError` as `502`); batch deletes follow the S3 convention of at most 1000 objects per batch, surfacing each failure in the `Errors` container as a `ProviderError` so callers can fall back to per-object deletes; copies above 5 GB (the move Saga's large-file path) use `UploadPartCopy` to copy in parts; and listing with a `Delimiter` aggregates common prefixes into virtual directories.
 
-**Content-hash addressing (§F).** All writes go through `services/storage/content.ts` plus `services/files/write.ts`, and object bodies are stored under their content SHA-256 (`<prefix>/picumet:blob/<h2>/<hash>`; the namespace segment contains `:`, which no user virtual key can contain), shared across files with equal content:
+**Content-hash addressing (§F).** All writes go through `services/storage/content.ts` plus `services/files/write.ts`, and writes place object bodies under their content SHA-256 (`<prefix>/picumet:blob/<h2>/<hash>`; the namespace segment contains `:`, which no user virtual key can contain), shared across files with equal content:
 
 - Write strategy: when the S3 gateway has already verified the whole payload (SigV4) the hash is known — an existing index hit skips the object write entirely, otherwise the content key is written directly. Streaming writes (WebDAV, compat uploads, AList, Worker-proxied sessions) use a staging key plus an inline hash: delete the staging object on a hit, otherwise copy it to the content key and delete it.
 - File rows keep `object_key` as the unique virtual key and add `physical_key` + `blob_hash`; reads, deletes and moves resolve `physicalObjectKey(file)`, so rename and move are metadata-only operations that never copy objects.
 - Reference release happens inside the same SQL batch as the row delete/rewrite (`NOT EXISTS (SELECT 1 FROM file_metadata WHERE blob_hash = ?)` — no refcount column, no read-modify-write race); the last reference enqueues the object in `blob_gc`, where a scheduled task deletes it after a grace period, re-checking references and retrying on failure.
-- Multipart upload sessions stay path-keyed (`blob_hash` NULL): parts go straight to the provider, so their objects remain exclusive and are deleted directly.
+- Multipart upload sessions stay path-keyed (`blob_hash` NULL): parts go straight to the provider, so their objects remain exclusive and the cleanup removes them directly.
 - Quotas keep counting logical sizes (each file counts its own size), so capacity gates stay conservative.
 
 **Read-path failover (§G).** Object reads go through `serveFileObject` / `getFileObject` in `services/storage/failover.ts`. When the bucket recorded for a file cannot return the object (404) or the upstream fails (502 / `ProviderError`), the read falls through to the other pool members of the same mount in order — KV location hint → the file's recorded provider → remaining members by weight — capped at four candidates, with an 8-second limit per attempt so an unreachable bucket cannot stall the request. A replica hit stores `serve:loc:<fileId>` (provider id plus a physical-key fingerprint, 1-hour TTL) so later reads prefer that bucket; rewriting the file invalidates the hint through the fingerprint. Cross-bucket **copy** is not part of this layer: replicating objects into secondary buckets belongs to the future Go backend. The admin surface plans a per-mount "automatic cross-bucket sync" switch that is only selectable in a Go-backend environment — the current Node/Workers backend does not implement the capability (control rendered disabled); pooling (§E) and read failover (§G) work without it.
@@ -259,7 +259,7 @@ The storage layer also normalizes cross-provider details: object egress goes thr
 
 > Field note: the row first stored `path` = the parent directory, but folder rows store their **own absolute path**. The file tree therefore treated the mount folder as a root and expanded the same level forever, freezing `/files`. Fixed in code and repaired for existing rows by migration section 20 (`UPDATE ... SET path = substr(object_key, 8) WHERE type='folder' AND object_key LIKE 'folder:/%' AND path <> substr(object_key, 8)`); `mount-folders.test.ts` asserts the convention.
 
-**Failover candidates are buckets only.** Read fallback candidates always come from `mount_providers` → `storage_providers` (independent buckets); folders — mount-point folders or user folders such as a "backup" directory — are never candidates, and cross-bucket replication is planned bucket-by-bucket (see §G). A folder-level copy is not DR: replicas inside the same bucket share its failure domain.
+**Failover candidates are buckets only.** Read fallback candidates always come from `mount_providers` → `storage_providers` (independent buckets); folders — mount-point folders or user folders such as a "backup" directory — are never candidates, and §G plans cross-bucket replication bucket by bucket. A folder-level copy is not DR: replicas inside the same bucket share its failure domain.
 
 **Dependencies**: the provider and mount repositories and `utils/crypto.ts` for secret decryption.
 
@@ -396,12 +396,12 @@ The middleware layer handles cross-cutting concerns:
 | `middleware/auth.ts` | `authMiddleware`, `optionalAuthMiddleware`, `apiKeyAuthMiddleware`, and `adminMiddleware`; also exposes `getDb` and `getClientIp`. |
 | `middleware/csrf.ts` | Validates the CSRF token for cookie-authenticated write operations. |
 | `middleware/rate-limit.ts` | KV fixed-window rate limiting: global limits per IP (`rate_limit_requests_per_minute`, 50 requests per minute by default) and per signed-in user (×2); auth endpoints get their own 5 per minute per IP; free mode adds 60 per session / 120 per user per minute. Production only, best-effort (KV has no atomic increment). |
-| `middleware/concurrency.ts` | Transfer concurrency limiting: every upload channel and the download gateway cap in-flight requests per user (per IP when signed out) at `max_concurrent_transfers` (default 4, 0 = unlimited) and answer `429 CONCURRENCY_LIMIT_EXCEEDED` beyond it; in-flight slots live in `transfer_slots` (D1 serializes the writes, so the count is trustworthy) and are released when the response finishes, including on error, with anything older than 30 minutes treated as a leak. |
+| `middleware/concurrency.ts` | Transfer concurrency limiting: every upload channel and the download gateway cap in-flight requests per user (per IP when signed out) at `max_concurrent_transfers` (default 4, 0 = unlimited) and answer `429 CONCURRENCY_LIMIT_EXCEEDED` beyond it; in-flight slots live in `transfer_slots` (D1 serializes the writes, so the count is trustworthy) and `finally` frees them when the response finishes (errors included), with anything older than 30 minutes treated as a leak. |
 | `middleware/download-limit.ts` | Download rate limiting: counts only download-type requests (download gateway, share download/preview, file download links, public-directory direct links) per user (per IP when signed out) per minute (`rate_limit_downloads_per_minute`, default 120, 0 = unlimited) and answers 429 beyond it; mounted on the protected API, the share API, the gateway, and the public directory, and narrowed by path inside the middleware; skipped outside production and fail-open on storage errors. |
 | `middleware/free-mode.ts` | Enforces free-mode cross-site, CSRF, and rate-limit guards. |
 | `middleware/global.ts` | Initializes the request context, CORS, and security headers. |
 
-The `db/` directory is the single data-access layer. The `Db` class wraps either a D1 backend (production on Workers) or a `node:sqlite` backend (local tests), so business code does not know which one runs. Domain repositories live under `db/repos/`: users, quotas, providers, mounts, files, sessions, jobs, rules, API keys, shares, logs, settings, announcements, and reconciliation.
+The `db/` directory is the single data-access layer. The `Db` class wraps either a D1 backend (production on Workers) or a `node:sqlite` backend (local tests), so business code does not know which one runs. Domain repositories live under `db/repos/`: users, quotas, providers, mounts, files, sessions, jobs, rules, API keys, shares, logs, settings, announcements, dashboard, blobs, role defaults, and reconciliation.
 
 The `utils/` directory holds `path.ts` (normalization, boundary checks, pattern matching), `crypto.ts` (JWT, bcrypt, AES-GCM), `ssrf.ts` (endpoint validation), `smtp.ts`, and `base64.ts`.
 
@@ -429,13 +429,13 @@ D1 stores the following core tables:
 | `download_tokens` | One-time download tokens consumed atomically. |
 | `access_logs` | Audit log of upload, download, delete, share, and verify actions. |
 | `system_settings` | Key-value site settings. |
-| `announcements` | Site announcements and per-user dismissal records. |
+| `announcements` | Site announcements and per-user dismissal records, plus the display-policy columns (§27): `display_mode` (`always`/`daily`/`interval`/`until`/`duration`/`once`), `interval_seconds`, and `kind` (`banner`/`toast`). |
 | `reconciliation_reports` | Reports from object-to-database reconciliation. |
 | `orphan_objects` | Objects whose deletion failed, pending retry. |
 
 Migrations live in `workers/migrations/`:
 
-- `0001_initial.sql` is the single migration file: the base schema plus dated sections appended over time (multipart parts and download tokens, mount isolation and session version, SMTP/OTP, provider type unification, the user model, storage pool §E, content-hash addressing §F, and so on). Historical migrations were merged into this file; new changes append a section and never rewrite existing ones, so existing databases only re-apply the missing sections.
+- `0001_initial.sql` is the single migration file: the base schema plus dated sections appended over time (multipart parts and download tokens, mount isolation and session version, SMTP/OTP, provider type unification, the user model, storage pool §E, content-hash addressing §F, announcement display policies §27, and so on). Earlier migrations merged into this file; new changes append a section and never rewrite existing ones, so existing databases only re-apply the missing sections.
 
 ## Glossary
 
@@ -485,7 +485,7 @@ Capability matrix:
 | Custom domain | Yes | Yes | Yes (via CDN) |
 | Checksum (MD5) | Yes | Yes | Yes |
 
-Credential model: all providers share one S3-protocol configuration instead of a per-provider discriminated union. The config holds `type`, `name`, `endpoint`, `region`, `bucket`, `accessKeyId`, and `secretAccessKey`, plus optional `publicDomain` and `pathPrefix` (`upload_domain` has been removed). The store encrypts credentials with AES-GCM and decrypts them only when the provider client needs them. `type` keeps two values, `r2` and `s3`: an `r2` provider with an empty `endpoint` uses the Workers R2 binding directly; anything with a non-empty `endpoint` (including the former Oracle, folded into `s3`) goes through the S3-protocol client. `endpoint`, `accessKeyId`, and `secretAccessKey` must be provided together or left empty together.
+Credential model: all providers share one S3-protocol configuration instead of a per-provider discriminated union. The config holds `type`, `name`, `endpoint`, `region`, `bucket`, `accessKeyId`, and `secretAccessKey`, plus optional `publicDomain` and `pathPrefix` (`upload_domain` no longer exists). The store encrypts credentials with AES-GCM and decrypts them only when the provider client needs them. `type` keeps two values, `r2` and `s3`: an `r2` provider with an empty `endpoint` uses the Workers R2 binding directly; anything with a non-empty `endpoint` (including the former Oracle, folded into `s3`) goes through the S3-protocol client. `endpoint`, `accessKeyId`, and `secretAccessKey` must arrive together or stay empty together.
 
 ## Security design
 
