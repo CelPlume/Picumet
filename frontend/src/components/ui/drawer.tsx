@@ -70,12 +70,18 @@ export function Drawer({
     top: 'top-0 left-0 w-full',
     bottom: 'bottom-0 left-0 w-full',
   };
-
-  const sideAnim: Record<string, string> = {
-    left: 'animate-slide-in-from-left',
-    right: 'animate-slide-in-from-right',
-    top: 'animate-slide-in-from-top',
-    bottom: 'animate-slide-in-from-bottom',
+  // 隐藏态/显示态： entered 翻转驱动 transition（与 Dialog 完全同款）
+  const sideHidden: Record<string, string> = {
+    left: '-translate-x-full opacity-0',
+    right: 'translate-x-full opacity-0',
+    top: '-translate-y-full opacity-0',
+    bottom: 'translate-y-full opacity-0',
+  };
+  const sideShown: Record<string, string> = {
+    left: 'translate-x-0 opacity-100',
+    right: 'translate-x-0 opacity-100',
+    top: 'translate-y-0 opacity-100',
+    bottom: 'translate-y-0 opacity-100',
   };
 
   const widthCls =
@@ -84,23 +90,25 @@ export function Drawer({
       : 'h-[80vh] max-h-[80vh]';
 
   return (
-    <div
-      className={cn(
-        'fixed inset-0 z-50 transition-opacity duration-300 ease-out',
-        entered ? 'opacity-100' : 'opacity-0',
-        className
-      )}
-    >
-      {/* Backdrop：压暗与模糊同步 */}
-      <div className="glass-overlay animate-dialog-overlay absolute inset-0" onClick={onClose} />
-
-      {/* Panel */}
+    <div className="fixed inset-0 z-50" aria-hidden={!open}>
+      {/* Backdrop：压暗与模糊随 entered 同步过渡（与 Dialog 同款 transition 写法） */}
       <div
         className={cn(
-          'glass-dialog fixed z-10 flex flex-col text-card-foreground shadow-xl',
+          'glass-overlay absolute inset-0 transition-opacity duration-300 ease-out',
+          entered ? 'opacity-100' : 'opacity-0'
+        )}
+        onClick={onClose}
+      />
+
+      {/* Panel：与 Dialog 同款 entered 过渡——首帧以关闭样式绘制（双 rAF），再切入终态；
+          opacity/transform 过渡全程保留 backdrop-filter，无 keyframes 合成器掉模糊问题 */}
+      <div
+        className={cn(
+          'glass-dialog fixed z-10 flex flex-col text-card-foreground shadow-xl transition-[opacity,transform] duration-300 ease-out',
           sideStyles[side],
           widthCls,
-          sideAnim[side]
+          entered ? sideShown[side] : sideHidden[side],
+          className
         )}
       >
         {title && (
