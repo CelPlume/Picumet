@@ -56,6 +56,95 @@ export interface FileListResponse {
   mount?: { id: string; name: string; sortBy: string; sortOrder: string } | null;
 }
 
+/** 树视图 / 挂载点视图共享的行类型：文件列表项 + 管理端附加的属主名 */
+export type TreeFileRow = FileListItem & { ownerName?: string };
+
+/** 树视图数据源：当前挂载点整棵子树（文件行 path=父目录、文件夹行 path=自身全路径） */
+export function useFilesTreeQuery(path: string, enabled = true) {
+  return useQuery({
+    queryKey: ['files-tree', path],
+    queryFn: async () =>
+      (await apiFetch<{ items: FileListItem[]; truncated: boolean }>(`/api/files/tree?path=${encodeURIComponent(path)}`)).data,
+    enabled,
+  });
+}
+
+/** 管理端树视图数据源：全命名空间（含属主名/封禁态）；与列表视图共用 5 项筛选 */
+export function useAdminTreeQuery(
+  filters: { mount?: string; bucket?: string; user?: string; visibility?: string; hash?: string } = {},
+  enabled = true
+) {
+  return useQuery({
+    queryKey: ['admin-files-tree', filters],
+    queryFn: async () => {
+      const q = new URLSearchParams();
+      if (filters.mount) q.set('mount', filters.mount);
+      if (filters.bucket) q.set('bucket', filters.bucket);
+      if (filters.user) q.set('user', filters.user);
+      if (filters.visibility) q.set('visibility', filters.visibility);
+      if (filters.hash) q.set('hash', filters.hash);
+      return (await apiFetch<{ items: TreeFileRow[]; truncated: boolean }>(`/api/admin/files/tree?${q.toString()}`)).data;
+    },
+    enabled,
+  });
+}
+
+/** 桶 → 挂载点树（挂载点视图骨架；与仪表盘 bucketTree 同源） */
+export interface BucketMountNode {
+  id: string;
+  name: string;
+  mountPath: string;
+  status: string;
+  capacityBytes: number | null;
+  fileCount: number;
+  usedSpace: number;
+  role: 'primary' | 'member';
+}
+export interface BucketNode {
+  id: string;
+  name: string;
+  bucket: string;
+  type: string;
+  fileCount: number;
+  usedSpace: number;
+  mounts: BucketMountNode[];
+  standbys: Array<{
+    mountId: string;
+    mountName: string;
+    mountPath: string;
+    primaryProviderId: string;
+    primaryProviderName: string;
+  }>;
+}
+export function useMountTreeQuery(enabled = true) {
+  return useQuery({
+    queryKey: ['admin-mount-tree'],
+    queryFn: async () => (await apiFetch<{ buckets: BucketNode[] }>('/api/admin/mount-tree')).data,
+    enabled,
+  });
+}
+
+/** 挂载点展开层：顶层文件夹 + 递归文件计数（可选按落桶过滤，仪表盘计数用） */
+export function useMountFolderSummary(mountId: string | null, providerId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['admin-mount-folders', mountId, providerId],
+    queryFn: async () => {
+      const q = new URLSearchParams({ mountId: mountId ?? '' });
+      if (providerId) q.set('providerId', providerId);
+      return (
+        await apiFetch<{
+          mountId: string;
+          providerId: string | null;
+          rootFiles: { count: number; size: number };
+          folders: Array<{ id: string; name: string; path: string; fileCount: number; usedSpace: number }>;
+          truncated: boolean;
+        }>(`/api/admin/dashboard/mount-folders?${q.toString()}`)
+      ).data;
+    },
+    enabled: enabled && !!mountId,
+  });
+}
+
 export function useFilesQuery(
   path: string,
   opts: { search?: string; sort?: string; order?: string; enabled?: boolean; page?: number; limit?: number } = {}

@@ -1,5 +1,5 @@
 // 管理员仪表板：四张紧凑统计卡 + 活跃挂载点关系图 + 存储使用/近期活动（GET /api/admin/dashboard）
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Users, Files, HardDrive, Database, Activity } from 'lucide-react';
 import { Card, CardContent, EmptyState, Progress } from '@/components/ui/core';
@@ -7,6 +7,8 @@ import { StatCardSkeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { formatBytes, formatDateTime } from '@/lib/utils';
 import { useAuth } from '@/stores/auth';
+import { BucketMountGraph } from '@/components/admin/BucketMountGraph';
+import type { BucketNode } from '@/components/files/data';
 
 interface DashboardStats {
   users: { total: number; active: number };
@@ -39,6 +41,7 @@ interface DashboardActivity {
 interface DashboardData {
   stats: DashboardStats;
   mounts: DashboardMount[];
+  buckets: BucketNode[];
   recentActivity: DashboardActivity[];
 }
 
@@ -95,13 +98,13 @@ export default function AdminDashboard() {
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
           {cards.map((c) => (
             <Card key={c.label}>
-              <CardContent className="px-3 py-1.5">
+              <CardContent className="px-3 py-1">
                 <div className="flex items-center gap-2">
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">{c.icon}</div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[11px] leading-tight text-muted-foreground">{c.label}</p>
-                    <p className="text-lg font-semibold leading-tight">{c.value}</p>
-                    {c.sub && <div className="truncate text-[10px] leading-tight text-muted-foreground">{c.sub}</div>}
+                    <p className="truncate text-xs leading-tight text-muted-foreground">{c.label}</p>
+                    <p className="text-xl font-semibold leading-tight">{c.value}</p>
+                    {c.sub && <div className="truncate text-[11px] leading-tight text-muted-foreground">{c.sub}</div>}
                   </div>
                 </div>
               </CardContent>
@@ -110,7 +113,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* 底部：左 挂载点关系图（3/5）+ 右 存储使用/近期活动（2/5） */}
+      {/* 底部：左 桶泳道挂载点图（3/5）+ 右 存储使用/近期活动（2/5） */}
       {stats && (
         <div className="grid items-start gap-3 lg:grid-cols-5">
           <Card className="lg:col-span-3">
@@ -119,45 +122,12 @@ export default function AdminDashboard() {
                 {t('admin.dashboard.activeMounts')}
                 <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{stats.activeMounts}</span>
               </h3>
-              {mounts.length === 0 ? (
+              {(data?.buckets ?? []).length === 0 ? (
                 <EmptyState compact icon={<Database className="h-4 w-4" />} title={t('admin.dashboard.noMounts')} description={t('admin.dashboard.noMountsDesc')} />
               ) : (
-                <div className="space-y-2">
-                  {mounts.map((m) => (
-                    <div key={m.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
-                      {/* 挂载点名 */}
-                      <span
-                        className="inline-flex max-w-full items-center truncate rounded-full bg-muted px-2.5 py-1 text-xs font-medium"
-                        title={m.mountPath}
-                      >
-                        {m.name}
-                      </span>
-                      <span aria-hidden className="h-px w-4 shrink-0 bg-border" />
-                      {/* 主桶（在用「拼好桶」，实底） */}
-                      <span
-                        className="inline-flex max-w-full items-center truncate rounded-full bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
-                        title={`${m.provider.name} · ${m.provider.bucket}`}
-                      >
-                        {m.provider.name}
-                      </span>
-                      {/* 备用桶（琥珀描边） */}
-                      {m.standbys.map((s) => (
-                        <Fragment key={s.id}>
-                          <span aria-hidden className="h-px w-4 shrink-0 bg-border" />
-                          <span
-                            className="inline-flex max-w-full items-center truncate rounded-full border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-600 dark:text-amber-400"
-                            title={`${s.name} · ${s.bucket}`}
-                          >
-                            {s.name}
-                            <span className="ml-1 opacity-60">×{s.weight}</span>
-                          </span>
-                        </Fragment>
-                      ))}
-                    </div>
-                  ))}
-                </div>
+                <BucketMountGraph buckets={data?.buckets ?? []} />
               )}
-              {mounts.length > 0 && (
+              {(data?.buckets ?? []).length > 0 && (
                 <div className="mt-3 flex items-center gap-4 border-t pt-2 text-[11px] text-muted-foreground">
                   <span className="flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full bg-primary" />
