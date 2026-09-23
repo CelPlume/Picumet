@@ -319,6 +319,18 @@ Terminology note: the **guest role** (a signed-in account with `role='guest'`) d
 | Banner policies and toasts | Client policy renderer (always/daily/interval/until/duration plus a local timestamp map), `kind=toast` temporary popups with title/content through the toast system, left color stripe removed; admin form adds kind/mode selects with conditional interval/until/duration inputs and per-row policy summaries | frontend |
 | Layout and tokens | Bounded height chain (`h-screen` shell, banner-aware table shrink, `flex-1 min-h-0` replacing viewport-`calc` caps), native scrollbars removed, sidebar indicator `inset-x-2` plus primary hover tokens, dropdown/select accent tokens, drawer entrance on the Dialog transition pattern, per-device cards-per-row (mobile 2–4 default 3) | frontend |
 
+## Motion tiers, entrance animations and admin table headers (§33, 2026-09-22)
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Motion tiers | `theme.motionLevel` (`off` / `default` / `all`) on `<html data-motion>` with centralized CSS gating in `index.css`: `off` kills all animation/transition, `default` keeps functional animations (charts, tabs, dialogs, drawers, loading) and drops decorative entrances, `all` adds them; `prefers-reduced-motion` falls back to the same 0.01ms + zero-delay treatment; `MotionSlider` in appearance settings | frontend |
+| Reveal primitives | `components/ui/reveal.tsx`: `.reveal` (fade + 8px rise) and `.reveal-row` (fade only, no row translation) keyframes, `revealDelay` / `innerDelay` delay helpers (block step 40ms, fine step 25ms, inner base 60ms, capped at the tenth item), `animation-fill-mode: both` so the first frame reserves space | frontend |
+| Page coverage | Two-layer entrance ordering (toolbar → card → header → rows) on dashboard, users, all files, logs, permissions, shares, mounts, providers, access rules, API keys, personalization, settings, shares settings; card-inner fields fade row by row via `innerDelay`; dashboard spacing unified with settings (16px vertical, 24px column rhythm) | frontend |
+| Flat tree entrance | Tree rows stagger once per view mount behind a settled gate (~700ms) so virtual-scroll remounts never replay; view switching (`key={view}`) re-runs the entrance | frontend |
+| Dropdown cascade | Direct children of `.animate-dropdown` fade in one by one in the `all` tier (30ms base, 20ms step, capped at the twelfth item) | frontend |
+| Table headers | Admin files/logs keep the committed two-part header (header table outside the scroll container on card glass) — the sticky frosted-header experiment was reverted after Chromium's `backdrop-filter` proved not to sample content scrolled under sticky elements; body horizontal scroll syncs the header via `translateX(-scrollLeft)`; name/path columns gained `minmax` floors so narrow containers overflow into horizontal scrolling instead of collapsing tracks onto neighboring columns; headers are `whitespace-nowrap` single-line (shares table header collapsed from two lines to one) | frontend |
+| Trends endpoint docs | `GET /api/admin/dashboard/trends` documented in both API references (metric/granularity/from/to, 2-year cap, 400-bucket ceiling) | docs |
+
 ## Current baseline
 
 - Backend: 40 test files / 359 Vitest tests pass; `tsc --noEmit` clean.
