@@ -578,6 +578,51 @@ function normalizePath(path: string): string {
 const canonicalPath = normalizePath(req.query.path);
 ```
 
+### 表头磨砂（sticky + backdrop-filter）
+
+❌ **错误**：把表头做成滚动容器内的 sticky 元素并指望 backdrop-filter 磨砂
+```tsx
+// Chromium 对 position: sticky 元素的 backdrop-filter 不采样其下滚动内容，
+// 行从表头下穿过时锐利穿透，磨砂完全不生效（2026-09 实测回归过一次）
+<table className="block w-full">
+  <thead className="item-surface glass-blur block sticky top-0 z-10">…</thead>
+  <tbody className="block">…</tbody>
+</table>
+```
+
+✅ **正确**：双表结构——表头表放在滚动容器**外**（贴卡片玻璃，透明底），行表在 `overflow-y-auto` 容器内；横向滚动时表头随 `translateX(-scrollLeft)` 同步
+```tsx
+<Card className="flex min-h-0 flex-1 flex-col py-0 overflow-hidden">
+  <div className="overflow-hidden [scrollbar-gutter:stable]">
+    <table className="block w-full"><thead className="block">…</thead></table>
+  </div>
+  <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+       onScroll={(e) => { headerRef.current!.style.transform = `translateX(-${e.currentTarget.scrollLeft}px)`; }}>
+    <table className="block w-full"><tbody className="block">…</tbody></table>
+  </div>
+</Card>
+```
+
+### 入场动画覆盖业务透明度
+
+❌ **错误**：reveal keyframes 写显式终点 `to { opacity: 1 }` 且 `fill-mode: both`
+```css
+/* fill both 的动画值在级联中高于普通声明，to{opacity:1} 会把
+   封禁行的 opacity-40、文件卡的 opacity-40 grayscale 永久钉成 1 —— 淡化失效 */
+@keyframes reveal-row-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+```
+
+✅ **正确**：只写 `from`，终点隐式回落到元素自身计算值（普通元素 = 1，封禁 = 0.4，业务类变化跟随）
+```css
+@keyframes reveal-row-in {
+  from { opacity: 0; }
+}
+```
+给带业务透明度的元素接入入场动画前，先确认动画终点不会钉死它；同类陷阱适用于 grayscale/filter 等任何被 keyframes 覆写的属性。
+
 ---
 
 ## Emergency Procedures（应急预案）
@@ -649,4 +694,4 @@ const canonicalPath = normalizePath(req.query.path);
 - 2026-08-18：服务化重构（Plan A），新增 docs/ 文档体系（架构/API/页面/开发/部署）
 - 2026-08-19：文档整合至 README + docs/（中英双语、谷歌文档风格），移除 spec 类源文档引用，新增 docs/PROGRESS.md 记录进度
 - 2026-09-19：新增「前端 UI 规则」摘要并强制阅读 docs/UI_CN.md「设计系统规则」（按前端模块拆分、逐条对照现有代码核实）：玻璃三档门控、强调色运行时校准（移除深色提亮补偿）、弹出菜单 Portal 统一、Toast 复刻规范（堆叠/退场/路由清空）、ConfirmDialog 强制二次确认、文件项三态压暗法、拖拽多选整页触发面 + 页面禁选文本、滑块、文件树、骨架屏与滚动条约定
-- 2026-09-23：前端 UI 规则摘要补「动画三档 + reveal 入场原语」「数据表双表表头（sticky 磨砂方案废弃）」两条；docs/UI_CN.md / UI.md 新增「入场动画体系」一节并修正表头规范（双表结构、横滚同步、列宽下限、表头单行），docs/ARCHITECTURE(_CN).md 补权限判定链第 7/8 步（桶级/挂载级角色矩阵）、矩阵仓库与趋势聚合，docs/API(_CN).md 补 `GET /api/admin/dashboard/trends`，docs/PROGRESS.md 记 §33 动画与表头批次
+- 2026-09-23：前端 UI 规则摘要补「动画三档 + reveal 入场原语」「数据表双表表头（sticky 磨砂方案废弃）」两条；docs/UI_CN.md / UI.md 新增「入场动画体系」一节并修正表头规范（双表结构、横滚同步、列宽下限、表头单行），docs/ARCHITECTURE(_CN).md 补权限判定链第 7/8 步（桶级/挂载级角色矩阵）、矩阵仓库与趋势聚合，docs/API(_CN).md 补 `GET /api/admin/dashboard/trends`，docs/PROGRESS.md 记 §33 动画与表头批次；常见坑点新增「表头磨砂（sticky + backdrop-filter 失效）」「入场动画覆盖业务透明度（keyframes 禁写显式 to{opacity:1}）」两条
