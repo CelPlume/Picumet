@@ -4,10 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { Users, Files, HardDrive, Database, Activity } from 'lucide-react';
 import { Card, CardContent, EmptyState, Progress } from '@/components/ui/core';
 import { StatCardSkeleton } from '@/components/ui/skeleton';
+import { revealDelay, innerDelay } from '@/components/ui/reveal';
 import { apiFetch } from '@/lib/api';
 import { formatBytes, formatDateTime } from '@/lib/utils';
 import { useAuth } from '@/stores/auth';
 import { BucketMountGraph } from '@/components/admin/BucketMountGraph';
+import { TrendCard } from '@/components/charts/TrendCard';
 import type { BucketNode } from '@/components/files/data';
 
 interface DashboardStats {
@@ -64,7 +66,7 @@ export default function AdminDashboard() {
   const cards = stats
     ? [
         {
-          icon: <Users className="h-3.5 w-3.5" />,
+          icon: <Users className="h-5 w-5" />,
           label: t('admin.dashboard.usersOverview'),
           value: String(stats.users.total),
           sub: (
@@ -74,7 +76,7 @@ export default function AdminDashboard() {
           ),
         },
         {
-          icon: <HardDrive className="h-3.5 w-3.5" />,
+          icon: <HardDrive className="h-5 w-5" />,
           label: t('admin.dashboard.memoryUsage'),
           value: formatBytes(stats.usedSpace),
           sub:
@@ -84,23 +86,23 @@ export default function AdminDashboard() {
               <span className="text-[11px] text-muted-foreground">{t('admin.dashboard.capacityUnset')}</span>
             ),
         },
-        { icon: <Files className="h-3.5 w-3.5" />, label: t('admin.totalFiles'), value: String(stats.files), sub: null },
-        { icon: <Database className="h-3.5 w-3.5" />, label: t('admin.dashboard.bucketCount'), value: String(stats.providers), sub: null },
+        { icon: <Files className="h-5 w-5" />, label: t('admin.totalFiles'), value: String(stats.files), sub: null },
+        { icon: <Database className="h-5 w-5" />, label: t('admin.dashboard.bucketCount'), value: String(stats.providers), sub: null },
       ]
     : [];
 
   return (
-    <div className="h-full space-y-2 overflow-y-auto scrollbar-none">
+    <div className="h-full space-y-4 overflow-y-auto scrollbar-none">
       {/* 顶部统计卡：md 以下纵向堆叠 */}
       {!stats ? (
         <StatCardSkeleton count={4} />
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-          {cards.map((c) => (
-            <Card key={c.label}>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {cards.map((c, i) => (
+            <Card key={c.label} className="reveal" style={revealDelay(i)}>
               <CardContent className="px-3 py-1">
                 <div className="flex items-center gap-2">
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">{c.icon}</div>
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">{c.icon}</div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs leading-tight text-muted-foreground">{c.label}</p>
                     <p className="text-xl font-semibold leading-tight">{c.value}</p>
@@ -113,49 +115,30 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* 底部：左 桶泳道挂载点图（3/5）+ 右 存储使用/近期活动（2/5） */}
+      {/* 底部：左列（3/5）存储使用 → 活跃挂载点上下堆叠，右列（2/5）趋势面板（下载/分享/登录）。
+          lg 以下左列整体先于右列渲染，故堆叠顺序为 存储使用 → 活跃挂载点 → 趋势。
+          间距与 /admin/settings 统一：卡片纵向 16px（space-y-4/gap-4）、双栏横向 24px（lg:gap-6）。
+          入场次序：顶部 4 张统计卡（0-3）之后，三张卡按 4-6 错开（动画档 all 时可见，§33） */}
       {stats && (
-        <div className="grid items-start gap-3 lg:grid-cols-5">
-          <Card className="lg:col-span-3">
-            <CardContent className="p-3">
-              <h3 className="mb-3 flex items-center gap-2 font-medium">
-                {t('admin.dashboard.activeMounts')}
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{stats.activeMounts}</span>
-              </h3>
-              {(data?.buckets ?? []).length === 0 ? (
-                <EmptyState compact icon={<Database className="h-4 w-4" />} title={t('admin.dashboard.noMounts')} description={t('admin.dashboard.noMountsDesc')} />
-              ) : (
-                <BucketMountGraph buckets={data?.buckets ?? []} />
-              )}
-              {(data?.buckets ?? []).length > 0 && (
-                <div className="mt-3 flex items-center gap-4 border-t pt-2 text-[11px] text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-primary" />
-                    {t('admin.dashboard.primaryBucket')}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full border border-amber-500/60 bg-amber-500/20" />
-                    {t('admin.dashboard.standbyBucket')}
-                  </span>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <div className="flex flex-col gap-3 lg:col-span-2">
-            <Card>
+        <div className="grid items-start gap-4 lg:grid-cols-5 lg:gap-6">
+          <div className="flex flex-col gap-4 lg:col-span-3">
+            <Card className="reveal py-3" style={revealDelay(4)}>
               <CardContent className="p-3">
                 <h3 className="mb-2 font-medium">{t('admin.storageUsage')}</h3>
                 <div className="space-y-2.5">
                   {mounts.length === 0 ? (
                     <EmptyState compact icon={<HardDrive className="h-4 w-4" />} title={t('admin.dashboard.noStorage')} description={t('admin.dashboard.noStorageDesc')} />
                   ) : (
-                    mounts.map((m) => (
-                      <div key={m.id}>
+                    mounts.map((m, i) => (
+                      <div key={m.id} className="reveal" style={innerDelay(4, i)}>
                         <div className="mb-1 flex justify-between gap-2 text-sm">
                           <span className="truncate">{m.name}</span>
                           <span className="shrink-0 text-muted-foreground">
-                            {formatBytes(m.usedSpace)} · {t('admin.dashboard.filesCount', { count: m.fileCount })}
+                            {/* 有容量时把分母一并标出（否则只有已用，看不出比例）；无容量只出已用 */}
+                            {m.capacityBytes != null && m.capacityBytes > 0
+                              ? `${formatBytes(m.usedSpace)} / ${formatBytes(m.capacityBytes)}`
+                              : formatBytes(m.usedSpace)}{' '}
+                            · {t('admin.dashboard.filesCount', { count: m.fileCount })}
                           </span>
                         </div>
                         {/* 无容量数据时只出数字，不画进度条 */}
@@ -171,23 +154,38 @@ export default function AdminDashboard() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="reveal py-3" style={revealDelay(5)}>
               <CardContent className="p-3">
-                <h3 className="mb-2 font-medium">{t('admin.recentActivity')}</h3>
-                <div className="space-y-2">
-                  {(data?.recentActivity ?? []).length === 0 ? (
-                    <EmptyState compact icon={<Activity className="h-4 w-4" />} title={t('admin.dashboard.noActivity')} description={t('admin.dashboard.noActivityDesc')} />
-                  ) : (
-                    data?.recentActivity.slice(0, 6).map((a, i) => (
-                      <div key={`${a.timestamp}-${i}`} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
-                        <div className="min-w-0 truncate">{a.message}</div>
-                        <div className="ml-2 shrink-0 text-xs text-muted-foreground">{formatDateTime(a.timestamp)}</div>
-                      </div>
-                    ))
-                  )}
-                </div>
+                <h3 className="mb-3 flex items-center gap-2 font-medium">
+                  {t('admin.dashboard.activeMounts')}
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{stats.activeMounts}</span>
+                </h3>
+                {(data?.buckets ?? []).length === 0 ? (
+                  <EmptyState compact icon={<Database className="h-4 w-4" />} title={t('admin.dashboard.noMounts')} description={t('admin.dashboard.noMountsDesc')} />
+                ) : (
+                  <div className="reveal-row" style={innerDelay(5, 1)}>
+                    <BucketMountGraph buckets={data?.buckets ?? []} />
+                  </div>
+                )}
+                {(data?.buckets ?? []).length > 0 && (
+                  <div className="reveal-row mt-3 flex items-center gap-4 border-t pt-2 text-[11px] text-muted-foreground" style={innerDelay(5, 2)}>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-primary" />
+                      {t('admin.dashboard.primaryBucket')}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full border border-amber-500/60 bg-amber-500/20" />
+                      {t('admin.dashboard.standbyBucket')}
+                    </span>
+                  </div>
+                )}
               </CardContent>
             </Card>
+          </div>
+
+          {/* 趋势面板（替代原近期活动）：下载 / 分享 / 登录三条曲线，自带粒度与时间范围筛选 */}
+          <div className="reveal lg:col-span-2" style={revealDelay(6)}>
+            <TrendCard />
           </div>
         </div>
       )}
