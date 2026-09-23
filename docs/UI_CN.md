@@ -299,6 +299,7 @@ flowchart LR
 - **落位约定**：页面顶栏/工具栏 = 区块 index 0，主卡片从 1 起；卡片 = `.reveal` + `revealDelay(i)`；表头行 = `reveal-row` + `innerDelay(卡序, 0)`；数据行/表单字段行 = `reveal-row` + `innerDelay(卡序, i+1)`。设置类页面（个性化、系统设置）的卡内字段**逐行渐入**；仪表盘存储行、趋势面板卡内同理。
 - **扁平树视图**：`TreeView` 行带 `reveal-row` + 绝对序延迟，但只在挂载后 ~700ms 内生效（内部 settled 门）——之后滚动/展开新挂载的行不再重播，虚拟滚动不产生鬼影；切换视图（容器 `key={view}` 重建）重新入场。
 - **下拉/Select 弹层**：`all` 档下 `.animate-dropdown` 直接子项逐个淡入（基础 30ms、步长 20ms、第 13 项封顶）；`default` 档规则不存在即自动关停，`off`/`prefers-reduced-motion` 由全局 0.01ms + 延迟归零兜底。
+- **业务透明度与动画终点**：keyframes **只写 `from`，禁止显式 `to { opacity: 1 }`**——`fill-mode: both` 的动画值在级联中高于普通声明，显式终点会把封禁行的 `opacity-40`、文件卡的 `opacity-40 grayscale` 永久钉成 1（2026-09 实测回归，见 AGENTS.md 常见坑点）；隐式终点回落到元素自身计算值，业务透明度与灰度不受影响。同理适用于任何被 keyframes 覆写的属性（filter/mask 等）。
 - **页面纵向节奏**：卡片间距统一 **16px**（`space-y-4` / `gap-4`），双栏布局横向 **24px**（`lg:gap-6`）——仪表盘与 /admin/settings 同一节奏，新增页面照抄。
 - 图表入场（趋势曲线的擦除式 reveal）由 EvilCharts 自带，不属于本原语；两套动画并存时图表绘制归图表层管。
 
