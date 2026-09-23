@@ -28,6 +28,8 @@ import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
 import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, formatBytes } from '@/lib/utils';
+import { revealDelay } from '@/components/ui/reveal';
+import { useMinLoading } from '@/hooks/useMinLoading';
 import type { FileListItem } from '@shared/types';
 
 // 排序字段选项；升序/降序在同一下拉内切换（不再是独立按钮）
@@ -436,6 +438,8 @@ export default function Files() {
     page,
     limit: pageSize,
   });
+  // 骨架屏最短驻留（§33）：数据太快时也保证加载动画可见
+  const showSkeleton = useMinLoading(isLoading);
   // 树视图数据源：当前挂载点整棵子树（仅 tree 视图启用）
   const treeQuery = useFilesTreeQuery(path, view === 'tree');
   const selectedId = selected.size === 1 ? [...selected][0] : null;
@@ -840,8 +844,9 @@ export default function Files() {
             <BreadcrumbNav crumbs={breadcrumb} hidden={view === 'tree'} />
           </div>
 
-          {/* 内容：树视图独立取数（treeQuery），不受当前文件夹列表加载/空态影响；高度链内滚动 */}
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-none">
+          {/* 内容：树视图独立取数（treeQuery），不受当前文件夹列表加载/空态影响；高度链内滚动。
+              key=view：切换视图时重建容器，触发子项 reveal 入场（视图切换动画，§33） */}
+          <div key={view} className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-none">
           {view === 'tree' ? (
             /* 扁平化树视图：单子目录链合并、缩进引导线、虚拟滚动（pierre trees 风格） */
             <div className="flex h-full min-h-0 flex-col gap-1">
@@ -873,7 +878,7 @@ export default function Files() {
                 </>
               )}
             </div>
-          ) : isLoading ? (
+          ) : showSkeleton ? (
             view === 'grid' ? <FileGridSkeleton /> : <FileListSkeleton />
           ) : error ? (
             <EmptyState title={t('files.loadFailed')} description={(error as Error).message} />
@@ -892,7 +897,7 @@ export default function Files() {
               className="grid grid-cols-[repeat(var(--files-cols),minmax(0,1fr))] gap-3"
               style={{ '--files-cols': String(perRow) } as React.CSSProperties}
             >
-              {items.map((f) => (
+              {items.map((f, i) => (
                 <FileCard
                   key={f.id}
                   f={f}
@@ -905,6 +910,8 @@ export default function Files() {
                   multiSelect={multiSelect}
                   sort={sort}
                   order={order}
+                  className="reveal"
+                  style={revealDelay(i, 'inner')}
                 />
               ))}
             </div>
@@ -952,7 +959,7 @@ export default function Files() {
                 <span aria-hidden />
               </div>
               <div className="min-h-0 flex-1 space-y-0.5 scrollbar-thin overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-                {items.map((f) => (
+                {items.map((f, i) => (
                   <FileRow
                     key={f.id}
                     f={f}
@@ -963,6 +970,8 @@ export default function Files() {
                     onSingleClick={handleFileClick}
                     handlers={handlers}
                     multiSelect={multiSelect}
+                    className="reveal"
+                    style={revealDelay(i, 'inner')}
                   />
                 ))}
               </div>

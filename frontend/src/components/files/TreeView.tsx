@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { revealDelay } from '@/components/ui/reveal';
 import FileIcon from '@/components/files/FileIcon';
 import { EmptyState } from '@/components/ui/core';
 import type { FileListItem } from '@shared/types';
@@ -170,6 +171,13 @@ export function TreeView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(480);
+  // 入场动画只播一次：挂载后前 700ms（最长延迟 225ms + 时长 300ms + 余量）内的可见行
+  // 逐一淡入；之后（用户滚动/展开触发窗口重渲染、新挂载的行）不再重播，避免滚动时鬼影
+  const [revealOn, setRevealOn] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setRevealOn(false), 700);
+    return () => clearTimeout(t);
+  }, []);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -208,7 +216,7 @@ export function TreeView({
     >
       <div style={{ height: visible.length * ROW_H, position: 'relative' }}>
         <div style={{ transform: `translateY(${start * ROW_H}px)` }}>
-          {slice.map(({ node, depth, expanded: isOpen }) => {
+          {slice.map(({ node, depth, expanded: isOpen }, si) => {
             const row = node.row;
             const isFolder = row.type === 'folder';
             const selected = !!row.id && row.id === selectedId;
@@ -221,10 +229,11 @@ export function TreeView({
                 className={cn(
                   'group flex h-8 cursor-pointer items-center gap-1 rounded-md pr-2 text-sm',
                   'hover:bg-accent/50',
+                  revealOn && row.id && 'reveal-row',
                   selected && 'item-surface-selected',
                   row.banned && 'opacity-40'
                 )}
-                style={{ height: ROW_H }}
+                style={{ height: ROW_H, ...(row.id ? revealDelay(start + si, 'inner') : undefined) }}
                 onClick={() => {
                   if (!row.id) return;
                   // 文件夹整行点击即展开/折叠（不依赖小箭头）；文件单击选中
@@ -265,8 +274,9 @@ export function TreeView({
                   <FileIcon name={row.name} type="file" className="h-4 w-4 shrink-0" />
                 )}
                 <span className={cn('min-w-0 truncate', !row.id && 'italic text-muted-foreground')}>
-                  {node.chain ? node.chain.join('/') : row.name}
-                  {isFolder && <span className="text-muted-foreground">/</span>}
+                  {/* 多级链的 / 两侧加空格降信息密度；单级文件夹保持 name/ */}
+                  {node.chain ? node.chain.join(' / ') : row.name}
+                  {isFolder && <span className="text-muted-foreground">{node.chain ? ' /' : '/'}</span>}
                 </span>
                 <span className="flex-1" />
                 {renderRight?.(row)}

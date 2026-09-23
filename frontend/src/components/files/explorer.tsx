@@ -38,6 +38,8 @@ export function FileCard({
   multiSelect,
   sort,
   order,
+  className,
+  style,
 }: {
   f: FileListItem;
   selected: boolean;
@@ -49,6 +51,10 @@ export function FileCard({
   multiSelect?: boolean;
   sort?: string;
   order?: string;
+  /** 追加到根元素的类（入场动画 reveal 用） */
+  className?: string;
+  /** 追加到根元素的内联样式（reveal 的 --reveal-delay 用） */
+  style?: React.CSSProperties;
 }) {
   const isFolder = f.type === 'folder';
   const [hovering, setHovering] = useState(false);
@@ -74,9 +80,13 @@ export function FileCard({
         'item-surface group relative cursor-pointer rounded-lg border p-3',
         selected && 'item-surface-selected',
         // 封禁文件：置灰半透明，仅保留删除入口
-        f.banned && 'opacity-40 grayscale'
+        f.banned && 'opacity-40 grayscale',
+        className
       )}
-      style={selected && f.customColor ? { borderColor: f.customColor } : undefined}
+      style={{
+        ...(selected && f.customColor ? { borderColor: f.customColor } : undefined),
+        ...style,
+      }}
     >
       {/* 复选框 - 左上角 */}
       <div className="absolute left-2 top-2 z-10">
@@ -229,6 +239,8 @@ export function FileRow({
   onSingleClick,
   handlers,
   multiSelect,
+  className,
+  style,
 }: {
   f: FileListItem;
   selected: boolean;
@@ -238,6 +250,10 @@ export function FileRow({
   onSingleClick?: (e: React.MouseEvent, f: FileListItem) => void;
   handlers?: FileActionHandlers;
   multiSelect?: boolean;
+  /** 追加到根元素的类（入场动画 reveal 用） */
+  className?: string;
+  /** 追加到根元素的内联样式（reveal 的 --reveal-delay 用） */
+  style?: React.CSSProperties;
 }) {
   const isFolder = f.type === 'folder';
   const { t } = useTranslation();
@@ -261,8 +277,10 @@ export function FileRow({
         'item-surface group grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border px-3 py-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)_100px_130px_auto]',
         selected && 'item-surface-selected',
         // 封禁文件：置灰半透明，仅保留删除入口
-        f.banned && 'opacity-40 grayscale'
+        f.banned && 'opacity-40 grayscale',
+        className
       )}
+      style={style}
     >
       {/* 复选框列 */}
       <Checkbox
