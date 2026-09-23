@@ -1,9 +1,10 @@
 // 管理员：全部文件（含公开审核，§4.2）——列表 / 挂载点视图（桶→挂载点→文件）/ 扁平化树视图
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Check, X, Files, Settings2, Lock, Users, Globe, Ban, RotateCcw, FilterX, List as ListIcon, FolderTree, GitBranch, SlidersHorizontal } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Card, Input, Badge, Button, EmptyState, ConfirmDialog, SEARCH_INPUT_GLASS } from '@/components/ui/core';
+import { useMinLoading } from '@/hooks/useMinLoading';
 import { Select } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { TableSkeleton } from '@/components/ui/skeleton';
@@ -11,6 +12,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api';
 import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 import { formatBytes, formatDateTime } from '@/lib/utils';
+import { revealDelay } from '@/components/ui/reveal';
 import { toast } from '@/components/ui/toast';
 import FileIcon from '@/components/files/FileIcon';
 import { TreeView } from '@/components/files/TreeView';
@@ -19,9 +21,11 @@ import { MountView } from '@/components/admin/BucketMountGraph';
 import { AdminFileSettingsDialog } from '@/components/files/AdminFileSettingsDialog';
 import type { FileListItem } from '@shared/types';
 
-/** 表头与数据行共用的网格模板（md 起多一列路径、lg 起再多上传用户 + 存储桶/挂载点/哈希值共四列），保证表头表与行表列对齐 */
+/** 表头与数据行共用的网格模板（md 起多一列路径、lg 起再多上传用户 + 存储桶/挂载点/哈希值共四列），保证表头表与行表列对齐。
+    名称/路径列给最小宽度下限：窄容器时网格整体溢出 → 横向滚动（表头单行、列不塌缩重叠），
+    而不是 minmax(0,·) 把名称列压成 0px 让图标叠到相邻列上 */
 const ROW_GRID =
-  'grid grid-cols-[minmax(0,1.4fr)_96px_140px_120px_84px] md:grid-cols-[minmax(0,1.2fr)_minmax(140px,1.4fr)_96px_140px_120px_84px] lg:grid-cols-[minmax(0,1.2fr)_112px_minmax(140px,1.4fr)_110px_96px_100px_96px_135px_104px_84px]';
+  'grid grid-cols-[minmax(150px,1.4fr)_96px_140px_120px_84px] md:grid-cols-[minmax(150px,1.2fr)_minmax(140px,1.4fr)_96px_140px_120px_84px] lg:grid-cols-[minmax(150px,1.2fr)_112px_minmax(140px,1.4fr)_110px_96px_100px_96px_135px_104px_84px]';
 
 /** 管理端列表行：后端在 FileListItem 上附加属主用户名（ownerName）与封禁/存储定位（banned/buckets/mounts/hash） */
 type AdminFileRow = FileListItem & {
@@ -101,6 +105,13 @@ export default function AdminFiles() {
   const { t } = useTranslation();
   const [files, setFiles] = useState<AdminFileRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // 骨架屏最短驻留：数据太快时也保证加载动画可见（§33）
+  const showSkeleton = useMinLoading(loading);
+  /** 双表结构：表体横向滚动时表头同步平移，列保持对齐（表头表在滚动容器外） */
+  const headerTableRef = useRef<HTMLTableElement>(null);
+  const syncHeaderScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (headerTableRef.current) headerTableRef.current.style.transform = `translateX(-${e.currentTarget.scrollLeft}px)`;
+  };
   const [sort, setSort] = useState<string | null>('updatedAt');
   const [order, setOrder] = useState<SortOrder>('desc');
   const [searchInput, setSearchInput] = useState('');
@@ -342,34 +353,37 @@ export default function AdminFiles() {
         </Card>
       ) : (
         <>
-      {/* 表头固定在滚动区上方：表头与数据行同在卡片玻璃上、同为透明层（观感一致），
-          行只在下方容器内滚动，不会滑到表头下面造成叠加 */}
-      <Card className="mt-3 flex min-h-0 flex-1 flex-col py-0 overflow-hidden">
-        <table className="block w-full shrink-0 overflow-hidden text-sm [scrollbar-gutter:stable]">
-          <thead className="block">
-            <tr className={ROW_GRID + ' whitespace-nowrap border-b text-left text-muted-foreground'}>
-              <th className="px-4 py-2"><SortableHeader title={t('files.name')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.owner')}</th>
-              <th className="hidden px-4 py-2 md:block">{t('admin.allFiles.path')}</th>
-              <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.buckets')}</th>
-              <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.mounts')}</th>
-              <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.hash')}</th>
-              <th className="px-4 py-2"><SortableHeader title={t('files.size')} sortKey="size" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2"><SortableHeader title={t('files.modified')} sortKey="updatedAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className="px-4 py-2">{t('admin.allFiles.visibility')}</th>
-              <th className="px-4 py-2">{t('common.actions')}</th>
-            </tr>
-          </thead>
-        </table>
-        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+      {/* 表头与数据行同在卡片玻璃上（提交版双表结构）：表头表在滚动容器外、同为透明层；
+          行只在下方容器内滚动，不会滑到表头下面。表体横向滚动时表头同步平移保持列对齐 */}
+      <Card className="reveal mt-3 flex min-h-0 flex-1 flex-col py-0 overflow-hidden" style={revealDelay(0)}>
+        {/* 裁剪放外层包裹：表体横向滚动时表头表格整体平移，右侧被裁的列随之进入视野 */}
+        <div className="w-full shrink-0 overflow-hidden [scrollbar-gutter:stable]">
+          <table ref={headerTableRef} className="block w-full text-sm">
+            <thead className="block">
+              <tr className={ROW_GRID + ' whitespace-nowrap border-b text-left text-muted-foreground'}>
+                <th className="px-4 py-2"><SortableHeader title={t('files.name')} sortKey="name" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+                <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.owner')}</th>
+                <th className="hidden px-4 py-2 md:block">{t('admin.allFiles.path')}</th>
+                <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.buckets')}</th>
+                <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.mounts')}</th>
+                <th className="hidden px-4 py-2 lg:block">{t('admin.allFiles.hash')}</th>
+                <th className="px-4 py-2"><SortableHeader title={t('files.size')} sortKey="size" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+                <th className="px-4 py-2"><SortableHeader title={t('files.modified')} sortKey="updatedAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+                <th className="px-4 py-2">{t('admin.allFiles.visibility')}</th>
+                <th className="px-4 py-2">{t('common.actions')}</th>
+              </tr>
+            </thead>
+          </table>
+        </div>
+        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" onScroll={syncHeaderScroll}>
           <table className="block w-full text-sm">
             <tbody className="block">
-              {loading ? (
+              {showSkeleton ? (
                 <tr className="block"><td className="block px-4 py-2"><TableSkeleton rows={6} cols={6} /></td></tr>
               ) : files.length === 0 ? (
                 <tr className="block"><td className="block px-4 py-2"><EmptyState icon={<Files className="h-7 w-7" />} title={t('admin.allFiles.emptyTitle')} description={t('admin.allFiles.emptyDesc')} /></td></tr>
-              ) : sortedRows.map((f) => (
-                <tr key={f.id} className={ROW_GRID + ' border-b last:border-0 hover:bg-accent/50' + (f.banned ? ' opacity-40' : '')}>
+              ) : sortedRows.map((f, i) => (
+                <tr key={f.id} className={'reveal-row ' + ROW_GRID + ' border-b last:border-0 hover:bg-accent/50' + (f.banned ? ' opacity-40' : '')} style={revealDelay(i, 'inner')}>
                   <td className="px-4 py-2">
                     <div className="flex items-center gap-2">
                       <FileIcon name={f.name} type={f.type} className="h-5 w-5 shrink-0 text-muted-foreground" />
