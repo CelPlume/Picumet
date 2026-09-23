@@ -11,6 +11,7 @@ import { toast } from '@/components/ui/toast';
 import { Pagination } from '@/components/ui/pagination';
 import { apiFetch, ApiError } from '@/lib/api';
 import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
+import { revealDelay, innerDelay } from '@/components/ui/reveal';
 
 interface Rule {
   id: string;
@@ -134,16 +135,16 @@ export default function AdminPermissions() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 flex items-center justify-between">
+      <div className="reveal shrink-0 flex items-center justify-between" style={revealDelay(0)}>
         <p className="text-sm text-muted-foreground">{t('admin.nav.permissions')} · {t('admin.permissions.ruleCount', { n: total })}</p>
         <Button onClick={() => { setShowCreate(true); setEditMode('gui'); setJsonError(null); setJsonText(''); }}><Plus className="h-4 w-4" /> {t('admin.addRule')}</Button>
       </div>
 
 
-      <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
+      <Card className="reveal mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0" style={revealDelay(1)}>
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b text-left text-muted-foreground">
+            <tr className="reveal-row whitespace-nowrap border-b text-left text-muted-foreground" style={innerDelay(1, 0)}>
               <th className={'px-4 py-2'}><SortableHeader title={t('admin.permissions.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className={'px-4 py-2'}>{t('admin.permissions.subject')}</th>
               <th className={'px-4 py-2'}>{t('admin.permissions.source')}</th>
@@ -158,8 +159,8 @@ export default function AdminPermissions() {
               <tr><td colSpan={7}><TableSkeleton rows={5} cols={4} /></td></tr>
             ) : rules.length === 0 ? (
               <tr><td colSpan={7}><EmptyState icon={<ShieldCheck className="h-7 w-7" />} title={t('admin.permissions.emptyTitle')} description={t('admin.permissions.emptyDesc')} /></td></tr>
-            ) : sortedRows.map((r) => (
-              <tr key={r.id} className="border-b last:border-0 hover:bg-accent/50">
+            ) : sortedRows.map((r, i) => (
+              <tr key={r.id} className="reveal-row border-b last:border-0 hover:bg-accent/50" style={innerDelay(1, i + 1)}>
                 <td className="px-4 py-2 font-mono text-sm"><code>{r.pathPattern}</code></td>
                 <td className="px-4 py-2 text-xs text-muted-foreground">{subjectLabel(r)}{r.mountId ? ` · ${r.mountName ?? r.mountId}` : ''}</td>
                 <td className="px-4 py-2 text-xs">

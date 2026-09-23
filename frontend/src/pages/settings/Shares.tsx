@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Share2, Trash2, Lock, ExternalLink, LayoutGrid, List as ListIcon, CheckCircle2, Clock, Ban, Eye, Download } from 'lucide-react';
 import { Button, EmptyState, Badge, Card, ConfirmDialog } from '@/components/ui/core';
+import { useMinLoading } from '@/hooks/useMinLoading';
 import { Dropdown, DropdownItem, DropdownSeparator } from '@/components/ui/dropdown';
 import { ShareLinkPanel } from '@/components/share/ShareLinkPanel';
 import { ShareGridSkeleton } from '@/components/ui/skeleton';
+import { revealDelay } from '@/components/ui/reveal';
 import { Pagination } from '@/components/ui/pagination';
 import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 import { toast } from '@/components/ui/toast';
@@ -90,6 +92,8 @@ export default function MyShares() {
   const currentUsername = useAuth((s) => s.user?.username);
   const [shares, setShares] = useState<ShareItem[]>([]);
   const [loading, setLoading] = useState(true);
+  // 骨架屏最短驻留：数据太快时也保证加载动画可见（§33）
+  const showSkeleton = useMinLoading(loading);
   const [confirmRevoke, setConfirmRevoke] = useState<ShareItem | null>(null);
   /** 转发菜单里已展开明文密码的分享 id */
   const [page, setPage] = useState(1);
@@ -189,7 +193,7 @@ export default function MyShares() {
         </div>
       )}
 
-      {loading ? (
+      {showSkeleton ? (
         <ShareGridSkeleton />
       ) : shares.length === 0 ? (
         <EmptyState
@@ -200,8 +204,8 @@ export default function MyShares() {
         <>
           {viewMode === 'grid' ? (
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-              {sortedShares.map((s) => (
-                <Card key={s.id} className="glass-surface glass-blur flex flex-col gap-1.5 p-3 transition-colors hover:border-border hover:[background-image:linear-gradient(rgb(0_0_0/0.08))]">
+              {sortedShares.map((s, i) => (
+                <Card key={s.id} className="reveal glass-surface glass-blur flex flex-col gap-1.5 p-3 transition-colors hover:border-border hover:[background-image:linear-gradient(rgb(0_0_0/0.08))]" style={revealDelay(i, 'inner')}>
                   <div className="flex items-center gap-2">
                     <FileIcon
                       name={s.firstItem?.name ?? ''}
@@ -215,12 +219,12 @@ export default function MyShares() {
                     </p>
                     <StatusBadge status={s.status} />
                   </div>
-                  {/* 三行：访问权限 / 预览+下载 / 访问与下载计数 */}
-                  <p className="truncate text-xs text-muted-foreground">
+                  {/* 三行：访问权限 / 预览+下载 / 访问与下载计数（卡内逐层入场，§33） */}
+                  <p className="reveal-row truncate text-xs text-muted-foreground" style={revealDelay(i, 'inner', 120)}>
                     {accessLabel(s, t)}
                     {s.passwordProtected && <Lock className="ml-1 inline h-3 w-3" />}
                   </p>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  <div className="reveal-row flex items-center gap-3 text-xs text-muted-foreground" style={revealDelay(i, 'inner', 160)}>
                     <span className="inline-flex items-center gap-1">
                       <Eye className="h-3.5 w-3.5" /> {t('admin.shares.previewShort')}
                       <span className={s.allowPreview ? 'text-primary' : 'line-through'}>{s.allowPreview ? t('admin.active') : t('admin.disabled')}</span>
@@ -230,7 +234,7 @@ export default function MyShares() {
                       <span className={s.allowDownload ? 'text-primary' : 'line-through'}>{s.allowDownload ? t('admin.active') : t('admin.disabled')}</span>
                     </span>
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">
+                  <p className="reveal-row truncate text-xs text-muted-foreground" style={revealDelay(i, 'inner', 200)}>
                     {s.viewCount}/{s.maxViews ?? t('myShares.noLimit')} · {s.downloadCount}/{s.maxDownloads ?? t('myShares.noLimit')}
                   </p>
                   <div className="mt-auto flex items-center justify-between gap-1 border-t pt-2">
@@ -287,8 +291,8 @@ export default function MyShares() {
                 </tr>
               </thead>
               <tbody>
-                {sortedShares.map((s) => (
-                  <tr key={s.id} className="border-b transition-colors last:border-0 hover:bg-accent/50">
+                {sortedShares.map((s, i) => (
+                  <tr key={s.id} className="reveal-row border-b transition-colors last:border-0 hover:bg-accent/50" style={revealDelay(i, 'inner')}>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2">
                         <FileIcon

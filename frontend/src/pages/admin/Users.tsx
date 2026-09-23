@@ -3,8 +3,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Pencil, Trash2, Settings2, Users } from 'lucide-react';
 import { Badge, Button, Card, ConfirmDialog, Dialog, EmptyState, Input, Label, SEARCH_INPUT_GLASS, Switch } from '@/components/ui/core';
+import { useMinLoading } from '@/hooks/useMinLoading';
 import { cn } from '@/lib/utils';
 import { TableSkeleton } from '@/components/ui/skeleton';
+import { revealDelay, REVEAL_INNER_BASE, REVEAL_STEP } from '@/components/ui/reveal';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { Pagination } from '@/components/ui/pagination';
@@ -195,6 +197,8 @@ export default function AdminUsers() {
   const { t } = useTranslation();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // 骨架屏最短驻留：数据太快时也保证加载动画可见（§33）
+  const showSkeleton = useMinLoading(loading);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -344,7 +348,7 @@ export default function AdminUsers() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between gap-3">
+      <div className="reveal flex items-center justify-between gap-3" style={revealDelay(0)}>
         <p className="text-sm text-muted-foreground">{t('admin.users.total', { count: total })}</p>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setDefaultsOpen(true)}>
@@ -358,7 +362,7 @@ export default function AdminUsers() {
         </div>
       </div>
 
-      <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
+      <Card className="reveal mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0" style={revealDelay(1)}>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
@@ -371,13 +375,13 @@ export default function AdminUsers() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {showSkeleton ? (
               <tr><td colSpan={6}><TableSkeleton rows={8} cols={6} /></td></tr>
             ) : sortedRows.length === 0 ? (
               <tr><td colSpan={6}><EmptyState icon={<Users className="h-7 w-7" />} title={t('admin.users.empty')} description={t('admin.users.emptyDesc')} /></td></tr>
             ) : (
-            sortedRows.map((u) => (
-              <tr key={u.id} className="border-b hover:bg-accent/50">
+            sortedRows.map((u, i) => (
+              <tr key={u.id} className="reveal border-b hover:bg-accent/50" style={revealDelay(i, 'inner', REVEAL_INNER_BASE + REVEAL_STEP)}>
                 <td className="px-4 py-2">
                   <p className="font-medium">{u.displayName || u.username}</p>
                   <p className="text-xs text-muted-foreground">{u.email}</p>

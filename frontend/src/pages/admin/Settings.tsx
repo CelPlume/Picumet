@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Save, Plus, Trash2, Mail, Send, Globe, ShieldCheck, Megaphone } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Switch, Badge } from '@/components/ui/core';
+import { useMinLoading } from '@/hooks/useMinLoading';
+import { revealDelay, innerDelay } from '@/components/ui/reveal';
 import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { Select } from '@/components/ui/select';
@@ -38,6 +40,8 @@ interface Settings {
 export default function AdminSettings() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<Settings | null>(null);
+  // 骨架屏最短驻留（§33）：数据太快时也保证加载动画可见
+  const showSkeleton = useMinLoading(!settings);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
@@ -144,20 +148,20 @@ export default function AdminSettings() {
     }
   };
 
-  if (!settings) return <FormCardSkeleton />;
+  if (showSkeleton || !settings) return <FormCardSkeleton />;
 
   return (
     <div className="h-full max-w-7xl space-y-4 overflow-y-auto scrollbar-none lg:grid lg:grid-cols-2 lg:items-start lg:gap-6 lg:space-y-0">
       {/* 左列：站点设置 + 安全设置 */}
       <div className="min-w-0 space-y-4">
-      <Card>
-        <CardHeader>
+      <Card className="reveal" style={revealDelay(0)}>
+        <CardHeader className="reveal-row" style={innerDelay(0, 0)}>
           <CardTitle className="flex items-center gap-2">
             <Globe className="h-4 w-4 text-primary" /> {t('admin.settingsSite')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(0, 1)}>
             <div>
               <Label>{t('admin.siteTitle')}</Label>
               <Input className="mt-1" value={settings.siteTitle} onChange={(e) => set('siteTitle', e.target.value)} />
@@ -167,11 +171,11 @@ export default function AdminSettings() {
               <Input className="mt-1" value={settings.siteLogo ?? ''} onChange={(e) => set('siteLogo', e.target.value)} />
             </div>
           </div>
-          <div>
+          <div className="reveal-row" style={innerDelay(0, 2)}>
             <Label>{t('admin.siteFavicon')}</Label>
             <Input className="mt-1" value={settings.siteFavicon ?? ''} onChange={(e) => set('siteFavicon', e.target.value)} />
           </div>
-          <div className="grid grid-cols-2 gap-3 rounded-md border p-3">
+          <div className="reveal-row grid grid-cols-2 gap-3 rounded-md border p-3" style={innerDelay(0, 3)}>
             <div>
               <Label>{t('admin.directPrefix')}</Label>
               <Select
@@ -202,18 +206,20 @@ export default function AdminSettings() {
               <p className="mt-1 text-xs text-muted-foreground">{t('admin.rootTargetHint')}</p>
             </div>
           </div>
-          <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+          <div className="reveal-row" style={innerDelay(0, 4)}>
+            <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+          </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
+      <Card className="reveal" style={revealDelay(1)}>
+        <CardHeader className="reveal-row" style={innerDelay(1, 0)}>
           <CardTitle className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-primary" /> {t('admin.settingsSecurity')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
+          <div className="reveal-row space-y-2" style={innerDelay(1, 1)}>
             <div className="flex items-center justify-between">
               <span className="text-sm">{t('admin.allowRegistration')}</span>
               <Switch checked={settings.allowRegistration} onChange={(v) => set('allowRegistration', v)} />
@@ -223,7 +229,7 @@ export default function AdminSettings() {
               <Switch checked={settings.allowGuestAccess} onChange={(v) => set('allowGuestAccess', v)} />
             </div>
           </div>
-          <div className="space-y-2 rounded-md border p-3">
+          <div className="reveal-row space-y-2 rounded-md border p-3" style={innerDelay(1, 2)}>
             <p className="text-sm font-medium">{t('admin.rateLimit')}</p>
             <div className="flex items-center justify-between">
               <span className="text-sm">{t('admin.rateLimitEnabled')}</span>
@@ -276,21 +282,23 @@ export default function AdminSettings() {
             <p className="text-xs text-muted-foreground">{t('admin.maxConcurrentTransfersHint')}</p>
             <p className="text-xs text-muted-foreground">{t('admin.rateLimitDownloadsHint')}</p>
           </div>
-          <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+          <div className="reveal-row" style={innerDelay(1, 3)}>
+            <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+          </div>
         </CardContent>
       </Card>
       </div>
 
       {/* 右列：SMTP + 公告 */}
       <div className="min-w-0 space-y-4">
-      <Card>
-        <CardHeader>
+      <Card className="reveal" style={revealDelay(2)}>
+        <CardHeader className="reveal-row" style={innerDelay(2, 0)}>
           <CardTitle className="flex items-center gap-2">
             <Mail className="h-4 w-4 text-primary" /> {t('admin.systemSettings.smtp')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(2, 1)}>
             <div>
               <Label>{t('admin.systemSettings.smtpHost')}</Label>
               <Input className="mt-1" value={settings.smtpHost} onChange={(e) => set('smtpHost', e.target.value)} placeholder="smtp.example.com" />
@@ -300,15 +308,15 @@ export default function AdminSettings() {
               <Input className="mt-1" type="number" value={settings.smtpPort} onChange={(e) => set('smtpPort', Number(e.target.value))} />
             </div>
           </div>
-          <div>
+          <div className="reveal-row" style={innerDelay(2, 2)}>
             <Label>{t('login.username')}</Label>
             <Input className="mt-1" value={settings.smtpUser} onChange={(e) => set('smtpUser', e.target.value)} />
           </div>
-          <div>
+          <div className="reveal-row" style={innerDelay(2, 3)}>
             <Label>{t('login.password')}</Label>
             <Input className="mt-1" type="password" value={settings.smtpPassword} onChange={(e) => set('smtpPassword', e.target.value)} placeholder={t('admin.systemSettings.passwordPlaceholder')} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(2, 4)}>
             <div>
               <Label>{t('admin.systemSettings.fromName')}</Label>
               <Input className="mt-1" value={settings.smtpFromName} onChange={(e) => set('smtpFromName', e.target.value)} />
@@ -318,7 +326,7 @@ export default function AdminSettings() {
               <Input className="mt-1" type="email" value={settings.smtpFromEmail} onChange={(e) => set('smtpFromEmail', e.target.value)} placeholder="noreply@example.com" />
             </div>
           </div>
-          <div className="space-y-2">
+          <div className="reveal-row space-y-2" style={innerDelay(2, 5)}>
             <div className="flex items-center justify-between">
               <span className="text-sm">{t('admin.systemSettings.enableTls')}</span>
               <Switch checked={settings.smtpSecure} onChange={(v) => set('smtpSecure', v)} />
@@ -332,8 +340,10 @@ export default function AdminSettings() {
               <Switch checked={settings.requireEmailVerification} onChange={(v) => set('requireEmailVerification', v)} />
             </div>
           </div>
-          <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
-          <div className="flex items-center gap-2 border-t pt-3">
+          <div className="reveal-row" style={innerDelay(2, 6)}>
+            <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+          </div>
+          <div className="reveal-row flex items-center gap-2 border-t pt-3" style={innerDelay(2, 7)}>
             <Input
               type="email"
               value={testEmail}
@@ -348,14 +358,14 @@ export default function AdminSettings() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
+      <Card className="reveal" style={revealDelay(3)}>
+        <CardHeader className="reveal-row" style={innerDelay(3, 0)}>
           <CardTitle className="flex items-center gap-2">
             <Megaphone className="h-4 w-4 text-primary" /> {t('admin.announcements')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="space-y-2">
+          <div className="reveal-row space-y-2" style={innerDelay(3, 1)}>
             <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t('admin.announcementTitle')} />
             <Input value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder={t('admin.announcementContent')} />
             {/* 公告类型：横幅 / 临时弹窗（toast）+ 显示时长策略 */}
@@ -428,7 +438,7 @@ export default function AdminSettings() {
             </div>
             <Button onClick={addAnnouncement}><Plus className="h-4 w-4" /> {t('admin.addAnnouncement')}</Button>
           </div>
-          <div className="space-y-2">
+          <div className="reveal-row space-y-2" style={innerDelay(3, 2)}>
             {announcements.map((a) => (
               <div key={a.id} className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
                 <Badge variant={a.level === 'danger' ? 'destructive' : a.level === 'warning' ? 'warning' : 'secondary'}>{a.level}</Badge>

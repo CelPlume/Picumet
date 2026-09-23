@@ -7,6 +7,7 @@ import { Users, User as UserIcon, Trash2 } from 'lucide-react';
 import type { PathRule } from '@shared/types';
 import { Card, Button, Badge, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
+import { revealDelay, REVEAL_INNER_BASE, REVEAL_STEP } from '@/components/ui/reveal';
 import { apiFetch } from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { formatDateTime } from '@/lib/utils';
@@ -57,13 +58,13 @@ export default function AccessRulesPage() {
 
   return (
     <div>
-      <p className="text-sm text-muted-foreground">
+      <p className="reveal text-sm text-muted-foreground" style={revealDelay(0)}>
         {t('settings.accessRules.intro')}
       </p>
 
-      <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
+      <Card className="reveal mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0" style={revealDelay(1)}>
         <table className="w-full text-sm">
-          <thead>
+          <thead className="reveal" style={revealDelay(2)}>
             <tr className="border-b text-left text-muted-foreground">
               <th className={'px-4 py-2'}><SortableHeader title={t('settings.accessRules.path')} sortKey="pathPattern" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className={'px-4 py-2'}><SortableHeader title={t('admin.ruleEffect')} sortKey="effect" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
@@ -79,16 +80,18 @@ export default function AccessRulesPage() {
             ) : rules.length === 0 ? (
               <tr>
                 <td colSpan={6}>
-                  <EmptyState
-                    icon={<Users className="h-7 w-7" />}
-                    title={t('settings.accessRules.noRules')}
-                    description={t('settings.accessRules.noRulesDesc')}
-                  />
+                  <div className="reveal" style={revealDelay(2)}>
+                    <EmptyState
+                      icon={<Users className="h-7 w-7" />}
+                      title={t('settings.accessRules.noRules')}
+                      description={t('settings.accessRules.noRulesDesc')}
+                    />
+                  </div>
                 </td>
               </tr>
             ) : (
-              sortedRules.map((r) => (
-                <tr key={r.id} className="border-b last:border-0 hover:bg-accent/50">
+              sortedRules.map((r, i) => (
+                <tr key={r.id} className="reveal-row border-b last:border-0 hover:bg-accent/50" style={revealDelay(i, 'inner', REVEAL_INNER_BASE + REVEAL_STEP)}>
                   <td className="px-4 py-2 font-mono text-xs">{r.pathPattern}</td>
                   <td className="px-4 py-2">
                     <Badge variant={r.effect === 'allow' ? 'success' : 'warning'}>

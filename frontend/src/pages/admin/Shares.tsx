@@ -25,6 +25,7 @@ import { apiFetch } from '@/lib/api';
 import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 import { AdminShareSettingsDialog } from '@/components/share/AdminShareSettingsDialog';
 import { cn, formatDateTime } from '@/lib/utils';
+import { revealDelay, innerDelay } from '@/components/ui/reveal';
 import type { FileListItem, ShareStatus } from '@shared/types';
 
 interface ShareRow {
@@ -105,10 +106,10 @@ export default function AdminShares() {
   return (
     <div className="flex h-full min-h-0 flex-col">
 
-      <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
+      <Card className="reveal mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0" style={revealDelay(0)}>
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b text-left text-muted-foreground">
+            <tr className="reveal-row whitespace-nowrap border-b text-left text-muted-foreground" style={innerDelay(0, 0)}>
               <th className={'px-4 py-2'}><SortableHeader title={t('admin.shares.fileTitle')} sortKey="title" sort={sort} order={order} onSort={onSort} /></th>
               <th className={'px-4 py-2'}><SortableHeader title={t('admin.shares.creator')} sortKey="creatorName" sort={sort} order={order} onSort={onSort} /></th>
               <th className={'px-4 py-2'}>{t('admin.shares.accessShort')}</th>
@@ -127,8 +128,8 @@ export default function AdminShares() {
               <tr><td colSpan={11}><TableSkeleton rows={6} cols={5} /></td></tr>
             ) : shares.length === 0 ? (
               <tr><td colSpan={11}><EmptyState icon={<Share2 className="h-7 w-7" />} title={t('admin.shares.empty')} description={t('admin.shares.emptyDesc')} /></td></tr>
-            ) : sortedRows.map((s) => (
-              <tr key={s.id} className="border-b last:border-0 hover:bg-accent/50">
+            ) : sortedRows.map((s, i) => (
+              <tr key={s.id} className="reveal-row border-b last:border-0 hover:bg-accent/50" style={innerDelay(0, i + 1)}>
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
                     <Link2 className="h-4 w-4 shrink-0 text-primary" />

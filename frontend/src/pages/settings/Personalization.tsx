@@ -29,6 +29,8 @@ import { RadioGroup } from '@/components/ui/radio-group';
 import { InputOTP } from '@/components/ui/input-otp';
 import { Select } from '@/components/ui/select';
 import { BlurSlider } from '@/components/settings/BlurSlider';
+import { MotionSlider } from '@/components/settings/MotionSlider';
+import { revealDelay, innerDelay } from '@/components/ui/reveal';
 import { FilesPerRowSlider } from '@/components/settings/FilesPerRowSlider';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -273,14 +275,14 @@ export default function PersonalizationPage() {
     <div className="grid max-w-7xl items-start gap-6 lg:grid-cols-2">
       {/* 左列：个人资料 · 邮箱管理 · 修改密码 */}
       <div className="space-y-6">
-        <Card>
-          <CardHeader>
+        <Card className="reveal" style={revealDelay(0)}>
+          <CardHeader className="reveal-row" style={innerDelay(0, 0)}>
             <CardTitle className="flex items-center gap-2">
               <User className="h-4 w-4 text-primary" /> {t('settings.nav.profile')}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-center gap-4">
+            <div className="reveal-row flex flex-wrap items-center gap-4" style={innerDelay(0, 1)}>
               {data.profile.avatarUrl ? (
                 <img src={data.profile.avatarUrl} alt="" className="h-16 w-16 shrink-0 rounded-full object-cover" />
               ) : (
@@ -313,15 +315,15 @@ export default function PersonalizationPage() {
               </div>
             </div>
 
-            <div>
+            <div className="reveal-row" style={innerDelay(0, 2)}>
               <Label>{t('settings.displayName')}</Label>
               <Input className="mt-1" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={data.profile.username} />
             </div>
-            <div>
+            <div className="reveal-row" style={innerDelay(0, 3)}>
               <Label>{t('settings.avatarUrl')}</Label>
               <Input className="mt-1" value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://..." />
             </div>
-            <div>
+            <div className="reveal-row" style={innerDelay(0, 4)}>
               <Label>{t('settings.language')}</Label>
               <Select
                 value={locale}
@@ -333,18 +335,20 @@ export default function PersonalizationPage() {
                 ]}
               />
             </div>
-            <Button onClick={save} loading={saving}>{t('common.save')}</Button>
+            <div className="reveal-row" style={innerDelay(0, 5)}>
+              <Button onClick={save} loading={saving}>{t('common.save')}</Button>
+            </div>
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
+        <Card className="reveal" style={revealDelay(1)}>
+          <CardHeader className="reveal-row" style={innerDelay(1, 0)}>
             <CardTitle className="flex items-center gap-2">
               <Mail className="h-4 w-4 text-primary" /> {t('settings.security.emailManagement')}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
+            <div className="reveal-row" style={innerDelay(1, 1)}>
               <Label>{t('settings.security.currentEmail')}</Label>
               <div className="mt-1 flex items-center gap-2">
                 <Input readOnly value={email || t('settings.security.notSet')} className="flex-1 bg-muted/50" />
@@ -356,7 +360,7 @@ export default function PersonalizationPage() {
               </div>
               <p className="mt-1.5 text-xs text-muted-foreground">{t('settings.security.emailHint')}</p>
             </div>
-            <div>
+            <div className="reveal-row" style={innerDelay(1, 2)}>
               <Label>{t('settings.security.changeEmail')}</Label>
               <div className="mt-1 flex gap-2">
                 <Input
@@ -384,19 +388,19 @@ export default function PersonalizationPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
+        <Card className="reveal" style={revealDelay(2)}>
+          <CardHeader className="reveal-row" style={innerDelay(2, 0)}>
             <CardTitle className="flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-primary" /> {t('settings.changePassword')}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
+            <div className="reveal-row" style={innerDelay(2, 1)}>
               <Label>{t('settings.currentPassword')}</Label>
               <Input type="password" className="mt-1" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
             </div>
             {data?.profile.email && (
-              <div>
+              <div className="reveal-row" style={innerDelay(2, 2)}>
                 <Label>{t('settings.passwordCode')}</Label>
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <InputOTP value={pwdCode} onChange={setPwdCode} />
@@ -407,23 +411,25 @@ export default function PersonalizationPage() {
                 <p className="mt-1 text-xs text-muted-foreground">{t('settings.passwordCodeHint')}</p>
               </div>
             )}
-            <div>
+            <div className="reveal-row" style={innerDelay(2, 3)}>
               <Label>{t('settings.newPassword')}</Label>
               <Input type="password" className="mt-1" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
             </div>
-            <div>
+            <div className="reveal-row" style={innerDelay(2, 4)}>
               <Label>{t('settings.confirmPassword')}</Label>
               <Input type="password" className="mt-1" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
             </div>
-            <Button onClick={change} loading={savingPwd}>{t('settings.changePassword')}</Button>
+            <div className="reveal-row" style={innerDelay(2, 5)}>
+              <Button onClick={change} loading={savingPwd}>{t('settings.changePassword')}</Button>
+            </div>
           </CardContent>
         </Card>
       </div>
 
       {/* 右列：右键单击行为 · 主题（含自定义背景） */}
       <div className="space-y-6">
-        <Card>
-          <CardHeader>
+        <Card className="reveal" style={revealDelay(3)}>
+          <CardHeader className="reveal-row" style={innerDelay(3, 0)}>
             <CardTitle className="flex items-center gap-2">
               <MousePointerClick className="h-4 w-4 text-primary" /> {t('settings.appearance.rightClickAction')}
             </CardTitle>
@@ -432,13 +438,14 @@ export default function PersonalizationPage() {
             <RadioGroup
               value={theme.rightClickAction}
               onChange={(v) => theme.set({ rightClickAction: v as 'properties' | 'menu' })}
-              className="grid-cols-2"
+              className="reveal-row grid-cols-2"
+              style={innerDelay(3, 1)}
               options={[
                 { value: 'properties', label: t('settings.appearance.rightClickProperties'), description: t('settings.appearance.rightClickPropertiesDesc') },
                 { value: 'menu', label: t('settings.appearance.rightClickMenu'), description: t('settings.appearance.rightClickMenuDesc') },
               ]}
             />
-            <div className="flex items-center justify-between rounded-lg border px-3 py-2.5">
+            <div className="reveal-row flex items-center justify-between rounded-lg border px-3 py-2.5" style={innerDelay(3, 2)}>
               <div>
                 <p className="text-sm font-medium">{t('settings.appearance.rightClickMultiSelect')}</p>
                 <p className="text-xs text-muted-foreground">{t('settings.appearance.rightClickMultiSelectDesc')}</p>
@@ -448,8 +455,8 @@ export default function PersonalizationPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
+        <Card className="reveal" style={revealDelay(4)}>
+          <CardHeader className="reveal-row" style={innerDelay(4, 0)}>
             <CardTitle className="flex items-center gap-2">
               <Palette className="h-4 w-4 text-primary" /> {t('settings.theme')}
             </CardTitle>
@@ -458,11 +465,12 @@ export default function PersonalizationPage() {
             <RadioGroup
               value={theme.theme}
               onChange={(v) => theme.set({ theme: v as 'light' | 'dark' | 'system' })}
-              className="grid-cols-3"
+              className="reveal-row grid-cols-3"
+              style={innerDelay(4, 1)}
               options={themeOptions}
             />
 
-            <div>
+            <div className="reveal-row" style={innerDelay(4, 2)}>
               <Label>{t('settings.accentColor')}</Label>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {ACCENT_PRESETS.map((c) => (
@@ -506,7 +514,7 @@ export default function PersonalizationPage() {
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="reveal-row grid gap-4 sm:grid-cols-2" style={innerDelay(4, 3)}>
               <div>
                 <Label>{t('settings.appearance.fileIconStyle')}</Label>
                 <RadioGroup
@@ -534,12 +542,18 @@ export default function PersonalizationPage() {
               </div>
             </div>
 
-            <div>
+            <div className="reveal-row" style={innerDelay(4, 4)}>
               <Label>{t('settings.blurLevel')}</Label>
               <BlurSlider value={theme.blurLevel} onChange={(level) => theme.set({ blurLevel: level })} className="mt-3" />
             </div>
 
-            <div>
+            {/* 动画三档（§33）：紧跟模糊效果，同一块外观卡内的第二个全局观感开关 */}
+            <div className="reveal-row" style={innerDelay(4, 5)}>
+              <Label>{t('settings.motionLevel')}</Label>
+              <MotionSlider value={theme.motionLevel} onChange={(level) => theme.set({ motionLevel: level })} className="mt-3" />
+            </div>
+
+            <div className="reveal-row" style={innerDelay(4, 6)}>
               <Label>{isMobile ? t('settings.filesPerRowMobile') : t('settings.filesPerRowDesktop')}</Label>
               {isMobile ? (
                 <FilesPerRowSlider min={2} max={4} value={theme.filesPerRowMobile} onChange={(n) => theme.set({ filesPerRowMobile: n })} className="mt-3" />
@@ -549,7 +563,7 @@ export default function PersonalizationPage() {
             </div>
 
             {/* 自定义背景（置于模糊效果之后） */}
-            <div className="space-y-2">
+            <div className="reveal-row space-y-2" style={innerDelay(4, 7)}>
               <Label>{t('settings.background')}</Label>
               <RadioGroup
                 className="grid-cols-2"

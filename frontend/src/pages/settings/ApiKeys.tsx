@@ -5,6 +5,7 @@ import { KeyRound, Copy, Trash2, Check , AlertTriangle, Boxes, Database, Link2 ,
 import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { FormCardSkeleton } from '@/components/ui/skeleton';
+import { revealDelay, REVEAL_INNER_BASE, REVEAL_STEP } from '@/components/ui/reveal';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -111,7 +112,7 @@ export default function ApiKeysPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="reveal flex items-center justify-between" style={revealDelay(0)}>
         <h2 className="text-lg font-semibold">{t('settings.nav.apiKeys')}</h2>
         <Button onClick={() => setShowCreate(true)}>
           <KeyRound className="h-4 w-4" /> {t('settings.createKey')}
@@ -121,7 +122,7 @@ export default function ApiKeysPage() {
       {loading ? (
         <FormCardSkeleton />
       ) : (
-        <Card className="min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
+        <Card className="reveal min-h-0 flex-1 scrollbar-thin overflow-auto py-0" style={revealDelay(1)}>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
@@ -146,8 +147,8 @@ export default function ApiKeysPage() {
                   </td>
                 </tr>
               ) : (
-                sortedKeys.map((k) => (
-                  <tr key={k.id} className="border-b last:border-0 hover:bg-accent/50">
+                sortedKeys.map((k, i) => (
+                  <tr key={k.id} className="reveal border-b last:border-0 hover:bg-accent/50" style={revealDelay(i, 'inner', REVEAL_INNER_BASE + REVEAL_STEP)}>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2">
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">

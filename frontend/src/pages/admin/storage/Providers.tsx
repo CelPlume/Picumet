@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { HardDrive, Plus, Trash2, PlugZap, Pencil } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
+import { revealDelay } from '@/components/ui/reveal';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -149,8 +150,8 @@ export function StorageProviders() {
               <tr><td colSpan={7}><TableSkeleton rows={5} cols={5} /></td></tr>
             ) : sortedRows.length === 0 ? (
               <tr><td colSpan={7}><EmptyState icon={<HardDrive className="h-7 w-7" />} title={t('admin.storageProviders.emptyTitle')} description={t('admin.storageProviders.emptyDesc')} /></td></tr>
-            ) : sortedRows.map((p) => (
-              <tr key={p.id} className="border-b last:border-0 hover:bg-accent/50">
+            ) : sortedRows.map((p, i) => (
+              <tr key={p.id} className="reveal border-b last:border-0 hover:bg-accent/50" style={revealDelay(i, 'inner')}>
                 <td className="px-4 py-2 font-medium">{p.name}</td>
                 <td className="px-4 py-2 text-xs text-muted-foreground">{typeLabel[p.type]}</td>
                 <td className="px-4 py-2 font-mono text-xs">{p.bucket}</td>
