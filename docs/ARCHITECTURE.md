@@ -144,7 +144,12 @@ The evaluation order runs from highest to lowest priority:
 4. API-key permission scope, applied as the intersection of key permissions and rule permissions.
 5. Path rules. Visibility-derived rules (reads and downloads of `users` / `public` files) flow through the same sort pipeline as stored rules; origin priority is `admin` > `user` > `system`, then subject specificity, path specificity, explicit priority, and effect.
 6. Owner-permission fallback.
-7. Default deny.
+7. **Bucket-scoped default role permission matrix (§31)**: a closed set scoped to the provider the file actually lands on — when an entry exists for (mount, landing bucket, role), any action it does not list is denied; with no entry the layer stays out of the way. On write paths the check runs inside the placement candidate loop: a candidate bucket whose matrix forbids the action is skipped (treated as "cannot fit").
+8. **Mount-scoped default role permission matrix (§28)**: the broader closed set keyed by `mount_role_permissions(mount_id, role)`; a present entry is likewise closed.
+9. User default-path permissions (the role default permission matrix).
+10. Default deny.
+
+Both matrices and the landing-bucket `providerId` are resolved and cached per request in `principal.ts` before being passed into `checkPermission` — the engine itself never queries the database, so the hot path gains no extra queries; omitting `providerId` reproduces the legacy behavior exactly.
 
 **Role default permissions (the user permission model).** `role_defaults.permissions` holds each role's default permission list (a five-item matrix: `read` / `write` / `update` / `delete` / `download`; **`share` is not part of it** — the `can_share` capability bit controls sharing, so one concern is never configured in two places). Built-in role seeds: `admin` and `user` = all five plus `capabilities=['can_share']`, `guest` = `download` only. **User-level override**: `users.permissions` (NULL = follow the role), with precedence `users.permissions` → `role_defaults.permissions` → the constant table `DEFAULT_ROLE_PERMISSIONS`. `getPrincipal` loads the effective list into `Principal.defaultPermissions`, which the own-space fallback in the decision order allows through (`share` actions keep their existing allow semantics inside the own space). Admin "Default user settings" edits the matrix, capability bits, alias, and default path/quota, and **saving a role default overrides the individual settings of every member of that role** (including `users.permissions`). A role also has an **alias** (`role_defaults.alias`, such as "Administrator"), and rule subjects accept that alias in addition to the role name (`loadPrincipalRules` resolves it to the role and merges it into the candidate set).
 
@@ -324,7 +329,7 @@ services/admin/
 └── types.ts
 ```
 
-The dashboard and statistics endpoints (`GET /api/admin/dashboard`, `/stats`) aggregate in `db/repos/dashboard.ts`: top-level `stats` (role counts, file count, used space, bucket count, active mounts, capacity total) plus per-mount `mounts` rows (primary bucket / standby pool members / usage / file count), built from 8 aggregate queries assembled in memory — N+1 queries are forbidden. The all-files list enriches mount, bucket, and hash the same way with batched per-page `IN` queries.
+The dashboard and statistics endpoints (`GET /api/admin/dashboard`, `/stats`) aggregate in `db/repos/dashboard.ts`: top-level `stats` (role counts, file count, used space, bucket count, active mounts, capacity total) plus per-mount `mounts` rows (primary bucket / standby pool members / usage / file count), built from 8 aggregate queries assembled in memory — N+1 queries are forbidden. The all-files list enriches mount, bucket, and hash the same way with batched per-page `IN` queries. The trends series (`GET /api/admin/dashboard/trends`) comes from `DashboardRepo.trends()`, which buckets `downloads` / `shares` / `logins` counts over time with a 2-year window cap and a 400-bucket ceiling (exceeding it returns 400 with a hint to shrink the range or coarsen the granularity).
 
 **Dependencies**: the user, share, log, settings, announcement, provider, mount, and rule repositories, `storage/providers.ts`, and `utils/ssrf.ts`.
 
@@ -409,7 +414,7 @@ The middleware layer handles cross-cutting concerns:
 | `middleware/free-mode.ts` | Enforces free-mode cross-site, CSRF, and rate-limit guards. |
 | `middleware/global.ts` | Initializes the request context, CORS, and security headers. |
 
-The `db/` directory is the single data-access layer. The `Db` class wraps either a D1 backend (production on Workers) or a `node:sqlite` backend (local tests), so business code does not know which one runs. Domain repositories live under `db/repos/`: users, quotas, providers, mounts, files, sessions, jobs, rules, API keys, shares, logs, settings, announcements, dashboard, blobs, role defaults, and reconciliation.
+The `db/` directory is the single data-access layer. The `Db` class wraps either a D1 backend (production on Workers) or a `node:sqlite` backend (local tests), so business code does not know which one runs. Domain repositories live under `db/repos/`: users, quotas, providers, mounts, files, sessions, jobs, rules, API keys, shares, logs, settings, announcements, dashboard, blobs, role defaults, and reconciliation, plus the mount-scoped (`mount-role-permissions.ts`) and bucket-scoped (`mount-provider-role-permissions.ts`) default role permission matrices.
 
 The `utils/` directory holds `path.ts` (normalization, boundary checks, pattern matching), `crypto.ts` (JWT, bcrypt, AES-GCM), `ssrf.ts` (endpoint validation), `smtp.ts`, and `base64.ts`.
 

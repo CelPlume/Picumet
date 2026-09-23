@@ -144,7 +144,12 @@ services/permissions/
 4. API 密钥权限范围，取密钥权限与规则权限的交集。
 5. 路径规则。可见性合成规则（`users` / `public` 的读和下载）与存量规则走同一条排序管线；来源（origin）优先级 `admin` > `user` > `system`，同来源内再按主体特异度、路径特异度、显式优先级、effect 排序。
 6. 文件所有者权限回退。
-7. 默认拒绝。
+7. **桶级默认角色权限矩阵（§31）**：封闭集合，限定「文件实际落桶」的 provider——该 (挂载点, 落桶, 角色) 有条目时，未列出的动作直接拒绝；无条目不介入。写路径在放置的候选成员循环里判定，候选桶矩阵不允许该动作即跳过候选（等价「放不下」）。
+8. **挂载点级默认角色权限矩阵（§28）**：比桶级更泛的封闭集合，`mount_role_permissions(mount_id, role)`；同样「有条目即封闭」。
+9. 用户默认路径权限（角色默认权限矩阵）。
+10. 默认拒绝。
+
+两层矩阵与落桶 `providerId` 由 `principal.ts` 按请求查库并缓存后传入 `checkPermission`——引擎内部不查库，热路径零额外查询；不传 `providerId` 时与既有行为完全一致。
 
 **角色默认权限（用户权限模型）**：`role_defaults.permissions` 是角色的默认权限清单（`read` / `write` / `update` / `delete` / `download` 五项矩阵；**`share` 不在其中**——分享开关是能力位 `can_share`，避免同一件事两处设置）。内置角色种子：`admin` 与 `user` = 全部五项 + `capabilities=['can_share']`，`guest` = 仅 `download`。**用户级覆盖**：`users.permissions`（NULL = 跟随角色）；优先级 `users.permissions` → `role_defaults.permissions` → 常量表 `DEFAULT_ROLE_PERMISSIONS`。`getPrincipal` 把生效清单装到 `Principal.defaultPermissions`；判定流程里「自有空间回退（用户默认路径权限）」按它放行（`share` 动作在自有空间内沿用既有放行语义）。管理端「默认用户设置」可编辑矩阵、能力位、别名与默认路径/配额，**保存角色默认会覆盖该角色全部成员的个别设置**（含 `users.permissions`）。角色另有**别名**（`role_defaults.alias`，如「管理员」），规则主体除角色名外也接受该别名（`loadPrincipalRules` 解析为角色后并入候选）。
 
@@ -324,7 +329,7 @@ services/admin/
 └── types.ts
 ```
 
-仪表板与统计（`GET /api/admin/dashboard`、`/stats`）由 `db/repos/dashboard.ts` 聚合：顶层 `stats`（角色计数、文件数、占用空间、桶数、活跃挂载点、容量合计）+ 每挂载点 `mounts`（主桶/备用池成员/用量/文件数）+ `buckets` 桶泳道树（`bucketTree()`：按 `file_metadata.provider_id` 分桶的挂载点节点与零文件备用清单）+ `mountFolderSummary()`（挂载点展开层的顶层文件夹递归计数，按桶过滤），内存组装，禁止 N+1；全部文件列表的挂载点/桶/哈希富化同样按页批量 `IN` 查询。
+仪表板与统计（`GET /api/admin/dashboard`、`/stats`）由 `db/repos/dashboard.ts` 聚合：顶层 `stats`（角色计数、文件数、占用空间、桶数、活跃挂载点、容量合计）+ 每挂载点 `mounts`（主桶/备用池成员/用量/文件数）+ `buckets` 桶泳道树（`bucketTree()`：按 `file_metadata.provider_id` 分桶的挂载点节点与零文件备用清单）+ `mountFolderSummary()`（挂载点展开层的顶层文件夹递归计数，按桶过滤），内存组装，禁止 N+1；全部文件列表的挂载点/桶/哈希富化同样按页批量 `IN` 查询。趋势序列（`GET /api/admin/dashboard/trends`）由 `DashboardRepo.trends()` 按 `downloads` / `shares` / `logins` 指标出时间桶计数，区间上限 2 年、桶数上限 400（超出 400 提示缩小范围或加粗粒度）。
 
 **依赖**：用户、分享、日志、设置、公告、提供商、挂载、规则等仓库，`storage/providers.ts`，`utils/ssrf.ts`。
 
@@ -409,7 +414,7 @@ services/public/
 | `middleware/free-mode.ts` | 自由模式的跨站、CSRF、限流守卫。 |
 | `middleware/global.ts` | 初始化请求上下文、CORS、安全响应头。 |
 
-`db/` 是唯一的数据访问层。`Db` 类要么包 D1 后端（生产环境 Workers），要么包 `node:sqlite` 后端（本地测试），业务代码不感知用的是哪个。领域仓库在 `db/repos/` 下：用户、配额、提供商、挂载、文件、会话、任务、规则、API 密钥、分享、日志、设置、公告、仪表板聚合、内容对象、角色默认、对账。
+`db/` 是唯一的数据访问层。`Db` 类要么包 D1 后端（生产环境 Workers），要么包 `node:sqlite` 后端（本地测试），业务代码不感知用的是哪个。领域仓库在 `db/repos/` 下：用户、配额、提供商、挂载、文件、会话、任务、规则、API 密钥、分享、日志、设置、公告、仪表板聚合、内容对象、角色默认、对账，以及挂载点级（`mount-role-permissions.ts`）与桶级（`mount-provider-role-permissions.ts`）默认角色权限矩阵。
 
 `utils/` 下有 `path.ts`（规范化、边界判断、模式匹配）、`crypto.ts`（JWT、bcrypt、AES-GCM）、`ssrf.ts`（endpoint 校验）、`smtp.ts`、`base64.ts`。
 
