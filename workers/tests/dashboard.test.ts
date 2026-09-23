@@ -75,7 +75,13 @@ async function createProvider(name: string, bucket: string): Promise<string> {
   return (await json<{ data: { provider: { id: string } } }>(res)).data.provider.id;
 }
 
-async function seedFile(mountId: string, name: string, size: number, type: 'file' | 'folder' = 'file'): Promise<void> {
+async function seedFile(
+  mountId: string,
+  name: string,
+  size: number,
+  type: 'file' | 'folder' = 'file',
+  providerId?: string
+): Promise<void> {
   const db = Db.fromSqlite(ctx.db);
   await FileRepo.createFile(db, {
     mountId,
@@ -85,6 +91,7 @@ async function seedFile(mountId: string, name: string, size: number, type: 'file
     type,
     size: type === 'file' ? size : 0,
     ownerId: adminId,
+    providerId,
   });
 }
 
@@ -174,7 +181,8 @@ describe('挂载点容量与池关系（1 主桶 + 1 备用桶成员）', () => 
         mountPath: '/pool',
         name: '池挂载',
         capacityBytes: 1024,
-        poolProviderIds: [standbyProviderId, primaryProviderId], // 主桶 P2 + 备用桶 P1
+        // §31：备用由显式标记决定（本地存储标为备用），主桶 = 备用桶
+        poolMembers: [{ providerId: standbyProviderId }, { providerId: primaryProviderId, standby: true }],
       },
     });
     expect(res.status).toBe(201);
@@ -230,7 +238,7 @@ describe('挂载点容量与池关系（1 主桶 + 1 备用桶成员）', () => 
     expect(pool.fileCount).toBe(3);
     // 主桶 = 创建时指定的 providerId
     expect(pool.provider).toEqual({ id: standbyProviderId, name: '备用桶', bucket: 'picumet-standby' });
-    // 备用桶 = 池成员排除主 provider，带 weight
+    // 备用桶 = 显式标记备用的池成员（排除主 provider，带 weight）；§31 起与文件数无关
     expect(pool.standbys).toEqual([
       { id: primaryProviderId, name: '本地存储', bucket: 'picumet-storage', weight: 1 },
     ]);
@@ -278,5 +286,57 @@ describe('挂载点容量与池关系（1 主桶 + 1 备用桶成员）', () => 
       body: { capacityBytes: -5 },
     });
     expect(put.status).toBe(400);
+  });
+});
+
+// ============ §31 备用桶由显式标记决定（不再由「该桶 0 文件」推断） ============
+describe('备用桶显式标记（§31）', () => {
+  it('未标 standby 的 0 文件池成员不进 standbys；标 standby 的桶持文件仍进 standbys', async () => {
+    // 未标记：备用桶上 0 文件也不再被当作备用
+    const unmarkedRes = await request(ctx, '/api/admin/mounts', {
+      method: 'POST',
+      cookie: adminCookie,
+      headers: { 'X-CSRF-Token': adminCsrf },
+      body: {
+        providerId: primaryProviderId,
+        mountPath: '/dash-unmarked',
+        name: '未标备用',
+        poolProviderIds: [primaryProviderId, standbyProviderId],
+      },
+    });
+    expect(unmarkedRes.status).toBe(201);
+    const unmarkedId = (await json<{ data: { mount: { id: string } } }>(unmarkedRes)).data.mount.id;
+
+    // 显式标记备用，且该桶随后持有文件 → 仍然进 standbys（标记与文件数解耦）
+    const markedRes = await request(ctx, '/api/admin/mounts', {
+      method: 'POST',
+      cookie: adminCookie,
+      headers: { 'X-CSRF-Token': adminCsrf },
+      body: {
+        providerId: primaryProviderId,
+        mountPath: '/dash-marked',
+        name: '标备用',
+        poolMembers: [{ providerId: primaryProviderId }, { providerId: standbyProviderId, standby: true }],
+      },
+    });
+    expect(markedRes.status).toBe(201);
+    const markedId = (await json<{ data: { mount: { id: string } } }>(markedRes)).data.mount.id;
+    await seedFile(markedId, 'on-standby.bin', 7, 'file', standbyProviderId);
+
+    const data = await getDashboard();
+    // 未标记：零文件成员不出现
+    expect(data.mounts.find((m) => m.id === unmarkedId)?.standbys).toEqual([]);
+    // 已标记且持文件：仍出现（排除主 provider）
+    expect(data.mounts.find((m) => m.id === markedId)?.standbys).toEqual([
+      { id: standbyProviderId, name: '备用桶', bucket: 'picumet-standby', weight: 1 },
+    ]);
+    // 落库列语义：standby = 1 才是备用
+    const rows = ctx.db
+      .prepare('SELECT provider_id, standby FROM mount_providers WHERE mount_id = ?')
+      .all(markedId) as Array<{ provider_id: string; standby: number }>;
+    expect(Object.fromEntries(rows.map((r) => [r.provider_id, Number(r.standby)]))).toEqual({
+      [primaryProviderId]: 0,
+      [standbyProviderId]: 1,
+    });
   });
 });

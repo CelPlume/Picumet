@@ -17,6 +17,7 @@ let standbyProviderId = '';
 let rootMountId = '';
 let poolMountId = '';
 let backupMountId = '';
+let spareMountId = '';
 
 interface Envelope<T = unknown> {
   data: T;
@@ -85,25 +86,51 @@ beforeAll(async () => {
     return (await json<{ data: { provider: { id: string } } }>(res)).data.provider.id;
   })();
 
-  // 拼好桶挂载点：主桶 = 备用桶（让「本地存储」成为拼好桶成员，验证 member 分桶计数）
+  // 拼好桶挂载点：主桶 = 备用桶（让「本地存储」成为拼好桶成员，验证 member 分桶计数）；
+  // §31：「本地存储」显式标记为备用（既持文件又标备用 → 应同时出现在 mounts 与 standbys）
   const poolRes = await request(ctx, '/api/admin/mounts', {
     method: 'POST',
     cookie: adminCookie,
     headers: { 'X-CSRF-Token': adminCsrf },
-    body: { providerId: standbyProviderId, mountPath: '/pool', name: '池挂载', poolProviderIds: [standbyProviderId, primaryProviderId] },
+    body: {
+      providerId: standbyProviderId,
+      mountPath: '/pool',
+      name: '池挂载',
+      poolMembers: [{ providerId: standbyProviderId }, { providerId: primaryProviderId, standby: true }],
+    },
   });
   expect(poolRes.status).toBe(201);
   poolMountId = (await json<{ data: { mount: { id: string } } }>(poolRes)).data.mount.id;
 
-  // 备份桶挂载点：主桶 = 本地存储，备用桶 = 备用桶，但备用桶上 0 文件 → badge 场景
+  // 备份桶挂载点：主桶 = 本地存储，备用桶 = 备用桶且显式标记备用（§31 起备用由标记决定，与文件数无关）
   const backupRes = await request(ctx, '/api/admin/mounts', {
     method: 'POST',
     cookie: adminCookie,
     headers: { 'X-CSRF-Token': adminCsrf },
-    body: { providerId: primaryProviderId, mountPath: '/backup', name: '备份挂载', poolProviderIds: [primaryProviderId, standbyProviderId] },
+    body: {
+      providerId: primaryProviderId,
+      mountPath: '/backup',
+      name: '备份挂载',
+      poolMembers: [{ providerId: primaryProviderId }, { providerId: standbyProviderId, standby: true }],
+    },
   });
   expect(backupRes.status).toBe(201);
   backupMountId = (await json<{ data: { mount: { id: string } } }>(backupRes)).data.mount.id;
+
+  // 未标备用挂载点：备用桶 0 文件但**没有** standby 标记 → 不应进 standbys（0 文件推断不再驱动语义）
+  const spareRes = await request(ctx, '/api/admin/mounts', {
+    method: 'POST',
+    cookie: adminCookie,
+    headers: { 'X-CSRF-Token': adminCsrf },
+    body: {
+      providerId: primaryProviderId,
+      mountPath: '/spare',
+      name: '未标备用挂载',
+      poolMembers: [{ providerId: primaryProviderId }, { providerId: standbyProviderId }],
+    },
+  });
+  expect(spareRes.status).toBe(201);
+  spareMountId = (await json<{ data: { mount: { id: string } } }>(spareRes)).data.mount.id;
 
   // 种子：根挂载点直置文件（主桶）
   await seedFile(rootMountId, '/', 'root-file.txt', 10, primaryProviderId);
@@ -135,7 +162,7 @@ describe('bucketTree：桶 → 挂载点泳道', () => {
     const backup = primary.mounts.find((m) => m.id === backupMountId)!;
     expect(backup.role).toBe('primary');
 
-    // 备用桶泳道：池挂载 member（standby 上的 2 个文件）；备份挂载 0 文件 → standbys badge
+    // 备用桶泳道：池挂载 member（standby 上的 2 个文件）；备份挂载显式标备用 → standbys badge
     const poolOnStandby = standby.mounts.find((m) => m.id === poolMountId)!;
     expect(poolOnStandby.role).toBe('primary');
     expect(poolOnStandby.fileCount).toBe(2); // on-standby.bin + pool-root.bin
@@ -144,7 +171,29 @@ describe('bucketTree：桶 → 挂载点泳道', () => {
     const badge = standby.standbys.find((s) => s.mountId === backupMountId);
     expect(badge).toBeDefined();
     expect(badge!.primaryProviderId).toBe(primaryProviderId);
-    expect(standby.standbys.some((s) => s.mountId === poolMountId)).toBe(false); // 有文件 → 不是 badge
+    // 该泳道的主桶（/pool）不会成为自身的备用条目
+    expect(standby.standbys.some((s) => s.mountId === poolMountId)).toBe(false);
+    // §31：「本地存储」对该挂载点是 0 文件成员但**未标 standby** → 不再进 standbys（0 文件推断不再驱动语义）
+    expect(standby.standbys.some((s) => s.mountId === spareMountId)).toBe(false);
+    expect(standby.mounts.some((m) => m.id === spareMountId)).toBe(false);
+  });
+
+  it('§31 显式备用标记：既持文件又标备用的桶同时出现在 mounts 与 standbys', async () => {
+    const buckets = await getMountTree();
+    const primary = buckets.find((b) => b.id === primaryProviderId)!;
+
+    // /pool 把「本地存储」显式标为备用，且该桶实际持有 on-primary.bin：
+    // → 既以 member 出现在 mounts（本桶文件计数），又以备用条目出现在 standbys（图里两行共存）
+    const asMember = primary.mounts.find((m) => m.id === poolMountId)!;
+    expect(asMember.role).toBe('member');
+    expect(asMember.fileCount).toBe(1);
+
+    const asStandby = primary.standbys.find((s) => s.mountId === poolMountId);
+    expect(asStandby).toBeDefined();
+    expect(asStandby!.mountName).toBe('池挂载');
+    expect(asStandby!.mountPath).toBe('/pool');
+    expect(asStandby!.primaryProviderId).toBe(standbyProviderId);
+    expect(asStandby!.primaryProviderName).toBe('备用桶');
   });
 });
 

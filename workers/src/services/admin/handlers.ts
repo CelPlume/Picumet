@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import {
   UserRepo, QuotaRepo, ShareRepo, LogRepo, SettingsRepo, AnnouncementRepo,
-  DashboardRepo, FileRepo, MountRepo, Db,
+  DashboardRepo, FileRepo, MountRepo, Db, trendBucketCount,
 } from '../../db';
 import type { FileListItem, Share } from '@shared/types';
 import { getDb } from '../../middleware/auth';
@@ -12,7 +12,7 @@ import { ApiError } from '../../shared/errors';
 import { toFileListItem } from '../../db/repos/files';
 import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
 import { parseJson } from '../../db';
-import { UserUpdateSchema, SettingsSchema, AnnouncementSchema, RoleNameSchema, RoleDefaultsSchema, FileBanSchema } from './schemas';
+import { UserUpdateSchema, SettingsSchema, AnnouncementSchema, RoleNameSchema, RoleDefaultsSchema, FileBanSchema, TrendsQuerySchema } from './schemas';
 import { sendMail, type SmtpConfig, resolveSmtpConfig } from '../../utils/smtp';
 import { encryptSecret, hashPassword } from '../../utils/crypto';
 import { loadRoutePrefixes } from '../storage/direct-links';
@@ -65,6 +65,37 @@ adminRoutes.get('/stats', async (c) => {
 adminRoutes.get('/mount-tree', async (c) => {
   const db = getDb(c);
   return ok(c, { buckets: await DashboardRepo.bucketTree(db) });
+});
+
+// ============ 趋势聚合（趋势面板曲线） ============
+/** 缺省窗口：最近 30 天（省略 from/to 时） */
+const TREND_DEFAULT_WINDOW_MS = 30 * 24 * 3600 * 1000;
+/** 区间长度上限：2 年（粗粒度下桶数不设限的第二道闸） */
+const TREND_MAX_RANGE_MS = 2 * 365 * 24 * 3600 * 1000;
+/** 桶数上限：前端曲线与传输体积保护（超出提示缩小区间或粗化粒度） */
+const TREND_MAX_BUCKETS = 400;
+
+/**
+ * GET /api/admin/dashboard/trends?metric=&granularity=&from=&to=
+ * 区间左闭右开 [from, to)，from/to 为毫秒时间戳；缺省 = 最近 30 天。
+ * 返回零填充的连续桶（UTC 对齐），供前端直接画图。
+ */
+adminRoutes.get('/dashboard/trends', async (c) => {
+  const db = getDb(c);
+  const parsed = TrendsQuerySchema.safeParse(c.req.query());
+  if (!parsed.success) {
+    throw ApiError.badRequest('趋势参数无效：metric / granularity 取值非法，或 from / to 不是毫秒时间戳');
+  }
+  const { metric, granularity } = parsed.data;
+  const to = parsed.data.to ?? Date.now();
+  const from = parsed.data.from ?? to - TREND_DEFAULT_WINDOW_MS;
+  if (from >= to) throw ApiError.badRequest('from 必须小于 to');
+  if (to - from > TREND_MAX_RANGE_MS) throw ApiError.badRequest('时间区间过长（上限 2 年），请缩小区间或改用更粗粒度');
+  const bucketCount = trendBucketCount(from, to, granularity);
+  if (bucketCount > TREND_MAX_BUCKETS) {
+    throw ApiError.badRequest(`桶数过多（${bucketCount} > ${TREND_MAX_BUCKETS}），请缩小区间或改用更粗粒度`);
+  }
+  return ok(c, { metric, granularity, buckets: await DashboardRepo.trends(db, { metric, granularity, from, to }) });
 });
 
 // 挂载点展开层：顶层文件夹 + 递归文件计数（可选按落桶 provider 过滤，仪表盘只显示计数）

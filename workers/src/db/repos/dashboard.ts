@@ -1,6 +1,6 @@
 // 仪表盘聚合仓库：/admin/dashboard 与 /admin/stats 共用的只读统计（§26）
 import { Db } from '../db';
-import { num, str } from '../row';
+import { num, str, b } from '../row';
 
 /** 顶层统计：与前端 AdminDashboard 契约的 stats 字段一一对应 */
 export interface DashboardStats {
@@ -25,7 +25,7 @@ export interface DashboardMount {
   usedSpace: number;
   fileCount: number;
   provider: { id: string; name: string; bucket: string };
-  /** 备用桶池成员（mount_providers，排除主 provider） */
+  /** 显式标记为备用（mount_providers.standby = 1）的池成员（排除主 provider）；不再按「该桶 0 文件」推断 */
   standbys: Array<{ id: string; name: string; bucket: string; weight: number }>;
 }
 
@@ -53,7 +53,10 @@ export interface DashboardBucket {
   fileCount: number;
   usedSpace: number;
   mounts: DashboardBucketMount[];
-  /** 备份桶参与：本桶为该挂载点备用成员且 0 文件 → 前端渲染跳主桶 badge */
+  /**
+   * 备份桶参与：本桶显式标记为备用（§31，`mount_providers.standby = 1`）且不是该挂载点主桶。
+   * 与文件数无关——既持文件又标备用的桶会**同时**出现在 mounts 与 standbys（泳道图两行共存）。
+   */
   standbys: Array<{
     mountId: string;
     mountName: string;
@@ -61,6 +64,99 @@ export interface DashboardBucket {
     primaryProviderId: string;
     primaryProviderName: string;
   }>;
+}
+
+// ============ 趋势聚合（§33 组合索引：仪表盘趋势曲线） ============
+
+/** 趋势指标：downloads = 下载（action='download'）、logins = 登录成功、share_visits = 分享访问、
+ *  shares = 新建分享（shares.created_at） */
+export const TREND_METRICS = ['downloads', 'logins', 'shares', 'share_visits'] as const;
+export type TrendMetric = (typeof TREND_METRICS)[number];
+
+/** 趋势粒度：hour/day/week（周一起算）/month，桶边界一律 UTC 对齐 */
+export const TREND_GRANULARITIES = ['hour', 'day', 'week', 'month'] as const;
+export type TrendGranularity = (typeof TREND_GRANULARITIES)[number];
+
+export interface TrendBucket {
+  /** 桶起始时间（UTC 对齐毫秒） */
+  t: number;
+  count: number;
+}
+
+/**
+ * 指标 → 数据源：全部按 created_at 落桶，一次 GROUP BY 出全桶。
+ * downloads/logins/share_visits 复用 access_logs 的既有动作命名；shares 直接数新建分享行（各状态都算创建事件）。
+ */
+const TREND_SOURCES: Record<TrendMetric, { table: string; where: string }> = {
+  downloads: { table: 'access_logs', where: `action = 'download'` },
+  logins: { table: 'access_logs', where: `action = 'login'` },
+  share_visits: { table: 'access_logs', where: `action = 'share'` },
+  shares: { table: 'shares', where: '1 = 1' },
+};
+
+/**
+ * 粒度 → SQLite 分桶表达式（UTC；created_at 是毫秒时间戳，先整除 1000 再 unixepoch）。
+ * 周：'weekday 0' 前进到最近的周日后回退 6 天 = 该日所在周的周一（周日归属前一个周一）。
+ */
+const TREND_GROUP_EXPR: Record<TrendGranularity, string> = {
+  hour: `strftime('%Y-%m-%d %H:00', created_at / 1000, 'unixepoch')`,
+  day: `strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')`,
+  week: `strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'weekday 0', '-6 days')`,
+  month: `strftime('%Y-%m', created_at / 1000, 'unixepoch')`,
+};
+
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+const WEEK_MS = 7 * DAY_MS;
+
+/** 桶起始（UTC 对齐）：hour=整点、day=当日 0 点、week=周一 0 点、month=当月 1 日 0 点 */
+function trendBucketStart(ts: number, granularity: TrendGranularity): number {
+  const d = new Date(ts);
+  switch (granularity) {
+    case 'hour':
+      return Math.floor(ts / HOUR_MS) * HOUR_MS;
+    case 'day':
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    case 'week': {
+      const day = d.getUTCDay(); // 0 = 周日
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - (day === 0 ? 6 : day - 1) * DAY_MS;
+    }
+    case 'month':
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  }
+}
+
+/** 下一个桶起始（UTC 无夏令时，hour/day/week 为定长步进） */
+function trendNextBucket(start: number, granularity: TrendGranularity): number {
+  if (granularity === 'hour') return start + HOUR_MS;
+  if (granularity === 'day') return start + DAY_MS;
+  if (granularity === 'week') return start + WEEK_MS;
+  const d = new Date(start);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+}
+
+/** 桶起始 → SQL 分桶键：与 TREND_GROUP_EXPR 的输出逐字符一致（零填充靠它在对齐桶上查表） */
+function trendBucketKey(start: number, granularity: TrendGranularity): string {
+  const d = new Date(start);
+  const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  if (granularity === 'month') return ym;
+  const day = `${ym}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  return granularity === 'hour' ? `${day} ${String(d.getUTCHours()).padStart(2, '0')}:00` : day;
+}
+
+/**
+ * 区间 [from, to) 的桶数（调用方据此做上限保护，避免生成超大数组）。
+ * hour/day/week 定长可整除直算；month 逐月计数（受区间上限约束，最多数百次）。
+ */
+export function trendBucketCount(from: number, to: number, granularity: TrendGranularity): number {
+  const start = trendBucketStart(from, granularity);
+  if (to <= start) return 0;
+  if (granularity === 'hour') return Math.ceil((to - start) / HOUR_MS);
+  if (granularity === 'day') return Math.ceil((to - start) / DAY_MS);
+  if (granularity === 'week') return Math.ceil((to - start) / WEEK_MS);
+  let n = 0;
+  for (let t = start; t < to; t = trendNextBucket(t, 'month')) n += 1;
+  return n;
 }
 
 function roleCountsOf(rows: Array<Record<string, unknown>>): DashboardStats['userRoles'] {
@@ -94,6 +190,33 @@ export const DashboardRepo = {
   },
 
   /**
+   * 趋势曲线（一次 GROUP BY 出全部桶 + 内存零填充，无 N+1、无逐桶查询）：
+   * 区间左闭右开 [from, to)；桶从 floor(from) 起、到「桶起点 < to」为止（to 恰在边界时不产生尾部空桶）。
+   * 无数据的桶补 0，保证前端能画连续曲线。
+   */
+  async trends(
+    db: Db,
+    opts: { metric: TrendMetric; granularity: TrendGranularity; from: number; to: number }
+  ): Promise<TrendBucket[]> {
+    const { metric, granularity, from, to } = opts;
+    const source = TREND_SOURCES[metric];
+    const rows = await db.all(
+      `SELECT ${TREND_GROUP_EXPR[granularity]} AS k, COUNT(*) AS c
+       FROM ${source.table}
+       WHERE ${source.where} AND created_at >= ? AND created_at < ?
+       GROUP BY k`,
+      [from, to]
+    );
+    const counts = new Map<string, number>();
+    for (const r of rows) counts.set(String(r.k), num(r.c));
+    const buckets: TrendBucket[] = [];
+    for (let t = trendBucketStart(from, granularity); t < to; t = trendNextBucket(t, granularity)) {
+      buckets.push({ t, count: counts.get(trendBucketKey(t, granularity)) ?? 0 });
+    }
+    return buckets;
+  },
+
+  /**
    * 每挂载点用量（file_metadata GROUP BY mount_id WHERE type='file'，一次查询）。
    * 顶层 usedSpace 与 mounts[].usedSpace/fileCount 共用同一条聚合。
    */
@@ -106,7 +229,7 @@ export const DashboardRepo = {
     return map;
   },
 
-  /** 挂载点总览（3 条查询 + 内存组装，禁止 N+1）：主 provider JOIN + 备用池成员 JOIN */
+  /** 挂载点总览（3 条查询 + 内存组装，禁止 N+1）：主 provider JOIN + 显式备用池成员 JOIN */
   async mounts(db: Db): Promise<DashboardMount[]> {
     const [mountRows, usage, standbyRows] = await Promise.all([
       db.all(
@@ -117,12 +240,13 @@ export const DashboardRepo = {
          ORDER BY m.priority DESC, m.mount_path ASC`
       ),
       this.usageByMount(db),
+      // §31：备用桶是显式标记（standby = 1），不再由「该桶对此挂载点 0 文件」推断
       db.all(
         `SELECT mp.mount_id, p.id, p.name, p.bucket, mp.weight
          FROM mount_providers mp
          JOIN mounts m ON m.id = mp.mount_id
          JOIN storage_providers p ON p.id = mp.provider_id
-         WHERE mp.provider_id <> m.provider_id
+         WHERE mp.provider_id <> m.provider_id AND mp.standby = 1
          ORDER BY mp.mount_id ASC, mp.weight DESC, p.name ASC`
       ),
     ]);
@@ -154,13 +278,15 @@ export const DashboardRepo = {
   /**
    * 桶 → 挂载点树（活跃挂载点泳道图 + 全部文件挂载点视图共用，一次查询禁止 N+1）：
    * 每桶列出「持有该挂载点文件」的挂载点节点（主桶或拼好桶成员，计数按 file_metadata.provider_id
-   * 落桶统计）；仅作备用（该桶内 0 文件）的池成员进入 standbys，前端给出跳主桶的备用桶 badge。
+   * 落桶统计）；**显式标记备用**（§31，`mount_providers.standby = 1`）且非该挂载点主桶的成员进入
+   * standbys —— 与文件数无关（0 文件不再作为任何判定依据，推断路径已移除），故「既持文件又标备用」的桶会同时
+   * 出现在 mounts 与 standbys（泳道图备用行与挂载点行同泳道共存）。
    */
   async bucketTree(db: Db): Promise<DashboardBucket[]> {
     const [providerRows, mountRows, memberRows, usageRows] = await Promise.all([
       db.all('SELECT id, name, bucket, type FROM storage_providers ORDER BY created_at ASC, id ASC'),
       db.all('SELECT id, name, mount_path, status, capacity_bytes, provider_id FROM mounts ORDER BY priority DESC, mount_path ASC'),
-      db.all('SELECT mount_id, provider_id FROM mount_providers'),
+      db.all('SELECT mount_id, provider_id, standby FROM mount_providers'),
       db.all(
         `SELECT mount_id, provider_id, COUNT(*) AS c, COALESCE(SUM(size), 0) AS s
          FROM file_metadata WHERE type = 'file' AND provider_id IS NOT NULL
@@ -172,12 +298,12 @@ export const DashboardRepo = {
     for (const r of usageRows) {
       perBucket.set(`${String(r.mount_id)}:${String(r.provider_id)}`, { fileCount: num(r.c), usedSpace: num(r.s) });
     }
-    // mount_id → 池成员 provider id 集（含主桶）
-    const members = new Map<string, Set<string>>();
+    // mount_id → provider_id → 是否显式备用（§31；成员存在性用 has() 判断，含主桶行）
+    const members = new Map<string, Map<string, boolean>>();
     for (const r of memberRows) {
-      const set = members.get(String(r.mount_id)) ?? new Set<string>();
-      set.add(String(r.provider_id));
-      members.set(String(r.mount_id), set);
+      const inner = members.get(String(r.mount_id)) ?? new Map<string, boolean>();
+      inner.set(String(r.provider_id), b(r.standby));
+      members.set(String(r.mount_id), inner);
     }
     const mountById = new Map(mountRows.map((m) => [String(m.id), m]));
 
@@ -189,7 +315,8 @@ export const DashboardRepo = {
       let bucketSpace = 0;
       for (const m of mountRows) {
         const mountId = String(m.id);
-        if (!members.get(mountId)?.has(providerId)) continue;
+        const memberFlags = members.get(mountId);
+        if (!memberFlags?.has(providerId)) continue;
         const u = perBucket.get(`${mountId}:${providerId}`) ?? { fileCount: 0, usedSpace: 0 };
         bucketFiles += u.fileCount;
         bucketSpace += u.usedSpace;
@@ -205,10 +332,11 @@ export const DashboardRepo = {
             usedSpace: u.usedSpace,
             role: isPrimary ? 'primary' : 'member',
           });
-        } else {
-          // 备份桶：该挂载点的备用成员且本桶 0 文件 → badge 跳主桶
-          const primary = mountById.get(mountId);
-          const primaryRow = providerRows.find((pp) => String(pp.id) === String(primary?.provider_id));
+        }
+        // §31：备用条目只由显式标记决定（与文件数无关）
+        if (!isPrimary && memberFlags.get(providerId) === true) {
+          const primaryMount = mountById.get(mountId);
+          const primaryRow = providerRows.find((pp) => String(pp.id) === String(primaryMount?.provider_id));
           if (primaryRow) {
             standbyEntries.push({
               mountId,

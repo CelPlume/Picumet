@@ -1,6 +1,7 @@
 // 管理服务 Zod schemas（用户管理、系统设置、公告）
 import { z } from 'zod';
 import { PERMISSION_MATRIX } from '@shared/types';
+import { TREND_METRICS, TREND_GRANULARITIES } from '../../db';
 import { DIRECT_PREFIX_VALUES, ROOT_TARGET_VALUES, normalizeRoutePrefix } from '../storage/direct-links';
 
 // 角色名：小写字母开头，仅小写字母、数字、-、_（最长 32）
@@ -97,6 +98,19 @@ export const AnnouncementSchema = z.object({
 
 // 文件封禁（§26）：PUT /api/admin/files/:id/ban —— true = 封禁、false = 解封
 export const FileBanSchema = z.object({ banned: z.boolean() });
+
+// 趋势查询（GET /api/admin/dashboard/trends）：metric/granularity 枚举 + 可选毫秒时间戳。
+// 空串（?from=）视同未给；跨字段约束（from < to）与桶数上限在 handler 判定。
+const msParam = z.preprocess(
+  (v) => (v === '' ? undefined : v),
+  z.coerce.number({ invalid_type_error: 'from/to 必须是毫秒时间戳' }).int().nonnegative().optional()
+);
+export const TrendsQuerySchema = z.object({
+  metric: z.enum(TREND_METRICS),
+  granularity: z.enum(TREND_GRANULARITIES),
+  from: msParam,
+  to: msParam,
+});
 
 export type UserUpdateRequest = z.infer<typeof UserUpdateSchema>;
 export type RoleDefaultsRequest = z.infer<typeof RoleDefaultsSchema>;

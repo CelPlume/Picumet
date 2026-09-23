@@ -51,21 +51,55 @@ export const ProviderSchema = ProviderSchemaBase.superRefine((data, ctx) => {
   }
 });
 
+// 挂载点级默认角色权限矩阵条目（§28）：动作词表 = 权限矩阵 5 项；
+// share 由能力位 can_share 表达，矩阵不接受（与 role_defaults.permissions 一致）；
+// permissions 传 [] = 删除该条目（配合全量替换即「该角色不设矩阵」）。
+export const MountRolePermissionSchema = z.object({
+  role: z.enum(['admin', 'user', 'guest']),
+  permissions: z.array(z.enum(['read', 'write', 'update', 'delete', 'download'])).max(5),
+});
+
+// 存储池成员（§E）：weight = 加权系数（least_used / free_weighted）；
+// capacityBytes = 成员容量上限（null/缺省 = 不限）；sortOrder = ordered 队列次序（升序，同序按 provider_id）。
+// §31：standby = 显式「作为备用桶」标记（缺省 false）；rolePermissions = 该桶的桶级默认角色权限矩阵，
+// 全量替换语义——缺省 = 不改该桶矩阵；[] = 清空；单条 permissions=[] = 删除该角色条目。
+// §32：standby = 备用桶**不参与写入放置**（只作 §G 读回退候选），故「除备用桶外都是主桶」；
+// 保存后池内必须至少留 1 个非备用成员（否则 400），主存储锚点由后端按池内第一个非备用成员派生。
+export const PoolMemberSchema = z.object({
+  providerId: z.string().min(1),
+  weight: z.number().int().min(1).max(1000).optional(),
+  capacityBytes: z.number().int().min(0).nullable().optional(),
+  sortOrder: z.number().int().min(0).optional(),
+  standby: z.boolean().optional(),
+  rolePermissions: z.array(MountRolePermissionSchema).max(3).optional(),
+});
+
 // 挂载点
 export const MountSchema = z.object({
-  providerId: z.string().min(1),
+  // §32 主存储锚点（内部字段，不再由用户选择）：缺省 = 取 poolMembers 第一个桶（二者都缺 → 400）。
+  // 请求里显式给的可写成员优先保留；其余情况由后端按「池内第一个非备用成员」派生。
+  providerId: z.string().min(1).optional(),
   mountPath: z.string().min(1),
   name: z.string().min(1).max(100),
   sortBy: z.enum(['name', 'time', 'size', 'manual']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional(),
   priority: z.number().int().optional(),
-  // 挂载容量（字节）；null = 不限（默认）
+  // 挂载容量（字节）；null = 不限（默认）；§31：设了上限时不得超过各桶上限之和（应用层校验）
   maxStorage: z.number().int().positive().nullable().optional(),
   // 展示容量（§26 仪表盘占用率，字节）；null/缺省 = 未设置
   capacityBytes: z.number().int().min(0).nullable().optional(),
-  // 存储池（§E）：写入选桶策略 + 池成员 provider（缺省 = 仅主 provider）
-  poolStrategy: z.enum(['least_used', 'round_robin', 'hash']).optional(),
+  // 存储池（§E）：写入选桶策略 + 池成员（缺省 = 仅主 provider）
+  poolStrategy: z.enum(['least_used', 'round_robin', 'hash', 'free_weighted', 'ordered']).optional(),
+  // 池成员全量替换：缺省 = 不改；[] = 清空（回到仅主 provider 单桶语义）。§32：池 = 入参成员集
+  // （主 provider 不再强制保留，主存储锚点随后按池内第一个非备用成员派生）。
+  // §31：成员可带 standby（显式备用标记）与 rolePermissions（该桶桶级矩阵，全量替换）
+  poolMembers: z.array(PoolMemberSchema).max(20).optional(),
+  // 旧简写：等价于 weight=1 / 不限容量 / sortOrder=0 的 poolMembers（两者同时给时 poolMembers 优先）
   poolProviderIds: z.array(z.string().min(1)).max(20).optional(),
+  // §28 写入口模式（缺省 = free，保持现状）
+  uploadMode: z.enum(['free', 'user_space', 'flat']).optional(),
+  // §28 挂载点级默认角色权限矩阵：全量替换语义——缺省 = 不改；[] = 清空矩阵；单条 [] = 删除该角色条目
+  rolePermissions: z.array(MountRolePermissionSchema).max(3).optional(),
 });
 
 // 权限规则
