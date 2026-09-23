@@ -2266,6 +2266,42 @@ Returns the same payload as **Get the dashboard** — `stats`, `mounts`, and `bu
 ```sh
 curl https://{domain}/api/admin/stats -b cookies.txt
 ```
+
+### Get dashboard trends
+
+Returns the three time series behind the dashboard trends panel (file downloads / shares created / successful logins), aggregated into time buckets. Out-of-range requests return 400 with a hint to shrink the range or coarsen the granularity.
+
+`GET /api/admin/dashboard/trends?metric={metric}&granularity={granularity}&from={from}&to={to}`
+
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `metric` | `string` | Yes | One of `downloads` / `shares` / `logins`. |
+| `granularity` | `string` | Yes | Bucket size: `hour` / `day` / `week` / `month`. |
+| `from` | `integer` | No | Range start (ms epoch); defaults to the last 30 days. |
+| `to` | `integer` | No | Range end (ms epoch); maximum span 2 years. |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "metric": "downloads",
+    "granularity": "day",
+    "buckets": [{ "t": 1710000000000, "count": 42 }]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### Example
+
+```sh
+curl "https://{domain}/api/admin/dashboard/trends?metric=downloads&granularity=day" -b cookies.txt
+```
+
 ### Get the bucket mount tree
 
 Returns the storage buckets together with the mounts they back. Use this payload to render the dashboard bucket-lane graph and the admin mount view: each bucket lists the mounts that store files in it, plus the mounts where the bucket acts as a zero-file standby.

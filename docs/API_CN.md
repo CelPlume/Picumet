@@ -2266,6 +2266,42 @@ curl https://{domain}/api/admin/dashboard -b cookies.txt
 ```sh
 curl https://{domain}/api/admin/stats -b cookies.txt
 ```
+
+### 获取仪表板趋势
+
+返回仪表盘「趋势」面板的三条时间序列（文件下载量 / 分享创建数 / 登录成功数），按时间桶聚合。区间超限时自动返回 400，提示缩小范围或加粗粒度。
+
+`GET /api/admin/dashboard/trends?metric={metric}&granularity={granularity}&from={from}&to={to}`
+
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `metric` | `string` | 是 | `downloads` / `shares` / `logins` 三选一。 |
+| `granularity` | `string` | 是 | 聚合粒度：`hour` / `day` / `week` / `month`。 |
+| `from` | `integer` | 否 | 区间起点（毫秒时间戳）；缺省 = 最近 30 天。 |
+| `to` | `integer` | 否 | 区间终点（毫秒时间戳）；最大跨度 2 年。 |
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "metric": "downloads",
+    "granularity": "day",
+    "buckets": [{ "t": 1710000000000, "count": 42 }]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### 示例
+
+```sh
+curl "https://{domain}/api/admin/dashboard/trends?metric=downloads&granularity=day" -b cookies.txt
+```
+
 ### 获取桶挂载点树
 
 返回存储桶以及它们承载的挂载点。这份数据驱动仪表盘的桶泳道图与管理端挂载点视图：每个桶列出存有其文件的挂载点，以及该桶作为零文件备用的挂载点。
