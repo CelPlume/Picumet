@@ -15,7 +15,7 @@ import { getProvider } from '../storage/providers';
 import { getProviderForFile } from '../storage/pool';
 import { serveFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
-import { requirePermission } from '../permissions/principal';
+import { requirePermission, assertBucketPermission } from '../permissions/principal';
 import { moveWithSaga } from '../files/move';
 import { deleteFileInternal } from '../files/remove';
 import { ensureFolders, upsertFileObject } from '../files/write';
@@ -23,6 +23,7 @@ import { serveObject } from '../storage/serve';
 import type { StorageProviderInterface } from '../storage/types';
 import { ApiError } from '../../shared/errors';
 import { normalizePath, isValidFileName, isPathWithinBoundary } from '../../utils/path';
+import { assertWritable, assertFolderCreateAllowed } from '../files/upload-mode';
 
 export const webdavRoutes = new Hono<AppBindings>();
 
@@ -148,6 +149,8 @@ webdavRoutes.on(['PROPFIND'], '*', async (c) => {
   }
   // 自项不存在且非挂载根 → 404（此前对不存在路径返回空列表，客户端会误判）
   if (!selfRow && !isRoot && !isMountRoot) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
+  // §31 桶级矩阵：自项为文件时按文件实际落桶补判读权限（初检早于行解析，不含落桶）
+  if (selfRow?.type === 'file') await assertBucketPermission(c, mount.id, selfRow.providerId, 'read');
   const selfIsFolder = isRoot || isMountRoot || selfRow!.type === 'folder';
 
   const items: DavItem[] = [];
@@ -196,6 +199,10 @@ webdavRoutes.on(['MKCOL'], '*', async (c) => {
   assertWithinUploadRoot(apiKey, targetPath);
   await requirePermission(c, mount, targetPath, 'write');
 
+  // §28 写入口模式：user_space 要求落在自身用户空间；flat 禁止新建文件夹
+  await assertWritable(db, mount, apiKey.userId, targetPath);
+  assertFolderCreateAllowed(mount);
+
   // 目录名占用检查（双形态：文件行 / 目录行）；被任何用户占用即 405
   const asFile = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
   const asFolder = asFile ?? await FileRepo.getFolderAtPath(db, mount.id, targetPath, name);
@@ -206,6 +213,9 @@ webdavRoutes.on(['MKCOL'], '*', async (c) => {
 });
 
 // ============ PUT：上传（统一走 upsertFileObject：覆盖语义/配额/目录行/补偿一致） ============
+// §28 写入口模式在 upsertFileObject 内统一校验（user_space 强制自身用户空间），
+// 此处不重复判断——PUT 永远产出文件行（key 尾部的 `/` 被 normalizePath 归一掉，不构成建目录语义），
+// 故 flat 档的「禁止新建文件夹」不适用于本入口。
 webdavRoutes.put('*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
@@ -272,6 +282,9 @@ async function resolveDavFile(c: Context<AppBindings>, targetPath: string): Prom
   await requirePermission(c, mount, targetPath, 'read');
   const file = await FileRepo.getFileAtPath(db, mount.id, parentPath, name, apiKey.userId);
   if (!file || file.type === 'folder') throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+
+  // §31 桶级矩阵：读路径初检早于文件行解析，此处按文件实际落桶补判（桶级明确禁止 → 403）
+  await assertBucketPermission(c, mount.id, file.providerId, 'read');
 
   const provider = await getProviderForFile(db, file, mount, c.env as Env);
   return { file, provider };
@@ -343,7 +356,7 @@ webdavRoutes.delete('*', async (c) => {
     throw new ApiError(404, 'NOT_FOUND', '文件不存在');
   }
   // H-3：删除操作走统一路径级权限
-  await requirePermission(c, mount, targetPath, 'delete', file.ownerId);
+  await requirePermission(c, mount, targetPath, 'delete', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
 
   await deleteFileInternal(c, mount, file, apiKey.userId);
   return xmlResponse(204);
@@ -402,11 +415,11 @@ webdavRoutes.on(['MOVE'], '*', async (c) => {
       if (destExisting.type === 'file' && destExisting.ownerId !== apiKey.userId) {
         // 他人文件视为存在但不能覆盖：T → 403（由权限服务裁决）、F → 412
         if (!overwrite) return xmlResponse(412);
-        await requirePermission(c, destMount, destPath, 'delete', destExisting.ownerId);
+        await requirePermission(c, destMount, destPath, 'delete', destExisting.ownerId, undefined, undefined, undefined, destExisting.providerId ?? undefined);
         return xmlResponse(403);
       }
       if (!overwrite) return xmlResponse(412);
-      await requirePermission(c, destMount, destPath, 'delete', destExisting.ownerId);
+      await requirePermission(c, destMount, destPath, 'delete', destExisting.ownerId, undefined, undefined, undefined, destExisting.providerId ?? undefined);
       await deleteFileInternal(c, destMount, destExisting, apiKey.userId);
     }
   }

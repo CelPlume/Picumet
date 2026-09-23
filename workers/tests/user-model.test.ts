@@ -33,6 +33,7 @@ const mount: Mount = {
   quotaReserved: 0,
   poolStrategy: 'least_used',
   capacityBytes: null,
+  uploadMode: 'free',
 };
 
 function user(id: string, defaultPath: string, capabilities: string[] = []): Principal {

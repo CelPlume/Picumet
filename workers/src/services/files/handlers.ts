@@ -21,6 +21,7 @@ import {
 import { hashPassword, verifyPassword } from '../../utils/crypto';
 import { toFileListItem } from '../../db/repos/files';
 import { assertNotBanned } from './ban';
+import { assertWritable, assertFolderCreateAllowed } from './upload-mode';
 import type { Env } from '../../shared/types';
 import { CAPABILITIES, type Visibility } from '@shared/types';
 import { decideAccessMode, createDownloadToken, buildGatewayUrl } from '../shares/tokens';
@@ -174,6 +175,10 @@ filesRoutes.post('/folder', async (c) => {
 
   const folderPath = targetPath === '/' ? `/${name}` : `${targetPath}/${name}`;
 
+  // §28 写入口模式：user_space 要求落在自身用户空间；flat 禁止新建文件夹
+  await assertWritable(db, mount, userId, folderPath);
+  assertFolderCreateAllowed(mount);
+
   // 重复检测：文件行 path=父目录；文件夹行 path=自身全路径 → 两处都要查
   const existingFile = await FileRepo.getFileAtPath(db, mount.id, targetPath, name);
   const existingFolder = await FileRepo.getFileAtPath(db, mount.id, folderPath, name);
@@ -205,7 +210,7 @@ function filePermPath(f: { path: string; name: string; type: 'file' | 'folder' }
 filesRoutes.get('/:id', async (c) => {
   const { file, mount, db } = await resolveFile(c);
   const permPath = filePermPath(file);
-  await requirePermission(c, mount, permPath, 'read', file.ownerId, undefined, file.visibility);
+  await requirePermission(c, mount, permPath, 'read', file.ownerId, undefined, file.visibility, undefined, file.providerId ?? undefined);
 
   const provider = await providerForFile(c, mount, file);
   const accessMode = decideAccessMode(file, provider, false);
@@ -213,7 +218,7 @@ filesRoutes.get('/:id', async (c) => {
   const perms = (
     await Promise.all(
       (['read', 'write', 'update', 'delete', 'share', 'download'] as const).map(async (p) => {
-        const allowed = await can(c, mount, permPath, p, file.ownerId);
+        const allowed = await can(c, mount, permPath, p, file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
         return allowed ? p : null;
       })
     )
@@ -249,7 +254,7 @@ filesRoutes.put('/:id', async (c) => {
     // public：can_publish 直接 approved；否则提交进入审核（§4.2.2），管理员批准后进 gallery
     const reviewStatus = visibility === 'public' ? (canPublish ? 'approved' : 'pending') : 'approved';
     if (visibility !== file.visibility || reviewStatus !== file.reviewStatus) {
-      await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
+      await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
       // cascade=false：只改本项，不牵连子树（用户抱怨"点一个公开连带一串公开"）
       if (file.type === 'folder' && cascade) {
         // 级联子树：公开相册场景一次置可见
@@ -278,7 +283,7 @@ filesRoutes.put('/:id', async (c) => {
     validateFileType(name, file.mimeType);
     // §H 挂载点皆目录：挂载点目录行由系统维护，禁止改名（会与 mounts.mount_path 脱节）
     if (await isMountPointFile(db, file)) throw new ApiError(409, 'OPERATION_FAILED', '挂载点目录由系统维护，请在存储配置中修改挂载路径');
-    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
     const parentPath = file.path.length > file.name.length
       ? file.path.slice(0, -(file.name.length + 1)) || '/'
       : '/';
@@ -301,16 +306,16 @@ filesRoutes.put('/:id', async (c) => {
     fields[colMap[k] ?? k] = v;
   }
   if (accessPassword !== undefined) {
-    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
     fields.access_password = accessPassword ? hashPassword(accessPassword) : null;
   }
   // §C 文件级游客可见性：'inherit'（或未传）= NULL（不额外开放）；显式值直接落库
   if (guestVisibility !== undefined) {
-    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
     fields.guest_visibility = guestVisibility === 'inherit' ? null : guestVisibility;
   }
   if (Object.keys(fields).length > 0) {
-    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
     await FileRepo.updateFile(db, file.id, fields);
     await FileRepo.updateVersion(db, file.id);
   }
@@ -351,7 +356,7 @@ filesRoutes.post('/:id/verify-password', async (c) => {
 // ============ 获取下载链接 ============
 filesRoutes.get('/:id/download', async (c) => {
   const { file, mount, db } = await resolveFile(c);
-  await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility);
+  await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility, undefined, file.providerId ?? undefined);
   // §26 违规封禁：内容出口门禁
   await assertNotBanned(db, [file.id]);
   // §4.4c：密码门禁统一豁免判定——admin 不受限、owner 跳过；其余主体需先验证密码
@@ -370,9 +375,11 @@ filesRoutes.get('/:id/download', async (c) => {
     passwordVerified: passwordExempt,
   });
   const url = buildGatewayUrl(c, token);
+  // 签发下载链接 ≠ 下载完成（预览也走本端点）：记 download_link，实际字节由下载网关记 action='download'，
+  // 避免同一文件既记签发又记下载造成 downloads 趋势双计
   await LogRepo.create(db, {
     userId: c.get('userId') as string | undefined,
-    action: 'download',
+    action: 'download_link',
     path: file.path,
     metadata: JSON.stringify({ fileName: file.name }),
     ipAddress: ipOf(c),
@@ -385,7 +392,7 @@ filesRoutes.get('/:id/download', async (c) => {
 // ============ 复制链接（多种格式，支持签名） ============
 filesRoutes.get('/:id/copy-links', async (c) => {
   const { file, mount, db } = await resolveFile(c);
-  await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility);
+  await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, undefined, file.visibility, undefined, file.providerId ?? undefined);
   const provider = await providerForFile(c, mount, file);
 
   const q = c.req.query();

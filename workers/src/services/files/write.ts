@@ -8,7 +8,7 @@
 // 分片上传（上传会话 multipart）不经过这里：分片直传存储商，物理键仍为虚拟路径键（blob_hash 为空）。
 import type { Context } from 'hono';
 import type { Mount, StorageProvider } from '@shared/types';
-import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, ProviderRepo } from '../../db';
+import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo } from '../../db';
 import type { Db } from '../../db';
 import { getDb, getClientIp } from '../../middleware/auth';
 import { ApiError } from '../../shared/errors';
@@ -19,7 +19,9 @@ import type { Env } from '../../shared/types';
 import { getProvider } from '../storage/providers';
 import { directUrl, loadRoutePrefixes, type RoutePrefixes } from '../storage/direct-links';
 import { pickWriteProvider } from '../storage/pool';
+import { getPrincipal } from '../permissions/principal';
 import { writeContentAddressed, type ContentWriteResult } from '../storage/content';
+import { assertWritable } from './upload-mode';
 
 /**
  * 逐级确保祖先文件夹行存在（P0-3：无目录行的文件在列表/PROPFIND 中不可见）。
@@ -110,6 +112,10 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
   const mimeType = opts.mimeType || 'application/octet-stream';
   validateFileType(fileName, mimeType);
 
+  // §28 写入口模式：user_space 下对象必须落在调用者用户空间内（free/flat 无路径约束）。
+  // 先于 ensureFolders：避免在用户空间之外自愈出目录行；用户空间内自愈的祖先目录天然合规，无需再判。
+  await assertWritable(db, opts.mount, userId, targetPath);
+
   if (opts.ensureParents !== false) {
     await ensureFolders(db, opts.mount, parentPath, userId);
   }
@@ -129,20 +135,30 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
     throw new ApiError(409, 'CONFLICT', `路径 ${targetPath} 已是文件夹`);
   }
 
-  // §E 存储池选桶：覆盖写粘住原 provider（避免跨桶残留旧对象）；新文件按池策略选桶
-  const stickyRow = isOverwrite && existing?.providerId ? await ProviderRepo.getProviderById(db, existing.providerId) : null;
-  const intentRow = stickyRow ?? (await pickWriteProvider(db, opts.mount, targetPath, env));
+  const declaredSize = opts.size > 0 ? opts.size : 0;
+  // §E/§30 存储池选桶：覆盖写优先粘住原 provider（容量装不下才按策略回退，避免跨桶残留旧对象）；
+  // 新文件按池策略选桶。成员级容量在选桶时原子预留——覆盖写的增量 = 新大小 − 旧大小（旧行仍计入聚合），
+  // 与用户/挂载两道预留同生命周期：提交事务内释放，失败/补偿路径释放。
+  const memberReserved = isOverwrite && existing ? Math.max(0, declaredSize - existing.size) : declaredSize;
+  // §31 桶级矩阵：候选桶对发起者角色明确禁止 write → 跳过该候选（全部被拒 → 403）
+  const principal = await getPrincipal(c);
+  const intentRow = await pickWriteProvider(db, opts.mount, targetPath, env, memberReserved, {
+    preferProviderId: isOverwrite ? (existing?.providerId ?? null) : null,
+    principalRole: principal.role,
+  });
   // 虚拟对象键：文件行的稳定标识（内容寻址后不再等于物理键，但唯一性/`folder:` 约定不变）
   const objectKey = objectKeyFromPath(opts.mount.mountPath, intentRow.pathPrefix ?? '', targetPath);
 
-  const declaredSize = opts.size > 0 ? opts.size : 0;
-
   const reserved = await QuotaRepo.reserve(db, userId, declaredSize);
-  if (!reserved) throw new ApiError(413, 'QUOTA_EXCEEDED', '存储配额不足');
+  if (!reserved) {
+    await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
+    throw new ApiError(413, 'QUOTA_EXCEEDED', '存储配额不足');
+  }
   if (!existing || existing.type !== 'file') {
     const canAdd = await QuotaRepo.canAddFile(db, userId);
     if (!canAdd) {
       await QuotaRepo.releaseReservation(db, userId, declaredSize);
+      await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
       throw new ApiError(413, 'QUOTA_EXCEEDED', '文件数量配额已满');
     }
   }
@@ -150,6 +166,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
   const mountReserved = await MountQuotaRepo.reserve(db, opts.mount.id, declaredSize);
   if (!mountReserved) {
     await QuotaRepo.releaseReservation(db, userId, declaredSize);
+    await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
     throw new ApiError(413, 'MOUNT_QUOTA_EXCEEDED', '挂载点容量不足');
   }
 
@@ -215,6 +232,9 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
           [finalSize, declaredSize, now, opts.mount.id]
         );
       }
+      // §30 成员级容量：文件行已落库（已用聚合已含本文件）→ 与落账同批释放预留，
+      // 避免「已记账 + 仍预留」的双重占额窗口。
+      await MountProviderQuotaRepo.releaseTx(tx, opts.mount.id, intentRow.id, memberReserved);
       // 内容索引登记（幂等）+ 撤销同 hash 的待回收条目；未内容寻址（hash 为空）跳过
       if (outcome.hash) {
         await BlobRepo.registerTx(tx, {
@@ -244,6 +264,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
   } catch (err) {
     await QuotaRepo.releaseReservation(db, userId, declaredSize);
     await MountQuotaRepo.releaseReservation(db, opts.mount.id, declaredSize);
+    await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
     if (written && !written.deduped) {
       const reason = isOverwrite ? 'overwrite_db_failed' : 'upload_db_failed';
       // 覆盖失败保留对象（可能承载旧文件唯一副本）；新建失败尝试删除，失败则记录孤儿。

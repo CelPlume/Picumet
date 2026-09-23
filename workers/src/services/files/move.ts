@@ -9,7 +9,8 @@ import { getProvider } from '../storage/providers';
 import { pickWriteProvider } from '../storage/pool';
 import { COPY_OBJECT_MAX_BYTES } from '../storage/s3';
 import { ApiError } from '../../shared/errors';
-import { normalizePath, isPathWithinBoundary } from '../../utils/path';
+import { normalizePath, isPathWithinBoundary, objectKeyFromPath } from '../../utils/path';
+import { assertWritable } from './upload-mode';
 import type { Env } from '../../shared/types';
 
 type Ctx = Parameters<typeof getPrincipal>[0];
@@ -99,17 +100,30 @@ export async function moveWithSaga(
   const allowed = checkMovePermission(principal, mount, targetMount, sourceCheckPath, targetFullPath, rules, file.ownerId);
   if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权移动文件');
 
+  // §28 写入口模式：目标位置同样受写入口约束（user_space 下只能移入自身空间、flat 无路径约束）。
+  // 以**发起者**为准：移动落盘后目标文件归属发起者，故按发起者的用户空间判定。
+  await assertWritable(db, targetMount, principal.id, targetFullPath);
+
   // 目标同名冲突
   const conflict = await FileRepo.getFileAtPath(db, targetMount.id, targetDir, targetName);
   if (conflict && conflict.id !== file.id) throw new ApiError(409, 'ALREADY_EXISTS', '目标位置已存在同名文件');
 
   // 目标对象键（§E：目标 provider 按池策略选定；同挂载移动复用源落桶，避免无谓跨桶拷贝）
-  const { objectKeyFromPath } = await import('../../utils/path');
+  // §30 成员容量：移动按文件大小参与判定，但**不持有成员预留**——目标用量在同一提交事务里
+  // 由 mounts.used_storage 转移（MountQuotaRepo.transferUsage 同语义，没有在途窗口可保护）；
+  // 同挂载移动复用源落桶（源 provider 行存在时不再选桶），用量不变、无需容量判定。
   const targetProviderRow =
     file.mountId === targetMount.id
       ? ((await ProviderRepo.getProviderById(db, file.providerId ?? targetMount.providerId)) ??
-         (await pickWriteProvider(db, targetMount, targetFullPath, c.env as Env)))
-      : await pickWriteProvider(db, targetMount, targetFullPath, c.env as Env);
+         (await pickWriteProvider(db, targetMount, targetFullPath, c.env as Env, file.size, {
+           reserve: false,
+           principalRole: principal.role,
+         })))
+      : await pickWriteProvider(db, targetMount, targetFullPath, c.env as Env, file.size, {
+          reserve: false,
+          // §31 桶级矩阵：目标候选桶对发起者角色明确禁止 write → 跳过该候选（全部被拒 → 403）
+          principalRole: principal.role,
+        });
   const targetObjectKey = objectKeyFromPath(targetMount.mountPath, targetProviderRow.pathPrefix ?? '', targetFullPath);
 
   // 创建操作任务

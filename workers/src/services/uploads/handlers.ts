@@ -1,10 +1,11 @@
 // 上传路由：单文件 + 分片 + Worker 代理上传 + 完成校验（防伪造）
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, ReconciliationRepo } from '../../db';
+import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, MountProviderQuotaRepo, ReconciliationRepo } from '../../db';
 import type { Db } from '../../db';
 import { getDb } from '../../middleware/auth';
-import { requirePermission } from '../permissions/principal';
+import { requirePermission, getPrincipal } from '../permissions/principal';
+import { assertWritable } from '../files/upload-mode';
 import { getProvider } from '../storage/providers';
 import { pickWriteProvider } from '../storage/pool';
 import { ProviderRepo } from '../../db';
@@ -46,6 +47,10 @@ uploadRoutes.post('/upload-session', async (c) => {
 
   await requirePermission(c, mount, targetPath, 'write');
 
+  // §28 写入口模式：上传会话在创建时就固定最终路径（raw/complete 沿用它），故在入口处校验
+  // user_space 的用户空间约束（flat 不约束路径）。此处与 compat/AList/WebDAV/S3 各入口行为一致。
+  await assertWritable(db, mount, userId, joinPath(targetPath, fileName));
+
   // 幂等检查
   if (idempotencyKey) {
     const idemKey = await sha256Hex(`upload:${userId}:${idempotencyKey}`);
@@ -74,17 +79,24 @@ uploadRoutes.post('/upload-session', async (c) => {
     throw new ApiError(413, 'MOUNT_QUOTA_EXCEEDED', '挂载点容量不足');
   }
 
-  // §E 存储池：上传会话开始时选定落桶（分片/续传期间保持不变）
-  const sessionProviderRow = await pickWriteProvider(db, mount, joinPath(targetPath, fileName), c.env as Env);
-  const objectKey = objectKeyFromPath(mount.mountPath, sessionProviderRow.pathPrefix ?? '', joinPath(targetPath, fileName));
-  const provider = await getProvider(db, sessionProviderRow, c.env as Env);
-
-  // 判断是否分片
-  const useMultipart = fileSize > MULTIPART_THRESHOLD || (parsed.data.partCount ?? 0) > 1;
-  const totalParts = useMultipart ? Math.ceil(fileSize / PART_SIZE) : undefined;
-
   let uploadId: string | undefined;
+  // §30 会话选定的池成员：选桶时已在该成员上预留 fileSize 字节，凡「会话未落库」的失败路径都要释放
+  let sessionProviderRow: StorageProvider | null = null;
   try {
+    // §E 存储池：上传会话开始时选定落桶并原子预留成员容量（分片/续传期间保持不变）。
+    // 选桶失败（如池成员全满 413）与后续建会话失败同属「会话未落库」路径，
+    // 必须与下面共用同一补偿块，先释放上面三道预留再抛出。
+    sessionProviderRow = await pickWriteProvider(db, mount, joinPath(targetPath, fileName), c.env as Env, fileSize, {
+      // §31 桶级矩阵：候选桶对发起者角色明确禁止 write → 跳过该候选（全部被拒 → 403）
+      principalRole: (await getPrincipal(c)).role,
+    });
+    const objectKey = objectKeyFromPath(mount.mountPath, sessionProviderRow.pathPrefix ?? '', joinPath(targetPath, fileName));
+    const provider = await getProvider(db, sessionProviderRow, c.env as Env);
+
+    // 判断是否分片
+    const useMultipart = fileSize > MULTIPART_THRESHOLD || (parsed.data.partCount ?? 0) > 1;
+    const totalParts = useMultipart ? Math.ceil(fileSize / PART_SIZE) : undefined;
+
     if (useMultipart) {
       const res = await provider.createMultipartUpload(objectKey, mimeType);
       uploadId = res.uploadId;
@@ -132,6 +144,7 @@ uploadRoutes.post('/upload-session', async (c) => {
   } catch (err) {
     await QuotaRepo.releaseReservation(db, userId, fileSize);
     await MountQuotaRepo.releaseReservation(db, mount.id, fileSize);
+    if (sessionProviderRow) await MountProviderQuotaRepo.release(db, mount.id, sessionProviderRow.id, fileSize);
     throw err;
   }
 });
@@ -258,6 +271,10 @@ uploadRoutes.delete('/upload/multipart/:sessionId', async (c) => {
   }
   await QuotaRepo.releaseReservation(db, userId, session.quotaReserved);
   await MountQuotaRepo.releaseReservation(db, session.mountId, session.quotaReserved);
+  // §30 成员级预留：会话创建时在选定池成员上预留过 quotaReserved，随会话中止释放
+  if (session.providerId) {
+    await MountProviderQuotaRepo.release(db, session.mountId, session.providerId, session.quotaReserved);
+  }
   await SessionRepo.updateStatus(db, sessionId, { status: 'aborted', completedAt: Date.now() });
   return ok(c, null);
 });
@@ -385,6 +402,10 @@ uploadRoutes.post('/upload-complete', async (c) => {
         `UPDATE mounts SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE id = ?`,
         [session.fileSize, session.quotaReserved, Date.now(), session.mountId]
       );
+      // §30 成员级预留：文件行已落库（该成员已用聚合已含本文件）→ 与落账同批释放
+      if (session.providerId) {
+        await MountProviderQuotaRepo.releaseTx(tx, session.mountId, session.providerId, session.quotaReserved);
+      }
       await tx.query(
         `UPDATE upload_sessions SET status = 'completed', completed_at = ? WHERE id = ?`,
         [Date.now(), sessionId]
@@ -399,6 +420,9 @@ uploadRoutes.post('/upload-complete', async (c) => {
     // H-5：对象已写入/合并，但元数据提交失败 → 释放预留并记录孤儿供对账
     await QuotaRepo.releaseReservation(db, userId, session.quotaReserved);
     await MountQuotaRepo.releaseReservation(db, session.mountId, session.quotaReserved);
+    if (session.providerId) {
+      await MountProviderQuotaRepo.release(db, session.mountId, session.providerId, session.quotaReserved);
+    }
     await ReconciliationRepo.createOrphanObject(db, {
       mountId: session.mountId,
       objectKey: physicalKey,

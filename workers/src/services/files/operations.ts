@@ -35,7 +35,7 @@ function ipOf(c: Parameters<typeof ok>[0]): string | undefined {
 // ============ 删除（硬删除） ============
 fileOpsRoutes.delete('/:id', async (c) => {
   const { file, mount, db } = await resolveFile(c);
-  await requirePermission(c, mount, file.path, 'delete', file.ownerId);
+  await requirePermission(c, mount, file.path, 'delete', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
   // §H：挂载点目录行由系统维护；删除/移动包含挂载点的目录会让挂载点从父目录消失
   if (await isMountPointFile(db, file)) {
     throw new ApiError(409, 'OPERATION_FAILED', '挂载点目录由系统维护，请在存储配置中删除挂载点');
@@ -161,7 +161,11 @@ fileOpsRoutes.post('/batch', async (c) => {
           mount,
           file.type === 'folder' ? file.path : (file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`),
           'delete',
-          file.ownerId
+          file.ownerId,
+          undefined,
+          undefined,
+          undefined,
+          file.providerId ?? undefined
         );
         let targets: FileMetadata[] = [];
         let size = file.size;

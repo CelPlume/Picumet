@@ -93,7 +93,7 @@ pathPublicRoutes.get('*', async (c) => {
         // 此处 file.type 必为 'file'（上方已过滤）：permPath = 文件全路径
         const permPath = file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`;
         // §C：文件级 guest_visibility 随文件行传入（匿名访客按 none/download/view 合成规则放行）
-        const allowed = await can(c, mount, permPath, 'download', file.ownerId, undefined, file.visibility, file.guestVisibility);
+        const allowed = await can(c, mount, permPath, 'download', file.ownerId, undefined, file.visibility, file.guestVisibility, file.providerId ?? undefined);
         if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权访问');
       }
     }

@@ -11,7 +11,7 @@ import { getProvider } from '../storage/providers';
 import { getProviderForFile } from '../storage/pool';
 import { serveFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
-import { requirePermission } from '../permissions/principal';
+import { requirePermission, assertBucketPermission } from '../permissions/principal';
 import { serveObject } from '../storage/serve';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
@@ -120,6 +120,9 @@ async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
   // 网关密钥数据层所有者绑定：按属主过滤查询 → 他人文件不可见（404，与 WebDAV 语义一致）
   const file = await FileRepo.getFileAtPath(db, mount.id, parent, name, apiKey.userId);
   if (!file || file.type !== 'file') throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+
+  // §31 桶级矩阵：路径级初检早于文件行解析，此处按文件实际落桶补判（桶级明确禁止 → 403）
+  await assertBucketPermission(c, mount.id, file.providerId, 'read');
 
   // §E 存储池：读路径按文件实际落桶定位
 
