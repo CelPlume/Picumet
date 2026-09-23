@@ -483,9 +483,11 @@ wrangler deploy
 > 详细的设计系统规则（按前端模块拆分、逐条对照现有代码核实）见 [docs/UI_CN.md](docs/UI_CN.md)「设计系统规则」一节。改 UI 前必读；改代码必须同步更新该文档。
 
 - **玻璃拟态**：表面样式只消费 `--glass-alpha` / `--glass-blur` 三档门控（off/default/frosted），禁止硬编码模糊或透明度。
+- **动画三档**：外观档位落 `<html data-motion>`（off/default/all），CSS 统一门停（`index.css`），组件零分支；入场动画用 `components/ui/reveal.tsx` 原语（`.reveal`/`.reveal-row` + `revealDelay`/`innerDelay` 两层节奏），卡片纵向间距 16px、双栏横向 24px；禁止逐项挂 JS 定时器。
 - **弹出菜单**：Dropdown / Select / 右键菜单必须 Portal 到 body 并复用 `DROPDOWN_MENU_CLASS` / `DROPDOWN_ITEM_CLASS`；禁止原生 `<select>`。
 - **破坏性操作**：必须走 `ConfirmDialog` + success/error toast；禁止原生 `confirm()`。
 - **文件项三态**：rest 玻璃表面、hover 压暗叠加、selected 主色调；文件页与分享页统一。
+- **数据表**：表头表在滚动容器外（双表结构），禁止 sticky 磨砂表头（Chromium backdrop-filter 不采样 sticky 下方内容）；弹性列给 `minmax` 下限，窄容器横向滚动、表头单行并与表体同步平移。
 - **验收**：两种主题 × 三档模糊 × 有无壁纸逐界面截图核对（WCAG AA）。
 
 ---
@@ -647,3 +649,4 @@ const canonicalPath = normalizePath(req.query.path);
 - 2026-08-18：服务化重构（Plan A），新增 docs/ 文档体系（架构/API/页面/开发/部署）
 - 2026-08-19：文档整合至 README + docs/（中英双语、谷歌文档风格），移除 spec 类源文档引用，新增 docs/PROGRESS.md 记录进度
 - 2026-09-19：新增「前端 UI 规则」摘要并强制阅读 docs/UI_CN.md「设计系统规则」（按前端模块拆分、逐条对照现有代码核实）：玻璃三档门控、强调色运行时校准（移除深色提亮补偿）、弹出菜单 Portal 统一、Toast 复刻规范（堆叠/退场/路由清空）、ConfirmDialog 强制二次确认、文件项三态压暗法、拖拽多选整页触发面 + 页面禁选文本、滑块、文件树、骨架屏与滚动条约定
+- 2026-09-23：前端 UI 规则摘要补「动画三档 + reveal 入场原语」「数据表双表表头（sticky 磨砂方案废弃）」两条；docs/UI_CN.md / UI.md 新增「入场动画体系」一节并修正表头规范（双表结构、横滚同步、列宽下限、表头单行），docs/ARCHITECTURE(_CN).md 补权限判定链第 7/8 步（桶级/挂载级角色矩阵）、矩阵仓库与趋势聚合，docs/API(_CN).md 补 `GET /api/admin/dashboard/trends`，docs/PROGRESS.md 记 §33 动画与表头批次
