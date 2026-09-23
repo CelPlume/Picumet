@@ -269,14 +269,16 @@
 
 /* 入场：内容/卡片/列表/卡内元素的统一次序入场（原语见 components/ui/reveal.tsx）
    - 只动 opacity 与 transform，元素首帧就占位，不产生布局位移（CLS）；
-   - 终点显式回落到 transform: none，动画结束后不留残余 transform（不制造包含块/合成层）；
+   - 终点隐式回落到元素自身计算值（transform: none + 业务透明度），不留残余 transform；
    - animation-fill-mode: both 让首帧即 --reveal-delay 期间保持隐藏，mount 后只播一次；
    - 逐项延迟由 --reveal-delay 提供（列表/卡片网格用 CSS 变量，不逐项开 JS 定时器）；
    - 默认时长复用 --duration-base（300ms），与参考站区块 0.3~0.45s 同量级。
    data-motion 三档与 prefers-reduced-motion 的关停见下方「动画三档」与文件末尾降级方案。 */
+/* 显式 to{opacity:1} + fill both 会永久压过业务透明度（封禁行 opacity-40、文件灰度等
+   被 CSS 动画值盖成 1）——因此只写 from，终点隐式回落到元素自身计算值：普通元素 = 1，
+   封禁行 = 0.4，且后续业务类变化会跟随。 */
 @keyframes reveal-in {
   from { opacity: 0; transform: translateY(var(--reveal-shift, 8px)); }
-  to { opacity: 1; transform: none; }
 }
 
 .reveal {
@@ -288,7 +290,6 @@
    撕出一条随延迟加宽的空隙（行仍占位但内容下移 8px）。表单/列表行统一用这个。 */
 @keyframes reveal-row-in {
   from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 .reveal-row {
