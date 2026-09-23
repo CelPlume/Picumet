@@ -1,9 +1,13 @@
 // 读路径容灾（§G）：文件落桶不可用时按「池成员」顺序轮询其余桶取回对象。
 //
-// 背景：跨桶复制（把对象真正写进副桶）由未来的 Go 后端负责；当前后端只做**读回退**——
-// 文件在库内记录的落桶取不到（对象缺失 = 404 / 上游故障 = 502）时，依次尝试该挂载点的其他
-// 池成员；一旦在副桶命中，把命中位置写进 KV 提示（含物理键指纹，文件被改写后自动失效），
-// 后续请求直接优先访问该桶。全部候选都不可用才向外抛 404/502。
+// 本模块只读不写副桶——镜像数据的写入/同步在项目之外（外部同步通道或云厂商侧复制），
+// 后端在 A（文件落桶）读不到时改向 B（其余池成员）取回。三条规则：
+// - 候选顺序：命中提示（物理键指纹一致才采纳）→ 文件落桶 → 其余池成员（weight 降序、id 升序）。
+//   上游故障过的桶带 KV 熔断标记，本轮排到末尾（仍留一次兜底尝试 = 恢复探测），
+//   避免 A 悬挂时每个请求都先等满 8s 超时才转向 B。
+// - 回退校验：非记录桶命中后先按元数据 size 校验，不符视作该候选不可用（宁可 404 也不给旧/坏内容）。
+//   etag 不参与判定：不同后端与上传路径（rclone 同步、multipart）的 etag 语义不同，硬拒会误杀合法镜像。
+// - 位置提示：副桶命中写提示（TTL 10 分钟、每次命中续期）；记录桶恢复供数时主动清除提示。
 import { ApiError } from '../../shared/errors';
 import type { Db } from '../../db';
 import { MountProviderRepo, MountRepo, ProviderRepo } from '../../db';
@@ -16,10 +20,12 @@ import type { ObjectBody, StorageProviderInterface } from './types';
 
 /** 单文件读取的候选上限（防止挂载点成员过多时放大延迟） */
 const MAX_CANDIDATES = 4;
-/** 命中位置提示 TTL：副桶命中的缓存时长（秒） */
-const HINT_TTL = 3600;
+/** 命中位置提示 TTL（秒）：命中即续期，记录桶恢复后最多这么久回到主桶 */
+const HINT_TTL = 600;
 /** 单个候选的单次尝试上限：主桶连接悬挂时不能拖死整个读请求（超时即换下一个候选） */
 const ATTEMPT_TIMEOUT_MS = 8000;
+/** 熔断标记 TTL（秒）：上游故障的桶在此期间排到候选末尾（兜底尝试仍会触发恢复探测） */
+const DOWN_TTL = 45;
 
 /** 读取目标（文件行或下载令牌载荷都可用它表达） */
 export interface FileObjectRef {
@@ -30,6 +36,7 @@ export interface FileObjectRef {
   providerId?: string | null;
   /** 物理对象键（§F） */
   physicalKey: string;
+  /** 元数据记录的对象大小；回退命中时用它校验（缺省不校验） */
   size?: number;
 }
 
@@ -56,13 +63,23 @@ function hintKey(fileId: string): string {
   return `serve:loc:${fileId}`;
 }
 
+function downKey(providerId: string): string {
+  return `pool:down:${providerId}`;
+}
+
 /**
  * 候选 provider 顺序：KV 命中提示（物理键一致才采纳）→ 文件落桶 → 其余池成员（weight 降序、id 升序）。
- * 去重后截断到 MAX_CANDIDATES。
+ * 去重后截断到 MAX_CANDIDATES；hinted 回带提示对象，供记录桶恢复后清提示。
  */
-async function candidateProviderIds(env: Env, db: Db, mount: Mount, ref: FileObjectRef): Promise<string[]> {
+async function candidateProviderIds(
+  env: Env,
+  db: Db,
+  mount: Mount,
+  ref: FileObjectRef
+): Promise<{ ids: string[]; hinted?: string }> {
   const primaryId = ref.providerId ?? mount.providerId;
   const ids: string[] = [];
+  let hinted: string | undefined;
 
   if (ref.fileId) {
     try {
@@ -70,7 +87,10 @@ async function candidateProviderIds(env: Env, db: Db, mount: Mount, ref: FileObj
       if (raw) {
         const hint = JSON.parse(raw) as { p?: string; k?: string };
         // 物理键不一致说明文件已被改写/搬迁，提示作废
-        if (hint.p && hint.k === ref.physicalKey) ids.push(hint.p);
+        if (hint.p && hint.k === ref.physicalKey) {
+          ids.push(hint.p);
+          hinted = hint.p;
+        }
       }
     } catch {
       // KV 异常不影响主流程（提示只是加速）
@@ -83,7 +103,7 @@ async function candidateProviderIds(env: Env, db: Db, mount: Mount, ref: FileObj
     .filter((m) => !ids.includes(m.providerId))
     .sort((a, b) => (a.weight !== b.weight ? b.weight - a.weight : a.providerId.localeCompare(b.providerId)));
   for (const member of rest) ids.push(member.providerId);
-  return ids.slice(0, MAX_CANDIDATES);
+  return { ids: ids.slice(0, MAX_CANDIDATES), hinted };
 }
 
 /** 单次尝试加超时（超时视作该候选不可用；被放弃的请求后台自然结束） */
@@ -103,6 +123,33 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+/** 熔断标记查询（KV 异常一律视作"未熔断"，熔断只是加速手段） */
+async function isProviderDown(env: Env, providerId: string): Promise<boolean> {
+  try {
+    return (await env.KV.get(downKey(providerId))) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** 标记上游故障：之后 DOWN_TTL 秒内该桶排到候选末尾 */
+async function markProviderDown(env: Env, providerId: string): Promise<void> {
+  try {
+    await env.KV.put(downKey(providerId), '1', { expirationTtl: DOWN_TTL });
+  } catch {
+    // 忽略：熔断只是加速手段
+  }
+}
+
+/** 清除熔断标记（兜底尝试命中即恢复） */
+async function clearProviderDown(env: Env, providerId: string): Promise<void> {
+  try {
+    await env.KV.delete(downKey(providerId));
+  } catch {
+    // 忽略
+  }
+}
+
 /** 记住副桶命中位置（带物理键指纹；写入失败只影响下次加速） */
 async function rememberLocation(env: Env, ref: FileObjectRef, providerId: string): Promise<void> {
   if (!ref.fileId) return;
@@ -113,41 +160,97 @@ async function rememberLocation(env: Env, ref: FileObjectRef, providerId: string
   }
 }
 
+/** 清除位置提示：记录桶重新供数后不再优先走副桶 */
+async function forgetLocation(env: Env, ref: FileObjectRef): Promise<void> {
+  if (!ref.fileId) return;
+  try {
+    await env.KV.delete(hintKey(ref.fileId));
+  } catch {
+    // 忽略
+  }
+}
+
+/**
+ * 回退命中的内容校验：以元数据 size 为准（记录侧未记大小、或上游未回报大小时放行，保证可用性）。
+ * 不符 = 该候选不可用：镜像同步不完整或对象被顶替时，宁可 404 也不把旧/坏内容给用户。
+ */
+function contentMatches(ref: FileObjectRef, actualSize: number | undefined): boolean {
+  if (ref.size == null || ref.size <= 0) return true;
+  if (actualSize == null) return true;
+  return actualSize === ref.size;
+}
+
+/** 校验不通过时丢弃已读回的响应体（只有 serve 路径会拿到 Response），避免连接悬挂 */
+async function disposeRejected(value: unknown): Promise<void> {
+  if (!(value instanceof Response)) return;
+  try {
+    await value.body?.cancel();
+  } catch {
+    // 忽略：连接已断开
+  }
+}
+
 /**
  * 按候选顺序执行读取；「对象不存在（null）」与 404/502/上游故障都触发回退，
  * 其余错误（如 416 越界）原样抛出。候选全失败时抛出最后一次的 404/502。
+ *
+ * 熔断只对「上游故障」生效：对象缺失是数据状态而非桶健康问题，不标记、不改变顺序。
+ * 回退命中（非记录桶）先过 verify 再返回。
  */
 async function tryCandidates<T>(
   ctx: FailoverContext,
-  attempt: (provider: StorageProviderInterface, providerId: string) => Promise<T | null>
+  attempt: (provider: StorageProviderInterface, providerId: string) => Promise<T | null>,
+  verify?: (value: T) => boolean
 ): Promise<{ provider: StorageProviderInterface; providerId: string; value: T }> {
   const { db, env, ref } = ctx;
   const mount = ctx.mount ?? (await MountRepo.getMountById(db, ref.mountId));
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
   const primaryId = ref.providerId ?? mount.providerId;
-  const ids = await candidateProviderIds(env, db, mount, ref);
+  const { ids, hinted } = await candidateProviderIds(env, db, mount, ref);
+  const downFlags = await Promise.all(ids.map(async (id) => ((await isProviderDown(env, id)) ? id : null)));
+  const down = new Set(downFlags.filter((id): id is string => id !== null));
+  // 健康的在前，熔断的兜底在后（保留恢复探测的机会）
+  const ordered = [...ids.filter((id) => !down.has(id)), ...ids.filter((id) => down.has(id))];
   let lastErr: unknown = null;
 
-  for (const id of ids) {
+  for (const id of ordered) {
     const row = await ProviderRepo.getProviderById(db, id);
     if (!row) continue;
     const provider = await getProvider(db, row, env);
+    const isRecorded = id === primaryId;
     try {
       const value = await withTimeout(attempt(provider, id), ATTEMPT_TIMEOUT_MS);
       if (value === null) {
-        // 该桶没有对象（未复制的池成员或已被清理），继续尝试下一个
+        // 该桶没有对象（未复制的池成员或已被清理），继续尝试下一个；桶本身是健康的
         lastErr = new ApiError(404, 'NOT_FOUND', '文件对象不存在或已被删除');
         continue;
       }
-      if (id !== primaryId) await rememberLocation(env, ref, id);
+      if (!isRecorded && verify && !verify(value)) {
+        await disposeRejected(value);
+        lastErr = new ApiError(404, 'NOT_FOUND', '备用桶对象与元数据不一致');
+        continue;
+      }
+      if (down.has(id)) await clearProviderDown(env, id);
+      if (isRecorded) {
+        // 记录桶重新供数：清掉指向副桶的提示，下个请求回到主桶
+        if (hinted && hinted !== primaryId) await forgetLocation(env, ref);
+      } else {
+        await rememberLocation(env, ref, id);
+      }
       return { provider, providerId: id, value };
     } catch (err) {
-      if (err instanceof ApiError && (err.statusCode === 404 || err.statusCode === 502)) {
+      if (err instanceof ApiError && err.statusCode === 404) {
         lastErr = err;
+        continue;
+      }
+      if (err instanceof ApiError && err.statusCode === 502) {
+        lastErr = err;
+        await markProviderDown(env, id);
         continue;
       }
       if (err instanceof ProviderError) {
         lastErr = new ApiError(502, 'UPSTREAM_ERROR', `存储上游错误（${err.kind}）`);
+        await markProviderDown(env, id);
         continue;
       }
       throw err;
@@ -160,8 +263,10 @@ async function tryCandidates<T>(
 
 /** 取回对象（含副桶回退） */
 export async function getFileObject(opts: GetFileObjectOptions): Promise<FileObjectResult> {
-  const result = await tryCandidates(opts, (provider) =>
-    provider.getObject(opts.ref.physicalKey, opts.range ? { range: opts.range } : undefined)
+  const result = await tryCandidates(
+    opts,
+    (provider) => provider.getObject(opts.ref.physicalKey, opts.range ? { range: opts.range } : undefined),
+    (object) => contentMatches(opts.ref, object.totalSize ?? object.size)
   );
   return { provider: result.provider, providerId: result.providerId, object: result.value };
 }
@@ -175,22 +280,33 @@ export interface ServeFileOptions extends FailoverContext {
   cacheControl?: string;
 }
 
+/** 从响应头取全对象大小：206 看 Content-Range 的 total，200 看 Content-Length */
+function responseTotalSize(res: Response): number | undefined {
+  const total = res.headers.get('Content-Range')?.split('/')[1];
+  if (total) return Number(total);
+  const length = res.headers.get('Content-Length');
+  return length ? Number(length) : undefined;
+}
+
 /**
  * 读取对象并构建 HTTP 响应（带副桶回退）。
  * Range 语义与 `serveObject` 一致（206/416/200），失败分类同样保持 404/502 区分。
  */
 export async function serveFileObject(opts: ServeFileOptions): Promise<Response> {
-  const result = await tryCandidates(opts, (provider) =>
-    serveObject({
-      provider,
-      objectKey: opts.ref.physicalKey,
-      name: opts.name,
-      mimeType: opts.mimeType,
-      rangeHeader: opts.rangeHeader,
-      totalSize: opts.totalSize ?? opts.ref.size,
-      forceAttachment: opts.forceAttachment,
-      cacheControl: opts.cacheControl,
-    })
+  const result = await tryCandidates(
+    opts,
+    (provider) =>
+      serveObject({
+        provider,
+        objectKey: opts.ref.physicalKey,
+        name: opts.name,
+        mimeType: opts.mimeType,
+        rangeHeader: opts.rangeHeader,
+        totalSize: opts.totalSize ?? opts.ref.size,
+        forceAttachment: opts.forceAttachment,
+        cacheControl: opts.cacheControl,
+      }),
+    (res) => contentMatches(opts.ref, responseTotalSize(res))
   );
   return result.value;
 }

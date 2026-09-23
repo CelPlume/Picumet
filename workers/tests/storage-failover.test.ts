@@ -4,6 +4,8 @@ import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { createTestContext, initSeeded, request, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
 import { R2BindingProvider } from '../src/services/storage/r2';
 import { ProviderError } from '../src/services/storage/errors';
+import { cleanupOldObjects } from '../src/services/cleanup';
+import type { Env } from '../src/shared/types';
 
 let ctx: TestContext;
 let fixture: PoolFixture;
@@ -17,6 +19,9 @@ beforeAll(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // 熔断标记会跨用例泄漏（上游故障用例会写下它），逐个清掉保证顺序断言的前提
+  ctx.kv.delete('pool:down:prov-primary-test');
+  ctx.kv.delete('pool:down:prov-replica-test');
 });
 
 const PRIMARY_NAME = '主桶-测试';
@@ -81,7 +86,7 @@ async function seedPoolFixture(): Promise<PoolFixture> {
 }
 
 /** 记录 provider 实例调用顺序；primaryMissing=true 时主桶返回"对象不存在"，fail=true 时抛上游故障 */
-function spyProviders(opts: { primaryMissing?: boolean; primaryFails?: boolean; bothMissing?: boolean }): string[] {
+function spyProviders(opts: { primaryMissing?: boolean; primaryFails?: boolean; replicaMissing?: boolean; bothMissing?: boolean }): string[] {
   const calls: string[] = [];
   const original = R2BindingProvider.prototype.getObject;
   vi.spyOn(R2BindingProvider.prototype, 'getObject').mockImplementation(function (
@@ -95,6 +100,8 @@ function spyProviders(opts: { primaryMissing?: boolean; primaryFails?: boolean; 
       if (opts.primaryFails) return Promise.reject(new ProviderError('other', 'upstream down'));
       if (opts.primaryMissing) return Promise.resolve(null);
     }
+    if (this.name === REPLICA_NAME && opts.replicaMissing) return Promise.resolve(null);
+    if (opts.bothMissing) return Promise.resolve(null);
     return original.call(this, key, getOpts);
   });
   return calls;
@@ -194,5 +201,118 @@ describe('§G 读路径容灾（副桶轮询）', () => {
     const res = await fetchCompat(fixture);
     expect(res.status).toBe(200);
     expect(calls).toEqual([PRIMARY_NAME]);
+  });
+
+  it('上游故障 → 写熔断标记，无提示时下个请求先试副桶', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    await ctx.kv.delete('pool:down:prov-primary-test');
+    const calls = spyProviders({ primaryFails: true });
+
+    expect((await fetchCompat(fixture)).status).toBe(200);
+    expect(calls).toEqual([PRIMARY_NAME, REPLICA_NAME]);
+    expect(await ctx.kv.get('pool:down:prov-primary-test')).not.toBeNull();
+
+    // 只留熔断状态（清掉位置提示）：候选顺序被反转，不再先撞主桶超时
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    calls.length = 0;
+    expect((await fetchCompat(fixture)).status).toBe(200);
+    expect(calls).toEqual([REPLICA_NAME]);
+    expect(await ctx.kv.get('pool:down:prov-primary-test')).not.toBeNull();
+
+    await ctx.kv.delete('pool:down:prov-primary-test');
+  });
+
+  it('对象缺失不熔断（数据状态而非桶健康）', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    await ctx.kv.delete('pool:down:prov-primary-test');
+    spyProviders({ primaryMissing: true });
+
+    expect((await fetchCompat(fixture)).status).toBe(200);
+    expect(await ctx.kv.get('pool:down:prov-primary-test')).toBeNull();
+  });
+
+  it('记录桶恢复：兜底尝试命中后清除熔断标记', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    await ctx.kv.put('pool:down:prov-primary-test', '1');
+    const calls = spyProviders({ replicaMissing: true });
+
+    const res = await fetchCompat(fixture);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(CONTENT);
+    // 熔断把记录桶排到末尾：先副桶（无对象）再记录桶命中
+    expect(calls).toEqual([REPLICA_NAME, PRIMARY_NAME]);
+    expect(await ctx.kv.get('pool:down:prov-primary-test')).toBeNull();
+    expect(await ctx.kv.get(`serve:loc:${fixture.fileId}`)).toBeNull();
+  });
+
+  it('记录桶重新供数 → 清除指向副桶的位置提示', async () => {
+    await ctx.kv.put(`serve:loc:${fixture.fileId}`, JSON.stringify({ p: 'prov-replica-test', k: OBJECT_KEY }));
+    spyProviders({ replicaMissing: true });
+
+    const res = await fetchCompat(fixture);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(CONTENT);
+    expect(await ctx.kv.get(`serve:loc:${fixture.fileId}`)).toBeNull();
+  });
+
+  it('副桶对象与元数据大小不符 → 视作未命中（404），不写提示', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    ctx.db.prepare('UPDATE file_metadata SET size = ? WHERE id = ?').run(CONTENT.length + 99, fixture.fileId);
+    try {
+      const calls = spyProviders({ primaryMissing: true });
+      const res = await fetchCompat(fixture);
+      expect(res.status).toBe(404);
+      expect(calls).toEqual([PRIMARY_NAME, REPLICA_NAME]);
+      expect(await ctx.kv.get(`serve:loc:${fixture.fileId}`)).toBeNull();
+    } finally {
+      ctx.db.prepare('UPDATE file_metadata SET size = ? WHERE id = ?').run(CONTENT.length, fixture.fileId);
+    }
+  });
+
+  it('§32 备用桶仍是读回退候选：标 standby 的池成员照旧参与容灾轮询', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    // 副桶显式标为备用（§32：写入不再落它）——读回退按池成员**全集**轮询（§G），标记不改变读路径
+    ctx.db
+      .prepare(`UPDATE mount_providers SET standby = 1 WHERE mount_id = ? AND provider_id = ?`)
+      .run('mount-vol-test', 'prov-replica-test');
+    try {
+      const calls = spyProviders({ primaryMissing: true });
+      const res = await fetchCompat(fixture);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(CONTENT);
+      expect(calls).toEqual([PRIMARY_NAME, REPLICA_NAME]);
+      // 命中位置提示指向备用桶（回退链路与标记正交）
+      const hint = await ctx.kv.get(`serve:loc:${fixture.fileId}`);
+      expect(JSON.parse(hint as string)).toEqual({ p: 'prov-replica-test', k: OBJECT_KEY });
+    } finally {
+      ctx.db
+        .prepare(`UPDATE mount_providers SET standby = 0 WHERE mount_id = ? AND provider_id = ?`)
+        .run('mount-vol-test', 'prov-replica-test');
+      await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    }
+  });
+
+  it('§G 镜像豁免：旧对象清理只在文件落桶上执行，副桶不参与删除', async () => {
+    const oldKey = 'vol/report-old.txt';
+    ctx.r2.putRaw(oldKey, new TextEncoder().encode('old-payload'), { 'Content-Type': 'text/plain' } as never);
+    ctx.db
+      .prepare('UPDATE file_metadata SET old_object_key = ?, source_cleanup_pending = 1 WHERE id = ?')
+      .run(oldKey, fixture.fileId);
+
+    const deleted: Array<{ provider: string; key: string }> = [];
+    vi.spyOn(R2BindingProvider.prototype, 'deleteObject').mockImplementation(function (this: R2BindingProvider, key: string) {
+      deleted.push({ provider: this.name, key });
+      return Promise.resolve();
+    });
+
+    expect(await cleanupOldObjects(ctx.env as Env)).toBeGreaterThan(0);
+    expect(deleted.filter((d) => d.key === oldKey)).toEqual([{ provider: PRIMARY_NAME, key: oldKey }]);
+    expect(deleted.every((d) => d.provider === PRIMARY_NAME)).toBe(true);
+
+    const row = ctx.db
+      .prepare('SELECT old_object_key, source_cleanup_pending FROM file_metadata WHERE id = ?')
+      .get(fixture.fileId) as { old_object_key: string | null; source_cleanup_pending: number };
+    expect(row.old_object_key).toBeNull();
+    expect(row.source_cleanup_pending).toBe(0);
   });
 });

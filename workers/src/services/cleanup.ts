@@ -1,10 +1,10 @@
 // 定时任务：过期配额释放、移动源对象清理、过期分享标记
-import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, ProviderRepo, QuotaRepo } from '../db';
+import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo, QuotaRepo } from '../db';
 import { getProvider } from './storage/providers';
 import { ensureAllMountFolders } from './storage/mount-folders';
 import type { Env } from '../shared/types';
 
-/** 释放过期上传会话的配额预留 */
+/** 释放过期上传会话的配额预留（用户 / 挂载点 / 池成员三层） */
 export async function releaseExpiredReservations(env: Env): Promise<number> {
   const db = Db.fromAny(env.DB);
   const expired = await SessionRepo.listExpired(db);
@@ -19,6 +19,16 @@ export async function releaseExpiredReservations(env: Env): Promise<number> {
         `UPDATE mounts SET quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE id = ?`,
         [session.quota_reserved, Date.now(), session.mount_id]
       );
+      // §30 池成员级预留：新建会话的 provider_id 必填（选桶时预留），据此释放成员预留；
+      // provider_id 为空 = 池化前的存量会话（当时不存在成员级预留）→ 跳过，避免误扣他人在途预留。
+      if (session.provider_id) {
+        await MountProviderQuotaRepo.releaseTx(
+          tx,
+          String(session.mount_id),
+          String(session.provider_id),
+          Number(session.quota_reserved ?? 0)
+        );
+      }
       await tx.query(`UPDATE upload_sessions SET status = 'expired' WHERE id = ?`, [session.id]);
     });
     released++;
@@ -35,10 +45,10 @@ export async function cleanupOldObjects(env: Env): Promise<number> {
     if (!file.oldObjectKey) continue;
     try {
       const mount = await MountRepo.getMountById(db, file.mountId);
-      // §E 存储池：旧对象清理按文件落桶 provider（可能非主 provider）
-      const providerRow = mount
-        ? await ProviderRepo.getProviderById(db, (file.oldObjectKey ? file.providerId : null) ?? mount.providerId)
-        : null;
+      // §E 存储池：旧对象只从「文件落桶」provider 删除（拼好桶里各文件各自登记落桶）。
+      // §G 镜像豁免：池内其余成员（副桶/镜像）永不是删除目标——镜像数据由外部同步通道维护，
+      // 后端误删会让容灾读回退失去数据源；镜像副本没有元数据行，也不需要这里清理。
+      const providerRow = mount ? await ProviderRepo.getProviderById(db, file.providerId ?? mount.providerId) : null;
       if (mount && providerRow) {
         const provider = await getProvider(db, providerRow, env);
         if (!file.oldObjectKey.startsWith('folder:')) {
@@ -126,6 +136,7 @@ export async function cleanupBlobObjects(env: Env, now: number = Date.now()): Pr
       continue;
     }
     try {
+      // §G 镜像豁免：只删 blob 索引登记的那一个 provider；镜像副本不登记索引，不在此列
       const providerRow = await ProviderRepo.getProviderById(db, entry.providerId);
       if (!providerRow) {
         // provider 已删除：对象不可达，直接出队
