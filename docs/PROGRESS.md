@@ -150,9 +150,12 @@ When the bucket recorded for a file cannot return the object, reads automaticall
 | Area | Implementation | Tests |
 | :--- | :--- | :--- |
 | Candidate order | `services/storage/failover.ts`: KV location hint (only when its physical-key fingerprint matches) → the file's recorded provider → remaining pool members (weight desc, id asc), capped at 4 | `storage-failover.test.ts` |
+| Circuit breaking (2026-09-22) | An upstream-failing bucket gets `pool:down:<providerId>` (45 s TTL) and drops to the end of the candidate list for that window — it keeps one last-resort attempt, which doubles as the recovery probe — and the marker clears on the first success; a missing object never trips it (data state, not bucket health) | `storage-failover.test.ts` |
+| Content validation (2026-09-22) | A hit on a bucket other than the recorded one is checked against the metadata `size` (skipped when either side has no size); a mismatch counts as a miss, so stale or truncated mirror content is never served. Etags stay out of the decision — their semantics differ per backend and upload path | `storage-failover.test.ts` |
 | Trigger conditions | Object missing (404) and upstream failure (502/`ProviderError`) fall through to the next candidate; semantic errors such as 416 propagate immediately | `storage-failover.test.ts` |
 | Bounded attempts | The reader caps each candidate attempt at 8 s, so an unreachable bucket cannot stall the read | `storage-failover.test.ts` (real-stack check below) |
-| Location hint | A replica hit writes `serve:loc:<fileId>` = `{providerId, physicalKey}` (1 h TTL) so later reads go straight to the replica; a rewritten file invalidates it via the key fingerprint | `storage-failover.test.ts` |
+| Location hint | A replica hit writes `serve:loc:<fileId>` = `{providerId, physicalKey}` (10 min TTL, refreshed on every hit) so later reads go straight to the replica; a rewritten file invalidates it via the key fingerprint, and the recorded provider serving again clears it | `storage-failover.test.ts` |
+| Mirror exemption (2026-09-22) | `services/cleanup.ts` only deletes from the file's recorded provider (old-object cleanup) or the provider registered in the blob index (blob GC) — other pool members hold externally synced mirror content and are never deletion targets | `storage-failover.test.ts` |
 | Wiring | `serveFileObject` / `getFileObject` replace raw provider reads in path-serve, share gateway + preview, WebDAV GET/HEAD, S3 gateway GET/HEAD, AList direct links and the compat read endpoint | all gateway suites |
 
 Real-stack check: a file whose recorded bucket was an unreachable S3 endpoint (connection hangs) still returned `200` after the 8 s candidate timeout by serving from the R2 pool member; follow-up requests took ~0.1 s (hint path), and `serve:loc:<fileId>` was present in KV.
@@ -173,6 +176,66 @@ The system materialises every non-root mount point as a real folder row in its *
 Rationale: the earlier behaviour left sub-mounts invisible in the file page (e.g. a mount at `/poolui` did not exist for listing code). Making the mount a folder row fixes every consumer at once and keeps a single source of truth.
 
 **Failover candidates are buckets, never folders.** Read failover (§G) only ever considers `mount_providers` → `storage_providers` entries — real, independent buckets. Mount-point folders, user folders such as a "backup" directory, and copies inside the same bucket are not DR: they share the same failure domain. Cross-bucket replication remains the future Go-backend item below.
+
+## Write-entry modes and the per-mount role matrix (§28, 2026-09-22)
+
+Mounts gain two capabilities aimed at public upload areas (a `/public`-style mount): a write-entry mode and a per-mount default role permission matrix. Both default to today's behaviour — `upload_mode = 'free'` and no matrix rows — so existing mounts are untouched.
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Write-entry mode | `mounts.upload_mode`: `free` (no extra constraint) / `user_space` (writes forced into `<mountPath>/<username>`, created on first use) / `flat` (folder creation rejected, uploads stay flat) | `upload-mode.test.ts` |
+| Enforcement point | Every write channel funnels through the pre-write checks in `services/files/write.ts` — `/api/upload`, the compat upload endpoint, WebDAV PUT/MKCOL, the S3 gateway and AList behave identically | `upload-mode.test.ts` |
+| Naming | Location uniqueness still comes from `object_key` (the mount-relative path, `UNIQUE (mount_id, object_key)`), never from content hashes: two users uploading `photo.jpg` into a flat mount collide by design (same row key → 409 "occupied by another user"), while equal content at different paths shares one physical object (§F) | `upload-mode.test.ts` |
+| Owner semantics | Nobody can modify or delete another user's file (the owner fallback in `checkPermission`); directory owners get no inherited power over their subtree — admins cover that case | `mount-role-matrix.test.ts` |
+| Role matrix | `mount_role_permissions(mount_id, role, permissions)`, evaluated after the file-owner fallback and before the role defaults: a present entry is a **closed set**, no entry falls back to the role defaults, `share` is excluded (the `can_share` capability bit governs sharing) and explicit `path_rules` of any origin always win | `mount-role-matrix.test.ts` |
+| Admin surface | `GET /api/admin/mounts` returns `uploadMode` + `rolePermissions`; create and update accept both (`rolePermissions` replaces the whole matrix, `[]` clears it) | `mount-role-matrix.test.ts` |
+
+Deliberately out of scope: MIME/size upload gates, per-mount upload quotas, and the review workflow — review only ever triggers for `visibility = 'public'` and its only consumer is the anonymous gallery, so a private-by-default upload area never reaches it.
+
+## Pooled-mount placement strategies (§29, 2026-09-22)
+
+The write-path bucket choice for a pooled mount (`mounts.pool_strategy`) grows from three options to five, and pool members gain a capacity cap and an upload order. All of it only affects **new** writes: reads and deletes resolve through `file_metadata.provider_id`, so existing objects stay where they are and no relocation job is needed.
+
+| Strategy | Rule | Notes |
+| :--- | :--- | :--- |
+| `least_used` | Smallest `(used + 1) / weight` wins, ties by provider id | Unchanged; still the default |
+| `round_robin` | KV cursor modulo member count | Unchanged |
+| `hash` | FNV-1a of the **parent directory** modulo member count | Changed from whole-path hashing to directory-sticky, so one directory lands in one bucket and prefix listings stay contiguous |
+| `free_weighted` | Largest `(capacity − used) × weight`; members without a capacity count as unlimited and rank first; every member full → `413 MOUNT_QUOTA_EXCEEDED`; no capacities configured at all degrades to `least_used` | New; needs `mount_providers.capacity_bytes` |
+| `ordered` | Fills members by `sort_order` (ties by provider id), moving on only once the current member is full; no capacity means unlimited, so the first member always wins | New; needs `mount_providers.sort_order` |
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Schema | `001_initial.sql` §29: `mount_providers.capacity_bytes` (NULL = unlimited) and `mount_providers.sort_order` (default 0) | `storage-pool.test.ts` |
+| Placement | `services/storage/pool.ts` `chooseMemberId` covers all five; `pickWriteProvider` keeps its signature so a full pool surfaces as a 413 to the caller | `storage-pool.test.ts` |
+| Admin surface | `GET /api/admin/mounts` returns each member with `capacityBytes` + `sortOrder`; create/update accept `poolMembers: [{ providerId, weight?, capacityBytes?, sortOrder? }]` as a full replacement (a plain provider-id array stays supported as a shorthand) | `storage-pool.test.ts` |
+| UI | Mount form: five-option strategy select plus per-member capacity and upload-order inputs | browser check |
+
+## Pool-member capacity is a hard cap (§30, 2026-09-22)
+
+A code-review finding on §29: the capacity check only asked whether a member was full **right now**, the placement functions never received the incoming size (a member with `capacity_bytes = 100` and nothing in it happily accepted a 180-byte object), and no member-level reservation existed, so two concurrent uploads could both pass the check and overshoot together. `storage-pool.test.ts` had pinned that wrong semantics (a 100-byte capacity accepting an 180-byte first write); the assertion was replaced, not preserved.
+
+| Area | Change |
+| :--- | :--- |
+| Schema | `mount_providers.quota_reserved` (§30) — in-flight reserved bytes per member, same semantics as `mounts.quota_reserved` |
+| Fit rule | `used (aggregated from file_metadata) + quota_reserved + incoming size <= capacity_bytes`; a `NULL` capacity means unlimited (never full, never reserved) — replacing the "is it currently full" test |
+| Reservation | Conditional atomic UPDATE; zero affected rows means the member cannot take the object right now, so the next candidate in the strategy's order is tried and a 413 is raised only when none fits |
+| Strategy scope | Capacity is a hard cap for **every** strategy: `hash`, `round_robin` and `least_used` fall back when their preferred member is out of room — a strategy only orders candidates |
+| Lifecycle | Reserve on the write path and at upload-session init; release on success, failure, compensation and session expiry |
+| Tests | Boundary (`used + size == capacity` passes, `+1` fails), size awareness (80 then 30 rejected, 80 then 20 accepted), concurrent reservation, release paths, unlimited-member regression, and a fallback/413 case per strategy |
+
+## Bucket-scoped role matrices, explicit standby flag, two-layer capacity (§31, 2026-09-22)
+
+The default role matrix can be configured per **bucket** instead of only per mount, "serves as a standby bucket" becomes an explicit flag, and capacity is split into two validated layers.
+
+| Area | Implementation |
+| :--- | :--- |
+| Bucket matrices | `mount_provider_role_permissions(mount_id, provider_id, role)`; resolution order **bucket → mount → role defaults**, so an entry only changes behaviour where it exists |
+| Read paths | Read, update, delete, download and share are judged against the **file's recorded bucket**, which the permission check now receives |
+| Write paths | Placed inside the §30 candidate loop: a candidate whose bucket matrix forbids the action is skipped, so a strategy still only orders candidates and a 403 is raised only when every candidate refuses |
+| Standby flag | `mount_providers.standby` replaces the "zero files for this mount" inference, which has been removed entirely: a flagged bucket stays a standby even when it holds files, and an unflagged empty member is no longer one |
+| Standby rows | A standby lane renders one non-expandable node row per standby mount (amber hollow ring, no trunk connection) that scrolls to and highlights the mount row on the primary lane |
+| Capacity layers | Per bucket `mount_providers.capacity_bytes` (placement hard cap, §30) plus the mount total `mounts.max_storage`; the total must not exceed the sum of bucket caps (uncapped buckets excluded) or the request is rejected with 400 |
 
 ## Sharing rework: multi-item shares (`§I`, 2026-09-21)
 

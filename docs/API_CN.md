@@ -2834,7 +2834,10 @@ curl -X POST https://{domain}/api/admin/storage/providers \
 | `sortOrder` | `string` | 否 | `asc` 或 `desc`。 |
 | `priority` | `integer` | 否 | 挂载点优先级，路径重叠时高优先级优先。 |
 | `maxStorage` | `integer` | 否 | 挂载点写入配额，单位字节。 |
-| `poolStrategy` | `string` | 否 | 存储池策略，默认 `least_used`。 |
+| `poolStrategy` | `string` | 否 | 存储池写路径策略（§E/§29），默认 `least_used`：`least_used` 已用最小（`(已用+1)/权重`）/ `round_robin` 轮询 / `hash` 目录粘性哈希（同目录落同一桶，便于按前缀列举）/ `free_weighted` 空间余量加权（`(容量−已用)×权重` 最大者，未配容量的成员视为不限并优先；全部满 → 413）/ `ordered` 指定顺序填满切换（按 `sortOrder` 升序取第一个未满成员）。 |
+| `poolMembers` | `array` | 否 | 池成员（**全量替换**，§E/§29/§31）：`[{ providerId, weight?, capacityBytes?, sortOrder?, standby?, rolePermissions? }]`；`weight` 缺省 1，`capacityBytes` 留空/null = 不限（配了就是**硬上限**：放置判定用 `已用 + 在途预留 + 本次大小 <= 容量`，放不下按策略次序回退，全部放不下返回 413），`sortOrder` 缺省 0（仅 `ordered` 使用），`standby` = 显式「作为备用桶」标记（不再由「0 文件」推断），`rolePermissions` = **桶级**默认角色矩阵（`[{role, permissions[]}]`）。权限判定优先级：**桶级 → 挂载点级 → 角色默认**。兼容简写：仅传 provider id 数组时等价 `poolMembers` 只给 `providerId`。 |
+| `uploadMode` | `string` | 否 | 写入口模式（§28）：`free`（默认，不额外约束）/ `user_space`（写路径强制 `<mountPath>/<用户名>`，目录首用自动创建）/ `flat`（禁止新建文件夹，平铺上传）。 |
+| `rolePermissions` | `array` | 否 | 默认角色权限矩阵（§28，**全量替换**）：`[{ role: admin\|user\|guest, permissions: [...] }]`；不传=不改，传 `[]` = 清空矩阵。词表 `read/write/update/delete/download`（`share` 不参与矩阵，分享由能力位控制）。条目存在即**封闭集合**：该挂载点内未被列出的动作被拒绝；无条目回落到角色默认权限。 |
 | `capacityBytes` | `integer` | 否 | 挂载点展示容量，单位字节；留空表示未设置（仪表盘容量汇总忽略未设置的挂载点）。更新时传 `null` 清除。 |
 
 #### 错误
