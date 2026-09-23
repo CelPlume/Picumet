@@ -113,6 +113,7 @@ export function mapMount(row: Row): Mount {
     quotaReserved: num(row.quota_reserved),
     poolStrategy: (str(row.pool_strategy) ?? 'least_used') as Mount['poolStrategy'],
     capacityBytes: row.capacity_bytes == null ? null : num(row.capacity_bytes),
+    uploadMode: (str(row.upload_mode) ?? 'free') as Mount['uploadMode'],
   };
 }
 

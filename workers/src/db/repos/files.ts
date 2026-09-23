@@ -399,7 +399,7 @@ export const SessionRepo = {
   },
   async listExpired(db: Db): Promise<Row[]> {
     return db.all(
-      `SELECT id, user_id, mount_id, quota_reserved FROM upload_sessions
+      `SELECT id, user_id, mount_id, quota_reserved, provider_id FROM upload_sessions
        WHERE status IN ('pending', 'uploading') AND expires_at < ?`,
       [Date.now()]
     );

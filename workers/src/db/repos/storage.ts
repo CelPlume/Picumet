@@ -1,7 +1,7 @@
 // 存储提供商与挂载点仓库
 import type { Mount, StorageProvider } from '@shared/types';
-import { Db } from '../db';
-import { mapProvider, mapMount, num, type Row } from '../row';
+import { Db, type Tx } from '../db';
+import { mapProvider, mapMount, b, num, type Row } from '../row';
 import { uuid } from '../../utils/crypto';
 
 export const ProviderRepo = {
@@ -136,28 +136,102 @@ export const MountQuotaRepo = {
   },
 };
 
+/** 池成员（§E）：weight = 加权系数；capacityBytes = 成员容量上限（null = 不限）；sortOrder = ordered 队列次序 */
+export interface MountProviderMember {
+  providerId: string;
+  weight: number;
+  capacityBytes: number | null;
+  sortOrder: number;
+  /** §31 显式「作为备用桶」标记（1 = 备用）；「0 文件」推断只作界面提示，不再驱动语义 */
+  standby: boolean;
+  /** §30 该成员在途预留字节数：放置判定 = used(聚合) + quotaReserved + 待写大小 <= capacityBytes */
+  quotaReserved: number;
+}
+
+/** 池成员写入入参：weight 缺省 1、capacityBytes 缺省 null（不限）、sortOrder 缺省 0、standby 缺省 false */
+export interface MountProviderMemberInput {
+  providerId: string;
+  weight?: number | null;
+  capacityBytes?: number | null;
+  sortOrder?: number | null;
+  standby?: boolean | null;
+}
+
+/**
+ * §32 可写池成员：池内排除备用桶后的成员集（**保序过滤**——策略的哈希取模/轮转次序沿用池成员原次序）。
+ * 「除备用桶外都是主桶」——备用桶只作**读回退**候选（§G 用池成员全集，含备用），不参与写入放置。
+ */
+export function writableMembers(members: MountProviderMember[]): MountProviderMember[] {
+  return members.filter((m) => !m.standby);
+}
+
+/**
+ * §32 主存储锚点派生：池内**第一个可写成员**（sort_order 升序、同序 provider_id 升序，与 ordered 策略一致）。
+ * 池内没有可写成员（清空池 / 成员全为备用）→ null（调用方保持单桶语义或按坏配置处理）。次序确定，与成员集无关。
+ */
+export function firstWritableMember(members: MountProviderMember[]): MountProviderMember | null {
+  return (
+    writableMembers(members).sort((a, b) =>
+      a.sortOrder !== b.sortOrder ? a.sortOrder - b.sortOrder : a.providerId.localeCompare(b.providerId)
+    )[0] ?? null
+  );
+}
+
 /**
  * 存储池成员（§E）：mount_providers 关联表。
- * weight 供 least_used 策略按 用量/权重 比较；成员为空时写路径回退 mounts.provider_id。
+ * weight 供 least_used / free_weighted 打分，capacityBytes 供 free_weighted / ordered 判满，
+ * sortOrder 供 ordered 排序；成员为空时写路径回退 mounts.provider_id（单桶语义）。
  */
 export const MountProviderRepo = {
-  async listMembers(db: Db, mountId: string): Promise<Array<{ providerId: string; weight: number }>> {
+  async listMembers(db: Db, mountId: string): Promise<MountProviderMember[]> {
     const rows = await db.all(
-      `SELECT provider_id, weight FROM mount_providers WHERE mount_id = ? ORDER BY provider_id ASC`,
+      `SELECT provider_id, weight, capacity_bytes, sort_order, standby, quota_reserved FROM mount_providers WHERE mount_id = ? ORDER BY provider_id ASC`,
       [mountId]
     );
-    return rows.map((r) => ({ providerId: String(r.provider_id), weight: Math.max(1, num(r.weight)) }));
+    return rows.map((r) => ({
+      providerId: String(r.provider_id),
+      weight: Math.max(1, num(r.weight)),
+      capacityBytes: r.capacity_bytes == null ? null : Math.max(0, num(r.capacity_bytes)),
+      sortOrder: Math.max(0, num(r.sort_order)),
+      standby: b(r.standby),
+      quotaReserved: Math.max(0, num(r.quota_reserved)),
+    }));
   },
-  /** 全量替换池成员（事务内先删后插；主 provider 始终保留且权重不可为 0） */
-  async setMembers(db: Db, mountId: string, primaryProviderId: string, providerIds: string[]): Promise<void> {
+  /**
+   * 全量替换池成员（事务内先删后插）。§32：池 = 调用方给出的成员集——主 provider **不再强制保留**
+   * （「除备用桶外都是主桶」，mounts.provider_id 是自动维护的内部锚点，由调用方随后派生）；
+   * 只有成员集为空（清空池 = 回到单桶语义）时才落库主 provider 作为唯一成员，供写路径兜底。
+   */
+  async setMembers(
+    db: Db,
+    mountId: string,
+    primaryProviderId: string,
+    members: MountProviderMemberInput[]
+  ): Promise<void> {
     const now = Date.now();
+    const normalized: Required<MountProviderMemberInput>[] = [];
+    const seen = new Set<string>();
+    const push = (m: MountProviderMemberInput) => {
+      if (!m.providerId || seen.has(m.providerId)) return;
+      seen.add(m.providerId);
+      normalized.push({
+        providerId: m.providerId,
+        weight: m.weight == null ? 1 : Math.max(1, Math.trunc(m.weight)),
+        capacityBytes: m.capacityBytes == null ? null : Math.max(0, Math.trunc(m.capacityBytes)),
+        sortOrder: m.sortOrder == null ? 0 : Math.max(0, Math.trunc(m.sortOrder)),
+        standby: m.standby === true,
+      });
+    };
+    for (const m of members) push(m);
+    if (normalized.length === 0) push({ providerId: primaryProviderId });
+
     await db.transaction(async (tx) => {
       await tx.query(`DELETE FROM mount_providers WHERE mount_id = ?`, [mountId]);
-      const unique = providerIds.includes(primaryProviderId) ? providerIds : [primaryProviderId, ...providerIds];
-      for (const pid of unique) {
+      for (const m of normalized) {
         await tx.query(
-          `INSERT OR IGNORE INTO mount_providers (mount_id, provider_id, weight, created_at) VALUES (?, ?, 1, ?)`,
-          [mountId, pid, now]
+          `INSERT OR IGNORE INTO mount_providers (mount_id, provider_id, weight, capacity_bytes, sort_order, standby, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [mountId, m.providerId, m.weight, m.capacityBytes, m.sortOrder, m.standby ? 1 : 0, now]
         );
       }
     });
@@ -165,3 +239,58 @@ export const MountProviderRepo = {
 };
 
 export type { Row };
+
+const MEMBER_RELEASE_SQL = `UPDATE mount_providers SET quota_reserved = MAX(0, quota_reserved - ?) WHERE mount_id = ? AND provider_id = ?`;
+
+/**
+ * 池成员级容量预留（§30）：与 MountQuotaRepo 同构，作用域从「挂载点」下沉到「单个池成员」。
+ *
+ * 判定式（契约）：`used(由 file_metadata 聚合) + quota_reserved + 待写大小 <= capacity_bytes`；
+ * capacity_bytes IS NULL = 不限 → 不判满、不预留（调用方按快照直接放行，不进入本仓库）；
+ * 下面 SQL 里保留 `capacity_bytes IS NULL` 分支，用于兜住「判定期间管理员刚清空容量」的并发。
+ * used 口径与写路径聚合一致：provider_id IS NULL 的存量行记在挂载主 provider 名下。
+ *
+ * 原子性：判定与记账在同一条条件 UPDATE 内完成——受影响行数 = 0 即该成员此刻不可用（并发写不会
+ * 一起通过判定后各自超容量）。
+ *
+ * 生命周期与挂载点级预留对齐：写入成功/失败/补偿、上传会话完成/失败/过期都要释放（release / releaseTx）。
+ */
+export const MountProviderQuotaRepo = {
+  /** 原子预留成员容量；false = 该成员此刻放不下，或该 (mount, provider) 不是池成员行 */
+  async reserve(db: Db, mountId: string, providerId: string, primaryProviderId: string, size: number): Promise<boolean> {
+    const res = await db.run(
+      `UPDATE mount_providers
+          SET quota_reserved = quota_reserved + ?
+        WHERE mount_id = ? AND provider_id = ?
+          AND (capacity_bytes IS NULL
+               OR quota_reserved + COALESCE((SELECT SUM(size) FROM file_metadata
+                    WHERE mount_id = ? AND type = 'file'
+                      AND (provider_id = ? OR (provider_id IS NULL AND ? = ?))), 0) + ? <= capacity_bytes)`,
+      [size, mountId, providerId, mountId, providerId, providerId, primaryProviderId, size]
+    );
+    return res.changes > 0;
+  },
+  /**
+   * 只判定不预留：同一条件式，读路径无记账副作用。
+   * 供「用量在事务内同步转移、没有在途窗口」的入口使用（如跨挂载移动，与 MountQuotaRepo.transferUsage 同语义）。
+   */
+  async fits(db: Db, mountId: string, providerId: string, primaryProviderId: string, size: number): Promise<boolean> {
+    const row = await db.first(
+      `SELECT 1 AS placeable FROM mount_providers
+        WHERE mount_id = ? AND provider_id = ?
+          AND (capacity_bytes IS NULL
+               OR quota_reserved + COALESCE((SELECT SUM(size) FROM file_metadata
+                    WHERE mount_id = ? AND type = 'file'
+                      AND (provider_id = ? OR (provider_id IS NULL AND ? = ?))), 0) + ? <= capacity_bytes)`,
+      [mountId, providerId, mountId, providerId, providerId, primaryProviderId, size]
+    );
+    return row != null;
+  },
+  async release(db: Db, mountId: string, providerId: string, size: number): Promise<void> {
+    await db.run(MEMBER_RELEASE_SQL, [size, mountId, providerId]);
+  },
+  /** 事务内释放（写路径提交事务里与落账同批，避免「已记账 + 仍预留」的双重占额窗口） */
+  async releaseTx(tx: Tx, mountId: string, providerId: string, size: number): Promise<void> {
+    await tx.query(MEMBER_RELEASE_SQL, [size, mountId, providerId]);
+  },
+};

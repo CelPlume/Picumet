@@ -749,3 +749,78 @@ ALTER TABLE announcements ADD COLUMN interval_seconds INTEGER;
 -- kind：banner 常驻横幅（默认）| toast 临时弹窗（toast 样式展示片刻自动关闭；
 --   display_mode 复用为频率/窗口语义：once 单次、interval 每 x 间隔、until 到期、duration 发布后 x）。
 ALTER TABLE announcements ADD COLUMN kind TEXT NOT NULL DEFAULT 'banner';
+
+-- ============ 28. 挂载点级默认角色权限矩阵 + 上传模式（/public 公共上传区） ============
+-- mounts.upload_mode：挂载点写入口模式。
+--   free（默认，现状）——不额外约束，写路径只受路径规则与配额约束；
+--   user_space——写路径强制落在 <mountPath>/<用户名>（该目录首次使用自动创建；用户名唯一故跨用户零冲突）；
+--   flat——挂载点内禁止新建文件夹（平铺上传）；同名占用仍走既有 409「目标路径已被其他用户占用」。
+-- mount_role_permissions：挂载点 × 角色的默认权限（词表 read/write/update/delete/share/download）。
+--   封闭集合语义：条目存在时，在该挂载点内、无显式 path_rules 命中、且非文件属主时按矩阵判定——
+--   含该动作则 allow、不含则 deny；无条目则回落到角色默认权限矩阵（§4.4 第 8 步）。
+--   share 不参与矩阵（分享开关是能力位 can_share，§4.4 防线 5），矩阵内出现 share 时忽略。
+ALTER TABLE mounts ADD COLUMN upload_mode TEXT NOT NULL DEFAULT 'free';
+CREATE INDEX IF NOT EXISTS idx_mounts_upload_mode ON mounts(upload_mode);
+CREATE TABLE IF NOT EXISTS mount_role_permissions (
+  mount_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  permissions TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (mount_id, role),
+  FOREIGN KEY (mount_id) REFERENCES mounts(id) ON DELETE CASCADE
+);
+
+-- ============ 29. 拼好桶放置策略扩展（池成员容量/顺序 + 目录粘性哈希） ============
+-- mount_providers.capacity_bytes：单个池成员的容量上限（NULL = 不限）。free_weighted 用它算余量
+--   （余量 = capacity − 该成员已落文件用量），ordered 用它判定「填满」后切换到下一个成员。
+-- mount_providers.sort_order：ordered 策略的指定上传顺序（升序；同序按 provider_id 稳定）。
+--   与 weight 分工：weight 是 least_used/free_weighted 的加权系数，sort_order 是 ordered 的队列次序。
+-- mounts.pool_strategy 取值扩展为：least_used（默认）/ round_robin / hash（目录粘性）/
+--   free_weighted（空间余量加权）/ ordered（指定顺序填满切换）。
+ALTER TABLE mount_providers ADD COLUMN capacity_bytes INTEGER;
+ALTER TABLE mount_providers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+
+-- ============ 30. 池成员级容量预留（放置安全） ============
+-- 背景：§29 的 free_weighted / ordered 只判「该成员当前是否已满」，既不看待写对象大小，也没有成员级预留：
+--   容量 100 字节、已用 0 的成员会直接吃下 180 字节的对象；并发写也会同时通过判定而一起超容量。
+-- mount_providers.quota_reserved：该成员的在途预留字节数（语义与 mounts.quota_reserved 一致）。
+--   放置判定必须满足：used(由 file_metadata 聚合) + quota_reserved + 待写大小 <= capacity_bytes
+--   （capacity_bytes 为 NULL = 不限，此时无需预留与判满）。
+--   预留通过条件原子 UPDATE 完成（受影响行数 = 0 即该成员此刻不可用 → 换下一个候选）；容量是硬上限，
+--   因此**所有策略**都受它约束（hash/round_robin/least_used 的候选若放不下，按策略次序回退到其余成员，
+--   全部放不下才 413）。写入完成/失败/会话过期都需要释放相应预留。
+ALTER TABLE mount_providers ADD COLUMN quota_reserved INTEGER NOT NULL DEFAULT 0;
+
+-- ============ 31. 桶级默认角色矩阵 + 备用桶显式标记 + 总上限约束 ============
+-- mount_provider_role_permissions：桶级默认权限（比挂载点级更具体）。判定优先级：
+--   桶级条目（mount+provider+role）→ 挂载点级条目（mount+role）→ 角色默认权限（§4.4 第 9 步之前）。
+--   - 落桶已知的动作（读/改/删/下载/分享）按「文件实际落桶 provider」判定；
+--   - 写路径在「候选成员」循环里判定：候选桶的桶级矩阵不含该动作 → 该候选直接跳过（等价于放不下），
+--     全部候选都不允许才 403（与 §30 容量预留同一循环，策略依旧只决定候选次序）；
+--   - 无桶级条目 → 回落挂载点级矩阵（§28），两者都没有 → 现行为不变。
+-- mount_providers.standby：显式「作为备用桶」标记（1 = 备用）。此前该状态由「该桶对此挂载点 0 文件」
+--   推断，现改为显式开关；「0 文件」只保留为界面提示，不再驱动任何语义。
+ALTER TABLE mount_providers ADD COLUMN standby INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS mount_provider_role_permissions (
+  mount_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  permissions TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (mount_id, provider_id, role),
+  FOREIGN KEY (mount_id) REFERENCES mounts(id) ON DELETE CASCADE
+);
+-- 容量上限的两层关系（应用层校验，不加 CHECK）：每个桶有上限 mount_providers.capacity_bytes，
+-- 挂载点有总上限 mounts.max_storage；总上限必须 <= 各桶上限之和（未设上限的桶视为不参与求和）。
+-- 桶上限是放置硬上限（§30），总上限是挂载点写入配额，两者分别判定。
+
+-- ============ 33. 趋势聚合索引（仪表盘趋势曲线：按动作 + 时间分桶计数） ============
+-- 趋势查询形状：WHERE action = ? AND created_at >= ? AND created_at < ? GROUP BY strftime(...)。
+-- access_logs 既有索引是 action / created_at 两张单列索引，区间扫描只能命中其一：
+--   走 created_at 索引 → 逐行回表比对 action；走 action 索引 → 扫描该动作全部历史再按时间过滤。
+-- 组合索引 (action, created_at) 让「动作等值 + 时间范围」走同一索引前缀完成桶计数（无需回表）。
+CREATE INDEX IF NOT EXISTS idx_access_logs_action_created_at ON access_logs(action, created_at);
+-- shares 趋势按创建时间分桶（新建分享数）；既有索引只覆盖 file_id / creator_id / status / expires_at。
+CREATE INDEX IF NOT EXISTS idx_shares_created_at ON shares(created_at);

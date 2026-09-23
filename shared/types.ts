@@ -151,10 +151,29 @@ export interface Mount {
   poolStrategy: PoolStrategy;
   /** 挂载点展示容量（字节，§26 仪表盘占用率）；null = 未设置 */
   capacityBytes: number | null;
+  /**
+   * 写入口模式（§28）：free 不额外约束 | user_space 写路径强制 <mountPath>/<用户名> |
+   * flat 禁止新建文件夹（平铺上传）
+   */
+  uploadMode: UploadMode;
 }
 
-/** 存储池写入选桶策略 */
-export type PoolStrategy = 'least_used' | 'round_robin' | 'hash';
+/** 挂载点写入口模式（§28）：公共上传区用 user_space 或 flat 消除跨用户命名冲突 */
+export type UploadMode = 'free' | 'user_space' | 'flat';
+
+/**
+ * 存储池写入选桶策略（§E，五档；成员字段见 mount_providers）：
+ * - `least_used`（默认）：ratio = (成员已用 + 1) / weight 取最小；平局按 provider_id 升序。
+ * - `round_robin`：KV 计数器轮转，均摊新写入。
+ * - `hash`：对挂载内相对父目录路径做 fnv1a 取模（挂载根 = `/`）→ 同目录粘性，便于按前缀查找/列举；
+ *   成员集不变则落桶不变。老文件读路径不受影响（按 file_metadata.provider_id 定位）。
+ * - `free_weighted`：未配容量的成员 = 不限，优先于任何有限余量（「不限」成员间按 weight 降序）；
+ *   配了容量的成员「已用 >= capacity」视为满（排除），否则按 (capacity − 已用) × weight 取最大。
+ *   全满 → 413 `MOUNT_QUOTA_EXCEEDED`（fail closed，清空 capacity 即回到不限）；全部未配容量 → 退化为 `least_used`。
+ * - `ordered`：按 sort_order 升序（同序按 provider_id）取第一个未满成员；未配容量 = 不限 → 永远入选
+ *   （即「填满一个再下一个」）；全满 → 413 `MOUNT_QUOTA_EXCEEDED`。
+ */
+export type PoolStrategy = 'least_used' | 'round_robin' | 'hash' | 'free_weighted' | 'ordered';
 
 export interface Conditions {
   ip?: string;
