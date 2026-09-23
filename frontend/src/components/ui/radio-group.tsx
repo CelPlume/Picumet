@@ -13,14 +13,17 @@ export function RadioGroup({
   onChange,
   options,
   className,
+  style,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: RadioGroupOption[];
   className?: string;
+  /** 入场动画延迟（--reveal-delay）等内联样式 */
+  style?: React.CSSProperties;
 }) {
   return (
-    <div className={cn('grid gap-2', className)} role="radiogroup">
+    <div className={cn('grid gap-2', className)} style={style} role="radiogroup">
       {options.map((opt) => {
         const active = value === opt.value;
         return (

@@ -267,6 +267,90 @@
   animation: slide-in-from-bottom var(--duration-base) var(--ease-out);
 }
 
+/* 入场：内容/卡片/列表/卡内元素的统一次序入场（原语见 components/ui/reveal.tsx）
+   - 只动 opacity 与 transform，元素首帧就占位，不产生布局位移（CLS）；
+   - 终点显式回落到 transform: none，动画结束后不留残余 transform（不制造包含块/合成层）；
+   - animation-fill-mode: both 让首帧即 --reveal-delay 期间保持隐藏，mount 后只播一次；
+   - 逐项延迟由 --reveal-delay 提供（列表/卡片网格用 CSS 变量，不逐项开 JS 定时器）；
+   - 默认时长复用 --duration-base（300ms），与参考站区块 0.3~0.45s 同量级。
+   data-motion 三档与 prefers-reduced-motion 的关停见下方「动画三档」与文件末尾降级方案。 */
+@keyframes reveal-in {
+  from { opacity: 0; transform: translateY(var(--reveal-shift, 8px)); }
+  to { opacity: 1; transform: none; }
+}
+
+.reveal {
+  animation: reveal-in var(--reveal-duration, var(--duration-base)) var(--ease-out) both;
+  animation-delay: var(--reveal-delay, 0ms);
+}
+
+/* 表格行变体（.reveal-row）：只淡入、不位移——表格行 translate 会在表头与首行之间
+   撕出一条随延迟加宽的空隙（行仍占位但内容下移 8px）。表单/列表行统一用这个。 */
+@keyframes reveal-row-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.reveal-row {
+  animation: reveal-row-in var(--reveal-duration, var(--duration-base)) var(--ease-out) both;
+  animation-delay: var(--reveal-delay, 0ms);
+}
+
+/* ============ 动画三档（theme store data-motion，§33；与模糊三档并排的外观开关） ============
+   分层原则：动画按「装饰性 / 功能性」划层，档位只关装饰层，永远不动交互反馈的必需过渡。
+   - [data-motion="all"]：全开（默认，不写任何覆盖规则）
+   - [data-motion="default"]：关停装饰性入场动画（.reveal 家族）；图表绘制、tab/弹窗/抽屉
+     过渡、加载态等功能性动画保留 —— 它们承载状态反馈，砍掉会伤害可用性。
+   - [data-motion="off"]：全部动画与过渡禁用（含功能性），元素瞬时到达终态；仅保留
+     reduced-motion 场景同款的必要可见性（opacity 立即到位）。
+   层级选择器挂在根元素属性上，与 .no-blur 同一模式；两条规则都带 !important，
+   因为要覆盖组件内联的 animation-delay（reveal 的逐项延迟走 CSS 变量 + style 属性）。 */
+
+/* 下拉菜单逐项入场（完整动画档独有）：菜单容器 .animate-dropdown 弹出后，直接子项
+   （DropdownItem/DropdownLabel/Separator/Select 选项）依次淡入。基础 30ms 等菜单自身
+   先起势，步长 20ms、第 13 项起同延迟封顶（长列表不拖出长尾）；只淡入不位移。
+   default 档规则不存在 → 自动关停；off/reduced-motion 由全局 0.01ms + 下方延迟归零兜底。 */
+[data-motion='all'] .animate-dropdown > * {
+  animation: reveal-row-in var(--duration-fast) var(--ease-out) both;
+}
+[data-motion='all'] .animate-dropdown > *:nth-child(1) { animation-delay: 30ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(2) { animation-delay: 50ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(3) { animation-delay: 70ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(4) { animation-delay: 90ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(5) { animation-delay: 110ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(6) { animation-delay: 130ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(7) { animation-delay: 150ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(8) { animation-delay: 170ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(9) { animation-delay: 190ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(10) { animation-delay: 210ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(11) { animation-delay: 230ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(n+12) { animation-delay: 250ms; }
+
+/* default 档：装饰性入场（reveal 家族）关停 —— 终态直达，无延迟无位移 */
+[data-motion='default'] .reveal,
+[data-motion='default'] .reveal-row,
+[data-motion='default'].reveal,
+[data-motion='default'].reveal-row {
+  animation: none !important;
+  animation-delay: 0ms !important;
+}
+
+/* off 档：全站动画/过渡禁用。transition-duration 0.01ms 保留事件模型的完整性
+   （transitionend 仍会触发一次），与 reduced-motion 降级方案同一写法 */
+[data-motion='off'] *,
+[data-motion='off'] *::before,
+[data-motion='off'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* off 档：装饰层关停（动画 0.01ms + fill both 已让元素瞬时落到终态 opacity:1）。
+   不再强制 opacity/transform：列表行可能自带业务透明度语义（如封禁文件 opacity-40），
+   无差别 !important 会把业务样式抹掉。 */
+
 /* 卡片悬停 */
 .card-hover {
   transition: box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
@@ -422,6 +506,13 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  /* 入场动画的逐项延迟必须一并归零：只压时长会留下「先隐藏、延迟结束才跳出」的半吊子效果。
+     延迟归零 + 时长 0.01ms + fill both ⇒ 首帧直接是终态（opacity 1 / transform none）。 */
+  .reveal,
+  .reveal-row,
+  [data-motion] .animate-dropdown > * {
+    animation-delay: 0ms !important;
   }
 }
 

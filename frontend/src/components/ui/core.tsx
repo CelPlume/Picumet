@@ -1,5 +1,5 @@
 // 基础 UI 原语（Tailwind 风格，shadcn 美学）
-import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, type ButtonHTMLAttributes, type CSSProperties, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode } from 'react';
 import { Loader2, Inbox } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -106,16 +106,16 @@ export function Label({ className, children, htmlFor }: { className?: string; ch
 }
 
 // ============ Card ============
-export function Card({ className, children, onClick }: { className?: string; children: ReactNode; onClick?: () => void }) {
+export function Card({ className, style, children, onClick }: { className?: string; style?: CSSProperties; children: ReactNode; onClick?: () => void }) {
   return (
-    <div onClick={onClick} className={cn('glass-surface glass-blur flex flex-col gap-4 rounded-xl border py-5 text-card-foreground shadow-sm', className)}>
+    <div onClick={onClick} style={style} className={cn('glass-surface glass-blur flex flex-col gap-4 rounded-xl border py-5 text-card-foreground shadow-sm', className)}>
       {children}
     </div>
   );
 }
 
-export function CardHeader({ className, children }: { className?: string; children: ReactNode }) {
-  return <div data-slot="card-header" className={cn('flex flex-col gap-1.5 px-5', className)}>{children}</div>;
+export function CardHeader({ className, style, children }: { className?: string; style?: CSSProperties; children: ReactNode }) {
+  return <div data-slot="card-header" className={cn('flex flex-col gap-1.5 px-5', className)} style={style}>{children}</div>;
 }
 
 export function CardTitle({ className, children }: { className?: string; children: ReactNode }) {

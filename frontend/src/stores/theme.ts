@@ -4,11 +4,21 @@ import { create } from 'zustand';
 /** 模糊强度三档：off 全站实底；default 项目默认强度；frosted 文件卡片磨砂配方全局化 */
 export type BlurLevel = 'off' | 'default' | 'frosted';
 
+/**
+ * 动画三档（与模糊三档并排的外观开关）：
+ * - off：全部动画禁用（即时切换，适配低性能设备/动效敏感用户）
+ * - default：仅保留功能性动画（图表绘制、tab/弹窗过渡、加载态等反馈）
+ * - all：外加装饰性动画（页面分区入场 reveal、卡片浮层等）
+ */
+export type MotionLevel = 'off' | 'default' | 'all';
+
 export interface AppearanceSettings {
   theme: 'light' | 'dark' | 'system';
   accentColor: string;
   fontColor?: string;
   blurLevel: BlurLevel;
+  /** 动画三档（§33）：off 全关 / default 仅功能性动画 / all 加入场装饰动画 */
+  motionLevel: MotionLevel;
   backgroundType: 'none' | 'image' | 'color';
   backgroundUrl?: string;
   backgroundColor?: string;
@@ -26,6 +36,7 @@ const DEFAULT: AppearanceSettings = {
   theme: 'system',
   accentColor: '#3B82F6',
   blurLevel: 'default',
+  motionLevel: 'all',
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
@@ -129,6 +140,12 @@ function applyTheme(s: AppearanceSettings) {
   root.classList.toggle('no-blur', s.blurLevel === 'off');
   root.style.setProperty('--glass-alpha', glass.alpha);
   root.style.setProperty('--glass-blur', glass.blur);
+
+  // 动画三档（§33）：落在 <html data-motion> 上，CSS 侧按属性关停对应层级的动画
+  // - off：全局动画/过渡禁用（唯一例外：reduced-motion 用户本来就被强制禁用）
+  // - default：装饰性入场动画（.reveal 等）禁用；功能性动画（图表/tab/弹窗/加载）保留
+  // - all：全开（默认）
+  root.setAttribute('data-motion', s.motionLevel === 'all' ? 'all' : s.motionLevel);
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
