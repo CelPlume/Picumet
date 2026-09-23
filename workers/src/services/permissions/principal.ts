@@ -2,8 +2,10 @@
 import type { Context } from 'hono';
 import type { Principal, Mount, Permission, Conditions, PathRule, Visibility, GuestVisibility } from '@shared/types';
 import { getDb } from '../../middleware/auth';
-import { loadPrincipalRules, checkPermission, DEFAULT_ROLE_PERMISSIONS } from './check';
+import { loadPrincipalRules, checkPermission, bucketMatrixDecision, DEFAULT_ROLE_PERMISSIONS } from './check';
 import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
+import { MountRolePermissionsRepo } from '../../db/repos/mount-role-permissions';
+import { MountProviderRolePermissionsRepo } from '../../db/repos/mount-provider-role-permissions';
 import { ApiError } from '../../shared/errors';
 
 export async function getPrincipal(c: Context): Promise<Principal> {
@@ -54,6 +56,47 @@ export async function getRules(c: Context, mountId?: string): Promise<PathRule[]
   return loadPrincipalRules(db, principal, mountId);
 }
 
+/**
+ * 默认角色权限矩阵的**每请求缓存**（§28 挂载点级 / §31 桶级）：
+ * 键为当前请求的 Hono Context（每请求一个对象，随请求结束被 GC 回收），
+ * 值为 缓存键 → 查询 Promise 的记忆表——同一请求内同一 (挂载点[, 桶]) 只查一次库，
+ * 并发调用（如树形遍历逐子挂载复核、逐文件按落桶复核）共享同一 Promise，不产生重复往返。
+ * 缓存键：挂载点级 = mountId；桶级 = `${mountId}\0${providerId}`（桶 id 非空，无碰撞）。
+ * 矩阵为空时也只是多这一条按主键的查询，判定行为不变。
+ *
+ * 导出给所有**直接调用 checkPermission 的入口**复用（如公开目录浏览 public/fs.ts）：
+ * 矩阵语义按挂载点/桶生效、与入口无关，缓存也必须按请求共享同一份。
+ */
+const matrixCache = new WeakMap<Context, Map<string, Promise<Map<string, Permission[]>>>>();
+
+function cachedMatrix(c: Context, key: string, load: () => Promise<Map<string, Permission[]>>): Promise<Map<string, Permission[]>> {
+  let perRequest = matrixCache.get(c);
+  if (!perRequest) {
+    perRequest = new Map();
+    matrixCache.set(c, perRequest);
+  }
+  const cached = perRequest.get(key);
+  if (cached) return cached;
+  const pending = load();
+  perRequest.set(key, pending);
+  return pending;
+}
+
+export function getMountMatrix(c: Context, mountId: string): Promise<Map<string, Permission[]>> {
+  return cachedMatrix(c, mountId, () => MountRolePermissionsRepo.getMatrix(getDb(c), mountId));
+}
+
+/** §31 桶级矩阵（键含 providerId，与挂载点级互不覆盖） */
+export function getBucketMatrix(
+  c: Context,
+  mountId: string,
+  providerId: string
+): Promise<Map<string, Permission[]>> {
+  return cachedMatrix(c, `${mountId}\u0000${providerId}`, () =>
+    MountProviderRolePermissionsRepo.getMatrix(getDb(c), mountId, providerId)
+  );
+}
+
 export function getConditions(c: Context): Conditions {
   return { ip: getClientIpSafe(c) };
 }
@@ -70,6 +113,8 @@ function getClientIpSafe(c: Context): string {
  * 校验权限，失败抛出 403。
  * visibility：目标文件的可见性（§4.4a）——users/public 注入合成 allow 规则。
  * guestVisibility：目标文件的游客可见性（§C）——匿名访客按 none/download/view 注入合成 allow 规则。
+ * providerId：目标文件的**实际落桶**（§31）——传入时判定顺序为 桶级矩阵 → 挂载点级矩阵 → 角色默认；
+ * 缺省（落桶未知/目录行）与既有行为完全一致。
  */
 export async function requirePermission(
   c: Context,
@@ -79,11 +124,29 @@ export async function requirePermission(
   fileOwnerId?: string,
   conditions?: Conditions,
   visibility?: Visibility,
-  guestVisibility?: GuestVisibility | null
+  guestVisibility?: GuestVisibility | null,
+  providerId?: string
 ): Promise<void> {
   const principal = await getPrincipal(c);
   const rules = await getRules(c, mount.id);
-  const result = checkPermission(principal, mount, path, action, rules, fileOwnerId, conditions, visibility, guestVisibility);
+  // §28：挂载点级默认角色权限矩阵（每请求按 mountId 缓存，见 getMountMatrix）
+  const mountMatrix = await getMountMatrix(c, mount.id);
+  // §31：桶级矩阵（每请求按 (mountId, providerId) 缓存，见 getBucketMatrix）
+  const bucketMatrix = providerId ? await getBucketMatrix(c, mount.id, providerId) : undefined;
+  const result = checkPermission(
+    principal,
+    mount,
+    path,
+    action,
+    rules,
+    fileOwnerId,
+    conditions,
+    visibility,
+    guestVisibility,
+    mountMatrix,
+    providerId,
+    bucketMatrix
+  );
   if (result !== 'allow') {
     throw new ApiError(403, 'FORBIDDEN', '无权执行此操作');
   }
@@ -98,12 +161,37 @@ export async function can(
   fileOwnerId?: string,
   conditions?: Conditions,
   visibility?: Visibility,
-  guestVisibility?: GuestVisibility | null
+  guestVisibility?: GuestVisibility | null,
+  providerId?: string
 ): Promise<boolean> {
   try {
-    await requirePermission(c, mount, path, action, fileOwnerId, conditions, visibility, guestVisibility);
+    await requirePermission(c, mount, path, action, fileOwnerId, conditions, visibility, guestVisibility, providerId);
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * §31 桶级门禁（晚解析入口用）：桶级条目明确禁止该动作时抛 403，无条目/落桶未知 → 放行。
+ *
+ * 用于「权限初检先于文件行解析」的入口（WebDAV GET/HEAD/PROPFIND、下载网关的分享令牌流）：
+ * 这些入口的初检不含落桶，无法走 requirePermission(providerId)；此处补上桶级这一层。
+ * 与引擎第 7 步同源（bucketMatrixDecision），因此「桶级条目明确禁止」的语义两处一致。
+ * 注意：桶级条目**放行**时不会放宽前面的层级判定（那些层已由初检或令牌签发时定论）。
+ */
+export async function assertBucketPermission(
+  c: Context,
+  mountId: string,
+  providerId: string | null | undefined,
+  action: Permission
+): Promise<void> {
+  if (!providerId) return;
+  const bucketMatrix = await getBucketMatrix(c, mountId, providerId);
+  // 无桶级条目（绝大多数部署）：不解析主体，与既有语义完全一致
+  if (bucketMatrix.size === 0) return;
+  const principal = await getPrincipal(c);
+  if (bucketMatrixDecision(principal.role, action, bucketMatrix) === 'deny') {
+    throw new ApiError(403, 'FORBIDDEN', '当前存储桶的角色权限不允许此操作');
   }
 }

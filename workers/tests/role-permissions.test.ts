@@ -36,6 +36,7 @@ const mount: Mount = {
   quotaReserved: 0,
   poolStrategy: 'least_used',
   capacityBytes: null,
+  uploadMode: 'free',
 };
 
 const anonymous: Principal = {

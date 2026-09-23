@@ -163,10 +163,12 @@ async function guardPermission(
   mount: Mount,
   virtualPath: string,
   action: 'read' | 'write' | 'delete',
-  fileOwnerId?: string
+  fileOwnerId?: string,
+  providerId?: string | null
 ): Promise<Response | null> {
   try {
-    await requirePermission(c, mount, virtualPath, action, fileOwnerId);
+    // §31：文件行落桶已知时按桶级矩阵 → 挂载点级矩阵 → 角色默认判定
+    await requirePermission(c, mount, virtualPath, action, fileOwnerId, undefined, undefined, undefined, providerId ?? undefined);
     return null;
   } catch {
     return s3ErrorResponse(403, 'AccessDenied', '无权执行此操作', virtualPath);
@@ -226,6 +228,9 @@ async function listBuckets(c: Ctx): Promise<Response> {
 s3gwRoutes.get('/', (c) => listBuckets(c));
 
 // ============ PUT（PutObject） ============
+// §28 写入口模式在 upsertFileObject 内统一校验（user_space 强制自身用户空间）；
+// S3 网关没有「建目录」动作（key 尾部的 `/` 只是普通名字，被 normalizePath 归一），
+// 因此 flat 档的「禁止新建文件夹」在此入口无需额外判断。
 
 s3gwRoutes.put('*', async (c) => {
   const db = getDb(c);
@@ -327,7 +332,7 @@ async function getObjectOrHead(c: Ctx, bucket: string, key: string, head: boolea
   if (!file || file.type === 'folder') {
     return s3ErrorResponse(404, 'NoSuchKey', '对象不存在', virtualPath);
   }
-  const guard = await guardPermission(c, mount, virtualPath, 'read', file.ownerId);
+  const guard = await guardPermission(c, mount, virtualPath, 'read', file.ownerId, file.providerId);
   if (guard) return guard;
 
   if (!head) {
@@ -432,7 +437,7 @@ s3gwRoutes.delete('*', async (c) => {
     ?? await FileRepo.getFolderAtPath(db, mount.id, virtualPath, name);
   // S3 语义：删除不存在的 key 返回 204；他人文件按不存在处理（不泄露存在性）
   if (!file || (file.type === 'file' && file.ownerId !== apiKey.userId)) return new Response(null, { status: 204 });
-  const guard = await guardPermission(c, mount, virtualPath, 'delete', file.ownerId);
+  const guard = await guardPermission(c, mount, virtualPath, 'delete', file.ownerId, file.providerId);
   if (guard) return guard;
   await deleteFileInternal(c, mount, file, apiKey.userId);
   return new Response(null, { status: 204 });
@@ -474,7 +479,7 @@ s3gwRoutes.post('*', async (c) => {
         deleted.push(rawKey); // S3 语义：删除不存在的 key 视为成功
         continue;
       }
-      const guard = await guardPermission(c, mount, virtualPath, 'delete', file.ownerId);
+      const guard = await guardPermission(c, mount, virtualPath, 'delete', file.ownerId, file.providerId);
       if (guard) throw new Error('无权删除');
       await deleteFileInternal(c, mount, file, apiKey.userId);
       deleted.push(rawKey);

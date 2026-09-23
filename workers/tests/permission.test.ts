@@ -28,6 +28,7 @@ const mount: Mount = {
   quotaReserved: 0,
   poolStrategy: 'least_used',
   capacityBytes: null,
+  uploadMode: 'free',
 };
 
 function userPrincipal(overrides: Partial<Principal> = {}): Principal {

@@ -29,7 +29,16 @@ export { DEFAULT_ROLE_PERMISSIONS };
  * 4. API密钥配置权限范围
  * 5. 收集匹配规则 → 排序 → 应用第一个
  * 6. 文件所有者回退
- * 7. 默认拒绝
+ * 7. 桶级默认角色权限矩阵（§31，封闭集合；仅在本步之前的路径规则/属主均未命中时生效）
+ * 8. 挂载点级默认角色权限矩阵（§28，封闭集合，比桶级更泛）
+ * 9. 用户默认路径权限（角色默认权限矩阵）
+ * 10. 默认拒绝
+ *
+ * mountMatrix：挂载点级默认角色权限矩阵（§28，role → 权限词表）。由调用方（principal.ts）
+ * 按请求缓存后传入——引擎内部**不查库**，避免把 DB 调用带进每请求热路径。
+ * providerId / bucketMatrix：桶级默认角色权限矩阵（§31，限定到「文件实际落桶」的 provider）。
+ * 落桶已知时由调用方传入（读/改/删/下载/分享按文件行 provider_id，写路径按候选成员），
+ * 判定顺序为 桶级 → 挂载点级 → 角色默认；**未传 providerId 时与既有行为完全一致**。
  */
 export function checkPermission(
   principal: Principal,
@@ -40,7 +49,10 @@ export function checkPermission(
   fileOwnerId?: string,
   conditions?: Conditions,
   visibility?: Visibility,
-  guestVisibility?: GuestVisibility | null
+  guestVisibility?: GuestVisibility | null,
+  mountMatrix?: Map<string, Permission[]>,
+  providerId?: string,
+  bucketMatrix?: Map<string, Permission[]>
 ): PermissionResult {
   const path = normalizePath(canonicalPath);
 
@@ -111,7 +123,26 @@ export function checkPermission(
     }
   }
 
-  // 8. 用户默认路径权限（角色默认权限矩阵：user.permissions ?? role_defaults.permissions，缺省用兜底常量）
+  // 7. 桶级默认角色权限矩阵（§31，比挂载点级更具体，封闭集合）：
+  //    该 (挂载点, 文件实际落桶 provider, 角色) 有条目时——已走到这里说明无显式 path_rules 命中（第 6 步）、
+  //    且非文件属主（第 7 步）——动作在条目内 → allow，不在条目内 → deny（封闭集合，兜底层不放宽）。
+  //    无条目（Map 缺该角色 / 调用方未传落桶）→ 不介入，继续下一层，存量挂载点行为零变化。
+  const bucketDecision = providerId ? bucketMatrixDecision(principal.role, action, bucketMatrix) : undefined;
+  if (bucketDecision) {
+    return bucketDecision;
+  }
+
+  // 8. 挂载点级默认角色权限矩阵（§28，封闭集合）：
+  //    该 (挂载点, 角色) 有条目时——已走到这里说明无显式 path_rules 命中（第 6 步）、且非文件属主（第 7 步）——
+  //    动作在条目内 → allow，不在条目内 → deny（矩阵是封闭集合，兜底层不放宽）。
+  //    share 不参与矩阵（分享开关是能力位 can_share，§4.4 防线 5），出现 share 时整层跳过，交第 10 步既有语义。
+  //    无条目（Map 缺该角色 / 调用方未传矩阵）→ 不介入，继续第 10 步，存量挂载点行为零变化。
+  const matrixEntry = action === 'share' ? undefined : mountMatrix?.get(principal.role);
+  if (matrixEntry) {
+    return matrixEntry.includes(action) ? 'allow' : 'deny';
+  }
+
+  // 9. 用户默认路径权限（角色默认权限矩阵：user.permissions ?? role_defaults.permissions，缺省用兜底常量）
   // share 不在矩阵内（分享开关是能力位 can_share，§4.4 防线 5），默认路径内保持既有放行语义。
   if (principal.type === 'user' && isPathWithinBoundary(path, principal.defaultPath)) {
     const defaultPerms =
@@ -121,8 +152,26 @@ export function checkPermission(
     }
   }
 
-  // 9. 默认拒绝（无匹配规则且非所有者）
+  // 10. 默认拒绝（无匹配规则且非所有者）
   return 'deny';
+}
+
+/**
+ * 桶级矩阵判定（§31）：桶级条目存在时构成该桶内该角色的**封闭集合**——
+ * 动作在条目内 → allow，不在条目内 → deny；无条目（Map 缺该角色 / 未传矩阵）→ undefined（不介入，回落下一层）。
+ * share 不参与矩阵（同 §28），一律不介入。
+ * 导出供两处复用：权限引擎第 7 步，以及写路径候选桶过滤（storage/pool.ts）与晚解析入口的桶级门禁
+ * （principal.ts）——保证「哪些候选桶被跳过」与引擎判定同源。
+ */
+export function bucketMatrixDecision(
+  role: string,
+  action: Permission,
+  bucketMatrix?: Map<string, Permission[]> | null
+): PermissionResult | undefined {
+  if (action === 'share') return undefined;
+  const entry = bucketMatrix?.get(role);
+  if (!entry) return undefined;
+  return entry.includes(action) ? 'allow' : 'deny';
 }
 
 /**

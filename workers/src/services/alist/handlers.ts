@@ -151,7 +151,7 @@ fsApi.post('/get', async (c) => {
     ?? await FileRepo.getFolderAtPath(db, mount.id, virtualPath, name);
   if (!file) return c.json(AListFail(500, 'object not found'));
   try {
-    await requirePermission(c, mount, virtualPath, 'read', file.ownerId);
+    await requirePermission(c, mount, virtualPath, 'read', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
   } catch {
     return c.json(AListFail(403, '无权读取'));
   }
@@ -190,7 +190,7 @@ fsApi.post('/remove', async (c) => {
     if (!file) return c.json(AListFail(500, 'object not found'));
     if (file.type === 'file' && file.ownerId !== apiKey.userId) return c.json(AListFail(500, 'object not found'));
     try {
-      await requirePermission(c, mount, virtualPath, 'delete', file.ownerId);
+      await requirePermission(c, mount, virtualPath, 'delete', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
     } catch {
       return c.json(AListFail(403, '无权删除'));
     }

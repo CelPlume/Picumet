@@ -5,6 +5,7 @@ import type { Context } from 'hono';
 import { FileRepo, MountRepo, ProviderRepo, LogRepo, ShareRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { getProviderForFile } from '../storage/pool';
+import { assertBucketPermission } from '../permissions/principal';
 import { ApiError } from '../../shared/errors';
 import { consumeDownloadToken } from '../shares/tokens';
 import { assertNotBanned } from '../files/ban';
@@ -29,6 +30,9 @@ gatewayRoutes.get('/download/:token', async (c) => {
 
   // §26 违规封禁：下载网关内容出口门禁（令牌签发后文件被封禁也在此拦截）
   await assertNotBanned(db, [file.id]);
+  // §31 桶级矩阵：下载网关凭令牌放行（含分享令牌），此处按文件实际落桶补判下载权限，
+  // 桶级条目明确禁止该角色下载 → 403（无桶级条目时与既有令牌语义一致）
+  await assertBucketPermission(c, mount.id, file.providerId, 'download');
 
   // 文件设置了密码但 token 未验证 → 拒绝
   if (file?.accessPassword && !payload.passwordVerified) {
@@ -79,17 +83,22 @@ gatewayRoutes.get('/download/:token', async (c) => {
     totalSize: payload.size || undefined,
   });
 
-  // 记录下载日志
-  await LogRepo.create(db, {
-    userId: c.get('userId') as string | undefined,
-    action: payload.shareId ? 'share_download' : 'download',
-    path: file?.path ?? payload.objectKey,
-    metadata: JSON.stringify({ fileName: payload.name, shareId: payload.shareId }),
-    ipAddress: ipOf(c),
-    userAgent: c.req.header('user-agent'),
-    bytesTransferred: payload.size,
-    statusCode: 200,
-  });
+  // 记录下载日志（统一下载出口：直链 token 与分享 token 同记 action='download'，
+  // 分享来源由 metadata.shareId 区分——趋势 metric=downloads 直接按动作聚合）
+  try {
+    await LogRepo.create(db, {
+      userId: c.get('userId') as string | undefined,
+      action: 'download',
+      path: file?.path ?? payload.objectKey,
+      metadata: JSON.stringify({ fileName: payload.name, shareId: payload.shareId, via: 'gateway' }),
+      ipAddress: ipOf(c),
+      userAgent: c.req.header('user-agent'),
+      bytesTransferred: payload.size,
+      statusCode: 200,
+    });
+  } catch {
+    // 埋点失败不阻断下载（对象已取回，响应照常返回）
+  }
 
   return response;
 });

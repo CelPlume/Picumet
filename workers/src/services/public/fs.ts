@@ -1,6 +1,7 @@
 // 公开目录浏览（§C 游客）：GET /api/public/fs?path=/x
 // 分级可见：匿名访客受站点 allow_guest_access 开关约束，逐项按权限引擎过滤
-// （role='guest' 规则 / users·public 可见性合成规则 / 属主回退），并为可读文件附签名直链。
+// （role='guest' 规则 / users·public 可见性合成规则 / 属主回退 / §28 挂载点级默认角色权限矩阵），
+// 并为可读文件附签名直链。
 import { Hono } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo, SettingsRepo } from '../../db';
@@ -8,7 +9,7 @@ import { getDb } from '../../middleware/auth';
 import { ApiError } from '../../shared/errors';
 import { ok } from '../../shared/response';
 import { normalizePath, safeDecodePath } from '../../utils/path';
-import { getPrincipal } from '../permissions/principal';
+import { getPrincipal, getMountMatrix, getBucketMatrix } from '../permissions/principal';
 import { checkPermission, loadPrincipalRules } from '../permissions/check';
 import { getProvider } from '../storage/providers';
 import { physicalObjectKey } from '../storage/keys';
@@ -49,6 +50,9 @@ publicFsRoutes.get('/fs', async (c) => {
 
   const principal = await getPrincipal(c);
   const rules = await loadPrincipalRules(db, principal, mount.id);
+  // §28：挂载点矩阵按挂载点生效、与入口无关（匿名访客按 role='guest' 条目判定）；
+  // 与本请求内 requirePermission 共用同一份每请求缓存，不产生额外往返。
+  const mountMatrix = await getMountMatrix(c, mount.id);
 
   // 目录本身可读（目录行的读权限）；根目录对 guest 亦需显式规则授权。
   // 文件级游客可见性（§C）：目录行 guest_visibility='view' 时匿名访客可列目录（'download' 只给下载，不给列表）。
@@ -64,7 +68,8 @@ publicFsRoutes.get('/fs', async (c) => {
     undefined,
     undefined,
     undefined,
-    folder?.guestVisibility
+    folder?.guestVisibility,
+    mountMatrix
   );
   if (folderRead !== 'allow') {
     throw new ApiError(403, 'FORBIDDEN', '无权访问该目录');
@@ -85,7 +90,12 @@ publicFsRoutes.get('/fs', async (c) => {
   const items: PublicFsItem[] = [];
   for (const row of rows) {
     const itemPath = row.type === 'folder' ? row.path : (row.path === '/' ? `/${row.name}` : `${row.path}/${row.name}`);
-    // 逐项判定：文件夹需 read，文件需 download；visibility / guest_visibility 与属主回退在引擎内统一处理
+    // §31 桶级矩阵：文件按实际落桶判定（每请求按 (挂载点, 桶) 缓存，逐项不产生重复往返）；
+    // 目录行无桶语义 → 不传落桶，与既有行为一致
+    const itemProviderId = row.type === 'file' ? (row.providerId ?? undefined) : undefined;
+    const itemBucketMatrix = itemProviderId ? await getBucketMatrix(c, mount.id, itemProviderId) : undefined;
+    // 逐项判定：文件夹需 read，文件需 download；visibility / guest_visibility / §28 挂载点矩阵 /
+    // §31 桶级矩阵与属主回退在引擎内统一处理
     const decision = checkPermission(
       principal,
       mount,
@@ -95,7 +105,10 @@ publicFsRoutes.get('/fs', async (c) => {
       row.ownerId,
       undefined,
       row.visibility,
-      row.guestVisibility
+      row.guestVisibility,
+      mountMatrix,
+      itemProviderId,
+      itemBucketMatrix
     );
     if (decision !== 'allow') continue;
     const locked = !!row.accessPassword;
