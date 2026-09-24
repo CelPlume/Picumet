@@ -2683,8 +2683,9 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `siteTitle` | `string` | 否 | 站点标题。 |
-| `siteLogo` | `string` | 否 | 站点 Logo 地址。 |
+| `siteTitle` | `string` | 否 | 标签页标题（浏览器标签页，即 `document.title`）。 |
+| `siteHeaderTitle` | `string` | 否 | 左上角标题（顶栏 Logo 旁文字）。留空 `''` = 只显示 Logo；不传（未设置）= 跟随 `siteTitle`。 |
+| `siteLogo` | `string` | 否 | 左上角 Logo 地址，高度固定、宽度随图片比例自适应。 |
 | `siteFavicon` | `string` | 否 | 站点图标地址。 |
 | `allowRegistration` | `boolean` | 否 | 是否允许注册。 |
 | `allowGuestAccess` | `boolean` | 否 | 是否允许游客访问。 |
@@ -2703,7 +2704,7 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 | `smtpUser` | `string` | 否 | SMTP 用户名。 |
 | `smtpPassword` | `string` | 否 | SMTP 密码。传 `"******"` 或空字符串可保留当前密码。 |
 | `smtpFromName` | `string` | 否 | 发件人名称。 |
-| `smtpFromEmail` | `string` | 否 | 发件邮箱。 |
+| `smtpFromEmail` | `string` | 否 | 发件邮箱；空字符串 `''` = 清空发件地址（未配置时读取值即为 `''`，整表单回传不会被判为无效邮箱）。 |
 | `emailEnabled` | `boolean` | 否 | 是否启用邮件服务。 |
 
 #### 示例
@@ -3225,6 +3226,7 @@ curl -L "https://{domain}/api/gateway/download/{token}" -o photo.jpg
   "success": true,
   "data": {
     "siteTitle": "Picumet",
+    "siteHeaderTitle": null,
     "siteLogo": null,
     "siteFavicon": null,
     "allowGuestAccess": false,

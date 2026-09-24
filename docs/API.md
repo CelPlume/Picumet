@@ -2683,8 +2683,9 @@ All fields are optional.
 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `siteTitle` | `string` | No | The site title. |
-| `siteLogo` | `string` | No | The site logo URL. |
+| `siteTitle` | `string` | No | The tab title (browser tab, i.e. `document.title`). |
+| `siteHeaderTitle` | `string` | No | The header title (text next to the top-bar logo). Empty `''` = logo only; omitted (unset) = follow `siteTitle`. |
+| `siteLogo` | `string` | No | The header logo URL; rendered at a fixed height with width following the image's aspect ratio. |
 | `siteFavicon` | `string` | No | The favicon URL. |
 | `allowRegistration` | `boolean` | No | Allow new user registration. |
 | `allowGuestAccess` | `boolean` | No | Allow guest access. |
@@ -2703,7 +2704,7 @@ All fields are optional.
 | `smtpUser` | `string` | No | The SMTP user. |
 | `smtpPassword` | `string` | No | The SMTP password. Pass `"******"` or an empty string to keep the current password. |
 | `smtpFromName` | `string` | No | The sender name. |
-| `smtpFromEmail` | `string` | No | The sender email. |
+| `smtpFromEmail` | `string` | No | The sender email; an empty string `''` clears it (an unconfigured read returns `''`, so posting the whole form back is not rejected as an invalid email). |
 | `emailEnabled` | `boolean` | No | Enable email service. |
 
 #### Example
@@ -3226,6 +3227,7 @@ Returns site-wide settings for the landing page and login screen.
   "success": true,
   "data": {
     "siteTitle": "Picumet",
+    "siteHeaderTitle": null,
     "siteLogo": null,
     "siteFavicon": null,
     "allowGuestAccess": false,
