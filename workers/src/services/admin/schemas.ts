@@ -74,7 +74,8 @@ export const SettingsSchema = z.object({
   smtpUser: z.string().max(300).optional(),
   smtpPassword: z.string().nullable().optional(),
   smtpFromName: z.string().max(200).optional(),
-  smtpFromEmail: z.string().email().nullable().optional(),
+  // '' = 清空发件地址（前端整表单 PATCH，未配置的 GET 值就是 ''，不能被 .email() 拒成 400）
+  smtpFromEmail: z.string().email().or(z.literal('')).nullable().optional(),
   emailEnabled: z.boolean().optional(),
   // 路由前缀：公开直链前缀（'' = 站点根）/ 根路径语义
   directPrefix: DirectPrefixSchema.optional(),
