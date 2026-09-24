@@ -8,7 +8,8 @@
 // - 仪表盘（BucketMountGraph）：展开 = 顶层文件夹 + 递归文件计数（只显示计数）
 // - 全部文件挂载点视图（MountView）：展开 = 本桶物理存储的具体文件（分页加载）
 // 备份桶：某挂载点的备用池成员且本桶 0 文件 → 琥珀 badge 挂在对应挂载点行之后（泳道内没有该挂载点行时，
-// 补一行琥珀空心环的备用挂载点行，badge 紧随其后）；点击定位到主桶泳道上的那个挂载点行（3s 熄灭）；
+// 补一行琥珀空心环的备用挂载点行，badge 紧随其后；占位行同样接桶干线 —— 琥珀分支 + 空心环 + 不可展开，
+// 与真实挂载点行「层级色 + 可展开」一眼可分）；点击定位到主桶泳道上的那个挂载点行（3s 熄灭）；
 // 拼好桶：挂载点节点出现在每个持有其文件的桶泳道上，展开只列本桶存储的文件。
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -97,14 +98,15 @@ function levelColor(bucketId: string, level: number): string {
   return hslToHex(h + level * LEVEL_HUE, s, l);
 }
 
-/** 竖线段（2px，以列圆心对齐） */
+/** 竖线段（2px，以列圆心对齐）。zIndex 1 = 干线层级：压在同列子级转角曲线之上，
+    子曲线的起点段藏进干线里，只有弯出侧面时才露出 —— 拼接缝被干线盖住（git-graph 画法） */
 function Line({ x, color, top = 0, height }: { x: number; color: string; top?: number | string; height: number | string }) {
-  return <span aria-hidden className="absolute w-0.5" style={{ left: x - 1, top, height, backgroundColor: color }} />;
+  return <span aria-hidden className="absolute w-0.5" style={{ left: x - 1, top, height, backgroundColor: color, zIndex: 1 }} />;
 }
 
-/** 圆角转角：父列竖线 → 圆角 → 水平段切入本列锚点左缘。
-    盒高 CURVE_H 锚在行垂直中线之上，盒内没有竖直直线段：曲线起点在盒内 y=1 处（线宽 2 的描边恰好盖住盒顶）
-    → 与上方父列线无缝，且拐点紧贴本行行顶，曲线以整个半行高为跨度缓入锚点。 */
+/** 圆角转角：起点落在父列干线正中、切线竖直（与干线同宽同轴，z 层在干线之下 —— 见 Line），
+    三次曲线缓出后水平切入本列锚点左缘：竖直起始段被干线盖住，弯出侧面才露出，看不出拼接；
+    控制点把弯曲摊开（P1 沿竖直、P2 提前转平），无四分之一圆的生硬拐点。 */
 function Elbow({ from, to, color, anchorR }: { from: number; to: number; color: string; anchorR: number }) {
   const w = to - from;
   return (
@@ -115,7 +117,7 @@ function Elbow({ from, to, color, anchorR }: { from: number; to: number; color: 
       viewBox={`0 0 ${w + 1} ${CURVE_H}`}
     >
       <path
-        d={`M 1 1 Q 1 ${CURVE_H} ${1 + CURVE_R} ${CURVE_H} L ${w + 1 - anchorR} ${CURVE_H}`}
+        d={`M 1 1 C 1 ${Math.round(CURVE_H * 0.7)} ${Math.round(1 + CURVE_R * 0.45)} ${CURVE_H} ${1 + CURVE_R} ${CURVE_H} L ${w + 1 - anchorR} ${CURVE_H}`}
         fill="none"
         stroke={color}
         strokeWidth={2}
@@ -152,6 +154,7 @@ function GraphRow({
   stub,
   highlight,
   mountNodeId,
+  color: colorOverride,
   children,
 }: {
   /** 本行列号：0 = 桶、1 = 挂载点、2+ = 文件夹/文件 */
@@ -168,10 +171,12 @@ function GraphRow({
   highlight?: boolean;
   /** 挂载点 id → 渲染 data-mount-node（备用入口按此定位到主桶泳道上的挂载点行） */
   mountNodeId?: string;
+  /** 行配色覆盖：默认 levelColor(bucketId, level)；备用占位行传 STANDBY_COLOR（锚点与转角同琥珀，父列线仍为桶基色） */
+  color?: string;
   children: React.ReactNode;
 }) {
   const x = colX(level);
-  const color = levelColor(bucketId, level);
+  const color = colorOverride ?? levelColor(bucketId, level);
   return (
     <div
       className={cn('relative flex items-center rounded-md', highlight && ROW_HIGHLIGHT_CLASS)}
@@ -197,8 +202,14 @@ function GraphRow({
 
 // ============ 泳道 / 节点 ============
 
-/** 备用关系条目：本桶是某挂载点的备用池成员且本桶 0 文件（bucketTree.standbys） */
+/** 备用条目：本桶是某挂载点的备用池成员且本桶 0 文件（bucketTree.standbys） */
 type StandbyEntry = BucketNode['standbys'][number];
+
+/** 泳道上会渲染成占位行的备用条目：本桶没有该挂载点的真实行（有则 badge 紧随该行之后） */
+function orphanStandbysOf(b: BucketNode): StandbyEntry[] {
+  const mountIds = new Set(b.mounts.map((m) => m.id));
+  return b.standbys.filter((s) => !mountIds.has(s.mountId));
+}
 
 /** 备用桶 badge：点击定位主桶泳道上的那个挂载点行（滚动 + 高亮，3 秒熄灭） */
 function StandbyBadge({ standby, onHighlight }: { standby: StandbyEntry; onHighlight: () => void }) {
@@ -323,7 +334,7 @@ function BucketLane({
         pass={[]}
         parent={null}
         anchor={open ? 'solid' : 'hollow'}
-        stub={open && b.mounts.length > 0}
+        stub={open && (b.mounts.length > 0 || orphanStandbysOf(b).length > 0)}
       >
         <BucketHeader b={b} open={open} onToggle={onToggle} />
       </GraphRow>
@@ -392,14 +403,24 @@ function LaneLabel({ children }: { children: React.ReactNode }) {
 }
 
 /** 备用挂载点行（level 1）：本桶是某挂载点的备用池成员且本桶 0 文件、泳道上没有该挂载点的行时渲染。
-    与挂载点行同列同缩进，但锚点为琥珀空心环（备用关系、不可展开，故不渲染折叠箭头，仅以等宽占位对齐标题列），
-    且不接桶干线 —— 「连着桶干线 = 本桶持有该挂载点文件，不连的琥珀环 = 仅备用」一眼可分。
-    整行与 badge 都定位到主桶泳道上的挂载点行。 */
-function StandbyMountNode({ standby, onHighlight }: { standby: StandbyEntry; onHighlight: () => void }) {
+    与挂载点行同列同缩进、同样接桶干线（末行止于转角），但整条分支为琥珀：空心环锚点（备用关系、
+    不可展开，故不渲染折叠箭头，仅以等宽占位对齐标题列）+ 琥珀转角，与真实挂载点行（层级色、可展开）
+    一眼可分。整行与 badge 都定位到主桶泳道上的挂载点行。 */
+function StandbyMountNode({
+  bucketId,
+  standby,
+  isLast,
+  onHighlight,
+}: {
+  bucketId: string;
+  standby: StandbyEntry;
+  /** 本泳道最后一个子行 → 父列（桶列）竖线止于转角 */
+  isLast: boolean;
+  onHighlight: () => void;
+}) {
   const { t } = useTranslation();
   return (
-    <div className="relative flex items-center" data-standby-node={standby.mountId} style={{ paddingLeft: rowPad(1), minHeight: ROW_MIN_H }}>
-      <Anchor x={colX(1)} kind="hollow" color={STANDBY_COLOR} />
+    <GraphRow level={1} bucketId={bucketId} pass={[]} parent={isLast ? 'toCurve' : 'full'} anchor="hollow" color={STANDBY_COLOR}>
       <button
         type="button"
         onClick={onHighlight}
@@ -411,7 +432,7 @@ function StandbyMountNode({ standby, onHighlight }: { standby: StandbyEntry; onH
         <span className="hidden truncate font-mono text-[10px] text-muted-foreground sm:block">{standby.mountPath}</span>
       </button>
       <StandbyBadge standby={standby} onHighlight={onHighlight} />
-    </div>
+    </GraphRow>
   );
 }
 
@@ -435,14 +456,10 @@ function LaneNodes({
   const { t } = useTranslation();
   // 备用条目按 mountId 归属：有同 mountId 挂载点行的紧随该行（§31 显式备用标记下两个列表可重叠），
   // 其余（本桶 0 文件、无该挂载点行）渲染为备用挂载点占位行
-  const mountIds = new Set(b.mounts.map((m) => m.id));
+  const orphanStandbys = orphanStandbysOf(b);
   const standbysByMount = new Map<string, StandbyEntry[]>();
-  const orphanStandbys: StandbyEntry[] = [];
   for (const s of b.standbys) {
-    if (!mountIds.has(s.mountId)) {
-      orphanStandbys.push(s);
-      continue;
-    }
+    if (orphanStandbys.includes(s)) continue;
     const list = standbysByMount.get(s.mountId);
     if (list) list.push(s);
     else standbysByMount.set(s.mountId, [s]);
@@ -453,8 +470,8 @@ function LaneNodes({
       {b.mounts.map((m, mi) => {
         const key = `${b.id}:${m.id}`;
         const open = openMounts.has(key);
-        // 备用行不接桶干线 → 桶列竖线/子树贯通只看挂载点，不看备用行
-        const isLast = mi === b.mounts.length - 1;
+        // 备用行同样接桶干线 → 桶列贯通到整条泳道的最后一个子行（尾随备用行存在时挂载点行不再止于转角）
+        const isLast = mi === b.mounts.length - 1 && orphanStandbys.length === 0;
         return (
           <Fragment key={key}>
             <MountRow
@@ -475,10 +492,12 @@ function LaneNodes({
           </Fragment>
         );
       })}
-      {orphanStandbys.map((s) => (
+      {orphanStandbys.map((s, si) => (
         <StandbyMountNode
           key={`${b.id}:${s.mountId}`}
+          bucketId={b.id}
           standby={s}
+          isLast={si === orphanStandbys.length - 1}
           onHighlight={() => onHighlightMount(s.primaryProviderId, s.mountId)}
         />
       ))}
