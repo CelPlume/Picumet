@@ -14,6 +14,8 @@ import type { Announcement } from '@shared/types';
 
 interface Settings {
   siteTitle: string;
+  /** 左上角标题：'' = 只显示 Logo 不出文字；undefined（后端未设置）= 跟随 siteTitle */
+  siteHeaderTitle?: string;
   siteLogo?: string;
   siteFavicon?: string;
   allowRegistration: boolean;
@@ -161,19 +163,27 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* 站点标识：标题在左、图标在右各占一行 —— 左上角（标题 + Logo）与浏览器标签页（标题 + Favicon）；
+              左上角标题留空 = 只显示 Logo；标签页标题即 document.title */}
           <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(0, 1)}>
+            <div>
+              <Label>{t('admin.siteHeaderTitle')}</Label>
+              <Input className="mt-1" value={settings.siteHeaderTitle ?? ''} onChange={(e) => set('siteHeaderTitle', e.target.value)} />
+            </div>
+            <div>
+              <Label>{t('admin.siteLogo')}</Label>
+              <Input className="mt-1" value={settings.siteLogo ?? ''} onChange={(e) => set('siteLogo', e.target.value)} placeholder="https://…" />
+            </div>
+          </div>
+          <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(0, 2)}>
             <div>
               <Label>{t('admin.siteTitle')}</Label>
               <Input className="mt-1" value={settings.siteTitle} onChange={(e) => set('siteTitle', e.target.value)} />
             </div>
             <div>
-              <Label>{t('admin.siteLogo')}</Label>
-              <Input className="mt-1" value={settings.siteLogo ?? ''} onChange={(e) => set('siteLogo', e.target.value)} />
+              <Label>{t('admin.siteFavicon')}</Label>
+              <Input className="mt-1" value={settings.siteFavicon ?? ''} onChange={(e) => set('siteFavicon', e.target.value)} placeholder="https://…" />
             </div>
-          </div>
-          <div className="reveal-row" style={innerDelay(0, 2)}>
-            <Label>{t('admin.siteFavicon')}</Label>
-            <Input className="mt-1" value={settings.siteFavicon ?? ''} onChange={(e) => set('siteFavicon', e.target.value)} />
           </div>
           {/* 卡内分区用分隔线（border-t pt-3，与测试邮箱一致），不再嵌边框盒 —— 卡中卡原则 */}
           <div className="reveal-row grid grid-cols-2 gap-3 border-t pt-3" style={innerDelay(0, 3)}>

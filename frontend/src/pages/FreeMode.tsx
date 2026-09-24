@@ -59,7 +59,7 @@ export default function FreeMode() {
         <Link to="/" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> {t('common.back')}
         </Link>
-        <Logo size={24} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} />
+        <Logo size={24} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? "Picumet"} siteHeaderTitle={site.siteHeaderTitle} />
       </header>
 
       <div className="flex flex-1 items-start justify-center px-4 py-10">

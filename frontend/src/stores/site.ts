@@ -4,6 +4,8 @@ import { apiFetch } from '@/lib/api';
 
 export interface SiteSettings {
   siteTitle?: string;
+  /** 左上角标题：undefined（后端未设置）= 跟随 siteTitle；'' = 只显示 Logo 不出文字 */
+  siteHeaderTitle?: string;
   siteLogo?: string;
   siteFavicon?: string;
 }
@@ -28,6 +30,7 @@ function applySite(s: Partial<SiteSettings>) {
 
 export const useSite = create<SiteState>((set) => ({
   siteTitle: undefined,
+  siteHeaderTitle: undefined,
   siteLogo: undefined,
   siteFavicon: undefined,
   loaded: false,

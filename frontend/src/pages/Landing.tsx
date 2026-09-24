@@ -25,7 +25,7 @@ export default function Landing() {
       {/* 顶部导航 */}
       <header className="glass-surface glass-blur sticky top-0 z-30 border-b shadow-sm transition-shadow duration-300">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-          <Logo size={26} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} />
+          <Logo size={26} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? "Picumet"} siteHeaderTitle={site.siteHeaderTitle} />
           <div className="flex items-center gap-2">
             <Link to="/docs" className="hidden text-sm text-muted-foreground hover:text-foreground sm:block">
               {t('landing.viewDocs')}
