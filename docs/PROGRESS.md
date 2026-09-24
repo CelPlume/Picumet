@@ -331,10 +331,21 @@ Terminology note: the **guest role** (a signed-in account with `role='guest'`) d
 | Table headers | Admin files/logs keep the committed two-part header (header table outside the scroll container on card glass) — the sticky frosted-header experiment was reverted after Chromium's `backdrop-filter` proved not to sample content scrolled under sticky elements; body horizontal scroll syncs the header via `translateX(-scrollLeft)`; name/path columns gained `minmax` floors so narrow containers overflow into horizontal scrolling instead of collapsing tracks onto neighboring columns; headers are `whitespace-nowrap` single-line (shares table header collapsed from two lines to one) | frontend |
 | Trends endpoint docs | `GET /api/admin/dashboard/trends` documented in both API references (metric/granularity/from/to, 2-year cap, 400-bucket ceiling) | docs |
 
+## Standby trunk, connector z-order, card-in-card and site identity split (2026-09-24)
+
+| Area | Implementation | Tests |
+| :--- | :--- | :--- |
+| Standby trunk connection | `StandbyMountNode` renders through `GraphRow` (amber hollow anchor + elbow, non-expandable) so standby placeholder rows connect to the bucket trunk; the bucket header stub covers standby-only lanes (`orphanStandbysOf`), and trunk continuation treats trailing standby rows as the last children | frontend |
+| Connector geometry | Elbow starts on the trunk centre with a vertical tangent (same width and axis, cubic ease-out instead of a quarter circle); trunk lines carry `zIndex: 1` so child curves hide beneath the trunk and only show where they bend out of its side — no seam, no overlay, no kink | frontend |
+| Legend removed | The primary/standby bucket legend under the dashboard mount card is gone (lane colours are self-explanatory); `primaryBucket` / `standbyBucket` keys removed from both language packs | frontend |
+| Card-in-card principle | Sections inside a card use dividers (`border-t pt-3`, `divide-y` + `pt-4 first:pt-0`) instead of nested bordered boxes: settings direct-link and rate-limit blocks, trend card charts; documented as a new section in both UI guides and the AGENTS summary | frontend |
+| Site identity split | New `site_header_title` setting (`undefined` = follow `siteTitle`, `''` = logo only) end to end: `SettingsSchema`, admin GET/PATCH, public settings; the settings form lays two rows of title-left / icon-right; `Logo` renders a fixed-height, aspect-ratio-width image (no fixed container width) with the title right after, wired in AppShell/Landing/FreeMode; zh/en labels | frontend |
+| Settings 400 fix | `smtpFromEmail` accepts `''` (clear the sender address) — a whole-form PATCH with an unconfigured sender email no longer fails `.email()` validation with 400 | `admin-settings.test.ts` (3 cases) |
+
 ## Current baseline
 
-- Backend: 40 test files / 359 Vitest tests pass; `tsc --noEmit` clean.
-- Frontend: 3 test files / 14 Vitest tests pass; coverage gate passes (91.8% statements / 72.7% branches / 83.3% functions / 93.2% lines); build succeeds; `tsc --noEmit` clean.
+- Backend: 45 test files / 447 Vitest tests pass; `tsc --noEmit` clean.
+- Frontend: 4 test files / 27 Vitest tests pass; coverage gate passes (91.8% statements / 72.7% branches / 83.3% functions / 93.2% lines); build succeeds; `tsc --noEmit` clean.
 - Language: zh + en.
 
 ## What's next
