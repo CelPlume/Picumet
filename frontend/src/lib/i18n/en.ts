@@ -525,8 +525,6 @@ export const enUS = {
       capacityUnset: 'Capacity not set',
       bucketCount: 'Storage Buckets',
       activeMounts: 'Active Mounts',
-      primaryBucket: 'Primary bucket',
-      standbyBucket: 'Standby bucket',
       noMounts: 'No active mounts',
       noMountsDesc: 'Mount relationships appear here when ready',
       bucketNoMounts: 'No mounts on this bucket',

@@ -526,8 +526,6 @@ export const zhCN = {
       capacityUnset: '容量未设置',
       bucketCount: '存储桶数',
       activeMounts: '活跃挂载点',
-      primaryBucket: '在用桶',
-      standbyBucket: '备用桶',
       noMounts: '暂无活跃挂载点',
       noMountsDesc: '挂载点就绪后在此展示关系图',
       bucketNoMounts: '该桶暂无挂载点',

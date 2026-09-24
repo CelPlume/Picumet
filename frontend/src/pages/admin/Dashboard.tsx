@@ -167,18 +167,6 @@ export default function AdminDashboard() {
                     <BucketMountGraph buckets={data?.buckets ?? []} />
                   </div>
                 )}
-                {(data?.buckets ?? []).length > 0 && (
-                  <div className="reveal-row mt-3 flex items-center gap-4 border-t pt-2 text-[11px] text-muted-foreground" style={innerDelay(5, 2)}>
-                    <span className="flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-primary" />
-                      {t('admin.dashboard.primaryBucket')}
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full border border-amber-500/60 bg-amber-500/20" />
-                      {t('admin.dashboard.standbyBucket')}
-                    </span>
-                  </div>
-                )}
               </CardContent>
             </Card>
           </div>
