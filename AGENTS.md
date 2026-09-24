@@ -484,6 +484,7 @@ wrangler deploy
 
 - **玻璃拟态**：表面样式只消费 `--glass-alpha` / `--glass-blur` 三档门控（off/default/frosted），禁止硬编码模糊或透明度。
 - **动画三档**：外观档位落 `<html data-motion>`（off/default/all），CSS 统一门停（`index.css`），组件零分支；入场动画用 `components/ui/reveal.tsx` 原语（`.reveal`/`.reveal-row` + `revealDelay`/`innerDelay` 两层节奏），卡片纵向间距 16px、双栏横向 24px；禁止逐项挂 JS 定时器。
+- **卡中卡原则**：卡片内部尽量不再用卡片——卡内分区一律分隔线（`border-t pt-3` / 容器 `divide-y`），禁止在 `Card` 内嵌边框盒/子卡；详细规则见 docs/UI_CN.md「卡中卡原则」。
 - **弹出菜单**：Dropdown / Select / 右键菜单必须 Portal 到 body 并复用 `DROPDOWN_MENU_CLASS` / `DROPDOWN_ITEM_CLASS`；禁止原生 `<select>`。
 - **破坏性操作**：必须走 `ConfirmDialog` + success/error toast；禁止原生 `confirm()`。
 - **文件项三态**：rest 玻璃表面、hover 压暗叠加、selected 主色调；文件页与分享页统一。
@@ -695,3 +696,4 @@ const canonicalPath = normalizePath(req.query.path);
 - 2026-08-19：文档整合至 README + docs/（中英双语、谷歌文档风格），移除 spec 类源文档引用，新增 docs/PROGRESS.md 记录进度
 - 2026-09-19：新增「前端 UI 规则」摘要并强制阅读 docs/UI_CN.md「设计系统规则」（按前端模块拆分、逐条对照现有代码核实）：玻璃三档门控、强调色运行时校准（移除深色提亮补偿）、弹出菜单 Portal 统一、Toast 复刻规范（堆叠/退场/路由清空）、ConfirmDialog 强制二次确认、文件项三态压暗法、拖拽多选整页触发面 + 页面禁选文本、滑块、文件树、骨架屏与滚动条约定
 - 2026-09-23：前端 UI 规则摘要补「动画三档 + reveal 入场原语」「数据表双表表头（sticky 磨砂方案废弃）」两条；docs/UI_CN.md / UI.md 新增「入场动画体系」一节并修正表头规范（双表结构、横滚同步、列宽下限、表头单行），docs/ARCHITECTURE(_CN).md 补权限判定链第 7/8 步（桶级/挂载级角色矩阵）、矩阵仓库与趋势聚合，docs/API(_CN).md 补 `GET /api/admin/dashboard/trends`，docs/PROGRESS.md 记 §33 动画与表头批次；常见坑点新增「表头磨砂（sticky + backdrop-filter 失效）」「入场动画覆盖业务透明度（keyframes 禁写显式 to{opacity:1}）」两条
+- 2026-09-24：泳道图备用占位行接入桶干线（琥珀分支 + 空心环区分真实挂载点行）；转角曲线改为「起点落干线正中、切线竖直、三次曲线缓出」且干线 z 层压在子曲线之上（拼接缝被干线盖住，无断口无生硬拐点），图例（在用桶/备用桶）随旧配色废弃删除；新增「卡中卡原则」——卡内分区一律分隔线（设置页直链挂载点/速率限制、仪表盘趋势卡三图已改），docs/UI_CN.md / UI.md 新增对应小节；系统设置站点标识拆分：新增 `site_header_title`（左上角标题，留空 = 顶栏只显示 Logo，独立于标签页标题），表单按标题在左、图标在右两行排布；Logo 组件高度固定、宽度随图片比例自适应（去固定容器宽，宽长 logo 不再被压成小方块）；修复 SMTP 发件地址为空时保存设置 400（`smtpFromEmail` 接受空串 = 清空，附 `admin-settings.test.ts` 回归）；docs/API(_CN).md 补 `siteHeaderTitle` 字段、`smtpFromEmail` 空串语义与公开设置示例，docs/PROGRESS.md 记本批次并刷新基线
