@@ -147,10 +147,11 @@ export function TrendCard() {
           </p>
         )}
 
-        {/* 三张图一行一个（各占一整行）：不做横向网格，无论面板多宽都竖排；间距与仪表盘统一 16px */}
-        <div className="grid gap-4">
+        {/* 三张图一行一个（各占一整行）：不做横向网格，无论面板多宽都竖排；
+            卡内分区用分隔线（divide-y）而非再嵌边框盒 —— 卡中卡原则，见 docs/UI_CN.md */}
+        <div className="divide-y">
           {TREND_METRICS.map((metric, i) => (
-            <div key={metric} className="reveal-row" style={innerDelay(6, i + 1)}>
+            <div key={metric} className="reveal-row pt-4 first:pt-0" style={innerDelay(6, i + 1)}>
               <MetricChart
                 metric={metric}
                 granularity={effectiveGranularity}
@@ -305,7 +306,7 @@ function MetricChart({
   })();
 
   return (
-    <div className="rounded-lg border p-3">
+    <div>
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1.5 truncate text-sm">
           <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />

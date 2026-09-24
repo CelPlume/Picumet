@@ -175,7 +175,8 @@ export default function AdminSettings() {
             <Label>{t('admin.siteFavicon')}</Label>
             <Input className="mt-1" value={settings.siteFavicon ?? ''} onChange={(e) => set('siteFavicon', e.target.value)} />
           </div>
-          <div className="reveal-row grid grid-cols-2 gap-3 rounded-md border p-3" style={innerDelay(0, 3)}>
+          {/* 卡内分区用分隔线（border-t pt-3，与测试邮箱一致），不再嵌边框盒 —— 卡中卡原则 */}
+          <div className="reveal-row grid grid-cols-2 gap-3 border-t pt-3" style={innerDelay(0, 3)}>
             <div>
               <Label>{t('admin.directPrefix')}</Label>
               <Select
@@ -229,7 +230,7 @@ export default function AdminSettings() {
               <Switch checked={settings.allowGuestAccess} onChange={(v) => set('allowGuestAccess', v)} />
             </div>
           </div>
-          <div className="reveal-row space-y-2 rounded-md border p-3" style={innerDelay(1, 2)}>
+          <div className="reveal-row space-y-2 border-t pt-3" style={innerDelay(1, 2)}>
             <p className="text-sm font-medium">{t('admin.rateLimit')}</p>
             <div className="flex items-center justify-between">
               <span className="text-sm">{t('admin.rateLimitEnabled')}</span>
