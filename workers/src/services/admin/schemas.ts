@@ -55,6 +55,8 @@ export const DirectPrefixSchema = prefixSchema(DIRECT_PREFIX_VALUES, '直链前�
 // 系统设置
 export const SettingsSchema = z.object({
   siteTitle: z.string().max(100).optional(),
+  // 左上角标题：undefined（未设置）= 跟随 siteTitle；'' = 只显示 Logo 不出文字
+  siteHeaderTitle: z.string().max(100).nullable().optional(),
   siteLogo: z.string().max(1000).nullable().optional(),
   siteFavicon: z.string().max(1000).nullable().optional(),
   allowRegistration: z.boolean().optional(),

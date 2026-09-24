@@ -23,6 +23,7 @@ publicRoutes.get('/settings', async (c) => {
   };
   return ok(c, {
     siteTitle: parse('site_title') ?? 'Picumet',
+    siteHeaderTitle: parse('site_header_title'),
     siteLogo: parse('site_logo'),
     siteFavicon: parse('site_favicon'),
     allowGuestAccess: parse('allow_guest_access') ?? false,

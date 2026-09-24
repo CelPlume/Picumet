@@ -494,6 +494,7 @@ adminRoutes.get('/settings', async (c) => {
   };
   return ok(c, {
     siteTitle: get('site_title') ?? 'Picumet',
+    siteHeaderTitle: get('site_header_title'),
     siteLogo: get('site_logo'),
     siteFavicon: get('site_favicon'),
     allowRegistration: get('allow_registration') ?? true,
@@ -532,6 +533,7 @@ adminRoutes.patch('/settings', async (c) => {
   }
   const map: Record<string, string> = {
     siteTitle: 'site_title',
+    siteHeaderTitle: 'site_header_title',
     siteLogo: 'site_logo',
     siteFavicon: 'site_favicon',
     allowRegistration: 'allow_registration',
