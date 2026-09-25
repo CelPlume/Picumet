@@ -26,6 +26,7 @@ import { gatewayRoutes } from './services/shares/gateway';
 import { publicRoutes } from './services/public/handlers';
 import { publicFsRoutes } from './services/public/fs';
 import { galleryRoutes } from './services/public/gallery';
+import { siteAssetRoutes } from './services/public/site-asset';
 import { pathPublicRoutes } from './services/files/path-serve';
 import { ensureSeed } from './seed';
 import { runScheduledTasks } from './services/cleanup';
@@ -41,6 +42,9 @@ app.use('*', securityHeaders);
 
 // 公共 API
 app.route('/api/public', publicRoutes);
+// 站点 Logo/Favicon 中转（边缘缓存，见 services/public/site-asset.ts）
+app.use('/api/public/site-asset/*', rateLimitMiddleware);
+app.route('/api/public', siteAssetRoutes);
 // 公开目录浏览（§C 游客）：可选认证（区分匿名/登录可见性）+ 限速
 const publicFsApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 publicFsApi.use('*', optionalAuthMiddleware, rateLimitMiddleware, downloadRateLimitMiddleware);
