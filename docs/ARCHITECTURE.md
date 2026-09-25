@@ -99,7 +99,7 @@ The layout avoids cyclic dependencies. `index.ts` only assembles routes and midd
 
 ## Service details
 
-Every service directory follows the same shape: `handlers.ts` for API handlers, `schemas.ts` for Zod validation, `types.ts` for TypeScript types, and optional domain files. All API input passes through Zod validation.
+Every service directory follows the same shape: `handlers.ts` for API handlers, `schemas.ts` for Zod validation, `types.ts` for TypeScript types, and optional domain files. All API input passes through Zod validation. Each service also ships a `README.md` describing its responsibilities and contracts (12 of them: admin, auth, files, free-mode, keys, permissions, public, shares, storage, uploads, users, webdav; `alist/`, `s3gw/` and the single-file `cleanup.ts` are still missing one).
 
 ### Auth service
 
@@ -155,6 +155,8 @@ Both matrices and the landing-bucket `providerId` are resolved and cached per re
 
 **Guest visibility (per file).** `file_metadata.guest_visibility` is `NULL` / `none` / `download` / `view`; when unset it follows the role default, so **guests can only download by default**. On evaluation `syntheticGuestRule` synthesizes the file's guest visibility into one allow rule and merges it into the candidate set: `download` allows downloads, `view` allows viewing (list/preview) plus downloads, and `none` allows nothing. The "Default user permissions" section of the file properties panel is its only configuration entry point.
 
+**Password protection priority (file-level over path-level).** `checkPasswordProtection(fileAccessPassword, matchingRule)` looks at the file's own `access_password` first — when present, the file password governs; only then does it consider the matching path rule's `requirePassword` + `passwordHash`; with neither, no password is required. The two levels never stack: when a file password exists, the path-level password is out of the picture.
+
 Two security boundaries matter:
 
 - `isPathWithinBoundary` compares path segments rather than using `startsWith`.
@@ -182,7 +184,7 @@ Copy links: `GET /api/files/:id/copy-links` returns `formats: { direct, html, ma
 
 Public path serving: `GET /*` streams an object by its virtual path. A public mount serves directly without login; a private mount requires an authenticated user with download permission; a password-protected file returns `403`.
 
-Move Saga: `moveWithSaga` validates permissions, conflicts, and cycles, creates a job, copies and verifies the object, switches the metadata atomically, and cleans up the source asynchronously. The main file API and WebDAV `MOVE` share this path.
+Move Saga: `moveWithSaga` validates permissions, conflicts, and cycles, creates a job, copies and verifies the object, switches the metadata atomically, and cleans up the source asynchronously. The main file API and WebDAV `MOVE` share this path. Job state machine: `operation_jobs.state_data.phase` walks `init → copying → verifying → committing`, with `progress` at 0 → 70 → 90 → 100; `GET /api/files/jobs/:jobId` exposes only `id` / `type` / `status` / `progress` / `errorMessage` / `createdAt` / `completedAt` — the phase stays server-side.
 
 Visibility and review: files carry three visibility tiers — `private` (owner and admins), `users` (any signed-in user can read and download), and `public` (enters the anonymous public gallery once review passes). Setting `public` requires the owner to hold the `can_publish` capability, otherwise the file enters the `pending` review queue; setting it on a folder cascades to all entries inside. File-domain permission checks consistently use the file's full path (`filePermPath`) so user-authored full-path rules match, while parent-folder rules still apply through pattern inheritance.
 
@@ -225,6 +227,8 @@ services/shares/
 **Password retrievability.** Creating a share writes the password to both `password_hash` (for verification) and `password_cipher` (an AES-GCM ciphertext with an `enc:` prefix, using the same encryption as stored provider credentials); **only the creator's own list endpoint** `GET /api/shares` decrypts and returns the plaintext `password` — public endpoints (details/directory/download/preview) never hand out the plaintext or the ciphertext. When the ciphertext is missing or decryption fails, the field disappears and the endpoint does not error. Password-protected shares also accept a direct `?password=<plaintext>` entry (equivalent to verified; a wrong password returns 401).
 
 Download tokens: `consumeDownloadToken` uses `DELETE ... RETURNING` for a single atomic consumption, so concurrent requests cannot reuse a one-time token.
+
+**Access-mode decision**: `decideAccessMode` has exactly two outcomes — `public_cdn` when the provider can produce a public direct link **and the file has no password**, `private_gateway` (Workers proxy) in every other case. Call sites: copy links (`files/handlers.ts`), public path serving (`files/path-serve.ts`), and AList direct links (`alist/handlers.ts`).
 
 **Dependencies**: `permissions/principal.ts`, `storage/providers.ts`, the share, file, mount, provider, and log repositories, and `utils/crypto.ts`.
 
@@ -383,7 +387,7 @@ The gallery returns only files with `visibility=public` and review status `appro
 
 ### Cleanup tasks
 
-**Responsibilities**: expired quota release, move-source cleanup, expired share marking, and quota reconciliation, run by a scheduled task.
+**Responsibilities**: expired quota release, move-source cleanup, expired share marking, and quota reconciliation, run by a scheduled task (`crons = ["*/10 * * * *"]` — every 10 minutes).
 
 - `releaseExpiredReservations` releases quota reservations held by expired upload sessions.
 - `cleanupOldObjects` deletes source objects left by moves (`source_cleanup_pending` flag).
@@ -441,7 +445,7 @@ D1 stores the following core tables:
 | `transfer_slots` | Transfer concurrency slots (in-flight request counts, 30-minute leak threshold). |
 | `role_defaults` | Role defaults: default path/quota/status/capability bits/alias plus the **role default permissions** (`permissions`; built-in admin/user with all six, guest with `download` only). |
 | `download_tokens` | One-time download tokens consumed atomically. |
-| `access_logs` | Audit log of upload, download, delete, share, and verify actions. |
+| `access_logs` | Audit log of upload, download, delete, share, and verify actions. Deliberately has no `file_id` foreign key — it stores a path snapshot (`path`) so logs still land after the file is deleted, untouched by cascades. |
 | `system_settings` | Key-value site settings. |
 | `announcements` | Site announcements and per-user dismissal records, plus the display-policy columns (§27): `display_mode` (`always`/`daily`/`interval`/`until`/`duration`/`once`), `interval_seconds`, and `kind` (`banner`/`toast`). |
 | `reconciliation_reports` | Reports from object-to-database reconciliation. |
@@ -450,6 +454,18 @@ D1 stores the following core tables:
 Migrations live in `workers/migrations/`:
 
 - `0001_initial.sql` is the single migration file: the base schema plus dated sections appended over time (multipart parts and download tokens, mount isolation and session version, SMTP/OTP, provider type unification, the user model, storage pool §E, content-hash addressing §F, announcement display policies §27, and so on). Earlier migrations merged into this file; new changes append a section and never rewrite existing ones, so existing databases only re-apply the missing sections.
+
+### Key fields
+
+`workers/migrations/0001_initial.sql` (with its dated sections) is the source of truth for columns; this table lists only the fields that come up during debugging, to avoid duplicating the whole DDL into a second source:
+
+| Table | Key fields |
+| :--- | :--- |
+| `users` | `role` (admin/user/guest), `status`, `default_path`, `permissions` (NULL = follow the role), `capabilities`, `session_version` (session revocation), `email_verified`. |
+| `file_metadata` | `(mount_id, object_key)` unique, `physical_key` + `blob_hash` (§F), `path`, `owner_id`, `visibility` + `review_status`, `guest_visibility`, `banned`, `access_password`. |
+| `api_keys` | SHA-256 token hash only (the raw secret is never stored), `secret_cipher` (the S3 gateway needs a reversible secret for SigV4, AES-GCM), `permissions` / `protocols` / `upload_path` / `allowed_ips` / `status`. |
+| `mounts` | `mount_path`, `provider_id`, `pool_strategy` (§29), `max_storage`, `capacity_bytes` (display capacity), `upload_mode` (§28). |
+| `mount_providers` | Pool members: `weight`, `capacity_bytes` (§30 hard cap), `quota_reserved` (in-flight reservations), `sort_order` (§29 fill-in-order), `standby` (§31 explicit standby flag). |
 
 ## Glossary
 
@@ -468,6 +484,8 @@ Migrations live in `workers/migrations/`:
 | Idempotency Key | A client-generated identifier that prevents duplicate operations. |
 | Download Token | A short-lived token that authorizes one download. |
 | Share Link | A short link that exposes a file to public or password-protected access. |
+| Access Mode | Decides where the file bytes come from: `public_cdn` (a provider public direct link with no file password) or `private_gateway` (the Workers proxy). |
+| Operation Job | The execution record of an async move/copy/delete job (the `operation_jobs` table): `type` / `status` / `progress`, an idempotency key, and server-side phases. |
 
 ## Provider capability matrix
 
@@ -512,6 +530,7 @@ The security model applies defense in depth across the request lifecycle:
 - **CSRF**: write operations require an `X-CSRF-Token` verified against KV; API-key authentication bypasses this check.
 - **Rate limiting**: KV fixed-window counters with fail-closed behavior on authentication and sensitive write endpoints.
 - **Path traversal**: `normalizePath` plus `isPathWithinBoundary` compare path segments.
+- **Upload file-type blocklist**: `validateFileType` rejects 16 executable/script extensions (`.exe` `.bat` `.cmd` `.sh` `.php` `.asp` `.jsp` `.aspx` `.dll` `.so` `.dylib` `.msi` `.scr` `.ps1` `.vbs` `.jar`) and 8 dangerous MIME types (including `text/html` / `application/xhtml+xml`); the enforcement points are the unified write path `upsertFileObject` and free mode, so the main API, compat upload, WebDAV, the S3 gateway, and AList are all covered. PathErrors normalize to `400 INVALID_PATH` in the global error handler (message like "禁止上传 .exe 文件").
 - **SSRF**: `validateEndpoint` enforces scheme and port allowlists and blocks private IPv4/IPv6 ranges; deployment should pair it with an egress allowlist.
 - **Object poisoning**: completing an upload forces a HEAD check that verifies ETag and size.
 - **XSS**: strict file-name validation, React auto-escaping, and pre-escaped highlighting for code previews.

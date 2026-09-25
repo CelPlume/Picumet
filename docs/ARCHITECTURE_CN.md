@@ -99,7 +99,7 @@ flowchart LR
 
 ## 服务明细
 
-每个服务目录结构一致：`handlers.ts` 放 API handlers，`schemas.ts` 放 Zod 校验，`types.ts` 放 TypeScript 类型，领域逻辑视需要单独成文件。所有 API 入参都经过 Zod 校验。
+每个服务目录结构一致：`handlers.ts` 放 API handlers，`schemas.ts` 放 Zod 校验，`types.ts` 放 TypeScript 类型，领域逻辑视需要单独成文件。所有 API 入参都经过 Zod 校验。每个服务还带一份 `README.md` 记录职责与契约（admin、auth、files、free-mode、keys、permissions、public、shares、storage、uploads、users、webdav 共 12 个；`alist/`、`s3gw/` 与单文件 `cleanup.ts` 尚未补）。
 
 ### 认证服务
 
@@ -155,6 +155,8 @@ services/permissions/
 
 **游客可见性（文件级）**：`file_metadata.guest_visibility` 为 `NULL` / `none` / `download` / `view`，未设置时跟随角色默认——即**游客默认只能下载**。判定时由 `syntheticGuestRule` 把文件的游客可见性合成一条 allow 规则并入候选集：`download` 放行下载，`view` 放行查看（列表/预览）与下载，`none` 不放行任何操作。文件属性面板的「用户权限默认设置」是它的唯一配置入口。
 
+**密码保护优先级（文件级 > 路径级）**：`checkPasswordProtection(fileAccessPassword, matchingRule)` 先看文件自身的 `access_password`——存在即按文件密码校验；其次才看命中路径规则的 `requirePassword + passwordHash`；两者都没有则不要求密码。两级不会叠加：文件密码存在时路径级密码不参与。
+
 两个关键安全边界：
 
 - `isPathWithinBoundary` 按路径段比较，不用 `startsWith`。
@@ -182,7 +184,7 @@ services/files/
 
 公开路径直服：`GET /*` 按虚拟路径流式返回对象。公开挂载无需登录直接可读；私有挂载需要已登录且有下载权限的用户；带密码的文件直接返回 `403`。
 
-移动 Saga：`moveWithSaga` 先校验权限、冲突和循环，建任务，复制并校验对象，再原子切换元数据，最后异步清理源对象。主文件 API 和 WebDAV 的 `MOVE` 走同一条路径。
+移动 Saga：`moveWithSaga` 先校验权限、冲突和循环，建任务，复制并校验对象，再原子切换元数据，最后异步清理源对象。主文件 API 和 WebDAV 的 `MOVE` 走同一条路径。任务状态机：`operation_jobs.state_data.phase` 依次为 `init → copying → verifying → committing`，`progress` 对应 0 → 70 → 90 → 100；`GET /api/files/jobs/:jobId` 对外只返回 `id` / `type` / `status` / `progress` / `errorMessage` / `createdAt` / `completedAt`，phase 属服务端内部状态。
 
 可见性与审核：文件有三级可见性——`private`（属主和管理员）、`users`（全站登录用户可读/下载）、`public`（审核通过后进匿名公开空间）。设为 `public` 需要属主具备 `can_publish` 能力位，否则进入 `pending` 审核队列；对文件夹设置会级联到其下所有条目。文件域的权限检查统一用文件全路径（`filePermPath`），保证用户按全路径创建的规则能命中；父目录规则仍通过模式匹配继承。
 
@@ -225,6 +227,8 @@ services/shares/
 **密码可回看**：创建分享时密码同时写 `password_hash`（校验用）与 `password_cipher`（AES-GCM 密文，`enc:` 前缀，与存储凭据同一套加密）；**只有创建者自己的列表接口** `GET /api/shares` 会解密返回 `password` 明文，公开接口（详情/目录/下载/预览）一律不下发明文或密文。密文缺失或解密失败时该字段省略，接口不报错。带密码的分享支持 `?password=<明文>` 直进（等价于已验证，错误 401）。
 
 下载令牌：`consumeDownloadToken` 用 `DELETE ... RETURNING` 做单次原子消费，一次性令牌在并发下也无法重复使用。
+
+**访问模式判定**：`decideAccessMode` 只有两类结果——provider 能给出公网直链**且文件无密码**时返回 `public_cdn`，其余一律 `private_gateway`（Workers 网关代理）。调用点：复制链接（`files/handlers.ts`）、公开路径直服（`files/path-serve.ts`）、AList 直链（`alist/handlers.ts`）。
 
 **依赖**：`permissions/principal.ts`、`storage/providers.ts`、分享/文件/挂载/提供商/日志仓库、`utils/crypto.ts`。
 
@@ -383,7 +387,7 @@ services/public/
 
 ### 定时清理任务
 
-**职责**：过期配额释放、移动源对象清理、过期分享标记、配额对账，由定时任务统一触发。
+**职责**：过期配额释放、移动源对象清理、过期分享标记、配额对账，由定时任务统一触发（`crons = ["*/10 * * * *"]`，每 10 分钟一轮）。
 
 - `releaseExpiredReservations` 释放过期上传会话占用的配额预留。
 - `cleanupOldObjects` 清理移动后遗留的源对象（`source_cleanup_pending` 标记）。
@@ -441,7 +445,7 @@ D1 里存以下核心表：
 | `transfer_slots` | 传输并发槽位（在途请求计数，30 分钟泄漏阈值）。 |
 | `role_defaults` | 角色默认设置：默认路径/配额/状态/能力位/别名，以及**角色默认权限**（`permissions`：read/write/update/delete/download 五项，分享由能力位 `can_share` 控制；内置 admin/user = 五项 + `can_share`、guest = 仅 download）。 |
 | `download_tokens` | 一次性下载令牌，原子消费。 |
-| `access_logs` | 上传、下载、删除、分享、密码验证等操作日志。 |
+| `access_logs` | 上传、下载、删除、分享、密码验证等操作日志。刻意不设 `file_id` 外键，只存路径快照（`path`），保证删除文件后日志仍能落库、不被级联清掉。 |
 | `system_settings` | 键值形式的站点设置。 |
 | `announcements` | 站点公告、每用户关闭记录，外加显示策略列（§27）：`display_mode`（`always`/`daily`/`interval`/`until`/`duration`/`once`）、`interval_seconds` 与 `kind`（`banner`/`toast`）。 |
 | `reconciliation_reports` | 对象与数据库对账产生的报告。 |
@@ -450,6 +454,18 @@ D1 里存以下核心表：
 迁移脚本在 `workers/migrations/` 下：
 
 - `0001_initial.sql`：单文件迁移。包含基础表结构，以及按时间顺序追加的增量段（分片与下载令牌、挂载隔离与会话版本、SMTP/OTP、提供商类型收敛、用户模型、存储池 §E、内容哈希寻址 §F、公告显示时长 §27 等）。历史迁移已合并进该文件；新增变更以新段追加，既有的段不再改写（存量库按缺失段补跑）。
+
+### 关键字段
+
+字段的事实来源是 `workers/migrations/0001_initial.sql`（含按时间追加的增量段），这里只列排查时的高频字段，避免复述整份 DDL 形成双源：
+
+| 表 | 关键字段 |
+| :--- | :--- |
+| `users` | `role`（admin/user/guest）、`status`、`default_path`、`permissions`（NULL = 跟随角色）、`capabilities`、`session_version`（会话撤销）、`email_verified`。 |
+| `file_metadata` | `(mount_id, object_key)` 唯一、`physical_key` + `blob_hash`（§F）、`path`、`owner_id`、`visibility` + `review_status`、`guest_visibility`、`banned`、`access_password`。 |
+| `api_keys` | 令牌只存 SHA-256 哈希（原文不落库）、`secret_cipher`（S3 网关 SigV4 需要可逆 secret，AES-GCM）、`permissions` / `protocols` / `upload_path` / `allowed_ips` / `status`。 |
+| `mounts` | `mount_path`、`provider_id`、`pool_strategy`（§29）、`max_storage`、`capacity_bytes`（展示容量）、`upload_mode`（§28）。 |
+| `mount_providers` | 池成员：`weight`、`capacity_bytes`（§30 硬上限）、`quota_reserved`（在途预留）、`sort_order`（§29 顺序填满）、`standby`（§31 显式备用位）。 |
 
 ## 术语表
 
@@ -468,6 +484,8 @@ D1 里存以下核心表：
 | Idempotency Key（幂等键） | 客户端生成的标识，防止重复操作。 |
 | Download Token（下载令牌） | 短期有效的授权令牌，一次下载一个。 |
 | Share Link（分享链接） | 让文件通过公开或密码访问的短链接。 |
+| Access Mode（访问模式） | 决定文件字节从哪里出：`public_cdn`（provider 公网直链且文件无密码）或 `private_gateway`（Workers 网关代理）。 |
+| Operation Job（操作任务） | 异步移动/复制/删除任务的执行记录（`operation_jobs` 表）：`type` / `status` / `progress` / 幂等键与服务端内部阶段。 |
 
 ## 存储提供商能力矩阵
 
@@ -512,6 +530,7 @@ D1 里存以下核心表：
 - **CSRF**：写操作要求 `X-CSRF-Token`，在 KV 里校验；API 密钥认证可绕过。
 - **限流**：KV 固定窗口计数，认证和敏感写接口 fail-closed。
 - **路径遍历**：`normalizePath` 加 `isPathWithinBoundary`，按路径段判断。
+- **上传文件类型黑名单**：`validateFileType` 拦截 16 种可执行/脚本扩展名（`.exe` `.bat` `.cmd` `.sh` `.php` `.asp` `.jsp` `.aspx` `.dll` `.so` `.dylib` `.msi` `.scr` `.ps1` `.vbs` `.jar`）与 8 类危险 MIME（含 `text/html` / `application/xhtml+xml`）；强制点在统一写入路径 `upsertFileObject` 与自由模式，即主 API / 兼容上传 / WebDAV / S3 网关 / AList 全部生效。PathError 由全局错误处理归一为 `400 INVALID_PATH`（消息如「禁止上传 .exe 文件」）。
 - **SSRF**：`validateEndpoint` 做 scheme、端口白名单，并拦截私网 IPv4/IPv6 段；部署时建议配合 egress 白名单。
 - **对象投毒**：完成上传时强制 HEAD 校验，核对 ETag 和大小。
 - **XSS**：文件名严格校验、React 自动转义、代码预览用 highlight.js 预转义。
