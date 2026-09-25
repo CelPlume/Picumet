@@ -1,402 +1,214 @@
-# Picumet implementation progress
+# Picumet 实施进度
 
-This document tracks the product scope and implementation status. The requirements that were previously tracked in a standalone matrix now live here, marked with their current progress.
+本文档记录产品范围与实施状态。已完成并写入架构、API、UI、开发指南的功能不再在此重复；这里保留状态跟踪、决策记录、即将与将来的规划。
 
-## Status legend
+## 状态标记
 
-| Mark | Meaning |
+| 标记 | 含义 |
 | :--- | :--- |
-| Done | Implemented, tested, and verified. |
-| In progress | Implemented; verification or polish is pending. |
-| Planned | Scoped but not yet built. |
-| Rejected | Explicitly out of scope. |
+| Done | 已实现、已测试、已验证。 |
+| In progress | 已实现；验证或打磨未完成。 |
+| Planned | 已列入范围但尚未构建。 |
+| Rejected | 明确不在范围内。 |
 
-## Roadmap
+## 路线图
 
-| Phase | Scope | Status |
+| 阶段 | 范围 | 状态 |
 | :--- | :--- | :--- |
-| Phase 1 | Core platform: auth, files, quotas, roles, storage sources, system settings | Done |
-| Phase 2 | Uploads (multipart/resume), previews, shares, admin panels, API keys, WebDAV, free mode | Done |
-| Phase 3 | AWS S3, appearance theming, admin logins, announcement dismissal | Mostly done; Oracle provider pending |
-| Phase 4 | Path-variable DSL (`{year}/{month}`), analytics | Planned |
-| Future | High-performance Go backend: same-path multi-storage replication/DR | Planned |
+| Phase 1 | 核心平台：认证、文件、配额、角色、存储源、系统设置 | Done |
+| Phase 2 | 上传（分片/断点续传）、预览、分享、管理面板、API 密钥、WebDAV、自由模式 | Done |
+| Phase 3 | AWS S3、外观主题、管理员登录、公告关闭 | 基本完成；Oracle provider 待实现 |
+| Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录 | Planned |
+| 未来 | monorepo 双后端：Workers 版 + Go 高性能版（跨桶复制/DR、无配额长任务） | Planned |
 
-## Feature areas
+## 功能区域
 
-| Area | Status | Notes |
+| 区域 | 状态 | 说明 |
 | :--- | :--- | :--- |
-| Deployment: Cloudflare Pages + Workers | Done | Vercel and EdgeOne rejected. |
-| Storage providers | Done | R2 and S3 implemented; Oracle pending; 9 other providers rejected. |
-| File browse (card/list/tree views) | Done | `GET /api/files` + `GET /api/files/tree`, sort, search, pagination, flat tree view. |
-| Upload (single file) | Done | Session-based with quota reservation. |
-| Upload (multipart / large files) | Done | Resume + server-side part records. |
-| Hard delete | Done | Metadata-first transaction, async object cleanup. |
-| Rename | Done | `PUT /api/files/:id`. |
-| Move (Saga) | Done | Source-delete + target-write permission checks. |
-| Previews: image / video / audio / code | Done | Image zoom/rotate; video canvas thumbnails; highlight.js with pre-escaping. |
-| Selection and multi-select | Done | Grid + list, range selection in list view. |
-| Drag sort and drag move | In progress | Drag move works; verification notes pending. |
-| View memory per folder | Done | Stored in `localStorage`. |
-| Properties panel | Done | Right-side drawer at every size (no grid reflow); title/color/cover/emoji editing. |
-| Mount view + bucket lane graph | Done | Admin all-files mount view and dashboard lane graph from `/api/admin/mount-tree`. |
-| Announcement display policies | Done | §27 `display_mode`/`interval_seconds`/`kind`; banner policies + toast popups. |
-| Copy links | Done | Multi-file dialog; direct/HTML/Markdown/BBCode; direct public path or signed URL. |
-| Shares | Done | Password, expiry, download limits, QR code. |
-| Three-tier file visibility | Done | `private` / `users` / `public`; `public` requires `can_publish` plus review approval; folder-level cascade. |
-| User-authored access rules | Done | Single-file allow/deny for other users (`read`/`download`); requires `can_grant`; origin-aware sorting admin > user > system. |
-| Capability bits | Done | `can_publish` / `can_share` / `can_grant` stored on users, editable by admins, enforced server-side. |
-| Public gallery | Done | Anonymous list / download link / password verify for approved public files; owner and admin download password-exempt. |
-| Appearance | Done | Light/dark/system, accent color (HSL + YIQ foreground), blur, background image/URL, folder preview switch. Solid-color background removed. |
-| i18n (zh / en) | Done | |
-| Responsive layout | Done | Desktop/tablet/mobile; floating action bar tested at 350-1080 px. |
-| Users | Done | Register, login, email verify, guest role, free mode. |
-| Permissions and quotas | Done | 3 roles, path ACLs, file/path passwords, storage and file-count quotas. Download speed and monthly traffic quotas rejected. |
-| Storage configuration | Done | Mounts, CDN domain, path prefix, sort, signing; content-hash addressing (§F) dedupes equal content; storage pool (§E) spreads across providers. Replication/DR and path DSL pending. |
-| Storage core hardening | Done | Ranged reads (206/416 via unified `serveObject`), `ProviderError` classification, batched delete (≤1000/batch with per-object fallback), delimiter listing, `UploadPartCopy` for >5 GB moves. |
-| Provider unification | Done | Type derived from `endpoint` (`r2` / `s3`; `oracle` folded into `s3`); migration `0005`; `upload_domain` removed. |
-| Admin | Done | Dashboard, users, storage, mounts, rules, shares, files, logs. Analytics pending. |
-| System settings | Done | Site info, registration/guest toggles, Turnstile. |
-| API keys + compatible protocols | Done | `pk_x.sk_y` opaque tokens, WebDAV, PicGo/PicList. S3/OSS protocol gateway rejected. |
-| Security | Done | CSP, CSRF, rate limiting, path traversal, SSRF, SQL parameterization, atomic download tokens. Hot-file detection and forced signed URLs planned. |
-| Image editor link (Squoosh) | Done | |
-| Video/audio players | Done | |
+| 部署：Cloudflare Pages + Workers | Done | Vercel 与 EdgeOne 已拒绝。 |
+| 存储提供商 | Done | R2 与 S3 已实现；Oracle 待做；其余 9 家已拒绝。 |
+| 文件浏览（卡片/列表/树视图） | Done | `GET /api/files` + `GET /api/files/tree`，排序、搜索、分页、扁平树视图。 |
+| 上传（单文件） | Done | 会话制并原子预留配额。 |
+| 上传（分片 / 大文件） | Done | 断点续传 + 服务端分片记录。 |
+| 硬删除 | Done | 元数据优先事务，对象异步清理。 |
+| 重命名 | Done | `PUT /api/files/:id`。 |
+| 移动（Saga） | Done | 源删除 + 目标写入权限校验。 |
+| 预览：图片 / 视频 / 音频 / 代码 | Done | 图片缩放/旋转；视频 canvas 缩略图；highlight.js 预转义。 |
+| 选择与多选 | Done | 网格 + 列表，列表视图支持范围选择。 |
+| 拖拽排序与拖拽移动 | In progress | 拖拽移动可用；验证记录待补。 |
+| 每文件夹视图记忆 | Done | 存在 `localStorage`。 |
+| 属性面板 | Done | 任意尺寸均为右侧 drawer（网格不重排）；标题/颜色/封面/emoji 编辑。 |
+| 挂载点视图 + 桶泳道图 | Done | 管理端全部文件挂载点视图与仪表盘泳道图，数据来自 `/api/admin/mount-tree`。 |
+| 公告显示策略 | Done | §27 `display_mode`/`interval_seconds`/`kind`；banner 策略 + toast 弹窗。 |
+| 复制链接 | Done | 多文件 dialog；直链/HTML/Markdown/BBCode；公开直链或签名 URL。 |
+| 分享 | Done | 密码、过期时间、下载次数限制、二维码。 |
+| 三级文件可见性 | Done | `private` / `users` / `public`；`public` 需要 `can_publish` 加审核批准；文件夹级联。 |
+| 用户自建访问规则 | Done | 针对单个文件为其他用户授予/拒绝 `read`/`download`；需要 `can_grant`；来源排序 admin > user > system。 |
+| 能力位 | Done | `can_publish` / `can_share` / `can_grant` 存在 users 上，管理员可编辑，服务端强制。 |
+| 公开空间 gallery | Done | 匿名列表 / 下载链接 / 密码验证，仅限过审公开文件；属主与管理员下载免密。 |
+| 外观 | Done | 浅色/深色/跟随系统、强调色（HSL + YIQ 前景）、模糊、背景图/URL、文件夹预览开关。纯色背景已移除。 |
+| i18n（中 / 英） | Done | |
+| 响应式布局 | Done | 桌面/平板/手机；浮动操作栏在 350-1080 px 验证过。 |
+| 用户 | Done | 注册、登录、邮箱验证、游客角色、自由模式。 |
+| 权限与配额 | Done | 3 角色、路径 ACL、文件/路径密码、存储与文件数配额。下载限速与月度流量配额已拒绝。 |
+| 存储配置 | Done | 挂载点、CDN 域名、路径前缀、排序、签名；内容哈希寻址（§F）去重同内容；存储池（§E）跨 provider 摊铺。复制/DR 与路径 DSL 待做。 |
+| 存储核心加固 | Done | Range 读取（经统一 `serveObject` 的 206/416）、`ProviderError` 分类、批量删除（每批 ≤1000 + 逐对象回退）、Delimiter 列目录、>5 GB 移动用 `UploadPartCopy`。 |
+| Provider 统一 | Done | 类型由 `endpoint` 推导（`r2` / `s3`；`oracle` 并入 `s3`）；迁移 `0005`；`upload_domain` 移除。 |
+| 管理端 | Done | 仪表盘、用户、存储、挂载点、规则、分享、文件、日志。访问统计见「即将规划」。 |
+| 系统设置 | Done | 站点信息、注册/游客开关、Turnstile。 |
+| API 密钥 + 兼容协议 | Done | `pk_x.sk_y` 不透明令牌、WebDAV、PicGo/PicList、Lsky Pro V2、AList/OpenList shim、S3 兼容网关（对外中转面）。 |
+| 安全 | Done | CSP、CSRF、限流、路径遍历、SSRF、SQL 参数化、原子下载令牌。热文件检测与强制签名 URL planned。 |
+| 图片编辑器链接（Squoosh） | Done | |
+| 视频/音频播放器 | Done | |
 
-## Rejected decisions
+## 已拒绝的决策
 
-| Decision | Reason |
+| 决策 | 原因 |
 | :--- | :--- |
-| Recycle bin | Removed to avoid soft-delete inconsistency between object storage and database. |
-| Download speed / monthly traffic quotas | Storage size and file-count quotas cover the need. |
-| S3 / OSS protocol gateway | The product offers only WebDAV and the custom upload API. |
-| 9 additional providers (B2, IDrive, GCS, COS, OSS, OBS, Scaleway, Filebase, Kodo) | Not in scope. |
-| Client-side encryption | Out of scope; sensitive-path links require signed URLs instead. |
-| Vercel / EdgeOne hosting | Cloudflare only. |
+| 回收站 | 移除以避免对象存储与数据库之间的软删除不一致。 |
+| 下载限速 / 月度流量配额 | 存储与文件数配额已覆盖需求。 |
+| 把 Picumet 用作 S3 存储后端（入站存储面） | 只做对外中转网关（S3 兼容网关已实现，见架构文档与 API 参考的「S3 兼容网关」）；不提供对象存储入站面。 |
+| 其余 9 家提供商（B2、IDrive、GCS、COS、OSS、OBS、Scaleway、Filebase、Kodo） | 不在范围内。 |
+| 客户端加密 | 不做；敏感路径链接改用签名 URL。 |
+| Vercel / EdgeOne 托管 | 只用 Cloudflare。 |
+| 登录失败退避与账户锁定 | 认证类端点的 IP 限流（生产 fail-closed）与 Turnstile 已覆盖；不做账户锁定。 |
+| Refresh token 双令牌 | 单 JWT（7 天 HttpOnly Cookie）+ `session_version` 撤销已覆盖同一需求。 |
+| 找回密码按邮箱限流（每小时 3 次） | 复用通用速率限制；重置令牌 15 分钟有效且一次性消费。 |
+| 文件版本控制 | 早期产品评审明确不做；版本历史交由对象存储侧能力承担。 |
+| URL 元信息抓取 | 早期产品评审明确不做。 |
+| 自定义文件别名 / 短链 | 早期产品评审明确不做；现有短链是分享生成的 `shortCode` 与 `/i/:id` 图床短链，非用户自定义别名。 |
 
-## Security audit closure
+## 安全审计闭环
 
-Each fix now has a regression test that locks it. See `workers/tests/security-regressions.test.ts`, `workers/tests/s3-provider.test.ts`, `frontend/src/lib/escape.test.ts`, and `frontend/src/pages/Register.test.tsx`.
+每个修复都有回归测试锁住。见 `workers/tests/security-regressions.test.ts`、`workers/tests/s3-provider.test.ts`、`frontend/src/lib/escape.test.ts` 与 `frontend/src/pages/Register.test.tsx`。
 
-| Risk | Fix | Evidence |
+| 风险 | 修复 | 证据 |
 | :--- | :--- | :--- |
-| Free-mode credentials stored in plaintext in KV (high) | AES-256-GCM encryption with short TTL, random `sid` cookie, IP binding | Encrypt/decrypt/tamper cases |
-| API-key IP allowlist not enforced (high) | `apiKeyAuthMiddleware` returns `403` for non-allowlisted IPs | In/out allowlist cases |
-| Multipart parts always empty, no resume contract (high) | Server-side `parts_completed`, `GET /parts` resume contract, skip pre-HEAD merge | Resume flow: gap → reject → complete |
-| `/register` missing, forgot-password placeholder (high) | Standalone `/register` and `/reset-password` pages calling the real APIs | Register submit/error cases |
-| Download token consumed non-atomically (medium) | KV get→delete replaced with atomic `DELETE ... RETURNING` | Single-consumption and duplicate-401 case |
-| Rate limiting fail-open (medium) | Auth/sensitive write endpoints fail closed (`503`) on KV failure | KV failure in production case |
-| S3/Oracle provider tests + capability matrix (medium) | Presigned multipart URL unit tests (local signing); Oracle pending | S3 provider cases |
-| highlight.js escaping + frontend regression (medium) | `escapeHtml` pre-escaping as defense in depth | Escape cases |
-| CI/CD + coverage gate (medium) | `.github/workflows/ci.yml` (bun, CI only), frontend coverage gate, route lazy loading | Coverage lines 100% |
+| 自由模式凭据明文存 KV（高危） | AES-256-GCM 加密 + 短 TTL、随机 `sid` Cookie、IP 绑定 | 加密/解密/篡改用例 |
+| API 密钥 IP 白名单未强制（高危） | `apiKeyAuthMiddleware` 对非白名单 IP 返回 `403` | 白名单内/外用例 |
+| 分片恒为空、无断点续传契约（高危） | 服务端 `parts_completed`、`GET /parts` 续传契约、跳过合并前 HEAD | 续传流程：缺口 → 拒绝 → 完成 |
+| `/register` 缺失、忘记密码为占位（高危） | 独立 `/register` 与 `/reset-password` 页面调用真实 API | 注册提交/失败用例 |
+| 下载令牌非原子消费（中危） | KV 的 get→delete 换成原子 `DELETE ... RETURNING` | 单次消费与重复 401 用例 |
+| 限流 fail-open（中危） | 认证/敏感写端点在 KV 故障时 fail-closed（`503`） | 生产环境 KV 故障用例 |
+| S3/Oracle provider 测试 + 能力矩阵（中危） | 预签名分片 URL 单元测试（本地签名）；Oracle 待做 | S3 provider 用例 |
+| highlight.js 转义 + 前端回归（中危） | `escapeHtml` 预转义作纵深防御 | 转义用例 |
+| CI/CD + 覆盖率门禁（中危） | `.github/workflows/ci.yml`（bun，仅 CI）、前端覆盖率门禁、路由懒加载 | 覆盖率行 100% |
 
-## Gateway access implementation (2026-09-20, docs/PICLIST_COMPAT_CN.md)
+## 当前基线
 
-Implements the outward relay surface identified by the PicList compatibility report. Scope decision: only the outward-facing relay; the storage-provider backend ("inbound") remains as-is.
+- 后端：46 个测试文件 / 452 个 Vitest 用例通过；`tsc --noEmit` 干净。
+- 前端：4 个测试文件 / 27 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.3% functions / 93.3% lines）；构建成功；`tsc --noEmit` 干净。
+- 语言：中文 + 英文。
 
-| Report item | Implementation | Tests |
+## 即将规划
+
+近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面两项新规划。
+
+### Umami 访问统计（审计来源二选一）
+
+接入 Umami（自托管或 Umami Cloud）统计站点访问与下载行为；访问统计来源在 D1 审计与 Umami 之间二选一。
+
+- 管理端系统设置新增 Umami 配置：脚本地址、`data-website-id`、启用开关；前端按配置注入 tracker（`<script defer src=… data-website-id=…>`），脚本可配 `data-host-url` 上报地址与 `data-domains` 域名白名单。
+- SPA 开箱即用：tracker 自动监听 History API（`pushState`/`replaceState`/`popstate`）记录路由切换 pageview，无需手动打点页面浏览，也避免双重计数。
+- 事件上报：文件下载、复制链接等交互用 `umami.track(event, data)` 或 `data-umami-event` 属性上报；事件名上限 50 字符。下载按钮携带文件名/大小等事件数据，使文件下载链接的访问进入统计。
+- 审计来源二选一：站点级设置选择 D1 `access_logs`（网关侧逐次日志，仅覆盖 `private_gateway` 流量）或 Umami（前端行为统计）；两者互斥，避免双写双计。
+- 边界：`public_cdn` 直链的外部热链访问（如外链图片）不经过页面，JS 无法统计——这类流量仍依赖网关审计或未来的热文件检测。
+- CSP 联动：启用后 CSP 的 `script-src` / `connect-src` 需放行 Umami 域。
+
+### SSO / OIDC 登录
+
+支持第三方身份登录：GitHub、Google 与自托管 OIDC 提供商（authentik、logto、casdoor）。
+
+- 通用 OIDC 提供商走 authorization code + `state`（支持 PKCE），经 `/.well-known/openid-configuration` discovery 与 JWKS 验签 `id_token`，覆盖 Google 与自托管三家；管理端按提供商配置 issuer、client id/secret 与启用开关。
+- GitHub 特例：GitHub 的 OAuth 流程不签发 `id_token`（官方 discovery 文档仅面向 MCP 客户端），因此 GitHub 走 OAuth2 web application flow，回调后用 access token 请求 `/user` 与 `/user/emails`，取 primary 且 verified 的邮箱。
+- 账号关联：邮箱一致自动关联既有账号；不一致时按注册开关决定自动注册或拒绝。
+- 登录态与本地账号一致：发放同一 JWT（HttpOnly Cookie），沿用 `session_version` 撤销。
+- 前端：登录/注册页新增「使用 … 继续」按钮与回调路由，处理错误态并补齐 i18n 文案。
+
+## 将来规划（monorepo：Workers 版 + Go 高性能版）
+
+仓库以 monorepo 形态维护两个后端：Workers 版（现状默认）与 Go 高性能版。移植遵循契约冻结：API 路径、响应形状、错误码、Cookie 语义原样移植，前端只改 CORS origin——把约 2.2 万行前端完全排除在风险外。
+
+R2 的去留是独立的政策决策：R2 本身讲 S3 协议，可当作普通 S3 endpoint 保留（后端不再依赖 CF 绑定）；要绝对零 CF 时把 provider 指向 AWS S3/MinIO 即可，对象不用搬，前端 Pages 同理可留可走。
+
+### 运行时与依赖映射
+
+| Cloudflare 依赖 | 替代 | 说明 |
 | :--- | :--- | :--- |
-| P0-1 unusable direct URL | `buildFileAccessUrl`: provider CDN URL, else `{origin}{path}?sign=` capability signature (`signPath`/`verifyPathSign`, HMAC-SHA256) accepted by path-serve | `gateway-compat.test.ts` |
-| P0-2 same-name data loss | Shared `upsertFileObject` (files/write.ts): overwrite branch w/ quota delta; overwrite-path failure never deletes the object (reconciliation entry) | `gateway-compat.test.ts`, `fault-injection.test.ts` |
-| P0-3 invisible files (missing ancestor rows) | `ensureFolders` for compat/WebDAV/S3/AList writes | `gateway-compat.test.ts`, `webdav-piclist.test.ts` |
-| P1-1 Lsky V2 | `POST /api/v1/upload` shell (`uploads/lsky.ts`), bare-token/Bearer auth | `gateway-compat.test.ts` |
-| P1-2 dead `protocols` | Enforced per surface (`assertApiKeyProtocol`); enum gains `s3` | `gateway-compat.test.ts` |
-| P1-3 WebDAV gaps | href per-segment encoding, real PROPFIND self item + `getcontenttype`/`getetag`, OPTIONS drops COPY, MOVE `Overwrite` header, recursive MKCOL, nested filename support | `webdav-piclist.test.ts` |
-| P1-4 key REST read | `GET /api/compat/file?path=` (read permission, upload-root scoped) | `gateway-compat.test.ts` |
-| P2-1 AList shim | `/openlist` prefix: login / fs/form / fs/list / fs/get / fs/remove + `/d` direct links with signature | `alist.test.ts` |
-| P2-2 S3 SigV4 gateway | `services/s3gw/` (sigv4.ts + handlers.ts): PUT/GET/HEAD/DELETE object, ListBuckets, ListObjectsV2, DeleteObjects, presigned GET query auth; verified end-to-end with the real `@aws-sdk/client-s3` via a local HTTP bridge | `s3gw.test.ts` |
-| P2-3 key UX (partial) | Create-key response adds `configs.s3` / `configs.openlist`; WebDAV snippet gains customUrl/webpath hints | `gateway-compat.test.ts` |
-| Owner isolation (user decision) | The data layer pins relay keys to `owner_id` (check.ts deny rule + repo owner filters + cross-owner 409/404); folders are a shared namespace | all suites |
-| Naming (user decision) | "API 密钥" → 「网关密钥」/ Gateway Keys; settings page shows per-channel integration info | frontend build |
+| D1（SQLite 元数据） | PostgreSQL | 11 个 repo、SQLite 方言 SQL 逐条移植。 |
+| KV（CSRF/限流/OTP/自由模式/`serve:loc`/`pool:down`/seed） | Redis | 现用法全是简单 get/set + TTL，Redis 是天然落点。 |
+| R2 绑定（`R2BindingProvider`） | S3 provider | 代码已有 `S3Provider`；R2 本身讲 S3 协议，可当普通 endpoint 保留。 |
+| `*/10 * * * *` Cron（预留释放/blob GC/对账/分享过期/挂载自愈） | Go 内置 ticker + Redis 分布式锁 | 任务按设计幂等（自愈式），重复执行安全。 |
+| `ctx.waitUntil` / `scheduled` 后台语义 | goroutine + 生命周期管理 | 显式处理优雅退出/信号。 |
+| WHATWG 流/Range/分片 | `io.Reader`/`io.Writer` + `aws-sdk-go-v2` | multipart、`UploadPartCopy`、Range 全有现成 SDK。 |
+| bcryptjs（CPU 配额焦虑） | argon2id | OWASP 当前首选；无 Workers 10ms CPU 限制后可放心用。 |
+| SMTP/加密/预签名 | 不变 | 已有外部实现或 Go 等价物（jose→golang-jwt，AES-GCM 标准库）。 |
 
-Migration: `workers/migrations/0006_s3_gateway.sql` adds `api_keys.secret_cipher` (AES-GCM-encrypted `sk_`); recreate legacy keys before S3 gateway use. Frontend: protocol checkbox `s3`, gateway-key naming, per-channel config cards.
+### 高性能版本实际买到什么
 
-## User model and storage core (2026-09-20)
+- CPU：Workers Free 10ms/请求、Paid 默认 30s（上限 5 分钟）→ 无配额，argon2id 与加解密不再受 CPU 限制；免费版 bcrypt 10 轮约 80ms 直接超限是已知痛点。
+- 请求体：Workers 免费/Pro 单请求 100MB 上限，大文件上传触发 503 内存溢出 → Go 无限流式。
+- 并发：Workers 单 isolate 128MB、单请求 6 连接 → Go 全并发 + 连接池。
+- 冷启动：Workers 启动上限 1s → 常驻进程。
+- 数据库：D1 单库 10GB、无行锁与真事务语义 → PG 行级锁、事务、JSONB、EXPLAIN、分区。
+- 解锁能力：跨桶同步/镜像（§E/§G 预留的旗舰功能）、长任务、真后台作业。
+- 可观测：pprof、slog、Prometheus——Workers 上没有的完整工具链。
 
-Implements the user-model and storage-core items from the OpenList comparison report (`docs/OPENLIST_COMPARISON_CN.md`): three-tier visibility with review, user-authored access rules, capability bits, a hardened storage core, and provider-form unification.
+### 移植原则
 
-| Area | Implementation | Tests |
+1. 契约冻结，前端零改动：API 路径、响应形状、错误码、Cookie 语义原样移植，前端只改 CORS origin。
+2. 权限引擎按测试等价移植：10 步判定链 + 桶级/挂载级角色矩阵 + 合成游客规则，逐条对照 `bucket-role-matrix.test.ts`（653 行）与 `mount-role-matrix.test.ts`（541 行），判定逻辑零漂移；这些测试是安全网。
+3. 数据迁移走双轨：KV 瞬态数据直接丢弃重建；D1 经 `wrangler d1 export` → pgloader 或自定义 ETL 进 PG；对象留在桶内（S3 API 照常访问）。迁移期 Hertz 与 Workers 并行跑，代理层切流，失败可回滚。
+4. R2 去留是唯一的政策决策：R2 可保留为 S3 endpoint；绝对零 CF 则改指 AWS S3/MinIO，对象不用搬。
+5. Redis 用法升级：现 KV 限流是读-改-写，Go 端改原子 `INCR` + `EXPIRE` 或固定窗口 Lua，多实例才正确；`pool:down` 熔断、`serve:loc` 提示、自由模式会话、全部 OTP/token 都是 TTL 型，落 Redis 零压力。
+6. 调度器单体内置：一个 ticker goroutine + Redis `SET NX EX` 选主锁，多实例部署安全；任务本就幂等，重复执行无害；pg_cron 是备选。
+7. 并发正确性是 Go 端最隐蔽的坑：Workers 单 isolate 单线程，Go 全并发——请求作用域状态（如 `principal.ts` 的按请求缓存）风险低，但熔断器与任何模块级缓存必须 mutex/atomic 或下沉 Redis，全程跑 `-race`。
+8. 大包流式走标准库网络栈：Hertz 官方建议 >1MB 请求用 go net 而非 netpoll（LT 模型大包吃内存）；下载网关/WebDAV/代理上传用 `standard.NewTransporter` + `SetBodyStream(-1)` chunked，避开隐式关闭坑（hertz#1309）。
+9. 运维成本单列一期：Docker Compose（app + PG + Redis）、Caddy/Traefik 自动 TLS、pg_dump/WAL 备份、pgbouncer、监控告警；买的是性能与自主，必须规划运维。
+10. 性能基线先立后比：移植前在 Workers 上跑一轮基线留档（AGENTS.md 现成：文件列表 P50<200ms 等），Go 版上线后同场景复测——高性能要用数据证明。
+
+### 同路径多存储备份 / DR
+
+现状：`mount_providers` 把每个对象在成员间摊铺——每文件一份。读取已在成员间容灾（§G），但没有复制时桶丢失即其对象丢失。同路径的两个挂载点不会合并：`MountRepo.findMountForPath` 按优先级再深度取一个，只有第一个挂载点会服务该路径。
+
+| 条目 | 决策 | 目标 |
 | :--- | :--- | :--- |
-| Ranged reads | `storage/range.ts` + `serve.ts`: unified object egress (200/206/416/502) consumed by gateway, path-serve, WebDAV and compat | `storage-range.test.ts`, `fault-injection.test.ts` |
-| Error classification | `storage/errors.ts` `ProviderError` (not-found / auth / throttled / other) replaces provider-specific string matching | `fault-injection.test.ts` |
-| Batched ops | `deleteObjects` ≤1000/batch with `Errors` surfaced and per-object fallback; virtual-directory listing via `Delimiter` | `fault-injection.test.ts` |
-| Large-file moves | `UploadPartCopy` part-copy above 5 GB with abort compensation | `fault-injection.test.ts` |
-| Provider unification | Type derived from `endpoint` (empty = R2 binding); `oracle` folded into `s3`; migration `0005` is UPDATE-only (no table rebuild) | `free-mode-security.test.ts` |
-| Visibility + review | `file_metadata.visibility` / `review_status`; `users` tier opens signed-in reads; `public` tier gated by `can_publish` + admin review (`PATCH /api/admin/files/:id/review`); folder cascade | `user-model.test.ts` |
-| User access rules | `GET/POST/DELETE /api/users/rules` behind `rule-guard.ts` gates; visibility rules injected into the same sort pipeline with origin priority admin > user > system | `user-rules-api.test.ts`, `permission.test.ts` |
-| Capabilities | `users.capabilities` bits (`can_publish` / `can_share` / `can_grant`) enforced server-side, editable via admin user update | `user-model.test.ts` |
-| Gallery | `/api/gallery` anonymous list / download / verify-password reusing gateway download tokens; no second auth surface | `user-model.test.ts` |
-| Frontend | Storage presets (flat single forms, R2/AWS/Oracle/MinIO/custom), properties-panel visibility + inline rule composer, settings access-rules page, admin review/capabilities/origin surfaces | frontend typecheck, tests, coverage gate and build green |
+| 同路径多存储备份 / DR | 同路径多挂载变为复制（镜像），而非摊铺 | Go 高性能版 |
 
-Verification: workers `tsc --noEmit` clean; scoped suites green (permission 60, user-model 18, user-rules-api 14, api-files 7, fault-injection 3). See the parallel gateway work in the section above for full-suite status.
+规划的管理面：管理存储页上每个挂载一个**「自动跨桶同步」**开关。该开关只在 Go 高性能版可用；Workers 版不实现该能力，控件文档约定为环境门控、必须渲染为禁用（而非隐藏）。池化（§E）与读容灾（§G）今天即可用——开关只打开后台复制。
 
-## Content-hash addressing (§F, 2026-09-21)
+- 目标模型：`file_replicas(file_id, provider_id, etag, size, status, verified_at)`，`file_metadata.provider_id` 保留为主副本。写扇出（主同步、副本异步经队列）、读容灾、逐副本删除与 GC、校验/修复任务。
+- 可借鉴的先例：rclone 的 `union` 后端（`create_policy=all` 镜像写每个上游、`epmfs`/`lus` 摊铺、`:ro`/`:nc`/`:writeback` 标签）、MinIO site replication（active-active / active-passive，异步扫描器重排队失败对象）、SeaweedFS 机架/DC 感知放置。
+- 为什么不是一个开关：
+  - 无跨 provider 事务或原子 CAS：部分副本写入需要补偿/修复任务，没有 generation/ETag 校验时并发覆盖会分叉。
+  - 容灾读可能服务陈旧副本；严格新鲜度要为每次读付一次 HEAD。
+  - 预签名/直链绑定单一 provider 域名（`buildFileAccessUrl`）；切换副本会让链接失效，除非所有链接都走一个代理域名（R2 Worker 出口免费；S3/Oracle 会产生 Worker 出口费）。
+  - 分片上传必须把每个分片写到每个副本，或事后重传（CopyObject 实践上仅同 provider）。
+  - N× 物理存储成本；`least_used` 之类的池启发式对镜像挂载毫无意义（每个成员都需要完整数据集）。
+- 首选的平台级路径：provider 侧复制（R2 的持久性来自复制 + 纠删码；可用处启用桶复制/版本化）加既有对账任务；应用层扇出属于 Go 高性能版，那里写路径允许优化（流式多写、校验和）。
 
-Writes place object bodies under their content SHA-256 (`<prefix>/picumet:blob/<h2>/<hash>`; the namespace segment contains `:`, which user virtual keys can never contain), and equal content reuses one copy across files.
+## 原始规格残留（2026-09-25 审计）
 
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Content write path | `services/storage/content.ts`: known hash (S3 gateway SigV4 full-body check) skips the object write on a dedupe hit or writes the content key directly; streaming writes stage + hash while streaming, delete the staging object on a hit, otherwise copy to the content key | `content-addressing.test.ts` |
-| File rows | `file_metadata.object_key` stays the unique virtual key; new `physical_key` + `blob_hash` columns carry the provider key and content hash; every provider call resolves `physicalObjectKey(file)` | `content-addressing.test.ts`, gateway suites |
-| Reference release | Deletes/overwrites release references inside the same SQL batch (`NOT EXISTS (SELECT 1 FROM file_metadata WHERE blob_hash = ?)` — no refcount column, no read-modify-write race); the last reference enqueues `blob_gc` | `content-addressing.test.ts` |
-| Collection + reconciliation | `cleanupBlobObjects` deletes after a grace period, re-checks references first, retries on failure (`attempts`); `reconcileBlobs` restores missing index rows and queues unreferenced ones | `fault-injection.test.ts` |
-| Move/rename | Content-addressed files move as pure metadata (no copy, provider and physical key unchanged); multipart/legacy rows keep copy + source cleanup | `content-addressing.test.ts` |
-| Scope | Multipart upload sessions keep path keys (`blob_hash` NULL) — parts go straight to the provider, so the Worker never sees the bytes; the cleanup removes them as exclusive objects | upload-resume suite |
+对照原始规格与代码的缺口审计（`docs/SPEC_DOC_GAP_REPORT.md`）确认以下设想未落地。记录在此避免读者按旧规格寻找不存在的实现；判定口径以实际代码为准。
 
-Logical quota accounting counts each file's own size, so capacity gates stay conservative.
-
-## Read-path failover (§G, 2026-09-21)
-
-When the bucket recorded for a file cannot return the object, reads automatically fall back to the other pool members of that mount. Cross-bucket **copy** (actually replicating objects into secondary buckets) remains future Go-backend work; this layer only makes reads survive a missing/unreachable bucket.
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Candidate order | `services/storage/failover.ts`: KV location hint (only when its physical-key fingerprint matches) → the file's recorded provider → remaining pool members (weight desc, id asc), capped at 4 | `storage-failover.test.ts` |
-| Circuit breaking (2026-09-22) | An upstream-failing bucket gets `pool:down:<providerId>` (45 s TTL) and drops to the end of the candidate list for that window — it keeps one last-resort attempt, which doubles as the recovery probe — and the marker clears on the first success; a missing object never trips it (data state, not bucket health) | `storage-failover.test.ts` |
-| Content validation (2026-09-22) | A hit on a bucket other than the recorded one is checked against the metadata `size` (skipped when either side has no size); a mismatch counts as a miss, so stale or truncated mirror content is never served. Etags stay out of the decision — their semantics differ per backend and upload path | `storage-failover.test.ts` |
-| Trigger conditions | Object missing (404) and upstream failure (502/`ProviderError`) fall through to the next candidate; semantic errors such as 416 propagate immediately | `storage-failover.test.ts` |
-| Bounded attempts | The reader caps each candidate attempt at 8 s, so an unreachable bucket cannot stall the read | `storage-failover.test.ts` (real-stack check below) |
-| Location hint | A replica hit writes `serve:loc:<fileId>` = `{providerId, physicalKey}` (10 min TTL, refreshed on every hit) so later reads go straight to the replica; a rewritten file invalidates it via the key fingerprint, and the recorded provider serving again clears it | `storage-failover.test.ts` |
-| Mirror exemption (2026-09-22) | `services/cleanup.ts` only deletes from the file's recorded provider (old-object cleanup) or the provider registered in the blob index (blob GC) — other pool members hold externally synced mirror content and are never deletion targets | `storage-failover.test.ts` |
-| Wiring | `serveFileObject` / `getFileObject` replace raw provider reads in path-serve, share gateway + preview, WebDAV GET/HEAD, S3 gateway GET/HEAD, AList direct links and the compat read endpoint | all gateway suites |
-
-Real-stack check: a file whose recorded bucket was an unreachable S3 endpoint (connection hangs) still returned `200` after the 8 s candidate timeout by serving from the R2 pool member; follow-up requests took ~0.1 s (hint path), and `serve:loc:<fileId>` was present in KV.
-
-Re-runnable acceptance: `scripts/verify-storage-failover.py` (builds the broken-primary mount and asserts both reads; cleans up after itself). See the development guide for prerequisites.
-
-## Mount points are directories (§H, 2026-09-21)
-
-The system materialises every non-root mount point as a real folder row in its **parent mount's namespace**, so the file page, share picker, public browser, WebDAV and AList all see it without any of them implementing mount synthesis.
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Materialisation | `services/storage/mount-folders.ts`: row id `mountfolder:<mountId>`, `path` = absolute parent dir, `name` = last path segment, `object_key` = `folder:<absolute path>`, `custom_title` = mount display name | `mount-folders.test.ts` |
-| Self-healing | Ensured on directory listing (child mounts of the listed path), on the admin mounts page, and by the scheduled task — all idempotent | `mount-folders.test.ts` |
-| Mount lifecycle | Admin create/update/delete registers, migrates (path change) and removes the row; mount name changes refresh `custom_title` | `mount-folders.test.ts` |
-| Protection | Renaming/moving/deleting a mount-point row, or a parent directory that contains a mount point, gets 409 | `mount-folders.test.ts` |
-
-Rationale: the earlier behaviour left sub-mounts invisible in the file page (e.g. a mount at `/poolui` did not exist for listing code). Making the mount a folder row fixes every consumer at once and keeps a single source of truth.
-
-**Failover candidates are buckets, never folders.** Read failover (§G) only ever considers `mount_providers` → `storage_providers` entries — real, independent buckets. Mount-point folders, user folders such as a "backup" directory, and copies inside the same bucket are not DR: they share the same failure domain. Cross-bucket replication remains the future Go-backend item below.
-
-## Write-entry modes and the per-mount role matrix (§28, 2026-09-22)
-
-Mounts gain two capabilities aimed at public upload areas (a `/public`-style mount): a write-entry mode and a per-mount default role permission matrix. Both default to today's behaviour — `upload_mode = 'free'` and no matrix rows — so existing mounts are untouched.
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Write-entry mode | `mounts.upload_mode`: `free` (no extra constraint) / `user_space` (writes forced into `<mountPath>/<username>`, created on first use) / `flat` (folder creation rejected, uploads stay flat) | `upload-mode.test.ts` |
-| Enforcement point | Every write channel funnels through the pre-write checks in `services/files/write.ts` — `/api/upload`, the compat upload endpoint, WebDAV PUT/MKCOL, the S3 gateway and AList behave identically | `upload-mode.test.ts` |
-| Naming | Location uniqueness still comes from `object_key` (the mount-relative path, `UNIQUE (mount_id, object_key)`), never from content hashes: two users uploading `photo.jpg` into a flat mount collide by design (same row key → 409 "occupied by another user"), while equal content at different paths shares one physical object (§F) | `upload-mode.test.ts` |
-| Owner semantics | Nobody can modify or delete another user's file (the owner fallback in `checkPermission`); directory owners get no inherited power over their subtree — admins cover that case | `mount-role-matrix.test.ts` |
-| Role matrix | `mount_role_permissions(mount_id, role, permissions)`, evaluated after the file-owner fallback and before the role defaults: a present entry is a **closed set**, no entry falls back to the role defaults, `share` is excluded (the `can_share` capability bit governs sharing) and explicit `path_rules` of any origin always win | `mount-role-matrix.test.ts` |
-| Admin surface | `GET /api/admin/mounts` returns `uploadMode` + `rolePermissions`; create and update accept both (`rolePermissions` replaces the whole matrix, `[]` clears it) | `mount-role-matrix.test.ts` |
-
-Deliberately out of scope: MIME/size upload gates, per-mount upload quotas, and the review workflow — review only ever triggers for `visibility = 'public'` and its only consumer is the anonymous gallery, so a private-by-default upload area never reaches it.
-
-## Pooled-mount placement strategies (§29, 2026-09-22)
-
-The write-path bucket choice for a pooled mount (`mounts.pool_strategy`) grows from three options to five, and pool members gain a capacity cap and an upload order. All of it only affects **new** writes: reads and deletes resolve through `file_metadata.provider_id`, so existing objects stay where they are and no relocation job is needed.
-
-| Strategy | Rule | Notes |
-| :--- | :--- | :--- |
-| `least_used` | Smallest `(used + 1) / weight` wins, ties by provider id | Unchanged; still the default |
-| `round_robin` | KV cursor modulo member count | Unchanged |
-| `hash` | FNV-1a of the **parent directory** modulo member count | Changed from whole-path hashing to directory-sticky, so one directory lands in one bucket and prefix listings stay contiguous |
-| `free_weighted` | Largest `(capacity − used) × weight`; members without a capacity count as unlimited and rank first; every member full → `413 MOUNT_QUOTA_EXCEEDED`; no capacities configured at all degrades to `least_used` | New; needs `mount_providers.capacity_bytes` |
-| `ordered` | Fills members by `sort_order` (ties by provider id), moving on only once the current member is full; no capacity means unlimited, so the first member always wins | New; needs `mount_providers.sort_order` |
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Schema | `001_initial.sql` §29: `mount_providers.capacity_bytes` (NULL = unlimited) and `mount_providers.sort_order` (default 0) | `storage-pool.test.ts` |
-| Placement | `services/storage/pool.ts` `chooseMemberId` covers all five; `pickWriteProvider` keeps its signature so a full pool surfaces as a 413 to the caller | `storage-pool.test.ts` |
-| Admin surface | `GET /api/admin/mounts` returns each member with `capacityBytes` + `sortOrder`; create/update accept `poolMembers: [{ providerId, weight?, capacityBytes?, sortOrder? }]` as a full replacement (a plain provider-id array stays supported as a shorthand) | `storage-pool.test.ts` |
-| UI | Mount form: five-option strategy select plus per-member capacity and upload-order inputs | browser check |
-
-## Pool-member capacity is a hard cap (§30, 2026-09-22)
-
-A code-review finding on §29: the capacity check only asked whether a member was full **right now**, the placement functions never received the incoming size (a member with `capacity_bytes = 100` and nothing in it happily accepted a 180-byte object), and no member-level reservation existed, so two concurrent uploads could both pass the check and overshoot together. `storage-pool.test.ts` had pinned that wrong semantics (a 100-byte capacity accepting an 180-byte first write); the assertion was replaced, not preserved.
-
-| Area | Change |
+| 条目 | 现状与说明 |
 | :--- | :--- |
-| Schema | `mount_providers.quota_reserved` (§30) — in-flight reserved bytes per member, same semantics as `mounts.quota_reserved` |
-| Fit rule | `used (aggregated from file_metadata) + quota_reserved + incoming size <= capacity_bytes`; a `NULL` capacity means unlimited (never full, never reserved) — replacing the "is it currently full" test |
-| Reservation | Conditional atomic UPDATE; zero affected rows means the member cannot take the object right now, so the next candidate in the strategy's order is tried and a 413 is raised only when none fits |
-| Strategy scope | Capacity is a hard cap for **every** strategy: `hash`, `round_robin` and `least_used` fall back when their preferred member is out of room — a strategy only orders candidates |
-| Lifecycle | Reserve on the write path and at upload-session init; release on success, failure, compensation and session expiry |
-| Tests | Boundary (`used + size == capacity` passes, `+1` fails), size awareness (80 then 30 rejected, 80 then 20 accepted), concurrent reservation, release paths, unlimited-member regression, and a fallback/413 case per strategy |
+| JWT 多密钥轮换（`JWT_SECRETS` 新签旧验） | 未实现。密钥泄露的替代手段：`users.session_version` 递增撤销旧 JWT + 更换密钥。 |
+| 找回密码按邮箱限流（每小时 3 次） | 未实现。复用通用速率限制；重置令牌 15 分钟有效、一次性消费。 |
+| 路径变量模式（`/users/:userId/*`）与扩展名模式（`/images/*.{jpg,png}`） | 不支持。`pathMatches` 只实现精确、`/*` 与 `/**`，含 `:` 的模式恒不匹配——权限规则只支持这两种通配。`utils/path.ts` 的 `matchPriority` 是零引用残留，排序实际由 `permissions/check.ts` 的 `sortRules` 完成。 |
+| 对账报告审核与清理闭环 | 写入侧真实（删除/覆盖/移动/内容寻址失败都会写 `orphan_objects`）；`reconciliation_reports` 的 `createReport` / `listReports` 与孤儿列表查询零调用方，无管理端点与界面——表与仓库方法为预留，暂未接线。 |
+| 日志脱敏 `sanitizeForLog` | 残留：`shared/errors.ts` 实现了敏感键替换（`***REDACTED***`）但零调用方，当前没有任何日志走脱敏；接线或删除之前不要当成现存行为。 |
+| 热文件检测与强制签名 URL | 原始规格设想未落地；保留在「即将规划」（planned），不是已完成行为。 |
 
-## Bucket-scoped role matrices, explicit standby flag, two-layer capacity (§31, 2026-09-22)
+按当前实现重写的访问模式对比（原始规格的三模式表不成立——`decideAccessMode` 永不返回 `signed_redirect`，现实只有两态；详见架构文档「分享服务」）：
 
-The default role matrix can be configured per **bucket** instead of only per mount, "serves as a standby bucket" becomes an explicit flag, and capacity is split into two validated layers.
-
-| Area | Implementation |
-| :--- | :--- |
-| Bucket matrices | `mount_provider_role_permissions(mount_id, provider_id, role)`; resolution order **bucket → mount → role defaults**, so an entry only changes behaviour where it exists |
-| Read paths | Read, update, delete, download and share are judged against the **file's recorded bucket**, which the permission check now receives |
-| Write paths | Placed inside the §30 candidate loop: a candidate whose bucket matrix forbids the action is skipped, so a strategy still only orders candidates and a 403 is raised only when every candidate refuses |
-| Standby flag | `mount_providers.standby` replaces the "zero files for this mount" inference, which has been removed entirely: a flagged bucket stays a standby even when it holds files, and an unflagged empty member is no longer one |
-| Standby rows | A standby lane renders one non-expandable node row per standby mount (amber hollow ring, no trunk connection) that scrolls to and highlights the mount row on the primary lane |
-| Capacity layers | Per bucket `mount_providers.capacity_bytes` (placement hard cap, §30) plus the mount total `mounts.max_storage`; the total must not exceed the sum of bucket caps (uncapped buckets excluded) or the request is rejected with 400 |
-
-## Sharing rework: multi-item shares (`§I`, 2026-09-21)
-
-A share now carries 1..50 items (files, folders, or a mix) and you create it **only from the files page**; the share list became read/manage-only and surfaces every setting.
-
-| Area | Implementation | Tests |
+| 维度 | `public_cdn` | `private_gateway` |
 | :--- | :--- | :--- |
-| Data model | `share_items` (per-item order, cascades with share/file); `shares.file_id` keeps the first item for single-file compatibility and FK cascade | `share-items.test.ts` |
-| Creation | `POST /api/shares { fileIds[] }`: de-duplicated, per-file `share` permission, `title` defaults to the item name (single) or "N 个项目" | `share-items.test.ts` |
-| Public detail | `GET /api/shares/:id` returns `items` (display names from `file_metadata.name`); object keys and content hashes are never exposed | `share-items.test.ts` |
-| Folder browsing | `GET /api/shares/:id/list?root=&sub=` lists a shared folder; the server normalises `sub` and requires it to stay inside the root subtree (403 otherwise) | `share-items.test.ts` |
-| Item-scoped transfers | `download` / `preview` accept `itemId` (defaults to the first item) and accept descendants of a folder item (same mount, same owner, subtree) | `share-items.test.ts` |
-| Creation entry | Files page row menu + bulk bar open `ShareDialog` (multi-select incl. folders); the settings page no longer offers creation and the update removed the dead `?create=` route | manual/browser |
-| Share list | Cards and rows show every setting: status (icon + label), access mode (public/login/N users), password protection, preview/download switches, view/download counters, item count | `share-items.test.ts` |
-| Share page | Item list in the file page's visual language, folder breadcrumbs, a single Share button (QR + copy link menu), lucide icons instead of emoji | browser |
+| 条件 | provider 配置了公网直链域名且文件无密码 | 其余所有情况 |
+| 实时权限检查 | 发链接时判定，之后不再校验 | 每次下载经网关与权限判定 |
+| 流量与计费 | provider / CDN 出口 | Workers 出口（R2 免费，S3/Oracle 计费） |
+| 限速与并发 | 不经过 Picumet，无法限速 | 受下载限速与传输并发约束 |
+| 撤销 | 对象删除/改名或改 publicDomain 前链接一直可用 | 令牌一次性、15 分钟有效 |
+| 统计 | 无逐次日志（Umami 接入后由前端事件覆盖页面内行为） | 网关写 `access_logs` 并计数 |
 
-Also fixed: the share page previously showed 「分享已撤销」 for shares whose `expires_at` was NULL — that message only reflects `status`; expiry and revocation are independent. The reason a link dies while still reading "永久有效" is an explicit revoke (`DELETE /api/shares/:id`, creator or admin), which the share list now shows as a red `已撤销` badge. Re-runnable acceptance: `scripts/verify-share-items.py`.
-
-## Rate limiting visibility and transfer concurrency (§J, 2026-09-21)
-
-The admin settings page now states the effective limits instead of only offering an on/off switch, and a new concurrency limit protects transfer surfaces.
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Stated limits | Settings UI shows requests-per-minute plus a hint listing every effective rule: per-IP value, 2x for signed-in users, 5/min for auth endpoints, 60/120 per minute for free mode, and the concurrency limit | browser |
-| Concurrency | `middleware/concurrency.ts` + `transfer_slots`: at most `max_concurrent_transfers` (default 4, 0 = unlimited) in-flight transfer requests per user (per IP when anonymous) on the upload channels and the download gateway; exceeding it returns 429 `CONCURRENCY_LIMIT_EXCEEDED` | `concurrency-limit.test.ts` |
-| Why D1 | KV has no atomic increment and caches reads for up to 60 s, so an in-flight counter there would read stale values; D1 serialises writes, making the count trustworthy | — |
-| Leak handling | `finally` releases the slots (errors included); the code treats slots older than 30 minutes as a leak and sweeps them opportunistically | `concurrency-limit.test.ts` |
-
-## Role permissions, aliases and guest visibility (§K, 2026-09-21)
-
-The role model became explicit in the database so the admin UI shows what actually governs behaviour.
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Role defaults | `role_defaults.permissions` (JSON array of `read`/`write`/`update`/`delete`/`download`; `share` deliberately excluded because sharing is the `can_share` capability). Seeds: `admin` and `user` = all five, `guest` = `download` only; built-in roles also seed `capabilities=['can_share']` so "shareable by default" is visible | `role-permissions.test.ts` |
-| Per-user overrides | `users.permissions` (NULL = follow the role). Precedence: `users.permissions` → `role_defaults.permissions` → `DEFAULT_ROLE_PERMISSIONS`. Saving role defaults overwrites every member's individual value (explicit requirement) | `role-permissions.test.ts` |
-| Aliases | `role_defaults.alias` is a display alias that permission rules may target: `loadPrincipalRules` resolves role + aliases into the rule candidates (`role IN (...)`) | `role-permissions.test.ts` |
-| Guest visibility | `file_metadata.guest_visibility` (`NULL` / `none` / `download` / `view`), edited in the file properties panel under "Default user permissions". Anonymous access additionally requires the site-level `allow_guest_access` switch; `NULL` never opens a file by itself, so private files stay private | `role-permissions.test.ts` |
-
-Terminology note: the **guest role** (a signed-in account with `role='guest'`) defaults to download-only; the file's `guest_visibility` plus the site switch governs **anonymous visitors**. The two are independent.
-
-## Share forwarding panel and password recall (§L, 2026-09-21)
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Password recall | Creating a share stores `password_hash` (verification) **and** `password_cipher` (AES-GCM, `enc:` prefix). Only the creator's `GET /api/shares` decrypts and returns `password`; public endpoints never expose the plaintext or the cipher, and a failed decryption omits the field | `share-password.test.ts` |
-| Link with password | `GET /api/shares/:id?password=…` grants access directly (401 on a wrong value); the share page auto-fills and submits when the parameter is present | `share-password.test.ts` |
-| Single share button | The share page has one Share button whose menu holds the QR code, copy link, copy link with password, show password (click to copy) and copy share message; the share list menu offers the same items. Message format: `来自<user>的<title>` + `链接：` + `密码：` (password line omitted when unknown) | browser |
-| Card layout | Share cards show settings in three fixed rows: access mode / preview+download switches / view and download counters | browser |
-
-## Download limit and admin-level settings (§M, 2026-09-21)
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Download limit | `middleware/download-limit.ts` counts only download requests (download gateway, share download/preview, file download links, public directory links) per minute per user (per IP when anonymous), `rate_limit_downloads_per_minute` (default 120, 0 = unlimited), 429 on excess; the settings page now also states the effective rate-limit numbers | `download-limit.test.ts` |
-| Transfer concurrency | `max_concurrent_transfers` (default 4) with D1-backed slots (see §J) | `concurrency-limit.test.ts` |
-| Admin share settings | `GET/PATCH /api/admin/shares/:id`: creator name, items, access mode, password protection, limits, preview/download switches, status and expiry; password can be reset (hash + cipher) or cleared | `admin-shares.test.ts` |
-| Admin file properties | `PUT /api/files/:id` accepts `cascade` (default true); the admin files page gained a visibility column and a properties dialog that submits `cascade: false` by default, so publishing one folder no longer cascades the whole subtree by surprise | `admin-shares.test.ts` |
-| Direct-link prefix | `direct_prefix` (`''` / `/d` / `/download` / `/raw`) scopes public and signed direct links, and `root_target` decides whether `/` serves the landing page, the file page or the direct-link namespace — both are selectable in admin → System settings and validated together (a non-empty direct prefix cannot own `/`). The file browser stays at `/files`: a configurable files-page prefix failed review as too risky | `route-prefixes.test.ts` |
-
-## File ban governance, dashboard rework and admin files columns (§N, 2026-09-22)
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| File ban | `file_metadata.banned` (migration §26) + `PUT /api/admin/files/:id/ban`; `assertNotBanned` (`services/files/ban.ts`) gates all content outlets (file download, path-serve, share download/preview, gateway) with `429 FILE_BANNED`; delete is intentionally not blocked; owner-side ghost state is presentation-only (dimmed row, delete-only menu) | `files-ban.test.ts` (22 cases) |
-| Admin files columns & filters | Storage bucket / mount point / content-hash columns, per-page batched `IN` enrichment (mounts, `blob_objects`, providers — no N+1); filters `mount` / `bucket` / `hash` (substring) / `user` / `visibility` / `banned`; ban/unban entry with `ConfirmDialog`; rows with banned selections collapse the bulk bar to delete-only | `files-ban.test.ts` |
-| Mount capacity | `mounts.capacity_bytes` persisted via create/update; `Mount.capacityBytes` in shared types; dashboard aggregates Σ capacity (null when all unset) | `mount-quota.test.ts` |
-| Dashboard rework | `DashboardRepo.stats()` (role counts, files, used space, providers, active mounts, total capacity) + `DashboardRepo.mounts()` (primary provider, standby pool members, per-mount usage/file count) in `db/repos/dashboard.ts` — batched queries, no N+1; UI: four single-row stat cards, mount relation diagram (primary solid pill + standby outline pills), storage usage with capacity bars, recent activity (6) | `dashboard.test.ts` |
-| Admin settings restructure | System settings page split into Site / Security / SMTP / Announcements cards; settings Appearance/Profile/Security merged into Personalization with files-per-row slider | frontend |
-
-## Flat tree views, bucket lane graph and announcement display policies (2026-09-22)
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Display policy storage (migration §27) | `announcements.display_mode` / `interval_seconds` / `kind`; `AnnouncementSchema` gains `displayMode` / `intervalSeconds` / `endsAt` / `kind` (replaces `expiresIn`); `PUT` keeps title/content/level/active | `mount-tree.test.ts` |
-| Bucket tree repos | `DashboardRepo.bucketTree()` (per-bucket mounts from `file_metadata.provider_id`, role primary/member, standby entries for zero-file backups) + `DashboardRepo.mountFolderSummary()` (top-level folders with recursive counts, bucket-filtered, zero-count folders dropped) | `mount-tree.test.ts` |
-| Flat tree repos and routes | `FileRepo.listTree()` (path-prefix rows, LIKE-escaped, owner join, structural filters keep folder rows, 5000-row cap) + routes `GET /api/admin/mount-tree`, `GET /api/admin/dashboard/mount-folders`, `GET /api/admin/files/tree`, `GET /api/files/tree` (entry-path read check, per-nested-mount re-check, §4.4a private-folder filter for non-admins) | `mount-tree.test.ts` (6 cases) |
-| Tree and mount views | `TreeView.tsx` (single-child chain flattening, virtual rows, folder-row click expands), admin tree view with server filters plus a client name search, admin mount view (bucket → mount → folder → file, per-level guides), files page gains the tree mode and hides breadcrumb/pagination there | frontend |
-| Bucket lane graph | Dashboard active-mounts card becomes bucket lanes with level-1 mount nodes (hollow/solid dots, fork connectors, per-level guide lines), collapsible buckets (default open), multi-open mounts, standby badge highlights the primary lane for 3s | frontend |
-| Banner policies and toasts | Client policy renderer (always/daily/interval/until/duration plus a local timestamp map), `kind=toast` temporary popups with title/content through the toast system, left color stripe removed; admin form adds kind/mode selects with conditional interval/until/duration inputs and per-row policy summaries | frontend |
-| Layout and tokens | Bounded height chain (`h-screen` shell, banner-aware table shrink, `flex-1 min-h-0` replacing viewport-`calc` caps), native scrollbars removed, sidebar indicator `inset-x-2` plus primary hover tokens, dropdown/select accent tokens, drawer entrance on the Dialog transition pattern, per-device cards-per-row (mobile 2–4 default 3) | frontend |
-
-## Motion tiers, entrance animations and admin table headers (§33, 2026-09-22)
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Motion tiers | `theme.motionLevel` (`off` / `default` / `all`) on `<html data-motion>` with centralized CSS gating in `index.css`: `off` kills all animation/transition, `default` keeps functional animations (charts, tabs, dialogs, drawers, loading) and drops decorative entrances, `all` adds them; `prefers-reduced-motion` falls back to the same 0.01ms + zero-delay treatment; `MotionSlider` in appearance settings | frontend |
-| Reveal primitives | `components/ui/reveal.tsx`: `.reveal` (fade + 8px rise) and `.reveal-row` (fade only, no row translation) keyframes, `revealDelay` / `innerDelay` delay helpers (block step 40ms, fine step 25ms, inner base 60ms, capped at the tenth item), `animation-fill-mode: both` so the first frame reserves space | frontend |
-| Page coverage | Two-layer entrance ordering (toolbar → card → header → rows) on dashboard, users, all files, logs, permissions, shares, mounts, providers, access rules, API keys, personalization, settings, shares settings; card-inner fields fade row by row via `innerDelay`; dashboard spacing unified with settings (16px vertical, 24px column rhythm) | frontend |
-| Flat tree entrance | Tree rows stagger once per view mount behind a settled gate (~700ms) so virtual-scroll remounts never replay; view switching (`key={view}`) re-runs the entrance | frontend |
-| Dropdown cascade | Direct children of `.animate-dropdown` fade in one by one in the `all` tier (30ms base, 20ms step, capped at the twelfth item) | frontend |
-| Table headers | Admin files/logs keep the committed two-part header (header table outside the scroll container on card glass) — the sticky frosted-header experiment was reverted after Chromium's `backdrop-filter` proved not to sample content scrolled under sticky elements; body horizontal scroll syncs the header via `translateX(-scrollLeft)`; name/path columns gained `minmax` floors so narrow containers overflow into horizontal scrolling instead of collapsing tracks onto neighboring columns; headers are `whitespace-nowrap` single-line (shares table header collapsed from two lines to one) | frontend |
-| Trends endpoint docs | `GET /api/admin/dashboard/trends` documented in both API references (metric/granularity/from/to, 2-year cap, 400-bucket ceiling) | docs |
-
-## Standby trunk, connector z-order, card-in-card and site identity split (2026-09-24)
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Standby trunk connection | `StandbyMountNode` renders through `GraphRow` (amber hollow anchor + elbow, non-expandable) so standby placeholder rows connect to the bucket trunk; the bucket header stub covers standby-only lanes (`orphanStandbysOf`), and trunk continuation treats trailing standby rows as the last children | frontend |
-| Connector geometry | Elbow starts on the trunk centre with a vertical tangent (same width and axis, cubic ease-out instead of a quarter circle); trunk lines carry `zIndex: 1` so child curves hide beneath the trunk and only show where they bend out of its side — no seam, no overlay, no kink | frontend |
-| Legend removed | The primary/standby bucket legend under the dashboard mount card is gone (lane colours are self-explanatory); `primaryBucket` / `standbyBucket` keys removed from both language packs | frontend |
-| Card-in-card principle | Sections inside a card use dividers (`border-t pt-3`, `divide-y` + `pt-4 first:pt-0`) instead of nested bordered boxes: settings direct-link and rate-limit blocks, trend card charts; documented as a new section in both UI guides and the AGENTS summary | frontend |
-| Site identity split | New `site_header_title` setting (`undefined` = follow `siteTitle`, `''` = logo only) end to end: `SettingsSchema`, admin GET/PATCH, public settings; the settings form lays two rows of title-left / icon-right; `Logo` renders a fixed-height, aspect-ratio-width image (no fixed container width) with the title right after, wired in AppShell/Landing/FreeMode; zh/en labels | frontend |
-| Settings 400 fix | `smtpFromEmail` accepts `''` (clear the sender address) — a whole-form PATCH with an unconfigured sender email no longer fails `.email()` validation with 400 | `admin-settings.test.ts` (3 cases) |
-
-## Landing page rebuild (§34, 2026-09-25)
-
-| Area | Implementation | Tests |
-| :--- | :--- | :--- |
-| Independent visual system | `components/landing/landing.css` (lazy, ships with the landing chunk) redefines the whole token set on the `.landing` root, so the accent color, blur tier, wallpaper and motion tier never reach the page; solid root fill covers the body wallpaper; no `glass-*` class is used. `index.css` exempts the `.landing` subtree from the `data-motion` tiers (`[data-motion='off'] :not(.landing, .landing *)`); the page honours only `prefers-reduced-motion`. Geist + Geist Mono variable fonts imported from the landing chunk only | frontend |
-| Page structure | `pages/Landing.tsx` only assembles header + sections + footer; sections split by domain into `components/landing/` — `sections.tsx` (hero / providers / workflow / pool / admin / details / integrations / security / edge / deploy / faq / cta), `mockups.tsx` (file manager + admin dashboard), `Thumb.tsx` (SVG landscapes), `brands.tsx` (R2 / S3 / Oracle / MinIO / B2 / Wasabi / DO marks, Simple Icons CC0), `share-qr.ts` (prebuilt QR path), `primitives.tsx` (reveal root, `useCycle` / `useTicker` / `useVisible` / `useIsDark` / `useReducedMotion`, `SectionHeading`, `CountUp`, `EdgeGlobe`) | frontend |
-| Header | Logo, GitHub, theme, language and the sign-in/open-files button only — the section navigation and the mobile hamburger menu were removed; the header still frosts after scrolling (`data-scrolled`), and anchor ids remain on the sections | frontend |
-| Demos | Upload rows animate through concurrent progress (failed row retries); organise panel cycles a lasso selection; share card carries the QR, password, expiry and download cap; storage pool switches between the five write strategies with a file dropping into the chosen bucket plus a read-failover trace (8s attempt cap, 45s bench, 10-minute location hint); admin section walks the ten permission layers and shows the audit log, review queue and role matrix; integrations tab between REST / S3 / WebDAV / Lsky / AList snippets; deploy section carries the real commands from the deployment guide | frontend |
-| Copy accuracy | Claims verified against the backend before writing: single-PUT uploads (no resume, no per-part retry), no drag-to-move (move runs through the "Move to…" dialog), rate limiting is fail-closed for auth/sensitive writes only, gateway key tokens are hashed while the S3 gateway keeps a reversibly encrypted secret for SigV4, pool `free_weighted` treats unset capacity as unlimited, `/docs` never existed (docs links now point at the GitHub docs) | frontend |
-| Overflow fixes | Command blocks wrap with `whitespace-pre-wrap break-words` inside `min-w-0` containers (no horizontal scrollbar in landscape), mock windows use `w-[min(980px,92vw)] max-md:w-full`, two-tone titles break between halves so CJK phrases are not split mid-word, `TwoTone` / `landing.css` keep the page free of horizontal document overflow at 390px and 1440px | frontend |
-| Landing i18n | `landing.*` rewritten in both language packs (nav keys removed with the navigation); every UI label inside the mockups reuses existing app keys (`files.*` / `upload.*` / `share.*` / `admin.*` / `perm.*`) with sample data kept literal; 89 static keys and 100 template leaves verified present in zh and en | frontend |
-| Verification | Browser sweep across landscape (1440) and portrait (390) × light/dark × zh/en: no `scrollWidth > clientWidth`, no `overflow-x: auto/scroll` element on the page, hero/header/pool/admin/integrations/deploy/faq/cta screenshotted | frontend |
-| Site asset proxy | `GET /api/public/site-asset/:kind?u=…` (`services/public/site-asset.ts`): serves only the two currently configured `site_logo` / `site_favicon` URLs (everything else 404s — no open proxy), `validateEndpoint` refuses private/odd-port URLs, edge-cached via `caches.default`, answers `public, max-age=604800`. Frontend maps configured URLs through it (`siteAssetUrl` in `stores/site.ts`) and caches the settings JSON in localStorage (`picumet:site`) so title/favicon apply on first paint. Verified in the browser: reload serves both assets `fromCache` and the remote host is never contacted (previously 818 KB re-downloaded per refresh, uncacheable OneDrive redirect) | `site-asset.test.ts` (5) |
-| Site logo everywhere | `Logo` now receives `siteLogo` / `siteTitle` / `siteHeaderTitle` on the sign-in, sign-up, reset-password, public-browse and share pages, joining AppShell, the landing page and free mode — a configured site logo replaces the mark everywhere, the Picumet icon stays the fallback. Brand logo sizes unified: 40 across the landing top bar, AppShell and free mode, 48 on the auth cards (previously 24/26/44 per page) | frontend |
-| Entrance blur | `reveal-in` / `reveal-row-in` gained a from-only `filter: blur(var(--reveal-blur, 8px / 6px))` (landing-style) — file cards, personalization, dashboard, system settings and all reveal consumers in the `all` tier; dropdown / right-click / Select menu containers stack `dropdown-blur-in` (blur 6px, composes with `dropdown-in` on different properties) and items inherit `reveal-row-in`'s from-blur | frontend |
-| Default accent | Theme store default `accentColor` is now `#D8632B` (presets shared as `ACCENT_PRESETS` in `stores/theme.ts`, used by the personalization page and the landing page). The landing consumes the chosen accent through `accentHsl()` — raw shade plus YIQ foreground, no darkening loop — inlined as `--primary` / `--primary-foreground` on the `.landing` root, so the whole landing family follows accent switching (verified: default renders `rgb(216, 98, 44)`, switching to blue recolors every accent surface); the chain demo chip moved to ink so 10px text never sits on the primary | frontend |
-| Landing header and docs links | Docs entry added next to the sign-in/open-files button (ghost button, BookOpen, left of the CTA), hero secondary button changed 查看源码 → 查看文档, docs/deploy links point at the CelPlume docs site (zh `/zh/picumet/`, en `/picumet/`, deployment `dev/deployment/`; the old `/docs` route never existed and GitHub blob links are gone), footer copyright `© {year} 天空之翼 / CelPlume All Rights Reserved` with the brand name linked to celplume.hxcn.space; `lp-hide-sm` landing utility replaces Tailwind `hidden` (landing.css loads after utilities, so `.lp-btn` display overrode `hidden` and rendered the docs button twice) | frontend |
-
-## Current baseline
-
-- Backend: 46 test files / 452 Vitest tests pass; `tsc --noEmit` clean.
-- Frontend: 4 test files / 27 Vitest tests pass; coverage gate passes (91.8% statements / 72.7% branches / 83.3% functions / 93.2% lines); build succeeds; `tsc --noEmit` clean.
-- Language: zh + en.
-
-## What's next
-
-- Oracle Cloud provider implementation.
-- Configurable **direct-link prefix** (implemented): the prefix applies to public/signed file direct links only (`direct_prefix`: `''` / `/d` / `/download` / `/raw`) plus a `root_target` choice for what `/` serves — both editable in admin → System settings. The file browser page stays fixed at `/files`; a configurable files-page prefix failed review as too risky (it competes with the landing page, the guest catch-all route and the direct-link namespace).
-- Same-path multi-mount: spread across providers ships in `mount_providers`; the future Go backend owns replication/backup — see below.
-- Path-variable DSL (`{year}/{month}`).
-- Admin analytics.
-- Hot-file detection and forced signed URLs.
-- Ongoing verification notes for drag interactions and property-panel editing.
-
-## Planned: future high-performance backend (2026-09-21)
-
-A future Go backend owns cross-bucket replication (copying objects into secondary buckets) ("high-performance version"). The current Workers implementation spreads each object across pool members (`least_used` / `hash` / `round_robin`) and reads fail over across those members (§G), but it never copies objects between buckets.
-
-Planned admin surface for it: a per-mount **"automatic cross-bucket sync"** switch on the admin storage page. The switch is **only selectable in a Go-backend environment**; the current Node/Workers backend does not implement the capability, so the control is documented as environment-gated and must render disabled (not hidden) there. Pooling (§E) and read-path failover (§G) work today without it — the switch only turns on background replication.
-
-| Item | Decision | Target |
-| :--- | :--- | :--- |
-| Same-path multi-storage backup / DR | Same-path multi-mount becomes replication (mirror), not spread | Future Go backend |
-
-### Same-path multi-storage backup / DR
-
-- Today: `mount_providers` spreads each object across members — one copy per file. Reads already fail over across members (§G), but without replication a bucket loss means the objects it held are gone. Two mounts on the same path do not merge: `MountRepo.findMountForPath` picks one by priority then depth, so only the first mount ever serves that path.
-- Target model: `file_replicas(file_id, provider_id, etag, size, status, verified_at)` with `file_metadata.provider_id` kept as the primary replica. Write fan-out (primary synchronous, replicas asynchronous through a queue), read failover, per-replica delete and GC, verification/repair job.
-- Prior art to borrow from: rclone's `union` backend (`create_policy=all` mirrors writes to every upstream, `epmfs`/`lus` spread, `:ro`/`:nc`/`:writeback` tags), MinIO site replication (active-active / active-passive with an async scanner that re-queues failed objects), SeaweedFS rack-/DC-aware replication placement.
-- Why this is not a simple switch:
-  - No cross-provider transactions or atomic compare-and-swap: partial replica writes need compensation/repair jobs, and concurrent overwrites can diverge without generation/ETag checks.
-  - Failover reads may serve stale replicas; strict freshness costs a HEAD per read.
-  - Presigned/direct links are bound to a single provider's domain (`buildFileAccessUrl`); switching replicas invalidates them unless every link goes through one proxy domain (R2 worker egress is free; S3/Oracle would incur Worker egress).
-  - Multipart uploads must write every part to every replica, or re-transfer afterwards (CopyObject is same-provider in practice).
-  - N× physical storage cost; pool heuristics such as `least_used` are meaningless for a mirrored mount (every member needs the full data set).
-- Preferred platform-level path: provider-side replication (R2 durability is replication + erasure coding; use bucket replication/versioning where available) plus the existing reconciliation job; application-level fan-out belongs to the future backend, where the write path allows optimization (streaming multi-write, checksums).
-
-Related guides: [architecture](ARCHITECTURE.md), [API reference](API.md), [frontend guide](UI.md), [development guide](DEVELOPMENT.md), [deployment guide](DEPLOYMENT.md).
+相关指南：[架构](ARCHITECTURE_CN.md)、[API 参考](API_CN.md)、[前端指南](UI_CN.md)、[开发指南](DEVELOPMENT_CN.md)、[部署指南](DEPLOYMENT_CN.md)。
