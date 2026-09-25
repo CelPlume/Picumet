@@ -280,6 +280,25 @@ services/storage/
 
 **依赖**：提供商、挂载仓库，`utils/crypto.ts` 负责解密密钥。
 
+### S3 兼容网关服务
+
+**职责**：SigV4 验签的 S3 REST 子集（挂载在 `/s3` 前缀），让 rclone、S3 SDK 与 S3 浏览器把 Picumet 当作 S3 兼容端点使用。
+
+- 认证走网关密钥（`pk_*` / `sk_*`）。S3 验签需要可逆 secret：密钥创建时以 AES-GCM 加密落库（迁移 `0006`），存量密钥不支持 S3 面，需重建。
+- `bucket` 是虚拟路径首段（挂载路径或密钥上传根的首段），`key` 是其余路径；`GET /s3` 列出密钥可达的 bucket。
+- 操作面：PutObject、GetObject（Range）、HeadObject、DeleteObject、DeleteObjects、ListObjectsV2、ListBuckets 与 multipart。写入汇入统一写入路径（配额、目录行、内容寻址与主 API 一致），读取经读路径容灾（§G）。
+
+**依赖**：网关密钥认证、`services/files/write.ts`、`services/storage/failover.ts`、日志仓库。
+
+### AList 兼容服务
+
+**职责**：实现 AList v3 REST 协议子集（挂载在 `/openlist` 前缀），供 PicList 内置的 AList 通道接入：login、fs/form（上传）、fs/list、fs/get（带签名直链）、fs/remove。
+
+- 认证接受裸 token / Bearer / Basic；`login` 即网关密钥校验（`pk_*.sk_*`）。
+- 上传与删除复用统一写入与删除路径；`fs/get` 的直链走 `/d` 签名链接。
+
+**依赖**：网关密钥认证、`services/files/write.ts`、分享/文件仓库。
+
 ### WebDAV 服务
 
 **职责**：WebDAV 协议，兼容 PicGo、PicList：PROPFIND、GET/HEAD、PUT、DELETE、MKCOL、MOVE、OPTIONS。Basic 认证用 API 密钥。
@@ -372,7 +391,7 @@ services/keys/
 
 ### 公开服务
 
-**职责**：站点设置、公告、健康检查、公开空间 gallery，无需认证。
+**职责**：站点设置、公告、健康检查、公开空间 gallery，无需认证；另有站点 Logo / Favicon 中转（`/api/public/site-asset/:kind`，只中转当前配置的两个地址并做边缘缓存）。
 
 ```
 services/public/

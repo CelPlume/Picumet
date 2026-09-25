@@ -155,7 +155,7 @@ Both matrices and the landing-bucket `providerId` are resolved and cached per re
 
 **Guest visibility (per file).** `file_metadata.guest_visibility` is `NULL` / `none` / `download` / `view`; when unset it follows the role default, so **guests can only download by default**. On evaluation `syntheticGuestRule` synthesizes the file's guest visibility into one allow rule and merges it into the candidate set: `download` allows downloads, `view` allows viewing (list/preview) plus downloads, and `none` allows nothing. The "Default user permissions" section of the file properties panel is its only configuration entry point.
 
-**Password protection priority (file-level over path-level).** `checkPasswordProtection(fileAccessPassword, matchingRule)` looks at the file's own `access_password` first — when present, the file password governs; only then does it consider the matching path rule's `requirePassword` + `passwordHash`; with neither, no password is required. The two levels never stack: when a file password exists, the path-level password is out of the picture.
+**Password protection priority (file-level over path-level).** `checkPasswordProtection(fileAccessPassword, matchingRule)` looks at the file's own `access_password` first — when present, the file password governs; only then does it consider the matching path rule's `requirePassword` + `passwordHash`; with neither, the request needs no password. The two levels never stack: when a file password exists, the path-level password is out of the picture.
 
 Two security boundaries matter:
 
@@ -280,6 +280,25 @@ The storage layer also normalizes cross-provider details: object egress goes thr
 
 **Dependencies**: the provider and mount repositories and `utils/crypto.ts` for secret decryption.
 
+### S3 gateway service
+
+**Responsibilities**: a SigV4-verified S3 REST subset (mounted at `/s3`) that lets rclone, S3 SDKs, and S3 browsers use Picumet as an S3-compatible endpoint.
+
+- Authentication uses gateway keys (`pk_*` / `sk_*`). SigV4 requires a reversible secret: key creation stores it AES-GCM-encrypted (migration `0006`), and legacy keys do not support the S3 surface until you recreate them.
+- `bucket` is the first segment of the virtual path (the mount path or the key's upload root); `key` is the rest. `GET /s3` lists the buckets the key can reach.
+- Operations: PutObject, GetObject (Range), HeadObject, DeleteObject, DeleteObjects, ListObjectsV2, ListBuckets, and multipart. Writes funnel through the unified write path (quota, folder rows, and content addressing identical to the main API); reads go through read-path failover (§G).
+
+**Dependencies**: gateway-key authentication, `services/files/write.ts`, `services/storage/failover.ts`, and the log repository.
+
+### AList compatibility service
+
+**Responsibilities**: implements the AList v3 REST protocol subset (mounted at `/openlist`) for the AList channel built into PicList: login, fs/form (upload), fs/list, fs/get (signed direct links), and fs/remove.
+
+- Authentication accepts raw tokens, Bearer, and Basic; `login` is gateway-key validation (`pk_*.sk_*`).
+- Upload and delete reuse the unified write and delete paths; `fs/get` issues a signed `/d` direct link.
+
+**Dependencies**: gateway-key authentication, `services/files/write.ts`, and the share/file repositories.
+
 ### WebDAV service
 
 **Responsibilities**: the WebDAV protocol for PicGo and PicList compatibility, including PROPFIND, GET/HEAD, PUT, DELETE, MKCOL, MOVE, and OPTIONS, with Basic authentication using API keys.
@@ -372,7 +391,7 @@ Security notes:
 
 ### Public service
 
-**Responsibilities**: site settings, announcements, health checks, and the public gallery without authentication.
+**Responsibilities**: site settings, announcements, health checks, and the public gallery without authentication; plus the site logo/favicon relay (`/api/public/site-asset/:kind`, which serves only the two currently configured addresses behind an edge cache).
 
 ```
 services/public/
@@ -445,7 +464,7 @@ D1 stores the following core tables:
 | `transfer_slots` | Transfer concurrency slots (in-flight request counts, 30-minute leak threshold). |
 | `role_defaults` | Role defaults: default path/quota/status/capability bits/alias plus the **role default permissions** (`permissions`; built-in admin/user with all six, guest with `download` only). |
 | `download_tokens` | One-time download tokens consumed atomically. |
-| `access_logs` | Audit log of upload, download, delete, share, and verify actions. Deliberately has no `file_id` foreign key — it stores a path snapshot (`path`) so logs still land after the file is deleted, untouched by cascades. |
+| `access_logs` | Audit log of upload, download, delete, share, and verify actions. Deliberately omits the `file_id` foreign key — it stores a path snapshot (`path`), so logs still land after file deletion, untouched by cascades. |
 | `system_settings` | Key-value site settings. |
 | `announcements` | Site announcements and per-user dismissal records, plus the display-policy columns (§27): `display_mode` (`always`/`daily`/`interval`/`until`/`duration`/`once`), `interval_seconds`, and `kind` (`banner`/`toast`). |
 | `reconciliation_reports` | Reports from object-to-database reconciliation. |
