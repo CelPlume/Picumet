@@ -1,4 +1,4 @@
-// 权限判定算法测试：覆盖 spec.md 的真值表
+// 权限判定算法测试：覆盖权限排序真值表（主体特异度 > 路径特异度 > 显式优先级 > effect）
 import { describe, it, expect } from 'vitest';
 import {
   checkPermission,
