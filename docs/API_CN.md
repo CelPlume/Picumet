@@ -3309,6 +3309,30 @@ curl https://{domain}/api/public/announcements
 curl https://{domain}/api/public/health/ready
 ```
 
+### 获取站点标识资源
+
+`GET /api/public/site-asset/{kind}?u={url}`
+
+中转管理员配置的站点 Logo 或 Favicon。`kind` 取 `logo` 或 `favicon`；`u` 必须与「管理端 → 系统设置」当前配置的 `site_logo` / `site_favicon` 完全一致。命中时返回图片内容，响应带 `Cache-Control: public, max-age=604800`，浏览器与边缘缓存此后直接命中，不再回源。
+
+#### 路径参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `kind` | `string` | 是 | `logo` 或 `favicon`，决定与哪个设置项比对。 |
+
+#### 查询参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `u` | `string` | 是 | 站点 Logo / Favicon 的完整地址，须与当前配置逐字符一致。 |
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | `kind` 非法、`u` 与当前配置不一致，或上游地址不可用。 | 在管理端系统设置重新配置站点 Logo / Favicon。 |
+
 ## 公开路径直服
 
 API 会直接从文件的公开虚拟路径返回文件，例如 `GET https://{domain}/drive/photos/photo.jpg`。该路由在所有 API 和 WebDAV 路由之后注册，因此不会遮蔽它们。

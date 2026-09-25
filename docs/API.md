@@ -3310,6 +3310,30 @@ Returns service health. The liveness probe always reports `ok`. The readiness pr
 curl https://{domain}/api/public/health/ready
 ```
 
+### Get a site identity asset
+
+`GET /api/public/site-asset/{kind}?u={url}`
+
+Relays the site logo or favicon that the administrator configured. `kind` is `logo` or `favicon`; `u` must exactly match the `site_logo` / `site_favicon` currently configured in **Admin → System settings**. On a hit the response carries the image with `Cache-Control: public, max-age=604800`, so the browser and the edge cache serve later requests without touching the origin.
+
+#### Path parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `kind` | `string` | Yes | `logo` or `favicon`; selects which setting to compare the URL against. |
+
+#### Query parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `u` | `string` | Yes | The full site logo / favicon address; must match the current configuration character for character. |
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | The `kind` is unknown, `u` differs from the current configuration, or the upstream address is unreachable. | Reconfigure the site logo / favicon in Admin → System settings. |
+
 ## Serve files from public paths
 
 The API serves files directly from their public virtual path, for example `GET https://{domain}/drive/photos/photo.jpg`. This route runs after all API and WebDAV routes, so it never shadows them.
