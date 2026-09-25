@@ -170,6 +170,8 @@ python3 scripts/verify-storage-failover.py --base-url http://localhost:8787
 
 `services/permissions/check.ts` 里的权限判定按优先级依次检查:管理员特权、挂载边界、用户根路径、API 密钥权限范围、路径规则、所有者回退、默认拒绝。测试要锁死路径段边界:`/users/alice` 绝不能匹配 `/users/alice2`。规则优先级、通配符模式和默认拒绝也要有用例。
 
+密码保护优先级同样要有用例:文件级 `access_password` 优先于命中路径规则的 `requirePassword`(见 `checkPasswordProtection`),两级不叠加——文件设了密码时路径级密码不参与校验,都没有时不需要密码。
+
 ### 文件状态机
 
 上传会话按 `pending → uploading → verifying → completed` 流转,终态包括 `failed`、`expired`、`aborted`。分片上传还会经过 `parts_uploaded` 和 `completing`。要覆盖断点续传、中止,以及按分片覆盖度和最终 HEAD 大小做完成校验的逻辑。

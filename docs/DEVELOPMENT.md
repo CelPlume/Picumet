@@ -170,6 +170,8 @@ Cover the following modules whenever you change them.
 
 The permission algorithm in `services/permissions/check.ts` decides access with a priority order: administrator privilege, mount boundary, user root path, API-key permission scope, path rules, owner fallback, and default deny. Tests must lock in path segment boundaries: `/users/alice` must never match `/users/alice2`. Add cases for rule priority, wildcard patterns, and default deny.
 
+Password-protection priority needs cases too: the file-level `access_password` outranks the matching path rule's `requirePassword` (see `checkPasswordProtection`), and the two never stack — with a file password set, the path-level password is out of the picture; with neither, no password is required.
+
 ### File state machine
 
 Upload sessions transition through `pending → uploading → verifying → completed`, with `failed`, `expired`, and `aborted` terminal states. Multipart uploads add `parts_uploaded` and `completing`. Cover resume, abort, and the completion check that verifies part coverage and the final HEAD size.
