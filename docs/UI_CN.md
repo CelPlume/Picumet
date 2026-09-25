@@ -219,9 +219,20 @@ flowchart LR
 
 用户可以选择 **浅色**、**深色** 或 **跟随系统**。跟随系统时，应用读取 `prefers-color-scheme`，并响应系统实时切换。深色模式在根元素上加 `dark` 类。
 
+### 站点标识资源中转（`stores/site.ts` + `services/public/site-asset.ts`）
+
+- 管理员配置的 Logo/Favicon 往往指向外部图床，而这类地址经常不可缓存（302 到带临时 token 的地址、终态只有 `cache-control: private` 且无 max-age），直接引用会让浏览器每次刷新重新下载整张图（实测 818 KB）。
+- 前端把配置的 http(s) 地址映射为 `/api/public/site-asset/logo|favicon?u=…`（`stores/site.ts` 的 `siteAssetUrl`；相对路径保持原样）；Worker 只中转 `system_settings` 里**当前配置**的那两个地址（其余一律 404，防开放代理），再过 `validateEndpoint` 拒绝私网/保留地址，边缘 `caches.default` 缓存，响应带 `public, max-age=604800`——浏览器此后直接命中本地缓存，刷新不触网。
+- 公开设置整体也存 localStorage（`picumet:site`）：首帧直接套用标题与图标，接口返回后再对齐最新值。
+- 品牌锁定组件 `Logo`（AppShell / 落地页 / 登录 / 注册 / 重置密码 / 公开浏览 / 分享页 / 自由模式）统一传 `siteLogo` / `siteTitle` / `siteHeaderTitle`：配置了站点 Logo 就显示站点标识，未配置才回退默认 Picumet 图标；新增品牌位必须同样传齐三个 prop。
+
 ### 强调色
 
 用户从预设或取色器里选强调色。应用把十六进制值转成 HSL 三元组，写到 `--primary` 和 `--ring` 变量，Tailwind 以 `hsl(var(--primary))` 消费。再用 YIQ 公式算出前景色，浅色或深色强调色下文字和图标都保持可读。
+
+- **默认强调色 `#D8632B`**。预设常量 `ACCENT_PRESETS` 在 `stores/theme.ts`，个性化设置与落地页共用。
+- 浅色模式下，强调色与白字的对比度不足 4.5:1 时会逐步压暗（最低压到 35% 亮度）再按 YIQ 定前景；深色模式不压暗。
+- 落地页走 `accentHsl()`（`stores/theme.ts`）消费**原色**——不做压暗循环，因为落地页几乎没有 primary 底上放正文的场景；强调色一换，主页的点缀、进度条、图表色全部跟随。
 
 ### 模糊与背景
 
@@ -294,6 +305,8 @@ flowchart LR
 ### 入场动画体系（`stores/theme.ts` data-motion + `components/ui/reveal.tsx`）
 
 - **动画三档**（外观设置「动画档位」，落在 `<html data-motion>`，§33）：`off` 全站动画/过渡禁用（低性能设备/动效敏感）；`default` 只保留功能性动画（图表绘制、tab/弹窗/抽屉过渡、加载态），装饰性入场关停；`all` 外加入场动画（默认）。CSS 侧统一门停（`index.css`），组件零分支。
+- **进入模糊（主页同款，`all` 档）**：`reveal-in` / `reveal-row-in` 的 from 帧带 `filter: blur(var(--reveal-blur, 8px | 6px))`——只写 from，终点回落到元素自身 filter（普通元素 none、封禁行 grayscale），`.reveal` 8px、密集行 `.reveal-row` 6px。文件卡片视图、个性化设置、仪表盘、系统设置等全部 reveal 消费者随之生效。
+- **菜单同款模糊**：下拉 / 右键 / Select 菜单在 `all` 档给容器叠加 `dropdown-blur-in`（blur 6px，与 `dropdown-in` 双动画不同属性可叠加），逐项淡入继承 `reveal-row-in` 的 from-blur；右键菜单复用 `.animate-dropdown`，无需单独处理。
 - **reveal 原语**：`.reveal`（淡入 + 8px 上浮）与 `.reveal-row`（只淡入——表格行 translate 会撕开表头与首行空隙）；`animation-fill-mode: both` 首帧即占位隐藏，mount 后只播一次，换路由/重建容器才重播。逐项延迟走 CSS 变量 `--reveal-delay`（`revealDelay(index, layer, base)`），**不逐项挂 JS 定时器**。
 - **两层节奏**：卡片/分区步长 `REVEAL_STEP`（40ms），卡内行/表格行步长 `REVEAL_STEP_FINE`（25ms）；卡内元素用 `innerDelay(cardIndex, rowIndex)` 叠加「所在卡片延迟 + `REVEAL_INNER_BASE`(60ms)」，形成先卡片、卡头、再字段行的次序；第 10 项起延迟封顶（`REVEAL_MAX_INDEX`），长列表不拖尾。
 - **落位约定**：页面顶栏/工具栏 = 区块 index 0，主卡片从 1 起；卡片 = `.reveal` + `revealDelay(i)`；表头行 = `reveal-row` + `innerDelay(卡序, 0)`；数据行/表单字段行 = `reveal-row` + `innerDelay(卡序, i+1)`。设置类页面（个性化、系统设置）的卡内字段**逐行渐入**；仪表盘存储行、趋势面板卡内同理。
@@ -423,6 +436,20 @@ flowchart LR
 - 设置/管理内容 `lg:grid-cols-2`；admin 系统设置左列堆叠"系统设置+公告"、右列 SMTP。
 - 设置/管理侧栏 sticky + 内滚；内滚区域 `scrollbar-none`，可见滚动条用 `scrollbar-thin`（8px 圆角 muted）。两者是普通 CSS 类，**不支持 `md:` 变体前缀**（写 `md:scrollbar-none` 无效，历史 bug 来源）。
 - 后台/设置内容列接入有界高度链（出口 `h-full min-h-0` + `md:self-stretch`，行 `items-start` 让侧栏贴内容高）；外壳 `h-screen` 弹性列给出精确可视高度，表格卡因此改用 `flex-1 min-h-0` 而不再各写视口算式，公告横幅出现时表格变矮而非把分页挤出视口。滚动条保持 `scrollbar-none`（main、内容包裹层）或 `scrollbar-thin`（表体）——原生滚动条不出现。
+
+### `pages/Landing.tsx` + `components/landing/` — 落地页独立视觉系统
+
+- **强调色跟随个性化设置（默认 #D8632B）**：`accentHsl()` 把 accentColor 算成 `--primary` / `--primary-foreground` 内联到 `.landing` 根（landing.css 里同名变量只是回退值）；强调色一换，主页点缀、进度条、图表全部跟随。**模糊档位 / 壁纸 / 动画档位仍不消费**：根元素实底铺满遮住 body 壁纸，不使用任何 `glass-*` 类（`.no-blur` 不触达）；只跟随明暗模式（`.dark`）与语言（根 `lang` 属性驱动 `:lang(zh)` 收紧 CJK 字距）。样式 `landing.css` 随落地页 chunk 懒加载。
+- **动画独立**：`index.css` 的 `data-motion` 三档对 `.landing` 子树豁免（`[data-motion='off'] :not(.landing, .landing *)`），落地页只尊重 `prefers-reduced-motion`。
+- **文件划分**：`pages/Landing.tsx` 只做装配（顶栏 + 区块 + 页脚）；区块在 `sections.tsx`（hero / providers / workflow / pool / admin / details / integrations / security / edge / deploy / faq / cta）；模拟界面 `mockups.tsx`；SVG 插画 `Thumb.tsx`；服务商标识 `brands.tsx`；示例二维码 `share-qr.ts`；原语与钩子 `primitives.tsx`。
+- **顶栏只有** Logo（size 40）、GitHub 图标、主题、语言、**查看文档**（紧挨登录/打开文件左侧）、登录/打开文件，**没有站内导航**；区块 id 仍保留（`#workflow` `#storage` `#admin` `#integrations` `#deploy` `#faq`）。hero 的次要按钮也是「查看文档」。
+- **文档与品牌外链**：查看文档 / 页脚文档 / 部署指南指向 CelPlume 文档站（中文 `https://celplume.hxcn.space/zh/picumet/`、英文 `https://celplume.hxcn.space/picumet/`、部署页 `dev/deployment/`，常量在 `primitives.tsx` 的 `docsUrl`）；页脚版权是 `© {year} 天空之翼 / CelPlume All Rights Reserved`，品牌名链接到 `https://celplume.hxcn.space/`。
+- **顶栏显示/隐藏必须用 `lp-hide-sm`**（landing.css 自带媒体查询），**不要**用 Tailwind 的 `hidden` / `max-sm:hidden`——landing.css 在 utilities 之后加载，`.lp-btn` / `.lp-icon-btn` 的 `display` 会盖掉 `hidden`（历史 bug：顶栏文档按钮双渲染）。
+- **入场与循环**：整页一个 IntersectionObserver（`useRevealRoot`）给 `[data-reveal]` 打 `data-shown`；首屏用 `.lp-rise` / `.lp-tilt-in` 固定延迟；循环演示（进度条、落桶节拍、地球自转）只在可见时跑，`useReducedMotion` 时停并直达终态。
+- **文案**：模拟界面里的 UI 标签一律复用应用已有 key（`files.*` / `upload.*` / `share.*` / `admin.*` / `perm.*`），示例数据（文件名、桶名、路径、IP）保持字面量；落地页专属文案在 `landing.*`，两份语言包必须同时存在。
+- **代码块不得横向滚动**：命令用 `whitespace-pre-wrap break-words` 在块内折行，容器加 `min-w-0`；模拟窗宽度 `w-[min(980px,92vw)] max-md:w-full`，避免窄屏溢出。
+- **深色可读性**：模拟窗底 `--lp-surface` 比页面底色高一档；存储池容量条 `bg-primary/25` + `border-t border-primary/50`。
+- **验收**：横屏 + 竖屏 × 明暗 × 中英逐屏截图核对，`document.documentElement.scrollWidth <= clientWidth`（无横向滚动），页面内无 `overflow-x: auto/scroll` 的代码块。
 
 ### 验收纪律
 

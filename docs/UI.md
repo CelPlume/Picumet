@@ -219,9 +219,20 @@ The theme store in `frontend/src/stores/theme.ts` persists personalization in `l
 
 Users pick **light**, **dark**, or **system**. In system mode the app follows `prefers-color-scheme` and reacts to live changes. Dark mode toggles a `dark` class on the root element.
 
+### Site identity assets (`stores/site.ts` + `services/public/site-asset.ts`)
+
+- Admin-configured logos/favicons often point at image hosts that cannot be cached (a 302 to a tokenized URL whose final response is only `cache-control: private` with no max-age), so referencing them directly makes the browser re-download the whole image on every refresh (818 KB measured).
+- The frontend maps configured http(s) URLs to `/api/public/site-asset/logo|favicon?u=…` (`siteAssetUrl` in `stores/site.ts`; relative paths stay as-is). The Worker only proxies the two URLs **currently configured** in `system_settings` (everything else 404s — no open proxy), runs them through `validateEndpoint` to refuse private ranges, caches them at the edge with `caches.default`, and answers with `public, max-age=604800` — the browser then serves later loads from its own cache.
+- The public settings are also cached in localStorage (`picumet:site`): the title and favicon apply on the first paint, then reconcile with the API response.
+- The brand lockup component `Logo` (AppShell / landing / sign-in / sign-up / reset password / public browse / share page / free mode) always receives `siteLogo` / `siteTitle` / `siteHeaderTitle`: a configured site logo replaces the mark, and the default Picumet icon is only the fallback. New brand slots must pass all three props.
+
 ### Accent color
 
 Users pick an accent color from presets or with a color picker. The app converts the hex value to an HSL triple and writes it to the `--primary` and `--ring` CSS variables. Tailwind consumes these as `hsl(var(--primary))`. The app computes a foreground color with the YIQ formula, so text and icons stay readable on light or dark accents.
+
+- **The default accent is `#D8632B`**. The preset constant `ACCENT_PRESETS` lives in `stores/theme.ts` and is shared by the personalization page and the landing page.
+- In light mode, when the accent lacks 4.5:1 contrast against white text, it darkens step by step (down to 35% lightness) before the YIQ pass; dark mode never darkens.
+- The landing page consumes the **raw** shade through `accentHsl()` (`stores/theme.ts`) — no darkening loop, since the landing almost never places body text on the primary; switching the accent recolors every landing accent surface (dots, bars, charts).
 
 ### Blur and background
 
@@ -294,6 +305,8 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 ### Entrance animation system (`stores/theme.ts` data-motion + `components/ui/reveal.tsx`)
 
 - **Motion tiers** (appearance setting "Animation level", written to `<html data-motion>`, §33): `off` disables every animation and transition (low-power devices, motion sensitivity); `default` keeps only functional animations (chart drawing, tab/dialog/drawer transitions, loading states) and turns decorative entrances off; `all` adds entrance animations (the default). CSS gates all of it centrally in `index.css` — components carry zero branches.
+- **Entrance blur (landing-style, `all` tier)**: the `reveal-in` / `reveal-row-in` from-frames carry `filter: blur(var(--reveal-blur, 8px | 6px))` — from-only, so the end state falls back to the element's own filter (none normally, grayscale for banned rows); `.reveal` uses 8px, dense `.reveal-row` rows 6px. File cards, personalization, the dashboard, system settings and every other reveal consumer get it.
+- **Menus get the same blur**: dropdown / context / Select menus stack `dropdown-blur-in` on the container in the `all` tier (blur 6px — a second animation, different properties, so they compose) while items inherit `reveal-row-in`'s from-blur; the context menu reuses `.animate-dropdown`, so no special handling is needed.
 - **Reveal primitives**: `.reveal` (fade + 8px rise) and `.reveal-row` (fade only — translating table rows tears a gap between the header and the first row); `animation-fill-mode: both` keeps the first frame hidden but space-reserved, plays once on mount, and replays only when the route or a rebuilt container remounts. Per-item delays ride the `--reveal-delay` CSS variable (`revealDelay(index, layer, base)`), **never per-item JS timers**.
 - **Two-layer rhythm**: blocks (cards/sections) step `REVEAL_STEP` (40ms); rows inside cards and table rows step `REVEAL_STEP_FINE` (25ms); in-card elements use `innerDelay(cardIndex, rowIndex)`, stacking the owning card's delay plus `REVEAL_INNER_BASE` (60ms) so the order reads card → header → fields. Delays cap at the tenth item (`REVEAL_MAX_INDEX`) so long lists never trail out.
 - **Placement conventions**: page toolbar = block index 0, main cards start at 1; cards = `.reveal` + `revealDelay(i)`; the header row = `reveal-row` + `innerDelay(card, 0)`; data rows and form fields = `reveal-row` + `innerDelay(card, i + 1)`. Settings-style pages (personalization, system settings) fade their card fields in **row by row**; the dashboard usage rows and trend panel do the same.
@@ -423,6 +436,20 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 - Settings/admin content uses `lg:grid-cols-2`; the admin system settings stack "system settings + announcements" in the left column with SMTP on the right.
 - Settings/admin sidebars are sticky with inner scroll; inner scroll areas use `scrollbar-none`, visible scrollbars use `scrollbar-thin` (8px, rounded, muted). Both are plain CSS classes and **do not support `md:` style variants** (`md:scrollbar-none` silently does nothing — a past bug source).
 - The admin/settings outlet columns join the bounded height chain (`h-full min-h-0` on the outlet plus `md:self-stretch`, with `items-start` on the row so the sidebar hugs its content); the shell's `h-screen` flex column makes the visible height exact, so table cards use `flex-1 min-h-0` instead of per-page viewport math and the announcement banner shrinks tables instead of pushing pagination off-screen. Scrollbars stay `scrollbar-none` (main, content wrappers) or `scrollbar-thin` (table bodies) — native bars never show.
+
+### `pages/Landing.tsx` + `components/landing/` — the landing page's own visual system
+
+- **The accent follows personalization (default `#D8632B`)**: `accentHsl()` derives `--primary` / `--primary-foreground` from the accent color and inlines them on the `.landing` root (the same variables in landing.css are only the fallback); switching the accent recolors every landing accent surface. **Blur tier / wallpaper / motion tier stay unconsumed**: the root paints a solid fill over the body wallpaper, uses **no `glass-*` classes** (the `.no-blur` rule cannot reach it), and follows only light/dark (`.dark`) and language (the root `lang` attribute drives `:lang(zh)` to tighten CJK tracking). `landing.css` ships in the lazy landing chunk.
+- **Its own animation**: the `data-motion` tiers in `index.css` exempt the `.landing` subtree (`[data-motion='off'] :not(.landing, .landing *)`); the landing page honours only `prefers-reduced-motion`.
+- **File layout**: `pages/Landing.tsx` only assembles (top bar + sections + footer); sections live in `sections.tsx` (hero / providers / workflow / pool / admin / details / integrations / security / edge / deploy / faq / cta); product mockups in `mockups.tsx`; SVG illustrations in `Thumb.tsx`; provider marks in `brands.tsx`; the sample QR in `share-qr.ts`; primitives and hooks in `primitives.tsx`.
+- **The top bar holds** the logo (size 40), the GitHub icon, theme, language, **View docs** (immediately left of sign-in/open-files) and the sign-in/open-files button — **no in-page navigation**. Section ids remain (`#workflow` `#storage` `#admin` `#integrations` `#deploy` `#faq`). The hero's secondary button is also "View docs".
+- **Docs and brand links**: View docs / the footer docs link / the deployment guide point at the CelPlume docs site (Chinese `https://celplume.hxcn.space/zh/picumet/`, English `https://celplume.hxcn.space/picumet/`, deployment page `dev/deployment/`; constant `docsUrl` in `primitives.tsx`). The footer copyright reads `© {year} 天空之翼 / CelPlume All Rights Reserved` with the brand name linked to `https://celplume.hxcn.space/`.
+- **Show/hide in the top bar must use `lp-hide-sm`** (landing.css ships its own media query), **not** Tailwind's `hidden` / `max-sm:hidden` — landing.css loads after the utilities, so the `display` of `.lp-btn` / `.lp-icon-btn` overrides `hidden` (past bug: the docs button rendered twice).
+- **Entrance and loops**: one IntersectionObserver for the whole page (`useRevealRoot`) marks `[data-reveal]` with `data-shown`; above-the-fold pieces use fixed-delay `.lp-rise` / `.lp-tilt-in`; looping demos (progress bars, bucket drops, globe rotation) run only while visible and stop at their end state under `useReducedMotion`.
+- **Copy**: UI labels inside the mockups reuse existing app keys (`files.*` / `upload.*` / `share.*` / `admin.*` / `perm.*`) while sample data (file names, bucket names, paths, IPs) stays literal; landing-only copy lives under `landing.*` and must exist in both language packs.
+- **Code blocks never scroll sideways**: commands wrap inside the block with `whitespace-pre-wrap break-words`, containers carry `min-w-0`; mock windows use `w-[min(980px,92vw)] max-md:w-full` so narrow viewports do not overflow.
+- **Dark-mode legibility**: the mock window base `--lp-surface` sits one step above the page background; pool capacity bars use `bg-primary/25` + `border-t border-primary/50`.
+- **Verification**: screenshot every screen across landscape + portrait, light/dark and zh/en, confirm `document.documentElement.scrollWidth <= clientWidth` (no horizontal scroll) and that no code block on the page is `overflow-x: auto/scroll`.
 
 ## Accessibility
 
