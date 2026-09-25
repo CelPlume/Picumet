@@ -34,7 +34,7 @@ export interface AppearanceSettings {
 
 const DEFAULT: AppearanceSettings = {
   theme: 'system',
-  accentColor: '#3B82F6',
+  accentColor: '#D8632B',
   blurLevel: 'default',
   motionLevel: 'all',
   backgroundType: 'none',
@@ -183,6 +183,22 @@ function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: n
 
 const initial = load();
 applyTheme(initial);
+
+/** 强调色预设：#D8632B 为默认，原蓝色 #3B82F6 次之（个性化设置与落地页共用） */
+export const ACCENT_PRESETS = ['#D8632B', '#3B82F6', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#0EA5E9', '#64748B'];
+
+/**
+ * 强调色 → HSL 三元组 + 前景色（落地页等独立表面消费）。
+ * 与 applyTheme 的差异：不做浅色模式的压暗循环——落地页几乎没有「primary 底上放正文」
+ * 的场景，保持用户选的原色；前景仍按 YIQ 决定，保证 primary 上的文字可读。
+ */
+export function accentHsl(accent: string): { primary: string; foreground: string } {
+  const { r, g, b } = hexToRgb(accent);
+  const { h, s, l } = rgbToHsl(r, g, b);
+  const adj = hslToRgb(h, s, l);
+  const yiq = (adj.r * 299 + adj.g * 587 + adj.b * 114) / 1000;
+  return { primary: `${h} ${s}% ${l}%`, foreground: yiq >= 128 ? '222.2 47.4% 11.2%' : '210 40% 98%' };
+}
 
 export const useTheme = create<ThemeState>((set, get) => ({
   ...initial,

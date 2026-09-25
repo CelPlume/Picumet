@@ -34,6 +34,7 @@ import { revealDelay, innerDelay } from '@/components/ui/reveal';
 import { FilesPerRowSlider } from '@/components/settings/FilesPerRowSlider';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
+import { ACCENT_PRESETS } from '@/stores/theme';
 import { useAuth } from '@/stores/auth';
 import { useTheme } from '@/stores/theme';
 import { setLocale } from '@/lib/i18n';
@@ -55,7 +56,6 @@ interface SettingsData {
   quota: Quota;
 }
 
-const ACCENT_PRESETS = ['#3B82F6', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#0EA5E9', '#64748B'];
 const MAX_BG_SIZE = 2 * 1024 * 1024; // 2MB
 
 export default function PersonalizationPage() {
