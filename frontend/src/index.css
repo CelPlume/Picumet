@@ -276,9 +276,11 @@
    data-motion 三档与 prefers-reduced-motion 的关停见下方「动画三档」与文件末尾降级方案。 */
 /* 显式 to{opacity:1} + fill both 会永久压过业务透明度（封禁行 opacity-40、文件灰度等
    被 CSS 动画值盖成 1）——因此只写 from，终点隐式回落到元素自身计算值：普通元素 = 1，
-   封禁行 = 0.4，且后续业务类变化会跟随。 */
+   封禁行 = 0.4，且后续业务类变化会跟随。
+   同一条规则也适用于 filter：只写 from 的 blur，终点回到元素自身的 filter
+   （普通元素 = none，封禁行 = grayscale）。 */
 @keyframes reveal-in {
-  from { opacity: 0; transform: translateY(var(--reveal-shift, 8px)); }
+  from { opacity: 0; transform: translateY(var(--reveal-shift, 8px)); filter: blur(var(--reveal-blur, 8px)); }
 }
 
 .reveal {
@@ -287,9 +289,10 @@
 }
 
 /* 表格行变体（.reveal-row）：只淡入、不位移——表格行 translate 会在表头与首行之间
-   撕出一条随延迟加宽的空隙（行仍占位但内容下移 8px）。表单/列表行统一用这个。 */
+   撕出一条随延迟加宽的空隙（行仍占位但内容下移 8px）。表单/列表行统一用这个。
+   模糊半径略小：密集行同时起雾时 8px 会糊成一片。 */
 @keyframes reveal-row-in {
-  from { opacity: 0; }
+  from { opacity: 0; filter: blur(var(--reveal-blur, 6px)); }
 }
 
 .reveal-row {
