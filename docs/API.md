@@ -15,6 +15,7 @@ This reference describes the Picumet REST API. The API manages files across mult
 ## Before you begin
 
 - **Base URL**: the deployed origin of the Workers application, for example `https://{domain}`. All paths in this reference are relative to that origin.
+- **Paths and naming**: virtual paths are at most 2048 characters and must start with `/` (shared `PathSchema` validation); file names are at most 255 characters and cannot contain `<> : " | ? *` or control characters.
 - **Authentication**: each request uses one of three methods, depending on the client.
 - **CSRF tokens**: cookie-authenticated write requests must include the `X-CSRF-Token` header. Obtain a token from `GET /api/auth/csrf-token`. API-key and WebDAV requests skip CSRF checks.
 - **Content type**: send JSON request bodies with `Content-Type: application/json`. File uploads use `multipart/form-data` or a raw body.
@@ -92,6 +93,7 @@ Failed requests return an error envelope with an HTTP status code and a machine-
 | `FORBIDDEN` | `403` | The caller lacks permission for the operation. | Check the permission rules and the API key scope. |
 | `PASSWORD_REQUIRED` | `403` | The file is password-protected and the password is not verified. | Call the password-verify endpoint first. |
 | `NOT_FOUND` | `404` | The resource, file, mount, or path does not exist. | Confirm the identifier or path and retry. |
+| `INVALID_PATH` | `400` | The path is invalid (missing the leading `/`, contains `..` / `~`, or is out of bounds), or the upload hit the file-type blocklist (message like "禁止上传 .exe 文件"). | Fix the path or use a different file type. |
 | `ALREADY_EXISTS` | `409` | A file or folder with the same name already exists. | Use a different name. |
 | `OPERATION_FAILED` | `409` / `422` | The operation cannot proceed because of the current state. | Check the error message and retry. |
 | `SHARE_EXPIRED` | `410` | The share link has expired. | Ask the creator for a new link. |
@@ -927,7 +929,7 @@ Returns the status of an asynchronous operation, such as a move. Only the job ow
 }
 ```
 
-The `status` value is `pending`, `running`, `completed`, or `failed`. `progress` is a percentage from 0 to 100.
+The `status` value is `pending`, `running`, `completed`, `failed`, or `rollback` (the failure-compensation phase). `progress` is a percentage from 0 to 100; the internal phases of a move walk `init → copying → verifying → committing` (progress 0 / 70 / 90 / 100) — the phase stays server-side and never appears in the response.
 
 #### Errors
 
@@ -2024,6 +2026,8 @@ Creates an API key. The full token is shown only once, so store it before you cl
 | `uploadPath` | `string` | No | The upload root for writes. Defaults to `/uploads`. Normalized; the server rejects paths containing `..` or `~`. |
 | `allowedIps` | `array` | No | An IP whitelist. The server rejects requests from other IPs. |
 | `expiresIn` | `integer` | No | The key lifetime in seconds, at least 60. |
+
+> `uploadPath` doubles as the upload path template with 10 variables: `{year}` `{month}` `{day}` `{hour}` `{minute}` `{uuid}` `{hash}` `{ext}` `{mime}` `{username}`. Rendering is literal replacement; variables that do not apply become empty strings. The compat upload, Lsky V2, and AList `path` fields use the same template.
 
 #### Response
 

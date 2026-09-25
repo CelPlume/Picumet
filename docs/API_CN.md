@@ -15,6 +15,7 @@
 ## 开始之前
 
 - **基础地址**：Workers 应用部署后的域名，例如 `https://{domain}`。本文所有路径都相对于该域名。
+- **路径与命名**：虚拟路径不超过 2048 个字符且必须以 `/` 开头（共享 `PathSchema` 校验）；文件名不超过 255 个字符，禁止 `<> : " | ? *` 与控制字符。
 - **认证**：根据客户端类型，请求使用三种认证方式之一。
 - **CSRF**：使用 Cookie 认证的写请求必须携带 `X-CSRF-Token` 头，令牌通过 `GET /api/auth/csrf-token` 获取。API 密钥和 WebDAV 请求不检查 CSRF。
 - **请求格式**：JSON 请求体使用 `Content-Type: application/json`；文件上传使用 `multipart/form-data` 或原始字节流。
@@ -92,6 +93,7 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 | `FORBIDDEN` | `403` | 调用者没有执行该操作的权限。 | 检查权限规则和密钥范围。 |
 | `PASSWORD_REQUIRED` | `403` | 文件受密码保护，且密码未通过验证。 | 先调用密码验证端点。 |
 | `NOT_FOUND` | `404` | 资源、文件、挂载点或路径不存在。 | 核对标识或路径后重试。 |
+| `INVALID_PATH` | `400` | 路径非法（未以 `/` 开头、包含 `..` / `~`、越界），或命中上传文件类型黑名单（消息如「禁止上传 .exe 文件」）。 | 修正路径，或更换文件类型。 |
 | `ALREADY_EXISTS` | `409` | 同名文件或文件夹已存在。 | 换一个名称。 |
 | `OPERATION_FAILED` | `409` / `422` | 当前状态不允许执行该操作。 | 查看错误说明后重试。 |
 | `SHARE_EXPIRED` | `410` | 分享链接已过期。 | 请创建者重新生成。 |
@@ -927,7 +929,7 @@ curl -X POST https://{domain}/api/files/{id}/move \
 }
 ```
 
-`status` 取值为 `pending`、`running`、`completed` 或 `failed`。`progress` 为 0 到 100 的百分比。
+`status` 取值为 `pending`、`running`、`completed`、`failed` 或 `rollback`（失败补偿阶段）。`progress` 为 0 到 100 的百分比；移动任务的内部阶段依次为 `init → copying → verifying → committing`（对应 progress 0 / 70 / 90 / 100），phase 属服务端内部状态，不出现在响应里。
 
 #### 错误
 
@@ -2024,6 +2026,8 @@ curl -X POST https://{domain}/api/users/me/email/verify-otp \
 | `uploadPath` | `string` | 否 | 写操作的上传根目录，默认 `/uploads`。会做规范化，包含 `..` 或 `~` 的路径被拒绝。 |
 | `allowedIps` | `array` | 否 | IP 白名单，其他 IP 发来的请求会被拒绝。 |
 | `expiresIn` | `integer` | 否 | 有效期，单位秒，至少 60。 |
+
+> `uploadPath` 同时是上传路径模板，支持 10 个变量：`{year}` `{month}` `{day}` `{hour}` `{minute}` `{uuid}` `{hash}` `{ext}` `{mime}` `{username}`。渲染为字面替换，未匹配到的变量替换为空串；兼容上传 / Lsky V2 / AList 的 `path` 字段走同一模板。
 
 #### 响应
 
