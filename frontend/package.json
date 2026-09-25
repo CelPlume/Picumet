@@ -14,9 +14,12 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
     "@iconify/react": "^6.0.2",
     "@tanstack/react-query": "^5.62.7",
     "clsx": "^2.1.1",
+    "cobe": "^2.0.1",
     "dplayer": "^1.27.1",
     "highlight.js": "^11.10.0",
     "i18next": "^24.0.5",

@@ -337,10 +337,11 @@
 }
 
 /* off 档：全站动画/过渡禁用。transition-duration 0.01ms 保留事件模型的完整性
-   （transitionend 仍会触发一次），与 reduced-motion 降级方案同一写法 */
-[data-motion='off'] *,
-[data-motion='off'] *::before,
-[data-motion='off'] *::after {
+   （transitionend 仍会触发一次），与 reduced-motion 降级方案同一写法。
+   落地页（.landing 子树）豁免：它有独立的动画系统，不参与个性化动画档位 */
+[data-motion='off'] :not(.landing, .landing *),
+[data-motion='off'] :not(.landing, .landing *)::before,
+[data-motion='off'] :not(.landing, .landing *)::after {
   animation-duration: 0.01ms !important;
   animation-delay: 0ms !important;
   animation-iteration-count: 1 !important;
