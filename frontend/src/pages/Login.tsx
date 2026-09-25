@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Button, Input, Label, Dialog } from '@/components/ui/core';
 import { useAuth } from '@/stores/auth';
+import { useSite } from '@/stores/site';
 import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
 import { toast } from '@/components/ui/toast';
@@ -14,6 +15,7 @@ import type { User, Quota } from '@shared/types';
 
 export default function Login() {
   const { t } = useTranslation();
+  const site = useSite();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [username, setUsername] = useState('');
@@ -90,7 +92,9 @@ export default function Login() {
       <div className="flex flex-1 items-center justify-center px-4 pb-16">
         <div className="w-full max-w-sm">
           <div className="mb-8 text-center">
-            <div className="flex justify-center"><Logo size={44} /></div>
+            <div className="flex justify-center">
+              <Logo size={48} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} siteHeaderTitle={site.siteHeaderTitle} />
+            </div>
             <h3 className="mt-4 text-balance text-center text-lg font-semibold text-foreground">{t('login.title')}</h3>
             <p className="mt-1 text-pretty text-center text-sm text-muted-foreground">{t('login.subtitle')}</p>
           </div>

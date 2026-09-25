@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Ban, ChevronRight, Download, Eye, FileQuestion, FileText, FolderOpen, KeyRound, Link2, Lock, Share2, X } from 'lucide-react';
 import { Logo } from '@/components/layout/Logo';
+import { useSite } from '@/stores/site';
 import { Badge, Button, EmptyState, Input, Spinner } from '@/components/ui/core';
 import { Dropdown } from '@/components/ui/dropdown';
 import { ShareLinkPanel } from '@/components/share/ShareLinkPanel';
@@ -47,10 +48,13 @@ interface FolderListing {
 
 /** 页面外壳：顶部 Logo 栏 + 内容区（加载/错误/密码门/内容四个分支共用） */
 function ShareShell({ children }: { children: ReactNode }) {
+  const site = useSite();
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <header className="flex h-14 items-center justify-center border-b">
-        <a href="/"><Logo size={24} /></a>
+        <a href="/">
+          <Logo size={24} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} siteHeaderTitle={site.siteHeaderTitle} />
+        </a>
       </header>
       {children}
     </div>

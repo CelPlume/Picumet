@@ -6,10 +6,12 @@ import { ArrowLeft } from 'lucide-react';
 import { Button, Input, Label } from '@/components/ui/core';
 import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
+import { useSite } from '@/stores/site';
 import { ThemeToggle, LanguageSwitcher } from '@/components/layout/widgets';
 
 export default function ResetPassword() {
   const { t } = useTranslation();
+  const site = useSite();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const token = params.get('token') ?? '';
@@ -57,7 +59,9 @@ export default function ResetPassword() {
       <div className="flex flex-1 items-center justify-center px-4 pb-16">
         <div className="w-full max-w-sm">
           <div className="mb-8 text-center">
-            <div className="flex justify-center"><Logo size={44} /></div>
+            <div className="flex justify-center">
+              <Logo size={48} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} siteHeaderTitle={site.siteHeaderTitle} />
+            </div>
             <h3 className="mt-4 text-balance text-center text-lg font-semibold text-foreground">{t('login.resetPassword')}</h3>
             <p className="mt-1 text-pretty text-center text-sm text-muted-foreground">{t('login.subtitle')}</p>
           </div>

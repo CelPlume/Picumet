@@ -6,6 +6,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, FolderOpen, Home, Lock, LogIn, RefreshCw } from 'lucide-react';
 import { Logo } from '@/components/layout/Logo';
+import { useSite } from '@/stores/site';
 import { Button, EmptyState } from '@/components/ui/core';
 import { FileGridSkeleton } from '@/components/ui/skeleton';
 import FileIcon from '@/components/files/FileIcon';
@@ -34,6 +35,7 @@ function browseUrl(basePath: string, virtualPath: string): string {
 
 export default function Browse({ basePath = '' }: { basePath?: string }) {
   const { t } = useTranslation();
+  const site = useSite();
   const location = useLocation();
   const navigate = useNavigate();
   const [state, setState] = useState<BrowseState>({ kind: 'loading' });
@@ -72,7 +74,7 @@ export default function Browse({ basePath = '' }: { basePath?: string }) {
     <div className="flex min-h-screen flex-col bg-background">
       <header className="flex h-14 items-center justify-between border-b px-4">
         <Link to={'/'} className="flex items-center gap-2">
-          <Logo size={24} />
+          <Logo size={24} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} siteHeaderTitle={site.siteHeaderTitle} />
         </Link>
         <nav className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground" aria-label={t('browse.title')}>
           <Link to={'/'} className="shrink-0 rounded p-1 hover:bg-accent hover:text-foreground" title={t('common.back')}>

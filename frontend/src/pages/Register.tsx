@@ -8,11 +8,13 @@ import { InputOTP } from '@/components/ui/input-otp';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
+import { useSite } from '@/stores/site';
 import { ThemeToggle, LanguageSwitcher } from '@/components/layout/widgets';
 import type { User } from '@shared/types';
 
 export default function Register() {
   const { t } = useTranslation();
+  const site = useSite();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -82,7 +84,9 @@ export default function Register() {
       <div className="flex flex-1 items-center justify-center px-4 pb-16">
         <div className="w-full max-w-sm">
           <div className="mb-8 text-center">
-            <div className="flex justify-center"><Logo size={44} /></div>
+            <div className="flex justify-center">
+              <Logo size={48} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} siteHeaderTitle={site.siteHeaderTitle} />
+            </div>
             <h3 className="mt-4 text-balance text-center text-lg font-semibold text-foreground">{t('login.registerTitle')}</h3>
             <p className="mt-1 text-pretty text-center text-sm text-muted-foreground">{t('login.registerSub')}</p>
           </div>

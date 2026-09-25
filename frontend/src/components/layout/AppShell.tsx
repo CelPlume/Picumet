@@ -64,7 +64,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
               <Menu className="h-5 w-5" />
             </button>
             <Link to="/files">
-              <Logo size={26} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? "Picumet"} siteHeaderTitle={site.siteHeaderTitle} />
+              <Logo size={40} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? "Picumet"} siteHeaderTitle={site.siteHeaderTitle} />
             </Link>
             {freeMode && (
               <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
