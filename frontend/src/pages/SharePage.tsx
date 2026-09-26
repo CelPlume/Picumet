@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Ban, ChevronRight, Download, Eye, FileQuestion, FileText, FolderOpen, KeyRound, Link2, Lock, Share2, X } from 'lucide-react';
 import { Logo } from '@/components/layout/Logo';
 import { useSite } from '@/stores/site';
-import { Badge, Button, EmptyState, Input, Spinner } from '@/components/ui/core';
+import { Badge, Button, Dialog, EmptyState, Input, Spinner } from '@/components/ui/core';
 import { Dropdown } from '@/components/ui/dropdown';
 import { ShareLinkPanel } from '@/components/share/ShareLinkPanel';
 import FileIcon from '@/components/files/FileIcon';
@@ -141,6 +141,15 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
   const [folder, setFolder] = useState<FolderListing | null>(null);
   const [folderLoading, setFolderLoading] = useState(false);
   const [previewItem, setPreviewItem] = useState<ShareItemView | null>(null);
+  /** 文件密码弹窗的目标条目（null = 弹窗关闭）：分享密码已过后，带密码文件单独验证 */
+  const [filePwItem, setFilePwItem] = useState<ShareItemView | null>(null);
+  const [filePassword, setFilePassword] = useState('');
+  /** 已通过文件密码验证的条目 id（后端已种 HttpOnly cookie，15 分钟） */
+  const [fileAuthed, setFileAuthed] = useState<Set<string>>(() => new Set());
+  /** 弹窗来源：验证成功后续做的动作 */
+  const [pendingAction, setPendingAction] = useState<'download' | 'preview'>('download');
+  /** 预览 cache-bust：文件密码验证成功后追加时间戳，强制浏览器重新拉取预览流 */
+  const [previewBust, setPreviewBust] = useState(0);
 
   /** 拉取分享内容（不动 loading：带 ?password= 直接进时由 bootstrap 统一控制骨架屏时机） */
   const requestShare = async (): Promise<ShareInfo | null> => {
@@ -218,16 +227,60 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
     }
   };
 
-  const download = async (itemId: string) => {
+  /** 走后端换取下载 URL 并打开（不做密码校验；M-02：不携带密码，授权 cookie 已种下） */
+  const openDownload = async (itemId: string) => {
     if (!id) return;
     try {
-      // M-02：不携带密码；授权 cookie 已种下
       const res = await apiFetch<{ url: string; expiresIn: number }>(
         `/api/shares/${id}/download?itemId=${encodeURIComponent(itemId)}`
       );
       window.open(res.data.url, '_blank');
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : t('common.downloadFailed'));
+    }
+  };
+
+  /** 下载入口：带密码且未验证的文件先弹文件密码验证（后端下载令牌会被网关 403 PASSWORD_REQUIRED 拒绝） */
+  const download = (item: ShareItemView) => {
+    if (item.hasPassword && !fileAuthed.has(item.id)) {
+      setFilePwItem(item);
+      setFilePassword('');
+      setPendingAction('download');
+      return;
+    }
+    void openDownload(item.id);
+  };
+
+  /** 预览流报错：带密码且未验证的文件引导进文件密码验证弹窗（后端对未验证文件返回 401 PASSWORD_REQUIRED） */
+  const onPreviewError = (item: ShareItemView) => {
+    if (item.hasPassword && !fileAuthed.has(item.id)) {
+      setFilePwItem(item);
+      setFilePassword('');
+      setPendingAction('preview');
+    }
+  };
+
+  /** 文件密码验证：成功后种 HttpOnly cookie（15 分钟），续做被中断的下载/预览动作 */
+  const verifyFilePassword = async () => {
+    if (!id || !filePwItem || !filePassword) return;
+    const target = filePwItem;
+    const action = pendingAction;
+    try {
+      await apiFetch(`/api/shares/${id}/verify-file`, {
+        method: 'POST',
+        body: { itemId: target.id, password: filePassword },
+      });
+      setFileAuthed((prev) => new Set(prev).add(target.id));
+      setFilePwItem(null);
+      setFilePassword('');
+      if (action === 'download') {
+        await openDownload(target.id);
+      } else {
+        setPreviewBust(Date.now());
+      }
+    } catch (err) {
+      if (err instanceof ApiError) toast('error', err.status === 401 ? t('err.invalidPassword') : err.message);
+      else toast('error', t('err.invalidPassword'));
     }
   };
 
@@ -240,8 +293,9 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
 
   /** 复制分享文案：已知密码用带密码模板，否则用无密码模板 */
 
-  /** 图片预览直出流（对象流，鉴权靠 cookie） */
-  const previewSrc = (itemId: string) => `/api/shares/${id}/preview?itemId=${encodeURIComponent(itemId)}`;
+  /** 图片预览直出流（对象流，鉴权靠 cookie）；验证成功后追加 v= 时间戳 cache-bust 强制重拉 */
+  const previewSrc = (itemId: string) =>
+    `/api/shares/${id}/preview?itemId=${encodeURIComponent(itemId)}${previewBust ? `&v=${previewBust}` : ''}`;
 
   const items = folder ? folder.items : (info?.items ?? []);
 
@@ -404,7 +458,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
               )}
             </Dropdown>
             {info.allowDownload && singleFile && (
-              <Button onClick={() => void download(singleFile.id)}>
+              <Button onClick={() => download(singleFile)}>
                 <Download className="h-4 w-4" /> {t('common.download')}
               </Button>
             )}
@@ -413,7 +467,12 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
           {heroItem ? (
             // 图床短链大图预览
             <div className="glass-surface glass-blur rounded-xl border p-4 text-center">
-              <img src={previewSrc(heroItem.id)} alt={heroItem.name} className="mx-auto max-h-[60vh] rounded-md object-contain" />
+              <img
+                src={previewSrc(heroItem.id)}
+                alt={heroItem.name}
+                className="mx-auto max-h-[60vh] rounded-md object-contain"
+                onError={() => onPreviewError(heroItem)}
+              />
               <p className="mt-3 truncate text-sm text-muted-foreground">{heroItem.name}</p>
             </div>
           ) : (
@@ -465,7 +524,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
                         onOpen={() =>
                           void openFolder(folder ? folder.rootId : item.id, folder ? relJoin(folder.path, item.name) : '/')
                         }
-                        onDownload={() => void download(item.id)}
+                        onDownload={() => download(item)}
                         onPreview={() => setPreviewItem((cur) => (cur?.id === item.id ? null : item))}
                       />
                     );
@@ -488,13 +547,36 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
                       <X className="h-4 w-4" />
                     </button>
                   </div>
-                  <img src={previewSrc(previewItem.id)} alt={previewItem.name} className="mx-auto max-h-[50vh] rounded-md object-contain" />
+                  <img
+                    src={previewSrc(previewItem.id)}
+                    alt={previewItem.name}
+                    className="mx-auto max-h-[50vh] rounded-md object-contain"
+                    onError={() => onPreviewError(previewItem)}
+                  />
                 </div>
               )}
             </>
           )}
         </div>
       </main>
+
+      {/* 文件密码验证弹窗：分享密码（requiresPassword）已过后，对带密码文件单独验证；成功后种 HttpOnly cookie */}
+      <Dialog open={!!filePwItem} onClose={() => setFilePwItem(null)} title={t('sharePage.filePasswordTitle')}>
+        <div className="space-y-3">
+          {filePwItem && <p className="truncate text-sm text-muted-foreground">{filePwItem.name}</p>}
+          <Input
+            type="password"
+            value={filePassword}
+            onChange={(e) => setFilePassword(e.target.value)}
+            placeholder={t('sharePage.filePasswordPlaceholder')}
+            onKeyDown={(e) => e.key === 'Enter' && void verifyFilePassword()}
+            autoFocus
+          />
+          <Button className="w-full" onClick={() => void verifyFilePassword()}>
+            {t('common.confirm')}
+          </Button>
+        </div>
+      </Dialog>
 
       <footer className="border-t py-4 text-center text-xs text-muted-foreground">
         Powered by Picumet · <Share2 className="inline h-3 w-3" /> {t('landing.badge')}
