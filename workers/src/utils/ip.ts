@@ -1,4 +1,4 @@
-// 客户端真实 IP 解析（审计 SEC-03）：全站统一出口，替换各处自行实现的 XFF 首段解析。
+// 客户端真实 IP 解析：全站统一出口，收敛各处自行实现的 XFF 首段解析。
 // 优先级：
 //   1. `cf.connectingIp` —— Cloudflare Workers 运行时注入的属性，客户端请求不可伪造；
 //   2. `CF-Connecting-IP` 头 —— Cloudflare 官方建议的应用层来源（边缘会覆盖客户端同名头）；

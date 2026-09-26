@@ -1,4 +1,4 @@
-// 自由模式安全回归（审计 H-1/H-2/M-2）：
+// 自由模式安全边界：
 // CSRF 必带、Origin 跨站拒绝、路径/文件名边界、不再签发长寿命 JWT、logout 撤销会话
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { createTestContext, initSeeded, request, json, type TestContext } from './helpers';
@@ -41,8 +41,8 @@ async function seedSession(overrides: { path?: string; ip?: string } = {}): Prom
   return { cookie: `fm_token=${sid}`, csrf };
 }
 
-describe('自由模式安全防护（H-1/H-2/M-2）', () => {
-  it('H-1：写方法缺少 CSRF Token → 403 INVALID_CSRF', async () => {
+describe('自由模式安全防护', () => {
+  it('写方法缺少 CSRF Token → 403 INVALID_CSRF', async () => {
     const { cookie } = await seedSession();
     const res = await request(ctx, '/api/free-mode/upload', {
       method: 'POST',
@@ -55,7 +55,7 @@ describe('自由模式安全防护（H-1/H-2/M-2）', () => {
     expect(data.error.code).toBe('INVALID_CSRF');
   });
 
-  it('H-1：写方法携带错误 CSRF → 403', async () => {
+  it('写方法携带错误 CSRF Token → 403', async () => {
     const { cookie } = await seedSession();
     const res = await request(ctx, '/api/free-mode/upload', {
       method: 'POST',
@@ -66,7 +66,7 @@ describe('自由模式安全防护（H-1/H-2/M-2）', () => {
     expect(res.status).toBe(403);
   });
 
-  it('H-1：非白名单 Origin → 403（跨站拒绝）', async () => {
+  it('非白名单 Origin → 403（跨站拒绝）', async () => {
     const { cookie } = await seedSession();
     const res = await request(ctx, '/api/free-mode/files', {
       cookie,
@@ -75,7 +75,7 @@ describe('自由模式安全防护（H-1/H-2/M-2）', () => {
     expect(res.status).toBe(403);
   });
 
-  it('H-2：文件名含 .. 片段 → 400', async () => {
+  it('文件名含 .. 片段 → 400', async () => {
     const { cookie, csrf } = await seedSession();
     const res = await request(ctx, '/api/free-mode/upload', {
       method: 'POST',
@@ -86,7 +86,7 @@ describe('自由模式安全防护（H-1/H-2/M-2）', () => {
     expect(res.status).toBe(400);
   });
 
-  it('H-2：query path 越界（..）→ 400', async () => {
+  it('query path 越界（..）→ 400', async () => {
     const { cookie, csrf } = await seedSession();
     const res = await request(ctx, '/api/free-mode/upload?path=..%2F..%2F', {
       method: 'POST',
@@ -97,7 +97,7 @@ describe('自由模式安全防护（H-1/H-2/M-2）', () => {
     expect(res.status).toBe(400);
   });
 
-  it('H-2：删除 key 含 .. 或控制字符 → 400', async () => {
+  it('删除 key 含 .. 或控制字符 → 400', async () => {
     const { cookie, csrf } = await seedSession();
     const res = await request(ctx, '/api/free-mode/object?key=..%2F..%2Fetc', {
       method: 'DELETE',
@@ -107,7 +107,7 @@ describe('自由模式安全防护（H-1/H-2/M-2）', () => {
     expect(res.status).toBe(400);
   });
 
-  it('M-2：init 只签发 fm_token（不再签发 7 天 JWT），并返回会话级 CSRF Token', async () => {
+  it('init 只签发 fm_token（不再签发 7 天 JWT），并返回会话级 CSRF Token', async () => {
     vi.spyOn(S3Provider.prototype, 'testConnection').mockResolvedValue({ connected: true, message: 'ok' });
     const res = await request(ctx, '/api/free-mode/init', {
       method: 'POST',

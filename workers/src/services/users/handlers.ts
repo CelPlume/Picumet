@@ -163,7 +163,7 @@ userRoutes.put('/me/password', async (c) => {
     await consumePasswordCode(db, userId, parsed.data.emailCode);
   }
   await UserRepo.updateUser(db, userId, { password_hash: hashPassword(parsed.data.newPassword) });
-  // 审计 H-05：改密后旧 JWT 立即失效，需重新登录
+  // 改密后旧 JWT 立即失效，需重新登录
   await UserRepo.bumpSessionVersion(db, userId);
   return ok(c, { message: '密码已修改，请重新登录' });
 });

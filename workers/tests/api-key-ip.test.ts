@@ -1,4 +1,4 @@
-// API Key IP 白名单回归（审计 Fix 2）
+// API Key IP 白名单：来源 IP 的判定与白名单匹配
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
 import type { Env } from '../src/shared/types';
@@ -69,7 +69,7 @@ describe('API Key IP 白名单', () => {
     expect(res.status).toBe(200);
   });
 
-  // SEC-03（审计 §SEC-03）：cf.connectingIp 是运行时注入的不可伪造来源，必须压过客户端可伪造的头
+  // cf.connectingIp 由运行时注入、不可伪造，必须压过客户端可伪造的 XFF / CF-Connecting-IP 头
   it('带 cf.connectingIp 时白名单判定使用它而非伪造的 XFF / CF-Connecting-IP', async () => {
     const { authCookie } = await registerAndLogin(ctx, 'ipcf');
     const csrf = await getCsrf(ctx, authCookie);

@@ -60,7 +60,15 @@ authRoutes.post('/register/send-otp', authRateLimitMiddleware, async (c) => {
   const raw = await SettingsRepo.getAll(db);
   const smtp = await resolveSmtpConfig(raw, c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
   if (!smtp) throw ApiError.badRequest('邮件服务未配置，请联系管理员');
-  const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+  // 注册验证码必须来自 CSPRNG（Math.random 可预测，可被枚举爆破）。
+  // 拒绝采样剔除 >= 4_000_000_000 的取值，使 0..999999 均匀分布。
+  const otpBuf = new Uint32Array(1);
+  let otpValue: number;
+  do {
+    crypto.getRandomValues(otpBuf);
+    otpValue = otpBuf[0];
+  } while (otpValue >= 4_000_000_000);
+  const code = String(otpValue % 1_000_000).padStart(6, '0');
   await c.env.KV.put(`email:otp:register:${email}`, code, { expirationTtl: 300 });
   await sendMail(
     { ...smtp, from: smtp.from || 'Picumet <noreply@example.com>' },
@@ -151,7 +159,7 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
   );
 });
 
-// 邮箱验证（M-5：与 docs/API_CN.md 记录的 /api/auth/verify 命名对齐，提供兼容别名）
+// 邮箱验证（与 docs/API_CN.md 记录的 /api/auth/verify 命名对齐，提供兼容别名）
 const verifyEmailHandler = async (c: Parameters<typeof ok>[0]) => {
   const db = getDb(c);
   const token = c.req.query('token');
@@ -219,7 +227,7 @@ authRoutes.post('/login', authRateLimitMiddleware, async (c) => {
 });
 
 authRoutes.post('/logout', async (c) => {
-  // 会话撤销（审计 H-05）：登出时递增 session_version，使该用户所有 JWT 立即失效
+  // 会话撤销：登出时递增 session_version，使该用户所有 JWT 立即失效
   const db = getDb(c);
   const cookie = c.req.header('cookie');
   const match = cookie?.split(';').map((s) => s.trim()).find((s) => s.startsWith('auth_token='));
@@ -286,7 +294,7 @@ authRoutes.post('/reset-password', async (c) => {
   const userId = await c.env.KV.get(`pwd:reset:${token}`);
   if (!userId) throw ApiError.badRequest('重置链接无效或已过期');
   await UserRepo.updateUser(db, userId, { password_hash: hashPassword(password) });
-  await UserRepo.bumpSessionVersion(db, userId); // 审计 H-05：改密后旧 JWT 全部失效
+  await UserRepo.bumpSessionVersion(db, userId); // 改密后旧 JWT 全部失效
   await c.env.KV.delete(`pwd:reset:${token}`);
   return ok(c, { message: '密码已重置，请重新登录' });
 });

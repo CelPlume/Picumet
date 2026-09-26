@@ -13,7 +13,7 @@ export const LoginSchema = z.object({
   password: z.string().min(1),
 });
 
-// 审计 M-05：密码找回/重置 body 统一 Zod 校验
+// 密码找回/重置 body 统一 Zod 校验
 export const ForgotPasswordSchema = z.object({
   email: z.string().email('邮箱格式不正确'),
 });

@@ -1,4 +1,4 @@
-// 限流 fail-closed 回归（审计 Fix 6）
+// 限流 fail-closed：限流存储（KV/设置读取）异常时，认证与敏感写接口必须拒绝而非放行。
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, json, type TestContext } from './helpers';
 import type { Env } from '../src/shared/types';

@@ -1,4 +1,4 @@
-// SSRF 与密码学回归（审计 M-1/M-4）
+// SSRF 防护与密码学工具：私网/保留地址拦截，WebCrypto 缺失时摘要与加密 fail-closed
 import { describe, it, expect, afterEach } from 'vitest';
 import { isPrivateHost, validateEndpoint } from '../src/utils/ssrf';
 import { sha256Hex, encryptSecret, decryptSecret, __setCryptoOverrideForTests } from '../src/utils/crypto';
@@ -7,7 +7,7 @@ afterEach(() => {
   __setCryptoOverrideForTests(undefined);
 });
 
-describe('SSRF 防护（M-1）', () => {
+describe('SSRF 防护', () => {
   it('IPv4 私网/保留/回环/链路本地/文档/多播段全部拦截', () => {
     const blocked = [
       '10.0.0.1', '172.16.0.1', '172.31.255.254', '192.168.1.1',
@@ -56,7 +56,7 @@ describe('SSRF 防护（M-1）', () => {
   });
 });
 
-describe('密码学（M-4）', () => {
+describe('密码学', () => {
   it('sha256Hex 在 WebCrypto 缺失时 fail-closed（不使用非密码学降级）', async () => {
     __setCryptoOverrideForTests({} as Crypto);
     await expect(sha256Hex('anything')).rejects.toThrow();

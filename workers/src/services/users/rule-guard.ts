@@ -96,7 +96,7 @@ export function validateUserRule(
     return fail(403, 'FORBIDDEN', '规则路径超出你的空间边界');
   }
 
-  // mount 隔离锚点（审计 H-01）
+  // mount 隔离锚点：规则必须绑定挂载点，缺失则无法限定作用范围
   if (!item.mountId) {
     return fail(400, 'VALIDATION_ERROR', '目标缺少挂载点');
   }

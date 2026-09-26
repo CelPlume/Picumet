@@ -1,5 +1,5 @@
 // 自由模式中间件：Origin/Sec-Fetch-Site 校验、会话加载、CSRF、fail-closed 限流
-// 审计 H-1：自由模式写操作此前绕过统一 CSRF 与限流。这里为自由模式提供专用防护：
+// 自由模式写操作不经过统一 CSRF 与限流，这里为自由模式提供专用防护：
 // 1) Origin + Sec-Fetch-Site 校验（跨站请求直接拒绝）
 // 2) 会话加载（解密 KV 密文，校验过期/IP）并注入 userId（供限流用户维度）
 // 3) 写方法要求 X-CSRF-Token（会话级，init 时下发）
@@ -53,7 +53,7 @@ function siteOk(c: Context): boolean {
   return sfs.toLowerCase() !== 'cross-site';
 }
 
-/** KV 固定窗口计数（审计 M-01：best-effort，见 rate-limit.ts 注释） */
+/** KV 固定窗口计数（best-effort：KV 无原子自增，并发下可能超出阈值，见 rate-limit.ts 注释） */
 async function checkLimit(kv: KVNamespace, key: string, limit: number, windowMs: number): Promise<boolean> {
   const now = Date.now();
   const windowStart = now - (now % windowMs);

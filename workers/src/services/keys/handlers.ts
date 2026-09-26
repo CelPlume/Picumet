@@ -23,7 +23,7 @@ keyRoutes.post('/', async (c) => {
   const activeCount = await ApiKeyRepo.countActiveByUser(db, userId);
   if (activeCount >= 20) throw new ApiError(403, 'FORBIDDEN', 'API 密钥数量已达上限（20）');
 
-  // M-3：uploadPath 规范化（拒绝 .. / ~ 逃逸），作为密钥上传根边界
+  // uploadPath 规范化（拒绝 .. / ~ 逃逸），作为密钥上传根边界
   let uploadPath = '/uploads';
   if (parsed.data.uploadPath !== undefined) {
     try {

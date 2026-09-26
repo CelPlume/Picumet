@@ -224,7 +224,7 @@ export function validateFileType(fileName: string, mimeType?: string): void {
 }
 
 /**
- * 拆分嵌套文件名（P1-3.6）：PicList `{localFolder:N}` 重命名可让 multipart 文件名 / X-File-Name
+ * 拆分嵌套文件名：PicList `{localFolder:N}` 重命名可让 multipart 文件名 / X-File-Name
  * 携带 `/`，将其前段并入 customPath、尾段作为受校验的 basename。
  */
 export function splitNestedFileName(rawName: string, customPath?: string): { fileName: string; customPath?: string } {
@@ -243,4 +243,13 @@ export function safeDecodePath(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/**
+ * LIKE 模式转义：`isValidFileName` 允许文件名含 `%` 与 `_`，
+ * 直接拼进 LIKE 前缀会把它们当通配符（`/a/100%` 的级联会误伤 `/a/100x/`）。
+ * 所有 `path LIKE ?` 前缀匹配必须写成 `LIKE ? ESCAPE '\'` 并先经过本函数。
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }

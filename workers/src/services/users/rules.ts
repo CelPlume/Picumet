@@ -1,5 +1,5 @@
 // 用户自建访问规则路由（§4.4b）：/api/users/rules
-// 用户在设置页授权/禁止其他用户访问自己的文件；越权防线见 rule-guard.ts 与报告 §4.4。
+// 用户在设置页授权/禁止其他用户访问自己的文件；越权防线见 rule-guard.ts。
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import { FileRepo, RuleRepo, UserRepo, LogRepo } from '../../db';

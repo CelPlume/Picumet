@@ -1,4 +1,4 @@
-// 自由模式凭据加密落盘回归（审计 Fix 1）
+// 自由模式凭据加密落盘：KV 中只存密文（enc: 前缀 + AES-GCM），明文不落盘、可解密还原。
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, type TestContext } from './helpers';
 import { encryptSecret, decryptSecret } from '../src/utils/crypto';

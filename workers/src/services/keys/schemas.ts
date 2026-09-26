@@ -5,7 +5,7 @@ import { z } from 'zod';
 export const CreateKeySchema = z.object({
   name: z.string().min(1).max(100),
   permissions: z.array(z.enum(['read', 'write', 'delete'])).min(1),
-  // s3：S3 兼容网关（SigV4，docs/PICLIST_COMPAT_CN.md P2-2）
+  // s3：S3 兼容网关（SigV4 签名；见 docs/PICLIST_COMPAT_CN.md）
   protocols: z.array(z.enum(['webdav', 'api', 's3'])).min(1),
   uploadPath: z.string().min(1).optional(),
   allowedIps: z.array(z.string()).optional(),

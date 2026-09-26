@@ -2,7 +2,7 @@
 import { z } from 'zod';
 
 // 初始化自由模式会话
-// type 已删除（报告 §5.1）：自由模式一律走 S3 协议 endpoint，type 标签无运行时语义
+// 自由模式一律走 S3 协议 endpoint：type 标签无运行时语义，已移除
 export const FreeModeInitSchema = z.object({
   endpoint: z.string().min(1).max(500),
   region: z.string().max(100).optional(),

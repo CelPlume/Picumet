@@ -48,7 +48,7 @@ function requireSession(c: Context): FreeModeSession {
 }
 
 /**
- * 审计 H-2：校验并规范化对象键。
+ * 校验并规范化对象键。
  * 拒绝父级片段（.. / ~）、控制字符、反斜杠；结果必须落在会话根目录边界内。
  */
 function validateFreeModeKey(rawKey: string, mountPath: string): string {
@@ -92,7 +92,7 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
   const parsed = FreeModeInitSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '存储配置无效');
 
-  // M-1：endpoint 校验（scheme/端口白名单 + 私网黑名单）
+  // endpoint 校验（scheme/端口白名单 + 私网黑名单）
   if (!validateEndpoint(parsed.data.endpoint)) {
     throw ApiError.badRequest('不允许使用内网/本地地址或非法 endpoint');
   }
@@ -135,7 +135,7 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
     mountPath: '/',
     createdAt: Date.now(),
     expiresAt: Date.now() + parsed.data.sessionHours * 3600 * 1000,
-    // SEC-03（审计 §SEC-03）：会话 IP 绑定属安全判定，用 clientIp（cf.connectingIp 优先）
+    // 会话 IP 绑定属安全判定，用 clientIp（cf.connectingIp 优先）
     ip: clientIp(c.req.raw),
   };
 
@@ -145,7 +145,7 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
   const sid = randomString(24);
   await c.env.KV.put(`fm:${sid}`, sealed, { expirationTtl: ttl });
 
-  // M-2：自由模式仅使用不可复用 sid（不再签发 7 天 JWT 的 auth_token）；
+  // 自由模式仅使用不可复用的会话 sid（不签发可复用的 7 天 JWT auth_token）；
   // 会话级 CSRF token 一并下发（写操作需携带 X-CSRF-Token）
   const csrfToken = randomString(32);
   await c.env.KV.put(`fm:csrf:${sid}`, csrfToken, { expirationTtl: ttl });
@@ -174,7 +174,7 @@ freeModeRoutes.get('/files', async (c) => {
   const provider = await buildProvider(session);
   // 列表前缀同样走规范化（拒绝 .. 逃逸）
   const prefix = validateFreeModeDir(c.req.query('path'), session.mountPath);
-  // P1-5：Delimiter 折叠出目录结构，用户自带桶不再 flat 平铺
+  // Delimiter 折叠出目录结构：用户自带桶按目录层级返回，而非 flat 平铺
   const res = await provider.listObjects(prefix, { delimiter: '/' });
 
   type FreeModeItem = {
@@ -254,12 +254,12 @@ freeModeRoutes.post('/upload', async (c) => {
     const file = form.get('file');
     if (!(file instanceof File)) throw ApiError.badRequest('缺少 file 字段');
     fileName = file.name;
-    // 审计 H-03：multipart 用 file.stream() 流式写入
+    // multipart 用 file.stream() 流式写入，避免大文件整段缓冲进内存
     body = file.stream();
     size = file.size;
   } else {
     if (!fileName) throw ApiError.badRequest('缺少文件名（X-File-Name）');
-    // 审计 H-03：raw body 流式转发；Content-Length 已知则流式，缺失（chunked）回退读取
+    // raw body 流式转发：Content-Length 已知则流式，缺失（chunked）回退读取
     const rawLength = Number(c.req.header('content-length') ?? '');
     const hasLength = Number.isFinite(rawLength) && rawLength > 0;
     if (hasLength) {
@@ -279,14 +279,14 @@ freeModeRoutes.post('/upload', async (c) => {
     }
   }
 
-  // H-2：文件名 + 类型 + 大小校验
+  // 文件名 + 类型 + 大小校验
   if (!isValidFileName(fileName)) throw ApiError.badRequest('文件名包含非法字符');
   validateFileType(fileName, contentType);
   if (size > MAX_UPLOAD_BYTES) {
     throw new ApiError(413, 'PAYLOAD_TOO_LARGE', '单次上传超过大小上限');
   }
 
-  // H-2：目录前缀 + 最终 key 必须落在会话根目录内
+  // 目录前缀 + 最终 key 必须落在会话根目录内
   const prefix = validateFreeModeDir(c.req.query('path'), session.mountPath);
   const targetKey = validateFreeModeKey(prefix + fileName, session.mountPath);
 

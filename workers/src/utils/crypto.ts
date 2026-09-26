@@ -17,7 +17,7 @@ function webCrypto(): Crypto {
 }
 
 /** 异步 SHA-256 十六进制（WebCrypto，Workers/Node 均可用）。
- * 审计 M-4：WebCrypto 不可用时 fail-closed（抛错），不使用非密码学降级。 */
+ * WebCrypto 不可用时 fail-closed（抛错），不使用非密码学降级。 */
 export async function sha256Hex(input: string): Promise<string> {
   const cryptoApi = webCrypto();
   if (!cryptoApi?.subtle?.digest) {
@@ -46,7 +46,7 @@ export interface JwtPayload {
   username: string;
   role: string;
   type: 'access';
-  /** 会话版本（审计 H-05）：登出/改密/禁用时递增，旧 JWT 立即失效 */
+  /** 会话版本：登出/改密/禁用时递增，旧 JWT 立即失效 */
   sv?: number;
   iat: number;
   exp: number;
@@ -96,7 +96,7 @@ export function verifyPassword(plain: string, hash: string): boolean {
 
 // ============ AES-GCM 密钥加密（存储凭据） ============
 
-// 审计 M-4：用 HKDF-SHA256 从 ENCRYPTION_KEY 派生 32 字节 AES 密钥（标准 KDF，替换自定义 FNV 派生）。
+// 用 HKDF-SHA256 从 ENCRYPTION_KEY 派生 32 字节 AES 密钥（标准 KDF）；不用自定义 FNV 派生。
 const HKDF_SALT = 'picumet-encryption-v1';
 const HKDF_INFO = 'picumet-aes-gcm-key';
 
@@ -196,7 +196,7 @@ export async function sha256HexBytes(data: Uint8Array): Promise<string> {
   return toHex(new Uint8Array(buf));
 }
 
-// ============ 路径直链签名（P0-1：私有挂载的持久可嵌 URL 能力令牌） ============
+// ============ 路径直链签名（私有挂载的持久可嵌 URL 能力令牌） ============
 // sign = `${expiresAt}.${hmacHex(secret, `${path}:${expiresAt}`)}`；expiresAt=0 表示长期有效。
 // 能力范围：仅该精确路径的匿名 GET（与 AList sign 语义对齐）。
 
