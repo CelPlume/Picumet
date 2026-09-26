@@ -181,7 +181,7 @@ The settings layout (`/settings/*`) shows a vertical nav with **Personalization*
 
 ### Public pages
 
-The sign-in (`/login`), sign-up (`/register`), and reset-password (`/reset-password`) pages share a centered card layout. Sign-up collects username, password, email, and an optional invite code, and it can enforce Cloudflare Turnstile when the site enables it. After a successful sign-in, the app navigates to the `redirect` target, or to `/files` when no target exists. Opening `/login` with a live session (JWT cookie) skips the form and sends you straight to `/files` or the `redirect` target. The free-mode page (`/free-mode`) lets visitors connect their own object-storage bucket with temporary credentials; the form offers presets (R2, AWS S3, Oracle, MinIO, and more) that only prefill fields and stay editable, and the server stores the credentials AES-GCM encrypted in a short-lived session.
+The sign-in (`/login`), sign-up (`/register`), and reset-password (`/reset-password`) pages share a centered card layout. Sign-up collects username, password, and email. After a successful sign-in, the app navigates to the `redirect` target, or to `/files` when no target exists. Opening `/login` with a live session (JWT cookie) skips the form and sends you straight to `/files` or the `redirect` target. The free-mode page (`/free-mode`) lets visitors connect their own object-storage bucket with temporary credentials; the form offers presets (R2, AWS S3, Oracle, MinIO, and more) that only prefill fields and stay editable, and the server stores the credentials AES-GCM encrypted in a short-lived session.
 
 ### Top bar components
 

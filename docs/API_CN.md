@@ -77,6 +77,8 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 | `error.details` | `object` | 附加信息，仅在开发环境返回。 |
 | `timestamp` | `integer` | 服务器时间，Unix 毫秒。 |
 
+> **生产环境错误脱敏**：生产环境（非 `development`）下，服务端非业务异常统一返回 `500 INTERNAL_ERROR` 与固定文案「服务器内部错误」，内部异常 message 不回传给客户端，细节只写入服务端日志。开发环境维持原始 message 与 `details`（含堆栈信息）。
+
 ## 错误码
 
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
@@ -123,8 +125,6 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 | `username` | `string` | 是 | 3 到 20 个字符，只能包含字母、数字、下划线。 |
 | `password` | `string` | 是 | 至少 8 位，最多 128 位。 |
 | `email` | `string` | 是 | 合法邮箱地址。 |
-| `inviteCode` | `string` | 否 | 邀请码，站点开启邀请注册时需要。 |
-| `turnstileToken` | `string` | 否 | Turnstile 令牌，站点启用 Turnstile 时需要。 |
 
 #### 响应
 
@@ -175,7 +175,6 @@ curl -X POST https://{domain}/api/auth/register \
 | :--- | :--- | :--- | :--- |
 | `username` | `string` | 是 | 用户名。 |
 | `password` | `string` | 是 | 密码。 |
-| `turnstileToken` | `string` | 否 | Turnstile 令牌，站点启用 Turnstile 时需要。 |
 
 #### 响应
 
@@ -622,11 +621,11 @@ curl https://{domain}/api/files/{id} -b cookies.txt
 | `name` | `string` | 否 | 新名称，重命名需要 update 权限。 |
 | `customTitle` | `string` | 否 | 自定义标题，最多 200 个字符。 |
 | `customColor` | `string` | 否 | 自定义强调色，`#RRGGBB` 格式。 |
-| `coverUrl` | `string` | 否 | 封面图片地址。 |
+| `coverUrl` | `string` | 否 | 封面图片地址。预留字段：外部 API 契约保持稳定，前端暂无写入控件。 |
 | `iconEmoji` | `string` | 否 | 图标表情，最多 16 个字符。 |
 | `accessPassword` | `string` | 否 | 新的访问密码，传 `null` 可移除。服务端只保存哈希。 |
 | `visibility` | `string` | 否 | 可见性：`private`、`users` 或 `public`，需要 `update` 权限。 |
-| `manualPosition` | `integer` | 否 | 手动排序位置。 |
+| `manualPosition` | `integer` | 否 | 手动排序位置。预留字段：外部 API 契约保持稳定，前端暂无使用它的排序闭环。 |
 | `guestVisibility` | `string` | 否 | 游客（匿名访客）可见性：`inherit`（清除文件级设置，跟随角色默认）、`none`（游客不可见）、`download`（仅可下载）、`view`（可查看并下载）。需要 `update` 权限；文件与文件夹均支持，是「用户权限默认设置」的存储字段。 |
 
 #### 响应
@@ -673,7 +672,7 @@ curl -X PUT https://{domain}/api/files/{id} \
 
 ### 验证文件密码
 
-验证受保护文件的访问密码，返回短期有效的网关下载链接。
+验证受保护文件的访问密码，返回短期有效的网关下载链接。调用者需先对文件具备 `download` 权限（与获取下载链接同一道闸门），否则返回 `403 FORBIDDEN`。验证通过后签发的网关令牌带 `passwordVerified` 标记。
 
 `POST /api/files/{id}/verify-password`
 
@@ -707,6 +706,7 @@ curl -X PUT https://{domain}/api/files/{id} \
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | 文件未设置密码，或未提供密码。 | 提供密码，或跳过验证。 |
 | `INVALID_PASSWORD` | `401` | 密码错误。 | 重新输入密码。 |
+| `FORBIDDEN` | `403` | 调用者没有该文件的下载权限。 | 检查权限规则。 |
 
 #### 示例
 
@@ -849,7 +849,7 @@ curl -X DELETE https://{domain}/api/files/{id} \
 
 ### 移动文件
 
-异步移动或重命名文件、文件夹。移动走 Saga 流程：复制对象、校验副本、原子切换元数据、异步清理源。需要源路径的删除权限和目标路径的写权限。
+异步移动或重命名文件、文件夹。移动走 Saga 流程：复制对象、校验副本、原子切换元数据、异步清理源。需要源路径的删除权限和目标路径的写权限。跨挂载点移动文件夹会被拒绝并返回 `422 OPERATION_FAILED`——主行与子树的挂载归属无法一致迁移；同一挂载点内的移动不受影响。
 
 `POST /api/files/{id}/move`
 
@@ -885,7 +885,7 @@ curl -X DELETE https://{domain}/api/files/{id} \
 | `VALIDATION_ERROR` | `400` | 目标路径缺失或不合法。 | 提供目标路径。 |
 | `FORBIDDEN` | `403` | 缺少所需权限。 | 检查权限规则。 |
 | `NOT_FOUND` | `404` | 文件不存在。 | 核对标识。 |
-| `OPERATION_FAILED` | `409` | 会产生冲突或循环。 | 换一个目标路径。 |
+| `OPERATION_FAILED` | `409` / `422` | 会产生冲突或循环，或文件夹跨挂载点移动。 | 换一个目标路径；跨挂载点移动文件夹暂不支持。 |
 
 #### 示例
 
@@ -1325,7 +1325,7 @@ curl -X POST https://{domain}/api/upload \
 
 ## 分享
 
-分享端点负责分享链接的创建、列表、密码验证、目录浏览、下载、预览和撤销。一次分享可包含 1 到 50 个项目（文件与文件夹混合）。创建、列表、撤销需要登录；读取分享信息、目录浏览、验证密码、下载和预览对外开放。
+分享端点负责分享链接的创建、列表、密码验证、目录浏览、下载、预览和撤销。一次分享可包含 1 到 50 个项目（文件与文件夹混合）。创建、列表、撤销需要登录；读取分享信息、目录浏览、验证密码、下载和预览对外开放。分享密码与文件级访问密码相互独立：通过分享密码验证不会连带验证文件密码。
 
 ### 创建分享
 
@@ -1617,9 +1617,57 @@ curl -X POST https://{domain}/api/shares/abc123/verify \
   -d '{"password":"share-pass"}'
 ```
 
+### 验证分享内文件密码
+
+验证分享内某个文件的访问密码。分享内的文件可以自带访问密码，验证通过前该文件保持锁定。请求需先通过分享密码闸门（已验证分享密码），未通过时与其他分享读取端点同样返回 `401`。
+
+`POST /api/shares/{id}/verify-file`
+
+成功后服务端种下 15 分钟有效的 HttpOnly Cookie，记录「该访客已验证该文件密码」，此后的分享预览与网关消费都会放行该文件。多次验证不同文件会累积在同一 Cookie 里。
+
+#### 路径参数
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `id` | `string` | 是 | 分享 ID。 |
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | 是 | 目标文件项目标识。 |
+| `password` | `string` | 是 | 文件访问密码。 |
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": { "authorized": true },
+  "timestamp": 1710000000000
+}
+```
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | 文件不在该分享作用域内。 | 核对项目标识。 |
+| `VALIDATION_ERROR` | `400` | 文件未设置访问密码，或 `itemId` 指向文件夹。 | 直接下载该文件，或改用目录浏览。 |
+| `INVALID_PASSWORD` | `401` | 分享密码闸门未通过，或文件密码错误。 | 先验证分享密码，再重新输入文件密码。 |
+
+#### 示例
+
+```sh
+curl -X POST https://{domain}/api/shares/abc123/verify-file \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"itemId":"file-uuid","password":"file-pass"}'
+```
+
 ### 获取分享下载链接
 
-返回分享内某个文件的一次性网关下载链接。下载计数只在网关实际消费令牌时增加一次。`itemId` 可以是分享项目，也可以是某个文件夹项目的后代文件。
+返回分享内某个文件的一次性网关下载链接。下载计数只在网关实际消费令牌时增加一次。`itemId` 可以是分享项目，也可以是某个文件夹项目的后代文件。分享密码与文件级访问密码是两道独立的闸门：网关消费令牌时会按文件当前的访问密码复核，未通过 verify-file 验证的带密码文件在该处失败并返回 `403 PASSWORD_REQUIRED`。
 
 `GET /api/shares/{id}/download?itemId={itemId}`
 
@@ -1653,8 +1701,9 @@ curl -X POST https://{domain}/api/shares/abc123/verify \
 | `SHARE_REVOKED` | `410` | 分享不可用。 | 请创建者重新生成。 |
 | `SHARE_EXPIRED` | `410` | 分享已过期。 | 请创建者重新生成。 |
 | `FORBIDDEN` | `403` | 分享不允许下载。 | 请创建者开启下载。 |
+| `PASSWORD_REQUIRED` | `403` | 目标文件带访问密码，且该访客尚未验证。 | 先调用 verify-file 端点。 |
 | `VALIDATION_ERROR` | `400` | `itemId` 指向文件夹项目。 | 文件夹请改用目录浏览端点。 |
-| `INVALID_PASSWORD` | `401` | 密码未验证。 | 先调用验证端点。 |
+| `INVALID_PASSWORD` | `401` | 分享密码未验证。 | 先调用验证端点。 |
 | `SHARE_LIMIT_REACHED` | `410` | 分享达到下载次数上限。 | 请创建者提高上限。 |
 
 #### 示例
@@ -1665,7 +1714,7 @@ curl "https://{domain}/api/shares/abc123/download?itemId=file-uuid" -b cookies.t
 
 ### 预览分享文件
 
-分享允许预览时，直接以 `Content-Disposition: inline` 输出图片。返回二进制图片数据，不是 JSON。`itemId` 的作用域规则与下载一致。
+分享允许预览时，直接以 `Content-Disposition: inline` 输出图片。返回二进制图片数据，不是 JSON。`itemId` 的作用域规则与下载一致。带访问密码的文件在该访客通过 verify-file 验证文件密码之前返回 `401 PASSWORD_REQUIRED`。
 
 `GET /api/shares/{id}/preview?itemId={itemId}`
 
@@ -1689,7 +1738,8 @@ curl "https://{domain}/api/shares/abc123/download?itemId=file-uuid" -b cookies.t
 | `SHARE_EXPIRED` | `410` | 分享不可用。 | 请创建者重新生成。 |
 | `FORBIDDEN` | `403` | 分享不允许预览。 | 请创建者开启预览。 |
 | `VALIDATION_ERROR` | `400` | `itemId` 指向文件夹项目。 | 文件夹请改用目录浏览端点。 |
-| `INVALID_PASSWORD` | `401` | 密码未验证。 | 先调用验证端点。 |
+| `PASSWORD_REQUIRED` | `401` | 文件带访问密码，且密码未验证。 | 先调用 verify-file 端点。 |
+| `INVALID_PASSWORD` | `401` | 分享密码未验证。 | 先调用验证端点。 |
 
 #### 示例
 
@@ -1938,6 +1988,42 @@ curl -X POST https://{domain}/api/users/me/email/verify-otp \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
   -d '{"email":"new@example.com","code":"123456"}'
+```
+
+### 公告撤回
+
+读取和记录当前用户撤回了哪些公告。登录态下前端横幅会把撤回同步到服务端（本地横幅状态之外）。
+
+`GET /api/users/announcements/dismissed-ids`
+
+返回当前用户已撤回公告的 id 列表。
+
+```json
+{
+  "success": true,
+  "data": { "ids": ["announcement-uuid"] },
+  "timestamp": 1710000000000
+}
+```
+
+`POST /api/users/announcements/{id}/dismiss`
+
+把公告标记为当前用户已撤回。重复撤回幂等。请求体可选 `forever`（缺省 `true`）：`true` 记录为永久撤回（不再提示），`false` 只记录时间戳，由显示策略决定之后是否再次展示。
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | 公告不存在。 | 核对公告 ID。 |
+
+#### 示例
+
+```sh
+curl -X POST https://{domain}/api/users/announcements/{id}/dismiss \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"forever":true}'
 ```
 
 ## 用户访问规则
@@ -2675,7 +2761,7 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 
 ### 管理系统设置
 
-读取和更新全局站点设置，包括注册、邮件、限流和 Turnstile。
+读取和更新全局站点设置，包括注册、邮件和限流。
 
 `GET /api/admin/settings`
 
@@ -2694,8 +2780,6 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 | `allowRegistration` | `boolean` | 否 | 是否允许注册。 |
 | `allowGuestAccess` | `boolean` | 否 | 是否允许游客访问。 |
 | `requireEmailVerification` | `boolean` | 否 | 注册是否需要邮箱验证。 |
-| `enableTurnstile` | `boolean` | 否 | 是否启用 Cloudflare Turnstile。 |
-| `turnstileSiteKey` | `string` | 否 | Turnstile Site Key。 |
 | `rateLimitEnabled` | `boolean` | 否 | 是否启用限流。 |
 | `rateLimitRequestsPerMinute` | `integer` | 否 | 每分钟请求数，范围 1 到 10000。仅生产环境生效：按 IP 限制该值、登录用户按 2 倍；登录/注册等认证接口固定 5 次/分钟；自由模式按会话 60、按用户 120 次/分钟。 |
 | `maxConcurrentTransfers` | `integer` | 否 | 同时传输上限，范围 0 到 1000，默认 4，`0` 表示不限。按用户（未登录按 IP）限制上传各通道与下载网关的在途请求数，超限返回 `429 CONCURRENCY_LIMIT_EXCEEDED`。 |
@@ -2821,8 +2905,10 @@ curl -X POST https://{domain}/api/admin/announcements \
 | `bucket` | `string` | 是 | 存储桶名称。 |
 | `accessKeyId` | `string` | 否 | Access Key，R2 绑定模式留空。 |
 | `secretAccessKey` | `string` | 否 | Secret Key，R2 绑定模式留空。 |
-| `publicDomain` | `string` | 否 | 公网 CDN 域名，用于直链。 |
+| `publicDomain` | `string` | 否 | 公网 CDN 域名，用于直链。仅接受公网 https 地址，拒绝私网/保留主机名（本地开发豁免 `http://localhost` / `http://127.0.0.1`）。 |
 | `pathPrefix` | `string` | 否 | 对象键前缀。 |
+
+`PUT /api/admin/storage/providers/{id}` 与创建走同一套校验：`endpoint` 非空时必须通过 SSRF 校验（公网 http(s) 地址、端口 80/443、非私网/保留地址），否则更新失败并返回 `400`，文案与创建一致；`endpoint` 传空串表示切回 R2 绑定，直接放行。
 
 #### 测试响应
 
@@ -2921,10 +3007,9 @@ curl -X POST https://{domain}/api/admin/mounts \
 | `userId` | `string` | 否 | 用户主体，与 `role`、`apiKeyId` 互斥。 |
 | `apiKeyId` | `string` | 否 | 密钥主体，与 `role`、`userId` 互斥。 |
 | `permissions` | `array` | 否 | 规则授予的权限，如 `["read","write"]`。 |
-| `requirePassword` | `boolean` | 否 | 是否要求匹配路径输入密码。 |
-| `password` | `string` | 否 | 明文密码，服务端只保存哈希。 |
-| `allowedIps` | `array` | 否 | 规则的 IP 白名单。 |
 | `priority` | `integer` | 否 | 规则优先级。 |
+
+条件字段（`requirePassword`、`password`、`allowedIps`）已从规则创建面移除。引擎对仍带条件的存量规则行保持 fail-closed——这类规则一律拒绝请求；显式传入 conditions 的唯一路径是文件密码验证流程（传入真实客户端 IP 与密码标记）。API 密钥自身的 `allowedIps` 白名单不受影响。
 
 列表响应会把 `passwordHash` 脱敏为 `***`。
 
@@ -3448,7 +3533,7 @@ curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 
 ### OpenList / AList 兼容接口（`/openlist` 前缀）
 
-实现 AList v3 REST 协议子集，PicList 选「AList」、url 填 `https://{domain}/openlist` 即获得内置类型体验（含粘贴即删）。使用独立前缀的原因：`/api/auth/login` 已被 Picumet 自有登录占用。响应统一为 `{code, message, data}` 壳，`message` 恒为 `success`（客户端以 code===200 判定）。
+实现 AList v3 REST 协议子集，PicList 选「AList」、url 填 `https://{domain}/openlist` 即获得内置类型体验（含粘贴即删）。使用独立前缀的原因：`/api/auth/login` 已被 Picumet 自有登录占用。响应统一为 `{code, message, data}` 壳，`message` 恒为 `success`（客户端以 code===200 判定）。登录端点与全部 `/openlist/api/fs/*` 端点统一要求密钥的 `protocols` 包含 `api`（此前仅 `fs/form` 校验），不满足返回 `403`。
 
 | 端点 | 说明 |
 | :--- | :--- |
@@ -3464,6 +3549,8 @@ curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 SigV4 验签的 S3 REST 子集。客户端配置：endpoint = `https://{domain}/s3`、**路径式寻址（`forcePathStyle=true` / `pathStyleAccess`）**、region 任意（PicList 用字面量 `auto`）、`accessKeyId = pk_*`、`secretAccessKey = sk_*`。
 
 **bucket 语义**：bucket = 虚拟路径首段（挂载路径或密钥上传根的首段，如 uploadPath=`/uploads` → bucket=`uploads`），key = 其余路径。`GET /s3` 返回密钥可达的 bucket 列表（挂载根下的一级目录名）。
+
+**签名载荷上限**：SigV4 整包校验的请求体上限 100 MiB。`content-length` 超限的请求直接返回 `400 InvalidRequest`，不读取请求体；更大的文件请改用 `UNSIGNED-PAYLOAD` 或 multipart 上传。校验通过后内容哈希直接复用，不做重复哈希。
 
 | 操作 | 请求 |
 | :--- | :--- |

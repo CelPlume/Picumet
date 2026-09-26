@@ -77,6 +77,8 @@ Failed requests return an error envelope with an HTTP status code and a machine-
 | `error.details` | `object` | Additional details. Present only in development environments. |
 | `timestamp` | `integer` | The server time in milliseconds since the Unix epoch. |
 
+> **Production error sanitization.** In production (any environment other than `development`), unexpected server errors return `500 INTERNAL_ERROR` with the fixed message `服务器内部错误` ("internal server error"). The internal exception message is never sent to the client; the details are written to the server log only. Development environments keep the raw message plus `details` (including stack traces).
+
 ## Error codes
 
 | Error Code | HTTP Status | Cause | Recommended Action |
@@ -123,8 +125,6 @@ Creates a user account and, when the site requires email verification, sends a v
 | `username` | `string` | Yes | 3 to 20 characters. Letters, digits, and underscores only. |
 | `password` | `string` | Yes | At least 8 characters, at most 128. |
 | `email` | `string` | Yes | A valid email address. |
-| `inviteCode` | `string` | No | The invite code, required when invite codes are active. |
-| `turnstileToken` | `string` | No | The Turnstile token, required when Turnstile is active. |
 
 #### Response
 
@@ -175,7 +175,6 @@ Authenticates a user and sets an HttpOnly `auth_token` cookie for 7 days.
 | :--- | :--- | :--- | :--- |
 | `username` | `string` | Yes | The username. |
 | `password` | `string` | Yes | The password. |
-| `turnstileToken` | `string` | No | The Turnstile token, required when Turnstile is active. |
 
 #### Response
 
@@ -622,11 +621,11 @@ Renames a file or folder and updates its metadata, including the access password
 | `name` | `string` | No | The new name. Renaming requires the update permission. |
 | `customTitle` | `string` | No | A custom display title, at most 200 characters. |
 | `customColor` | `string` | No | A custom accent color in `#RRGGBB` format. |
-| `coverUrl` | `string` | No | A cover image URL. |
+| `coverUrl` | `string` | No | A cover image URL. Reserved field: the external API contract is stable, but the frontend does not yet ship a control that writes it. |
 | `iconEmoji` | `string` | No | An icon emoji, at most 16 characters. |
 | `accessPassword` | `string` | No | A new access password, or `null` to remove it. The server stores only a hash. |
 | `visibility` | `string` | No | The visibility: `private`, `users`, or `public`. Requires the update permission. |
-| `manualPosition` | `integer` | No | The manual sort position. |
+| `manualPosition` | `integer` | No | The manual sort position. Reserved field: the external API contract is stable, but the frontend does not yet ship a sort flow that uses it. |
 | `guestVisibility` | `string` | No | Guest (anonymous visitor) visibility: `inherit` (clears the file-level setting and follows the role default), `none` (guests cannot see it), `download` (download only), `view` (view and download). Requires the update permission; supported on files and folders, and it is the storage field behind "Default user permissions". |
 
 #### Response
@@ -673,7 +672,7 @@ curl -X PUT https://{domain}/api/files/{id} \
 
 ### Verify a file password
 
-Verifies the access password of a protected file and returns a short-lived gateway download URL.
+Verifies the access password of a protected file and returns a short-lived gateway download URL. The caller needs the `download` permission on the file first (the same gate as the download-link endpoint) and gets `403 FORBIDDEN` without it. The gateway token issued on success carries the `passwordVerified` flag.
 
 `POST /api/files/{id}/verify-password`
 
@@ -707,6 +706,7 @@ The returned URL stays valid for 900 seconds and works once.
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | The file has no password, or the password is missing. | Provide a password or skip verification. |
 | `INVALID_PASSWORD` | `401` | The password is wrong. | Re-enter the password. |
+| `FORBIDDEN` | `403` | The caller lacks the download permission on the file. | Check the permission rules. |
 
 #### Example
 
@@ -849,7 +849,7 @@ curl -X DELETE https://{domain}/api/files/{id} \
 
 ### Move a file
 
-Moves or renames a file or folder asynchronously. The move uses a Saga: it copies the object, verifies the copy, switches the metadata atomically, then cleans up the source. Requires the delete permission on the source and the write permission on the target.
+Moves or renames a file or folder asynchronously. The move uses a Saga: it copies the object, verifies the copy, switches the metadata atomically, then cleans up the source. Requires the delete permission on the source and the write permission on the target. Moving a folder across mount points is rejected with `422 OPERATION_FAILED` — the main row and its subtree cannot migrate their mount ownership consistently; moves within one mount are unaffected.
 
 `POST /api/files/{id}/move`
 
@@ -885,7 +885,7 @@ Returns the job identifier and its initial status.
 | `VALIDATION_ERROR` | `400` | The target path is missing or invalid. | Provide a target path. |
 | `FORBIDDEN` | `403` | The caller lacks the required permissions. | Check the permission rules. |
 | `NOT_FOUND` | `404` | The file does not exist. | Confirm the identifier. |
-| `OPERATION_FAILED` | `409` | A conflict or a cycle would result. | Choose another target. |
+| `OPERATION_FAILED` | `409` / `422` | A conflict or a cycle would result, or a folder move crosses mount points. | Choose another target; cross-mount folder moves are not supported. |
 
 #### Example
 
@@ -1325,7 +1325,7 @@ curl -X POST https://{domain}/api/upload \
 
 ## Shares
 
-Share endpoints create, list, verify, browse, download, preview, and revoke share links. One share carries 1 to 50 items (files and folders mixed). Creating, listing, and revoking shares require a logged-in session. Reading a share, browsing its folders, verifying its password, downloading, and previewing are public.
+Share endpoints create, list, verify, browse, download, preview, and revoke share links. One share carries 1 to 50 items (files and folders mixed). Creating, listing, and revoking shares require a logged-in session. Reading a share, browsing its folders, verifying its password, downloading, and previewing are public. The share password and the per-file access password are independent: verifying the share password never verifies a file-level password.
 
 ### Create a share
 
@@ -1617,9 +1617,57 @@ curl -X POST https://{domain}/api/shares/abc123/verify \
   -d '{"password":"share-pass"}'
 ```
 
+### Verify a file password in a share
+
+Verifies the access password of one file inside the share. Files inside a share can carry their own access password; such files stay locked until this endpoint verifies the file password. The request must pass the share gate first (share password verified); failing it returns `401` like the other share-read endpoints.
+
+`POST /api/shares/{id}/verify-file`
+
+On success the endpoint sets a 15-minute HttpOnly cookie recording that this visitor has verified that file's password; the share preview and the gateway accept the file afterwards. Multiple file verifications accumulate in the same cookie.
+
+#### Path parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `string` | Yes | The share id. |
+
+#### Request body
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `itemId` | `string` | Yes | Identifier of the target file item. |
+| `password` | `string` | Yes | The file access password. |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": { "authorized": true },
+  "timestamp": 1710000000000
+}
+```
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | The file does not exist in the share scope. | Confirm the item identifier. |
+| `VALIDATION_ERROR` | `400` | The file has no access password, or `itemId` points at a folder. | Download the file directly, or browse the folder instead. |
+| `INVALID_PASSWORD` | `401` | The share gate has not been passed, or the file password is wrong. | Verify the share password first, then re-enter the file password. |
+
+#### Example
+
+```sh
+curl -X POST https://{domain}/api/shares/abc123/verify-file \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"itemId":"file-uuid","password":"file-pass"}'
+```
+
 ### Get a share download link
 
-Returns a single-use gateway download URL for one file in the share. The download count increments only when the gateway consumes the token. `itemId` may be a share item or a descendant file of one of the share's folder items.
+Returns a single-use gateway download URL for one file in the share. The download count increments only when the gateway consumes the token. `itemId` may be a share item or a descendant file of one of the share's folder items. The share password and the file-level access password are separate gates: the gateway re-checks the file's current access password when it consumes the token, and a file password that has not been verified through the verify-file endpoint fails there with `403 PASSWORD_REQUIRED`.
 
 `GET /api/shares/{id}/download?itemId={itemId}`
 
@@ -1653,8 +1701,9 @@ Returns a single-use gateway download URL for one file in the share. The downloa
 | `SHARE_REVOKED` | `410` | The share is not active. | Ask the creator for a new link. |
 | `SHARE_EXPIRED` | `410` | The share expired. | Ask the creator for a new link. |
 | `FORBIDDEN` | `403` | The share does not allow downloads. | Ask the creator to enable downloads. |
+| `PASSWORD_REQUIRED` | `403` | The target file has an access password and this visitor has not verified it. | Call the verify-file endpoint first. |
 | `VALIDATION_ERROR` | `400` | `itemId` points at a folder item. | Use the folder browsing endpoint instead. |
-| `INVALID_PASSWORD` | `401` | The password is not verified. | Call the verify endpoint first. |
+| `INVALID_PASSWORD` | `401` | The share password is not verified. | Call the verify endpoint first. |
 | `SHARE_LIMIT_REACHED` | `410` | The share reached its download limit. | Ask the creator to raise the limit. |
 
 #### Example
@@ -1665,7 +1714,7 @@ curl "https://{domain}/api/shares/abc123/download?itemId=file-uuid" -b cookies.t
 
 ### Preview a shared file
 
-Streams the shared image directly with `Content-Disposition: inline` when the share allows preview. Returns binary image data, not JSON. `itemId` follows the same scope rules as downloads.
+Streams the shared image directly with `Content-Disposition: inline` when the share allows preview. Returns binary image data, not JSON. `itemId` follows the same scope rules as downloads. A file with an access password returns `401 PASSWORD_REQUIRED` until this visitor has verified the file password through the verify-file endpoint.
 
 `GET /api/shares/{id}/preview?itemId={itemId}`
 
@@ -1689,7 +1738,8 @@ Streams the shared image directly with `Content-Disposition: inline` when the sh
 | `SHARE_EXPIRED` | `410` | The share is not active. | Ask the creator for a new link. |
 | `FORBIDDEN` | `403` | The share does not allow preview. | Ask the creator to enable preview. |
 | `VALIDATION_ERROR` | `400` | `itemId` points at a folder item. | Use the folder browsing endpoint instead. |
-| `INVALID_PASSWORD` | `401` | The password is not verified. | Call the verify endpoint first. |
+| `PASSWORD_REQUIRED` | `401` | The file has an access password and it is not verified. | Call the verify-file endpoint first. |
+| `INVALID_PASSWORD` | `401` | The share password is not verified. | Call the verify endpoint first. |
 
 #### Example
 
@@ -1938,6 +1988,42 @@ curl -X POST https://{domain}/api/users/me/email/verify-otp \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
   -d '{"email":"new@example.com","code":"123456"}'
+```
+
+### Announcement dismissals
+
+Reads and records which announcements the signed-in user has dismissed. The frontend banner syncs dismissals to the server while logged in (in addition to the local banner state).
+
+`GET /api/users/announcements/dismissed-ids`
+
+Returns the ids of the announcements the current user has dismissed.
+
+```json
+{
+  "success": true,
+  "data": { "ids": ["announcement-uuid"] },
+  "timestamp": 1710000000000
+}
+```
+
+`POST /api/users/announcements/{id}/dismiss`
+
+Marks the announcement as dismissed for the current user. Dismissing again is idempotent. The optional body accepts `forever` (defaults to `true`): `true` records the dismissal permanently (no longer shown), `false` records it with the timestamp only, letting the display policy show it again.
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `NOT_FOUND` | `404` | The announcement does not exist. | Confirm the announcement id. |
+
+#### Example
+
+```sh
+curl -X POST https://{domain}/api/users/announcements/{id}/dismiss \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"forever":true}'
 ```
 
 ## User access rules
@@ -2675,7 +2761,7 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 
 ### Manage system settings
 
-Reads and updates the global site settings, including registration, email, rate limits, and Turnstile.
+Reads and updates the global site settings, including registration, email, and rate limits.
 
 `GET /api/admin/settings`
 
@@ -2694,8 +2780,6 @@ All fields are optional.
 | `allowRegistration` | `boolean` | No | Allow new user registration. |
 | `allowGuestAccess` | `boolean` | No | Allow guest access. |
 | `requireEmailVerification` | `boolean` | No | Require email verification on registration. |
-| `enableTurnstile` | `boolean` | No | Enable Cloudflare Turnstile. |
-| `turnstileSiteKey` | `string` | No | The Turnstile site key. |
 | `rateLimitEnabled` | `boolean` | No | Enable rate limiting. |
 | `rateLimitRequestsPerMinute` | `integer` | No | Requests per minute, 1 to 10000. Takes effect in production only: the value applies per IP, signed-in users get ×2, the server pins auth endpoints such as sign-in and sign-up at 5 per minute, and free mode allows 60 per session and 120 per user per minute. |
 | `maxConcurrentTransfers` | `integer` | No | Maximum concurrent transfers, 0 to 1000, default 4, where `0` means unlimited. Caps in-flight requests per user (per IP when signed out) across every upload channel and the download gateway, and returns `429 CONCURRENCY_LIMIT_EXCEEDED` beyond it. |
@@ -2822,8 +2906,10 @@ Lists, creates, updates, tests, and deletes storage providers. The server stores
 | `bucket` | `string` | Yes | The bucket name. |
 | `accessKeyId` | `string` | No | The access key. Leave empty for a bound R2 provider. |
 | `secretAccessKey` | `string` | No | The secret key. Leave empty for a bound R2 provider. |
-| `publicDomain` | `string` | No | A public CDN domain for direct URLs. |
+| `publicDomain` | `string` | No | A public CDN domain for direct URLs. Accepts public https addresses only; private or reserved hostnames are rejected (`http://localhost` / `http://127.0.0.1` are exempt for local development). |
 | `pathPrefix` | `string` | No | A prefix applied to object keys. |
+
+`PUT /api/admin/storage/providers/{id}` applies the same validation as create: a non-empty `endpoint` must pass the SSRF check (public http(s) address, port 80 or 443, no private or reserved hosts) or the update fails with `400` using the same message as create. An empty `endpoint` switches the provider back to the R2 binding and is allowed.
 
 #### Test response
 
@@ -2922,10 +3008,9 @@ Lists, creates, updates, and deletes path-based permission rules. Each rule targ
 | `userId` | `string` | No | The user subject. Mutually exclusive with `role` and `apiKeyId`. |
 | `apiKeyId` | `string` | No | The API key subject. Mutually exclusive with `role` and `userId`. |
 | `permissions` | `array` | No | The permissions the rule grants, such as `["read","write"]`. |
-| `requirePassword` | `boolean` | No | Require a password on the matched paths. |
-| `password` | `string` | No | The plaintext password. The server stores only a hash. |
-| `allowedIps` | `array` | No | An IP whitelist for the rule. |
 | `priority` | `integer` | No | The rule priority. |
+
+Conditional fields (`requirePassword`, `password`, `allowedIps`) have been removed from the rule creation surface. The engine keeps failing closed on legacy rows that still carry conditions — such rules deny every request; the only path that passes explicit conditions is the file password-verify flow (it supplies the real client IP and the password flag). The separate `allowedIps` whitelist on API keys is unaffected.
 
 The list response masks `passwordHash` values.
 
@@ -3449,7 +3534,7 @@ Failure response: `{ "status": false, "message": "reason", "data": null }` (HTTP
 
 ### OpenList / AList compatible endpoints (`/openlist` prefix)
 
-Implements a subset of the AList v3 REST protocol. In PicList pick "AList" with url `https://{domain}/openlist` to get the built-in picbed experience (including delete-by-URL). The separate prefix exists because `/api/auth/login` is already used by Picumet's own login. Responses share the `{code, message, data}` envelope with `message` always `success` (clients check `code === 200`).
+Implements a subset of the AList v3 REST protocol. In PicList pick "AList" with url `https://{domain}/openlist` to get the built-in picbed experience (including delete-by-URL). The separate prefix exists because `/api/auth/login` is already used by Picumet's own login. Responses share the `{code, message, data}` envelope with `message` always `success` (clients check `code === 200`). The login endpoint and every `/openlist/api/fs/*` endpoint require the key's `protocols` to include `api` (previously only `fs/form` was checked); keys without it are rejected with `403`.
 
 | Endpoint | Description |
 | :--- | :--- |
@@ -3465,6 +3550,8 @@ Implements a subset of the AList v3 REST protocol. In PicList pick "AList" with 
 A SigV4-verified subset of the S3 REST protocol. Client configuration: endpoint = `https://{domain}/s3`, **path-style addressing (`forcePathStyle=true` / `pathStyleAccess`)**, any region (PicList sends the literal `auto`), `accessKeyId = pk_*`, `secretAccessKey = sk_*`.
 
 **Bucket semantics**: bucket = first segment of the virtual path (mount path or the key's upload root, e.g. uploadPath=`/uploads` → bucket=`uploads`); key = the rest. `GET /s3` lists the buckets reachable by the key (top-level directory names).
+
+**Signed payload cap**: full-body SigV4 verification caps the request body at 100 MiB. A request whose `content-length` exceeds the limit is rejected with `400 InvalidRequest` without reading the body; for larger files use `UNSIGNED-PAYLOAD` or multipart upload. When the body passes verification, the verified content hash is reused directly (no duplicate hashing).
 
 | Operation | Request |
 | :--- | :--- |

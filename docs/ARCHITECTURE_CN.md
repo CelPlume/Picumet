@@ -155,7 +155,7 @@ services/permissions/
 
 **游客可见性（文件级）**：`file_metadata.guest_visibility` 为 `NULL` / `none` / `download` / `view`，未设置时跟随角色默认——即**游客默认只能下载**。判定时由 `syntheticGuestRule` 把文件的游客可见性合成一条 allow 规则并入候选集：`download` 放行下载，`view` 放行查看（列表/预览）与下载，`none` 不放行任何操作。文件属性面板的「用户权限默认设置」是它的唯一配置入口。
 
-**密码保护优先级（文件级 > 路径级）**：`checkPasswordProtection(fileAccessPassword, matchingRule)` 先看文件自身的 `access_password`——存在即按文件密码校验；其次才看命中路径规则的 `requirePassword + passwordHash`；两者都没有则不要求密码。两级不会叠加：文件密码存在时路径级密码不参与。
+**密码保护（文件级）**：密码保护只有文件级。带密码的文件在所有内容出口返回 `403 PASSWORD_REQUIRED`，直到其访问密码经 `POST /api/files/{id}/verify-password` 验证——该端点要求对文件具备 `download` 权限（与获取下载链接同一道闸门），校验通过后签发带 `passwordVerified` 标记的网关令牌。规则条件字段（`requirePassword`、`passwordHash`、IP 条件）已不再接受创建入参；引擎对仍带条件的存量规则保持 fail-closed——这类规则一律拒绝请求，唯一显式传入 conditions 的生产调用方是文件密码验证流程（传入真实客户端 IP 与 `passwordVerified: true`）。
 
 两个关键安全边界：
 

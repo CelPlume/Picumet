@@ -18,7 +18,7 @@
 | Phase 1 | 核心平台：认证、文件、配额、角色、存储源、系统设置 | Done |
 | Phase 2 | 上传（分片/断点续传）、预览、分享、管理面板、API 密钥、WebDAV、自由模式 | Done |
 | Phase 3 | AWS S3、外观主题、管理员登录、公告关闭 | 基本完成；Oracle provider 待实现 |
-| Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录 | Planned |
+| Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录、邀请码注册机制 | Planned |
 | 未来 | monorepo 双后端：Workers 版 + Go 高性能版（跨桶复制/DR、无配额长任务） | Planned |
 
 ## 功能区域
@@ -55,7 +55,7 @@
 | 存储核心加固 | Done | Range 读取（经统一 `serveObject` 的 206/416）、`ProviderError` 分类、批量删除（每批 ≤1000 + 逐对象回退）、Delimiter 列目录、>5 GB 移动用 `UploadPartCopy`。 |
 | Provider 统一 | Done | 类型由 `endpoint` 推导（`r2` / `s3`；`oracle` 并入 `s3`）；迁移 `0005`；`upload_domain` 移除。 |
 | 管理端 | Done | 仪表盘、用户、存储、挂载点、规则、分享、文件、日志。访问统计见「即将规划」。 |
-| 系统设置 | Done | 站点信息、注册/游客开关、Turnstile。 |
+| 系统设置 | Done | 站点信息、注册/游客开关。Turnstile 配置已随审计 YAGNI-03 清理移除（从未接线）。 |
 | API 密钥 + 兼容协议 | Done | `pk_x.sk_y` 不透明令牌、WebDAV、PicGo/PicList、Lsky Pro V2、AList/OpenList shim、S3 兼容网关（对外中转面）。 |
 | 安全 | Done | CSP、CSRF、限流、路径遍历、SSRF、SQL 参数化、原子下载令牌。热文件检测与强制签名 URL planned。 |
 | 图片编辑器链接（Squoosh） | Done | |
@@ -71,7 +71,7 @@
 | 其余 9 家提供商（B2、IDrive、GCS、COS、OSS、OBS、Scaleway、Filebase、Kodo） | 不在范围内。 |
 | 客户端加密 | 不做；敏感路径链接改用签名 URL。 |
 | Vercel / EdgeOne 托管 | 只用 Cloudflare。 |
-| 登录失败退避与账户锁定 | 认证类端点的 IP 限流（生产 fail-closed）与 Turnstile 已覆盖；不做账户锁定。 |
+| 登录失败退避与账户锁定 | 认证类端点的 IP 限流（生产 fail-closed）已覆盖；不做账户锁定。 |
 | Refresh token 双令牌 | 单 JWT（7 天 HttpOnly Cookie）+ `session_version` 撤销已覆盖同一需求。 |
 | 找回密码按邮箱限流（每小时 3 次） | 复用通用速率限制；重置令牌 15 分钟有效且一次性消费。 |
 | 文件版本控制 | 早期产品评审明确不做；版本历史交由对象存储侧能力承担。 |
@@ -94,15 +94,39 @@
 | highlight.js 转义 + 前端回归（中危） | `escapeHtml` 预转义作纵深防御 | 转义用例 |
 | CI/CD + 覆盖率门禁（中危） | `.github/workflows/ci.yml`（bun，仅 CI）、前端覆盖率门禁、路由懒加载 | 覆盖率行 100% |
 
+### 2026-09-26 代码审计修复批次（`docs/CODE_AUDIT_REPORT.md`）
+
+全量修复报告 P0/P1/P2 项（SMTP/SEC-05 按决策暂缓）。安全审计闭环：
+
+| 发现 | 修复 | 证据 |
+| :--- | :--- | :--- |
+| SEC-01 跨挂载点移动文件夹子树滞留源挂载点（高危） | `moveWithSaga` 阻断跨挂载文件夹移动（422）；清扫任务自愈存量孤儿子树（跳过嵌套挂载行）后再对账容量 | `move-cross-mount.test.ts`、`upload-resume.test.ts` |
+| SEC-02 更新 Provider 绕过 endpoint SSRF 校验（高危） | 更新路径复用 `validateEndpoint`（空串切回绑定放行） | `admin-provider-update.test.ts` |
+| SEC-03 IP 解析信任可伪造 XFF 首段（高危） | 统一 `utils/ip.ts`（cf.connectingIp → CF-Connecting-IP → X-Real-IP → XFF 受控回退），全部调用点迁移 | `api-key-ip.test.ts` 伪造头用例 |
+| SEC-04 分享出口绕过文件级密码（高危） | 分享令牌不再由分享密码推导 passwordVerified；新增 `POST /shares/:id/verify-file`（cookie+KV 按文件记录）；预览/网关按文件当前 accessPassword 复核 | `share-file-password.test.ts` |
+| SEC-05 SMTP 未启用 TLS 且 connect 未导入（高危） | **暂缓**（用户决策，SMTP 未配置） | — |
+| SEC-06 AList 登录缺协议面授权（中危） | 登录 + 全部 fs/* 统一 `assertApiKeyProtocol(api, 'api')` | `alist.test.ts` 协议矩阵 |
+| SEC-07 站点资源中转重定向未复核（中危） | `redirect: manual` 逐跳 validateEndpoint，≤3 跳 | `site-asset.test.ts` |
+| SEC-08 生产错误响应泄露内部异常（中危） | 非 ApiError 生产环境固定「服务器内部错误」+ 服务端日志留痕 | `error-response.test.ts` |
+| SEC-09 SigV4 整包校验无上限且重复哈希（中危） | 签名载荷 100 MiB 上限（读前按 content-length 拒绝）；payload 哈希复用 | `s3gw.test.ts` |
+| SEC-10 verify-password 绕过权限初检（中危） | 密码校验前执行 download 权限判定（显式 conditions：真实 IP + passwordVerified） | `share-password.test.ts` |
+| SEC-11 上传异常预留滞留（中危） | 失败路径统一释放三层预留 + 标 `aborted`；清扫回收 verifying/failed 过期会话；预留对账自愈 | `upload-resume.test.ts` |
+| SEC-12 publicDomain 不拒私网（低危） | httpsUrl 增加 isPrivateHost 校验（localhost 豁免） | `admin-provider-update.test.ts` |
+| DESIGN-01 权限条件接口未接入 | 删除 `getConditions`/`checkPasswordProtection` 死代码；规则创建面移除条件字段；存量行 fail-closed 契约测试 | `permission.test.ts` |
+| DESIGN-02 分享创建/配额对账 N+1 | 批量 IN 查询 + GROUP BY 聚合 + 预留自愈 | 各任务单测 |
+| DESIGN-03 I/O 超时分散 | 前端 apiFetch 默认 30s、上传暂停真实中止；S3 控制面 15s 超时（SMTP 部分随 SEC-05 暂缓） | — |
+| DESIGN-04/05/06 前端 | 下载统一 apiFetch；代码预览 2 MiB 上限；预览 URL 缓存 10 分钟 TTL | — |
+| YAGNI-01..04 | 死代码删除（useFolderOptions/getProviderCfg/toFileListItem 二次导出）；公告撤回接入后端 + 前端同步；inviteCode/Turnstile 全链路移除；coverUrl/manualPosition 文档标注预留契约 | `announcement-dismiss.test.ts` |
+
 ## 当前基线
 
-- 后端：46 个测试文件 / 452 个 Vitest 用例通过；`tsc --noEmit` 干净。
+- 后端：51 个测试文件 / 486 个 Vitest 用例通过；`tsc --noEmit` 干净。（2026-09-26 审计修复批次自 46/452 起新增 5 个回归测试文件）
 - 前端：4 个测试文件 / 27 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.3% functions / 93.3% lines）；构建成功；`tsc --noEmit` 干净。
 - 语言：中文 + 英文。
 
 ## 即将规划
 
-近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面两项新规划。
+近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面三项新规划。
 
 ### Umami 访问统计（审计来源二选一）
 
@@ -124,6 +148,20 @@
 - 账号关联：邮箱一致自动关联既有账号；不一致时按注册开关决定自动注册或拒绝。
 - 登录态与本地账号一致：发放同一 JWT（HttpOnly Cookie），沿用 `session_version` 撤销。
 - 前端：登录/注册页新增「使用 … 继续」按钮与回调路由，处理错误态并补齐 i18n 文案。
+
+### 邀请码注册机制
+
+在开放注册之上叠加受邀注册：管理员在系统设置控制开关与生成权限，用户在个性化设置生成并管理自己的邀请码、查看受邀记录。
+
+- 管理端系统设置新建「注册设置」分组：把现有「开放注册」「允许访客」两个开关从安全设置挪入，并新增四个设置项——是否开启邀请码、开启后邀请码是否必填（必填 = 无码不可注册）、生成权限（全部用户 / 仅管理员）、用户最大邀请码生成数量（默认 5）。
+- 码值格式：6 位数字 + 大小写字母（`[0-9A-Za-z]{6}`，约 5.7×10^10 组合），crypto 随机生成，唯一约束 + 碰撞重试，匹配区分大小写。
+- 数据模型：新迁移建 `invite_codes` 表（码值、名称、创建人、创建时间）与核销关联（`users.invited_by_code_id` 或独立核销表）；一个邀请码可被多人使用，按码聚合展示受邀用户；本次不做使用上限与过期。
+- 用户端：个性化设置「修改密码」下方新增邀请码区块，仅对有生成权限的用户显示——点击开启后批量生成多个邀请码，累计数量不超过「用户最大邀请码生成数量」（默认 5），每个邀请码可设置名称、可见创建时间，并可查看受邀用户的用户名、所用邀请码与注册时间（YYYYMMDD）。
+- 注册链路：开启且必填时注册表单展示邀请码输入（复用既有 i18n key），非必填时选填；校验在注册 handler 内完成，格式不符、码无效或未开启返回明确错误码；核销与建号在同一事务内原子完成，防并发重复核销。
+- 契约闭环：注册 schema 曾长期接受 `inviteCode` 但从未消费，该预留字段已按审计 YAGNI-03 于 2026-09-26 从 `RegisterSchema`/`shared/types.ts` 删除（连同 Turnstile 残留）；本机制落地时随实现重新引入字段与校验，不再「先收下、后接线」。
+- API：用户端 `POST /api/invites`（批量生成）与 `GET /api/invites`（自己的码与受邀记录）；管理端四个设置项走既有 `PATCH /api/admin/settings`；注册校验复用既有注册限流。
+- 测试：注册门控（关闭 / 开启必填无码 / 格式不符 / 错码 / 有效码）、生成权限矩阵（全部用户 / 仅管理员 × 管理员 / 普通用户）、生成数量上限（达到上限后拒绝）、核销原子性。
+- 文档联动：API 参考补端点与错误码；UI 指南补注册页输入与个性化设置区块（落地前，UI 指南「注册收集可选邀请码」的说法仍与代码不符）。
 
 ## 将来规划（monorepo：Workers 版 + Go 高性能版）
 

@@ -220,7 +220,6 @@ bunx wrangler secret put ADMIN_PASSWORD
 | `ADMIN_PASSWORD` | 生产必需 | 初始管理员密码;缺失时 API fail-closed。 |
 | `ADMIN_USERNAME` | 可选 | 初始管理员用户名,默认 `admin`。 |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | 可选 | 邮件发送,用于邮箱验证与密码重置。 |
-| `TURNSTILE_SECRET_KEY` | 可选 | Cloudflare Turnstile 人机验证。 |
 
 `ENVIRONMENT`、`APP_BASE_URL`、`ALLOWED_ORIGINS` 是 `wrangler.toml` 里的普通变量,不算密钥。
 
@@ -247,7 +246,6 @@ bun run build
    - 根目录:`/`
 4. 环境变量:
    - `VITE_API_BASE_URL`:`https://api.yourdomain.com`
-   - `VITE_TURNSTILE_SITE_KEY`:`你的 site key`(可选)
 5. 点击**保存并部署**。
 
 之后每次推送到生产分支,Cloudflare 都会自动重新构建并发布。
@@ -295,8 +293,7 @@ bunx wrangler pages deploy dist --project-name=picumet
 | `ADMIN_PASSWORD` | 密钥 | 生产必需 | 初始管理员密码,至少 12 位且含字母和数字。 |
 | `ADMIN_USERNAME` | 密钥 | 可选 | 初始管理员用户名,默认 `admin`。 |
 | `DEMO_PASSWORD` | 密钥 | 可选 | 演示用户密码,仅开发环境。 |
-| `SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASS`、`SMTP_FROM` | 密钥 | 可选 | 邮件发送。 |
-| `TURNSTILE_SECRET_KEY` | 密钥 | 可选 | Turnstile 人机验证。 |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | 密钥 | 可选 | 邮件发送。 |
 
 `wrangler.toml` 里的绑定:`DB`(D1)、`KV`(KV 命名空间)、`R2`(R2 存储桶)。
 

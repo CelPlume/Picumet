@@ -49,7 +49,7 @@ Copy the example file and edit the values that matter for local development:
 cp workers/.dev.vars.example workers/.dev.vars
 ```
 
-Set at least `JWT_SECRET` and `ENCRYPTION_KEY` to unique values. The file includes development defaults for the other settings, such as SMTP, Turnstile, and the initial administrator credentials.
+Set at least `JWT_SECRET` and `ENCRYPTION_KEY` to unique values. The file includes development defaults for the other settings, such as SMTP and the initial administrator credentials.
 
 ### Apply database migrations
 
@@ -170,7 +170,7 @@ Cover the following modules whenever you change them.
 
 The permission algorithm in `services/permissions/check.ts` decides access with a priority order: administrator privilege, mount boundary, user root path, API-key permission scope, path rules, owner fallback, and default deny. Tests must lock in path segment boundaries: `/users/alice` must never match `/users/alice2`. Add cases for rule priority, wildcard patterns, and default deny.
 
-Password-protection priority needs cases too: the file-level `access_password` outranks the matching path rule's `requirePassword` (see `checkPasswordProtection`), and the two never stack — with a file password set, the path-level password is out of the picture; with neither, no password is required.
+Password protection needs cases too. File-level passwords run through the verify-password endpoint, which first requires the `download` permission on the file (same gate as the download-link endpoint) and, on success, issues a gateway token carrying `passwordVerified`. Rule condition fields (`requirePassword`, `allowedIps`) are no longer accepted at rule creation; legacy rules that still carry conditions fail closed in the engine — deny unless explicit conditions are supplied (locked in by engine tests).
 
 ### File state machine
 

@@ -181,7 +181,7 @@ flowchart LR
 
 ### 公开页面
 
-登录（`/login`）、注册（`/register`）、重置密码（`/reset-password`）共用居中的卡片布局。注册需要用户名、密码、邮箱和可选的邀请码，站点开启后还要通过 Cloudflare Turnstile。登录成功后，应用跳转到 `redirect` 指向的页面，没有时就进入 `/files`。已持有有效会话（JWT Cookie）时打开 `/login` 会跳过表单，直接进入 `/files`（或 `redirect` 目标）。自由模式页（`/free-mode`）允许访客用临时凭据连接自己的对象存储桶，表单提供 R2、AWS S3、Oracle、MinIO 等预设（只预填字段，全部保持可编辑），凭据 AES-GCM 加密后短期保存在服务端会话。
+登录（`/login`）、注册（`/register`）、重置密码（`/reset-password`）共用居中的卡片布局。注册需要用户名、密码和邮箱。登录成功后，应用跳转到 `redirect` 指向的页面，没有时就进入 `/files`。已持有有效会话（JWT Cookie）时打开 `/login` 会跳过表单，直接进入 `/files`（或 `redirect` 目标）。自由模式页（`/free-mode`）允许访客用临时凭据连接自己的对象存储桶，表单提供 R2、AWS S3、Oracle、MinIO 等预设（只预填字段，全部保持可编辑），凭据 AES-GCM 加密后短期保存在服务端会话。
 
 ### 顶栏组件
 

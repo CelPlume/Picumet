@@ -220,7 +220,6 @@ Production password rules:
 | `ADMIN_PASSWORD` | Production | Initial administrator password; the API fails closed when it is missing. |
 | `ADMIN_USERNAME` | No | Initial administrator username (defaults to `admin`). |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | Email delivery for verification and password reset. |
-| `TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile verification. |
 
 `ENVIRONMENT`, `APP_BASE_URL`, and `ALLOWED_ORIGINS` are plain vars in `wrangler.toml`, not secrets.
 
@@ -247,7 +246,6 @@ bun run build
    - Root directory: `/`
 4. Set the environment variables:
    - `VITE_API_BASE_URL`: `https://api.yourdomain.com`
-   - `VITE_TURNSTILE_SITE_KEY`: `your_site_key` (optional)
 5. Click **Save and Deploy**.
 
 Cloudflare rebuilds and deploys the site on every push to the production branch.
@@ -296,7 +294,6 @@ Concurrent runs for the same branch cancel each other (`concurrency.cancel-in-pr
 | `ADMIN_USERNAME` | secret | No | Initial administrator username (defaults to `admin`). |
 | `DEMO_PASSWORD` | secret | No | Demo user password (development only). |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | secret | No | Email delivery. |
-| `TURNSTILE_SECRET_KEY` | secret | No | Turnstile verification. |
 
 Bindings in `wrangler.toml`: `DB` (D1), `KV` (KV namespace), and `R2` (R2 bucket).
 

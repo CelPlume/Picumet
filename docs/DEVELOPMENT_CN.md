@@ -49,7 +49,7 @@ cd ../frontend && bun install
 cp workers/.dev.vars.example workers/.dev.vars
 ```
 
-至少把 `JWT_SECRET` 和 `ENCRYPTION_KEY` 换成独立的值。文件里已带好 SMTP、Turnstile、初始管理员等配置的开发默认值。
+至少把 `JWT_SECRET` 和 `ENCRYPTION_KEY` 换成独立的值。文件里已带好 SMTP、初始管理员等配置的开发默认值。
 
 ### 应用数据库迁移
 
@@ -170,7 +170,7 @@ python3 scripts/verify-storage-failover.py --base-url http://localhost:8787
 
 `services/permissions/check.ts` 里的权限判定按优先级依次检查:管理员特权、挂载边界、用户根路径、API 密钥权限范围、路径规则、所有者回退、默认拒绝。测试要锁死路径段边界:`/users/alice` 绝不能匹配 `/users/alice2`。规则优先级、通配符模式和默认拒绝也要有用例。
 
-密码保护优先级同样要有用例:文件级 `access_password` 优先于命中路径规则的 `requirePassword`(见 `checkPasswordProtection`),两级不叠加——文件设了密码时路径级密码不参与校验,都没有时不需要密码。
+密码保护同样要有用例。文件级密码走 verify-password 端点:先要求对文件具备 `download` 权限(与获取下载链接同一道闸门),校验通过后签发带 `passwordVerified` 的网关令牌。规则条件字段(`requirePassword`、`allowedIps`)已不再接受创建入参;存量仍带条件的规则在引擎里 fail-closed——不显式传入 conditions 一律拒绝(由引擎测试锁定)。
 
 ### 文件状态机
 
