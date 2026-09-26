@@ -85,6 +85,24 @@ export function AnnouncementBanner() {
     apiFetch<{ items: Announcement[] }>('/api/public/announcements')
       .then((res) => {
         if (alive) setAnnouncements(res.data.items);
+        // 登录用户：拉取服务端撤回记录，补齐跨设备/清 localStorage 的场景（未登录 401、失败静默走本地）
+        return apiFetch<{ ids: string[] }>('/api/users/announcements/dismissed-ids');
+      })
+      .then((res) => {
+        if (!alive) return;
+        const now = Date.now();
+        setDismissed((prev) => {
+          const next: DismissMap = { ...prev };
+          let changed = false;
+          for (const id of res.data.ids) {
+            if (next[id] === undefined) {
+              next[id] = now;
+              changed = true;
+            }
+          }
+          if (changed) localStorage.setItem(BANNER_KEY, JSON.stringify(next));
+          return changed ? next : prev;
+        });
       })
       .catch(() => undefined);
     return () => {
@@ -114,6 +132,8 @@ export function AnnouncementBanner() {
     const next: DismissMap = { ...dismissed, [id]: Date.now() };
     setDismissed(next);
     localStorage.setItem(BANNER_KEY, JSON.stringify(next));
+    // 服务端同步（fire-and-forget）：游客 401 静默；跨设备由 dismissed-ids 拉取补齐
+    void apiFetch(`/api/users/announcements/${id}/dismiss`, { method: 'POST', body: { forever: true } }).catch(() => {});
   };
 
   const now = Date.now();
