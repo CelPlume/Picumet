@@ -21,8 +21,6 @@ interface Settings {
   allowRegistration: boolean;
   allowGuestAccess: boolean;
   requireEmailVerification: boolean;
-  enableTurnstile: boolean;
-  turnstileSiteKey?: string;
   rateLimitEnabled: boolean;
   rateLimitRequestsPerMinute: number;
   maxConcurrentTransfers: number;
