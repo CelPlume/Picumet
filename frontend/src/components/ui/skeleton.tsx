@@ -68,7 +68,7 @@ export function FormCardSkeleton({ rows = 4 }: { rows?: number }) {
 
 // ============ 表格骨架 ============
 // 行条完全透明 + border-b 分隔——与真实表格行一致；玻璃由所在卡片承担（三层卡上卡
-// 叠同色玻璃会复合成近不透明白板，历史 bug：骨架行自带 glass-surface 导致整卡发白不透明）
+// 叠同色玻璃会复合成近不透明白板：骨架行自带 glass-surface 会让整卡发白不透明）
 export function TableSkeleton({ rows = 6, cols = 4 }: { rows?: number; cols?: number }) {
   return (
     <div>

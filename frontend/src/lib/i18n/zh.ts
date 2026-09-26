@@ -900,6 +900,7 @@ export const zhCN = {
     accessKey: 'Access Key',
     secretKey: 'Secret Key',
     publicDomain: '公网域名',
+    publicDomainHint: '配置后该挂载的全部对象可经此 CDN 域名匿名直读（含 private 对象），不经过权限判定；同一存储池内的公有性策略必须保持一致。',
     pathPrefix: '路径前缀',
     testConnection: '测试连接',
     connected: '连接成功',

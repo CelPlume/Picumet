@@ -1,4 +1,4 @@
-// S3 兼容存储预设（对照报告 §5.2 单表单平铺 + 用户要求：R2/AWS/Oracle 给预设，MinIO/自定义自行填 URL）
+// S3 兼容存储预设：R2/AWS/Oracle 给预设，MinIO/自定义自行填 URL；单表单平铺，无模式切换。
 // 预设只做"预填"，不是模式切换：所有字段始终平铺可见，选择后可自由修改。
 export interface StoragePreset {
   id: string;

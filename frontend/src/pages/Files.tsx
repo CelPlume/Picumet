@@ -27,7 +27,7 @@ import { ShareDialog } from '@/components/files/ShareDialog';
 import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
-import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, formatBytes } from '@/lib/utils';
+import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, formatBytes, isVirtualRootItem, operableFileIds } from '@/lib/utils';
 import { ApiError, apiFetch } from '@/lib/api';
 import { revealDelay } from '@/components/ui/reveal';
 import { useMinLoading } from '@/hooks/useMinLoading';
@@ -296,7 +296,8 @@ export default function Files() {
   // 条目容器（命中测试 + 指针捕获用）
   const rowRef = useRef<HTMLDivElement>(null);
   // 主列容器即拖拽面：空白处(含网格四周)均可起拖；网格跳过卡片，列表允许从行起拖
-  const lasso = useLassoSelect(rowRef, setSelected, {
+  // 拖拽命中的虚拟根目录项（vroot:）不可操作，选择集里直接滤除
+  const lasso = useLassoSelect(rowRef, (ids) => setSelected(new Set([...ids].filter((id) => !isVirtualRootItem(id)))), {
     skipSelector: '[data-file-card], button, a, input, textarea, [role="checkbox"], [role="menuitem"]',
   });
   const lassoRef = useRef(lasso);
@@ -464,6 +465,8 @@ export default function Files() {
   }, [path, t]);
 
   const toggleSelect = useCallback((id: string) => {
+    // 虚拟根目录项（vroot:）不可进入选择集
+    if (isVirtualRootItem(id)) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -535,33 +538,60 @@ export default function Files() {
   const handleFileClick = useCallback(
     (e: React.MouseEvent, f: FileListItem) => {
       e.stopPropagation();
+      // 虚拟根目录项（vroot:）仅允许导航：单击即进入该路径，不入选择集
+      if (isVirtualRootItem(f)) {
+        openItem(f);
+        return;
+      }
       if (multiSelect || e.shiftKey || e.ctrlKey || e.metaKey) {
         toggleSelect(f.id);
       } else {
         setSelected(new Set([f.id]));
       }
     },
-    [multiSelect, toggleSelect]
+    [multiSelect, toggleSelect, openItem]
   );
 
+  // 文件项操作入口统一门禁：虚拟根目录项（vroot:）仅可导航进入其路径，
+  // 下载/重命名/移动/删除/分享/复制链接/属性/设密码 一律短路（行菜单/批量栏/右键菜单另按前缀滤除）
   const handlers: FileActionHandlers = {
     onOpen: openItem,
-    onDownload: downloadFile,
+    onDownload: (f) => {
+      if (!isVirtualRootItem(f)) void downloadFile(f);
+    },
     onRename: (f) => {
+      if (isVirtualRootItem(f)) return;
       setRenameTarget(f);
       setRenameValue(f.name);
     },
-    onDelete: (f) => setDeleteTarget(f),
-    onMove: (f) => setMoveTarget(f),
-    onShare: (f) => setShareItems([f]),
-    onCopyLink: doCopyLink,
-    onProperties: (f) => setPropsFile(f),
-    onSetPassword: (f) => setPropsFile(f),
+    onDelete: (f) => {
+      if (!isVirtualRootItem(f)) setDeleteTarget(f);
+    },
+    onMove: (f) => {
+      if (!isVirtualRootItem(f)) setMoveTarget(f);
+    },
+    onShare: (f) => {
+      if (!isVirtualRootItem(f)) setShareItems([f]);
+    },
+    onCopyLink: (f, format, signed) => {
+      if (!isVirtualRootItem(f)) void doCopyLink(f, format, signed);
+    },
+    onProperties: (f) => {
+      if (!isVirtualRootItem(f)) setPropsFile(f);
+    },
+    onSetPassword: (f) => {
+      if (!isVirtualRootItem(f)) setPropsFile(f);
+    },
   };
 
   const contextMenu = (e: React.MouseEvent, f: FileListItem) => {
     e.preventDefault();
     e.stopPropagation();
+    // 虚拟根目录项（vroot:）不可操作：强制走菜单（菜单内仅剩导航项），不直接打开属性面板
+    if (isVirtualRootItem(f)) {
+      setMenuPos({ x: e.clientX, y: e.clientY, file: f });
+      return;
+    }
     // 右键多选（可开关）：开启时未选中项累积加入；关闭时仅选中该项
     if (!selected.has(f.id)) {
       if (useTheme.getState().rightClickMultiSelect) {
@@ -769,7 +799,8 @@ export default function Files() {
                         <DropdownItem
                           icon={<CheckSquare className="h-4 w-4" />}
                           onClick={() => {
-                            setSelected(new Set(items.map((f) => f.id)));
+                            // 虚拟根目录项（vroot:）不可操作，全选滤除
+                            setSelected(new Set(operableFileIds(items)));
                             close();
                           }}
                         >
@@ -778,10 +809,8 @@ export default function Files() {
                         <DropdownItem
                           icon={<ArrowRightLeft className="h-4 w-4" />}
                           onClick={() => {
-                            const next = new Set<string>();
-                            items.forEach((f) => {
-                              if (!selected.has(f.id)) next.add(f.id);
-                            });
+                            // 反选同样只在可操作条目的作用域内（虚拟根目录项不参与）
+                            const next = new Set(operableFileIds(items).filter((id) => !selected.has(id)));
                             setSelected(next);
                             close();
                           }}

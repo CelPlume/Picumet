@@ -1,4 +1,4 @@
-// InputOTP 回归：填满后再输入不得覆盖整体（曾经的 bug：末格再输入被当成粘贴，值变成最后两位 → 数字“轮转”到首格）
+// InputOTP：填满后再输入不得覆盖整体（末格再输入会被当成粘贴，值退化成最后两位 → 数字“轮转”到首格）
 import { describe, it, expect, vi } from 'vitest';
 import { useState } from 'react';
 import { render, screen, act } from '@testing-library/react';

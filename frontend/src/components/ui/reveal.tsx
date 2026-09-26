@@ -5,7 +5,7 @@
 //   - 只动 opacity 与 transform，元素首帧就占位，不产生布局位移（CLS）；
 //   - ⚠️ keyframes 只写 from、不写显式 to{opacity:1}：fill both 的动画值高于普通声明，
 //     显式终点会把业务透明度（封禁行 opacity-40、文件卡 opacity-40 grayscale）永久钉成 1；
-//     隐式终点回落到元素自身计算值，业务样式不受影响（2026-09 实测回归，见 AGENTS.md 坑点）；
+//     隐式终点回落到元素自身计算值，业务样式不受影响；
 //   - mount 后只播一次（CSS 一次性动画，重渲染不重播；换路由/换页重新挂载才重播）；
 //   - 逐项延迟走 CSS 变量 --reveal-delay，不给每个列表项挂 JS 定时器；
 //   - 层级：卡片用 REVEAL_STEP，卡内元素/表格行用 REVEAL_STEP_FINE，卡内元素再叠加 base 偏移；

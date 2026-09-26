@@ -257,6 +257,7 @@ export function StorageProviders() {
             <div>
               <Label>{t('admin.publicDomain')}</Label>
               <Input className="mt-1" value={form.publicDomain ?? ''} onChange={(e) => set('publicDomain', e.target.value)} placeholder="https://cdn.example.com" />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.publicDomainHint')}</p>
             </div>
             <div>
               <Label>{t('admin.pathPrefix')}</Label>
@@ -311,6 +312,7 @@ export function StorageProviders() {
             <div>
               <Label>{t('admin.publicDomain')}</Label>
               <Input className="mt-1" value={editForm.publicDomain ?? ''} onChange={(e) => setEditForm((f) => ({ ...f, publicDomain: e.target.value }))} />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.publicDomainHint')}</p>
             </div>
             <div>
               <Label>{t('admin.pathPrefix')}</Label>

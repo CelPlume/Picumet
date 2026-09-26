@@ -78,7 +78,7 @@ export function ShareLinkPanel({ id, password, user, title, onClose }: ShareLink
           </label>
         )}
       </div>
-      {/* 「复制链接」按用户要求直接复制整段文案（分享者 + 标题 + 链接，勾选附带密码时含密码行） */}
+      {/* 「复制链接」直接复制整段文案（分享者 + 标题 + 链接，勾选附带密码时含密码行） */}
       <DropdownItem
         icon={<Copy className="h-4 w-4" />}
         onClick={() => {

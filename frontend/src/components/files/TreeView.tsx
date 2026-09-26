@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, isVirtualRootItem } from '@/lib/utils';
 import { revealDelay } from '@/components/ui/reveal';
 import FileIcon from '@/components/files/FileIcon';
 import { EmptyState } from '@/components/ui/core';
@@ -219,7 +219,9 @@ export function TreeView({
           {slice.map(({ node, depth, expanded: isOpen }, si) => {
             const row = node.row;
             const isFolder = row.type === 'folder';
-            const selected = !!row.id && row.id === selectedId;
+            // 合成根虚拟目录项（vroot:）：仅可导航（点击进入该路径），不入选择集、不弹右键菜单
+            const isVirtual = isVirtualRootItem(row);
+            const selected = !!row.id && !isVirtual && row.id === selectedId;
             return (
               <div
                 key={node.fullPath}
@@ -236,16 +238,25 @@ export function TreeView({
                 style={{ height: ROW_H, ...(row.id ? revealDelay(start + si, 'inner') : undefined) }}
                 onClick={() => {
                   if (!row.id) return;
+                  // 虚拟根目录项：点击即进入该路径（不展开/折叠，也不是选择）
+                  if (isVirtual) {
+                    onOpenFile?.(row);
+                    return;
+                  }
                   // 文件夹整行点击即展开/折叠（不依赖小箭头）；文件单击选中
                   if (isFolder) toggle(node.fullPath);
                   else onSelect?.(row);
                 }}
                 onDoubleClick={() => {
+                  if (isVirtual) {
+                    onOpenFile?.(row);
+                    return;
+                  }
                   if (isFolder) toggle(node.fullPath);
                   else if (row.id) onOpenFile?.(row);
                 }}
                 onContextMenu={(e) => {
-                  if (!row.id) return;
+                  if (!row.id || isVirtual) return;
                   if (onRowContext) {
                     e.preventDefault();
                     onRowContext(e, row);

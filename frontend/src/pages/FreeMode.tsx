@@ -1,4 +1,4 @@
-// 自由模式：输入对象存储凭据临时访问（报告 §5.1：单表单平铺 + 预设，无模式切换）
+// 自由模式：输入对象存储凭据临时访问（单表单平铺 + 预设，无模式切换）
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';

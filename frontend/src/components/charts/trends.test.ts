@@ -1,4 +1,4 @@
-// 趋势面板区间 / 粒度计算的行为回归：本地时区取整、后端上限预判、自定义区间校验
+// 趋势面板区间 / 粒度计算：本地时区取整、后端上限预判、自定义区间校验
 import { describe, expect, it } from 'vitest';
 import {
   customRangeFromInput,

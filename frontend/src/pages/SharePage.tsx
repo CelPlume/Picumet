@@ -154,7 +154,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
   /** 拉取分享内容（不动 loading：带 ?password= 直接进时由 bootstrap 统一控制骨架屏时机） */
   const requestShare = async (): Promise<ShareInfo | null> => {
     try {
-      // M-02：不再把密码放入 URL；依赖验证接口种下的授权 cookie
+      // 密码不进入 URL：依赖验证接口种下的授权 Cookie
       const res = await apiFetch<{ share: ShareInfo }>(`/api/shares/${id}`);
       setInfo(res.data.share);
       setFolder(null);
@@ -179,7 +179,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
   const verify = async (pw: string = password) => {
     if (!pw) return;
     try {
-      // M-02：POST 提交密码，服务端校验后种短期授权 cookie
+      // POST 提交密码，服务端校验后种短期授权 Cookie
       await apiFetch<{ authorized: boolean }>(`/api/shares/${id}/verify`, {
         method: 'POST',
         body: { password: pw },
@@ -227,7 +227,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
     }
   };
 
-  /** 走后端换取下载 URL 并打开（不做密码校验；M-02：不携带密码，授权 cookie 已种下） */
+  /** 走后端换取下载 URL 并打开（密码校验由验证接口完成；请求不携带密码，授权 Cookie 已种下） */
   const openDownload = async (itemId: string) => {
     if (!id) return;
     try {

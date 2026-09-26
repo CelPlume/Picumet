@@ -1,12 +1,11 @@
 // 管理员：访问日志
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ScrollText } from 'lucide-react';
-import { Card, Badge, EmptyState } from '@/components/ui/core';
+import { ChevronLeft, ChevronRight, ScrollText } from 'lucide-react';
+import { Card, Badge, Button, EmptyState } from '@/components/ui/core';
 import { useMinLoading } from '@/hooks/useMinLoading';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { revealDelay } from '@/components/ui/reveal';
-import { Pagination } from '@/components/ui/pagination';
 import { apiFetch } from '@/lib/api';
 import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 import { formatDateTime, formatBytes } from '@/lib/utils';
@@ -16,9 +15,7 @@ interface LogRow {
   userId?: string;
   action: string;
   path?: string;
-  metadata?: string;
   ipAddress?: string;
-  userAgent?: string;
   bytesTransferred: number;
   statusCode?: number;
   createdAt: number;
@@ -32,6 +29,9 @@ const ACTION_COLOR: Record<string, string> = {
   delete: 'destructive',
   login: 'outline',
 };
+
+/** 游标分页每页条数（后端上限 50） */
+const PAGE_SIZE = 50;
 
 /** 表头与数据行共用的网格模板（md 起多一列 IP），保证表头表与行表列对齐；
     路径列给最小宽度下限，窄容器时横向滚动而非塌缩 */
@@ -51,19 +51,37 @@ export default function AdminLogs() {
   };
   const [sort, setSort] = useState<string | null>('createdAt');
   const [order, setOrder] = useState<SortOrder>('desc');
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  /** 游标栈：cursors[i] 是第 i 页请求所用的游标（首页为 undefined）；index 指向当前页 */
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const [index, setIndex] = useState(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
 
   useEffect(() => {
+    const cursor = cursors[index];
     setLoading(true);
-    void apiFetch<{ logs: LogRow[]; pagination: { total: number } }>(`/api/admin/logs?page=${page}&limit=${pageSize}`)
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+    if (cursor) params.set('cursor', cursor);
+    void apiFetch<{ logs: LogRow[]; nextCursor: string | null; hasMore: boolean }>(`/api/admin/logs?${params.toString()}`)
       .then((res) => {
         setLogs(res.data.logs);
-        setTotal(res.data.pagination.total);
+        setNextCursor(res.data.nextCursor);
+        setHasMore(res.data.hasMore);
         setLoading(false);
       });
-  }, [page, pageSize]);
+  }, [index, cursors]);
+
+  const handlePrev = () => {
+    if (index === 0) return;
+    setIndex(index - 1);
+  };
+
+  const handleNext = () => {
+    if (!nextCursor) return;
+    // 记录当前页的下一页游标后前进；已后退过的前向分支一并截断，避免与重新拉取的页混用
+    setCursors((prev) => [...prev.slice(0, index + 1), nextCursor]);
+    setIndex(index + 1);
+  };
 
   const sortedRows = useMemo(() => {
     if (!sort) return logs;
@@ -112,16 +130,20 @@ export default function AdminLogs() {
         </div>
       </Card>
 
-      {total > 0 && (
-  <div className="shrink-0 pt-2">
-        <Pagination
-          page={page}
-          total={total}
-          pageSize={pageSize}
-          onPageChange={setPage}
-          onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
-        />
-  </div>
+      {/* 游标分页页脚：无总数与页码，仅上一页/下一页；下一页加载中禁用避免并发翻页 */}
+      {logs.length > 0 && (
+        <div className="flex shrink-0 justify-center pt-2">
+          <div className="glass-surface glass-blur mx-auto flex w-fit max-w-full items-center gap-1.5 rounded-xl border px-3 py-1.5">
+            <Button variant="ghost" size="sm" disabled={index === 0 || loading} onClick={handlePrev}>
+              <ChevronLeft className="h-4 w-4" />
+              {t('common.prevPage')}
+            </Button>
+            <Button variant="ghost" size="sm" disabled={!hasMore || loading} onClick={handleNext}>
+              {t('common.nextPage')}
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { FileListItem } from '@shared/types';
 import { MoreVertical, Pencil, Trash2, ArrowRight, Link2, Share2, Lock, Download, Eye, Copy, X, Code } from 'lucide-react';
-import { cn, formatBytes, formatDate, isImage, isVideo, isAudio, isCode } from '@/lib/utils';
+import { cn, formatBytes, formatDate, isImage, isVideo, isAudio, isCode, isVirtualRootItem } from '@/lib/utils';
 import { Dropdown, DropdownItem, DropdownSeparator, DropdownLabel } from '@/components/ui/dropdown';
 import { Badge, Button } from '@/components/ui/core';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -57,6 +57,8 @@ export function FileCard({
   style?: React.CSSProperties;
 }) {
   const isFolder = f.type === 'folder';
+  // 合成根虚拟目录项（vroot:）：仅可导航（点击进入该路径），无复选框、无三点菜单
+  const isVirtual = isVirtualRootItem(f);
   const [hovering, setHovering] = useState(false);
   const { t } = useTranslation();
   const previewUrl = useFilePreviewUrl(f);
@@ -88,18 +90,20 @@ export function FileCard({
         ...style,
       }}
     >
-      {/* 复选框 - 左上角 */}
-      <div className="absolute left-2 top-2 z-10">
-        <Checkbox
-          checked={selected}
-          onChange={onSelect}
-          className={cn('lasso-item-dot transition-opacity', multiSelect || selected || hovering ? 'opacity-100' : 'opacity-0')}
-          label={f.name}
-        />
-      </div>
+      {/* 复选框 - 左上角（虚拟根目录项无选择入口） */}
+      {!isVirtual && (
+        <div className="absolute left-2 top-2 z-10">
+          <Checkbox
+            checked={selected}
+            onChange={onSelect}
+            className={cn('lasso-item-dot transition-opacity', multiSelect || selected || hovering ? 'opacity-100' : 'opacity-0')}
+            label={f.name}
+          />
+        </div>
+      )}
 
-      {/* 右上角三点菜单 - hover 显示（与复选框一致） */}
-      {handlers && (
+      {/* 右上角三点菜单 - hover 显示（与复选框一致）；虚拟根目录项不提供操作菜单 */}
+      {handlers && !isVirtual && (
         <div
           className={cn(
             'absolute right-1.5 top-1.5 z-20 transition-opacity',
@@ -256,6 +260,8 @@ export function FileRow({
   style?: React.CSSProperties;
 }) {
   const isFolder = f.type === 'folder';
+  // 合成根虚拟目录项（vroot:）：仅可导航，无复选框、无三点菜单
+  const isVirtual = isVirtualRootItem(f);
   const { t } = useTranslation();
   const previewUrl = useFilePreviewUrl(f);
   return (
@@ -282,13 +288,17 @@ export function FileRow({
       )}
       style={style}
     >
-      {/* 复选框列 */}
-      <Checkbox
-        checked={selected}
-        onChange={onSelect}
-        className={cn('lasso-item-dot transition-opacity', multiSelect || selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}
-        label={f.name}
-      />
+      {/* 复选框列（虚拟根目录项无选择入口，保留占位以对齐列） */}
+      {isVirtual ? (
+        <span className="w-4" aria-hidden />
+      ) : (
+        <Checkbox
+          checked={selected}
+          onChange={onSelect}
+          className={cn('lasso-item-dot transition-opacity', multiSelect || selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}
+          label={f.name}
+        />
+      )}
 
       <div className="flex min-w-0 items-center gap-2">
         {isFolder ? (
@@ -303,7 +313,7 @@ export function FileRow({
       <span className="truncate text-right text-muted-foreground sm:text-right">{isFolder ? '-' : formatBytes(f.size)}</span>
       <span className="hidden truncate text-muted-foreground sm:block">{formatDate(f.updatedAt)}</span>
       <div className="flex items-center justify-end">
-        {handlers && <FileRowMenu f={f} handlers={handlers} />}
+        {handlers && !isVirtual && <FileRowMenu f={f} handlers={handlers} />}
       </div>
     </div>
   );
@@ -320,6 +330,15 @@ export function FileRowMenuItems({ f, handlers, onClose }: { f: FileListItem; ha
     return (
       <DropdownItem danger icon={<Trash2 className="h-4 w-4" />} onClick={() => { handlers.onDelete!(f); close(); }}>
         {t('common.delete')}
+      </DropdownItem>
+    );
+  }
+  // 合成根虚拟目录项（vroot:）：仅保留导航进入该路径一项，其余操作（下载/复制链接/分享/重命名/移动/删除/属性）全部不渲染
+  if (isVirtualRootItem(f)) {
+    if (!handlers?.onOpen) return null;
+    return (
+      <DropdownItem icon={<Eye className="h-4 w-4" />} onClick={() => { handlers.onOpen!(f); close(); }}>
+        {isFolder ? t('files.open') : t('common.preview')}
       </DropdownItem>
     );
   }

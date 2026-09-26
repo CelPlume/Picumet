@@ -1,4 +1,4 @@
-// escapeHtml 回归：代码预览高亮前的 XSS 纵深防御
+// escapeHtml：代码预览高亮前的 XSS 纵深防御
 import { describe, it, expect } from 'vitest';
 import { escapeHtml } from './escape';
 

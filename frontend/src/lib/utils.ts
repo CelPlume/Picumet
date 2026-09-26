@@ -145,3 +145,21 @@ export function parentOf(path: string): string {
   const idx = p.lastIndexOf('/');
   return idx <= 0 ? '/' : p.slice(0, idx);
 }
+
+/** 合成根虚拟目录项 id 前缀（共享契约，与 workers/src/services/storage/root-view.ts 的 VIRTUAL_ROOT_ID_PREFIX 一致） */
+export const VIRTUAL_ROOT_ID_PREFIX = 'vroot:';
+
+/**
+ * 合成根虚拟目录项：无 file_metadata 行，由挂载拓扑合成（type=folder，id=`vroot:<全路径>`）。
+ * 仅允许导航进入其路径；禁止选择/多选/重命名/移动/删除/属性/复制链接/分享。
+ * 入参可以是文件项本身或其 id。
+ */
+export function isVirtualRootItem(item: { id: string } | string): boolean {
+  const id = typeof item === 'string' ? item : item.id;
+  return id.startsWith(VIRTUAL_ROOT_ID_PREFIX);
+}
+
+/** 全选/反选/拖拽多选的作用域：虚拟根目录项不可操作，一律滤除后返回可操作条目 id */
+export function operableFileIds(items: Array<{ id: string }>): string[] {
+  return items.filter((i) => !isVirtualRootItem(i)).map((i) => i.id);
+}

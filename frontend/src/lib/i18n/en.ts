@@ -899,6 +899,7 @@ export const enUS = {
     accessKey: 'Access Key',
     secretKey: 'Secret Key',
     publicDomain: 'Public domain',
+    publicDomainHint: 'Once set, every object in this mount is anonymously readable through this CDN domain (including private objects), bypassing permission checks; publicness policy must stay consistent within the same storage pool.',
     pathPrefix: 'Path prefix',
     testConnection: 'Test connection',
     connected: 'Connected',
