@@ -1,4 +1,4 @@
-// S3 兼容网关端到端回归：真实 @aws-sdk/client-s3 通过本地 HTTP 桥接打到 app.fetch
+// S3 兼容网关端到端验证：真实 @aws-sdk/client-s3 通过本地 HTTP 桥接打到 app.fetch
 // 验证 SigV4（整包 hex payload / UNSIGNED-PAYLOAD 预签名 / 签名篡改）、对象 CRUD、列举、协议面。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
@@ -94,7 +94,7 @@ describe('S3 兼容网关（真实 AWS SDK，SigV4）', () => {
     expect(head.ContentLength).toBe(body.byteLength);
     expect(head.ETag).toBeTruthy();
 
-    // 元数据行 + 祖先目录行（P0-3 约定）
+    // 元数据行 + 祖先目录行（缺目录行的文件在列表/PROPFIND 中不可见）
     const rows = ctx.db.prepare(
       `SELECT path, name, type FROM file_metadata WHERE name IN ('2024', '09', 's3 pic.png') ORDER BY path`
     ).all() as Array<{ name: string; type: string }>;
@@ -156,11 +156,11 @@ describe('S3 兼容网关（真实 AWS SDK，SigV4）', () => {
     noS3.client.destroy();
   });
 
-  // SEC-09：content-length 超限在读取 body 之前拒绝。真实 AWS SDK 会把 content-length 签入
+  // content-length 超限在读取 body 之前拒绝。真实 AWS SDK 会把 content-length 签入
   // SignedHeaders 且 HTTP 桥接服务端会完整缓冲 body（声明 200MB 只发几十字节会让桥接挂起），
   // 因此这里按 sigv4.ts 的 canonical request 规则手工构造最小签名（仅 x-amz-content-sha256/x-amz-date），
   // 直接调用 app.fetch 发送伪造 content-length 的签名 PUT。
-  it('SEC-09：签名 PUT 声明超大 content-length → 400 InvalidRequest 且不读 body', async () => {
+  it('签名 PUT 声明超大 content-length → 400 InvalidRequest 且不读 body', async () => {
     const { keyId, secret } = await createS3Key('s3gwoversize');
     const body = Buffer.from('tiny-payload');
     const path = '/s3/uploads/2024/09/oversize.bin';
@@ -207,8 +207,8 @@ describe('S3 兼容网关（真实 AWS SDK，SigV4）', () => {
     expect(req.bodyUsed).toBe(false);
   });
 
-  // SEC-09：整包校验算出的哈希经 s3PayloadHash 复用为 contentHash → 小签名 PUT 仍走内容寻址去重
-  it('SEC-09：小签名 PUT 上传后内容寻址去重仍命中（同内容跨 key 共享对象）', async () => {
+  // 整包校验算出的哈希经 s3PayloadHash 复用为 contentHash → 小签名 PUT 仍走内容寻址去重
+  it('小签名 PUT 上传后内容寻址去重仍命中（同内容跨 key 共享对象）', async () => {
     const { client } = await createS3Key('s3gwdedup');
     const body = Buffer.from('dedup-content-payload');
     const first = await client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'dup/a.bin', Body: body }));
