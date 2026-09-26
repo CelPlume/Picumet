@@ -16,7 +16,6 @@ export interface Env {
   JWT_SECRET: string;
   JWT_SECRET_OLD?: string;
   ENCRYPTION_KEY: string;
-  TURNSTILE_SECRET_KEY?: string;
   SMTP_HOST?: string;
   SMTP_PORT?: string;
   SMTP_USER?: string;
@@ -67,6 +66,8 @@ export interface AppVariables {
   };
   /** S3 网关：SigV4 payload-hash 校验时读取的请求体（PUT 处理器直接复用，避免二次读取） */
   s3Payload?: Uint8Array;
+  /** S3 网关：整包校验已算出的请求体 SHA-256 hex（PUT 处理器复用，避免重复哈希） */
+  s3PayloadHash?: string;
   // 自由模式（用户自带凭据的临时 Provider）
   freeMode?: {
     provider: {

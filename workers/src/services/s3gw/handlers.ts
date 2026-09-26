@@ -15,7 +15,8 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo, ApiKeyRepo, LogRepo } from '../../db';
-import { getDb, getClientIp, applyApiKeyContext, assertApiKeyProtocol } from '../../middleware/auth';
+import { getDb, applyApiKeyContext, assertApiKeyProtocol } from '../../middleware/auth';
+import { clientIp } from '../../utils/ip';
 import { getProvider } from '../storage/providers';
 import { getProviderForFile } from '../storage/pool';
 import { serveFileObject } from '../storage/failover';
@@ -24,7 +25,7 @@ import { requirePermission } from '../permissions/principal';
 import { deleteFileInternal } from '../files/remove';
 import { upsertFileObject } from '../files/write';
 import { serveObject } from '../storage/serve';
-import { verifySigV4, SigV4Error, parseSigV4Request } from './sigv4';
+import { verifySigV4, SigV4Error, parseSigV4Request, MAX_SIGNED_PAYLOAD_BYTES } from './sigv4';
 import type { SigV4ErrorCode } from './sigv4';
 import { decryptSecret, sha256HexBytes } from '../../utils/crypto';
 import { normalizePath, isPathWithinBoundary } from '../../utils/path';
@@ -81,6 +82,7 @@ s3gwRoutes.use('*', async (c, next) => {
 
   let apiKey: ApiKey;
   let payloadBytes: Uint8Array | undefined;
+  let payloadHashHex: string | undefined;
   try {
     const parsed = parseSigV4Request(c.req.raw);
     if (!parsed) {
@@ -99,6 +101,7 @@ s3gwRoutes.use('*', async (c, next) => {
     const secret = await decryptSecret(cipher, env.ENCRYPTION_KEY);
     const verification = await verifySigV4(c.req.raw, secret);
     payloadBytes = verification.payloadBytes;
+    payloadHashHex = verification.payloadHashHex;
   } catch (err) {
     if (err instanceof SigV4Error) {
       const mapped = SIGV4_ERROR_STATUS[err.code];
@@ -115,7 +118,7 @@ s3gwRoutes.use('*', async (c, next) => {
     return s3ErrorResponse(403, 'AccessDenied', 'API 密钥已过期', path);
   }
   if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
-    const ip = getClientIp(c);
+    const ip = clientIp(c.req.raw);
     if (!apiKey.allowedIps.includes(ip)) {
       return s3ErrorResponse(403, 'AccessDenied', '该 API 密钥不允许从当前 IP 使用', path);
     }
@@ -128,6 +131,7 @@ s3gwRoutes.use('*', async (c, next) => {
   const applied = await applyApiKeyContext(c, db, apiKey);
   if (applied) return applied;
   c.set('s3Payload', payloadBytes);
+  c.set('s3PayloadHash', payloadHashHex);
   await next();
 });
 
@@ -261,18 +265,22 @@ s3gwRoutes.put('*', async (c) => {
   const contentLength = Number(c.req.header('content-length') ?? '');
   let size = 0;
   let body: ReadableStream<Uint8Array>;
-  // §F 内容寻址：SigV4 整包校验已把载荷缓存在内存 → 顺手算出内容哈希，写入路径可据此
-  // 完全跳过落对象（去重命中）或直写内容键（无需暂存 + 复制）。
+  // §F 内容寻址：SigV4 整包校验已把载荷缓存在内存并算出哈希 → 写入路径据此完全跳过落对象
+  //（去重命中）或直写内容键（无需暂存 + 复制），且无需再对载荷做第二次 SHA-256（SEC-09）。
   let contentHash: string | undefined;
   if (payloadBytes) {
     size = payloadBytes.byteLength;
     body = streamFromBytes(payloadBytes);
-    contentHash = await sha256HexBytes(payloadBytes);
+    contentHash = c.get('s3PayloadHash');
   } else if (Number.isFinite(contentLength) && contentLength > 0) {
     size = contentLength;
     body = c.req.raw.body as ReadableStream<Uint8Array>;
   } else {
+    // 无 content-length 兜底（UNSIGNED-PAYLOAD 且流式/分块传输）：只能整包读入后按实际大小校验
     const bytes = new Uint8Array(await c.req.raw.arrayBuffer());
+    if (bytes.byteLength > MAX_SIGNED_PAYLOAD_BYTES) {
+      return s3ErrorResponse(400, 'InvalidRequest', '请求体过大，请使用 UNSIGNED-PAYLOAD 或 multipart 上传', virtualPath);
+    }
     size = bytes.byteLength;
     body = streamFromBytes(bytes);
     contentHash = await sha256HexBytes(bytes);
@@ -341,7 +349,7 @@ async function getObjectOrHead(c: Ctx, bucket: string, key: string, head: boolea
       action: 'download',
       path: file.path,
       metadata: JSON.stringify({ fileName: file.name, via: 's3' }),
-      ipAddress: getClientIp(c),
+      ipAddress: clientIp(c.req.raw),
       userAgent: c.req.header('user-agent'),
       bytesTransferred: file.size,
     });

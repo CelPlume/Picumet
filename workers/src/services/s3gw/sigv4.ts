@@ -7,6 +7,10 @@ import { hmacSha256Raw, hmacSha256Hex, sha256HexBytes, timingSafeEqualStr } from
 
 const encoder = new TextEncoder();
 
+// SEC-09：SigV4 整包校验需把请求体完整读入内存，设置独立上限（与 uploads 的 MULTIPART_THRESHOLD
+// 同档）：更大的文件应改用 UNSIGNED-PAYLOAD（配合服务端大小校验）或 multipart 上传。
+export const MAX_SIGNED_PAYLOAD_BYTES = 100 * 1024 * 1024;
+
 export type SigV4ErrorCode =
   | 'InvalidRequest'
   | 'AuthorizationQueryParametersError'
@@ -56,6 +60,8 @@ export interface SigV4Verification {
   auth: SigV4Request;
   /** payload hash 为整包 hex 时已读取的请求体（供 PUT 处理器直接使用，避免二次读取） */
   payloadBytes?: Uint8Array;
+  /** 整包校验成功时已算出的请求体 SHA-256 hex（供处理器复用，消除重复哈希） */
+  payloadHashHex?: string;
 }
 
 function pctDecode(s: string): string {
@@ -234,16 +240,27 @@ export async function verifySigV4(req: Request, secret: string): Promise<SigV4Ve
 
   let payloadHash: string;
   let payloadBytes: Uint8Array | undefined;
+  let payloadHashHex: string | undefined;
   if (auth.kind === 'query') {
     payloadHash = 'UNSIGNED-PAYLOAD';
   } else if (/^[0-9a-fA-F]{64}$/.test(auth.payloadHash)) {
+    // SEC-09：读 body 前先按 content-length 头拒绝超限请求（避免为大 body 分配内存）
+    const declaredLength = Number(req.headers.get('content-length') ?? '');
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_SIGNED_PAYLOAD_BYTES) {
+      throw new SigV4Error('InvalidRequest', '请求体过大，请使用 UNSIGNED-PAYLOAD 或 multipart 上传');
+    }
     const bytes = new Uint8Array(await req.arrayBuffer());
+    if (bytes.byteLength > MAX_SIGNED_PAYLOAD_BYTES) {
+      // 无 content-length（chunked 等）时按实际字节数兜底校验
+      throw new SigV4Error('InvalidRequest', '请求体过大，请使用 UNSIGNED-PAYLOAD 或 multipart 上传');
+    }
     const actual = await sha256HexBytes(bytes);
     if (actual !== auth.payloadHash.toLowerCase()) {
       throw new SigV4Error('SignatureDoesNotMatch', 'x-amz-content-sha256 与请求体不一致');
     }
     payloadHash = actual;
     payloadBytes = bytes;
+    payloadHashHex = actual;
   } else if (auth.payloadHash === 'UNSIGNED-PAYLOAD') {
     payloadHash = auth.payloadHash;
   } else {
@@ -259,5 +276,5 @@ export async function verifySigV4(req: Request, secret: string): Promise<SigV4Ve
   if (!timingSafeEqualStr(signature, auth.signature.toLowerCase())) {
     throw new SigV4Error('SignatureDoesNotMatch', '签名不匹配');
   }
-  return { auth, payloadBytes };
+  return { auth, payloadBytes, payloadHashHex };
 }

@@ -5,6 +5,7 @@ import { Db, UserRepo, ApiKeyRepo } from '../db';
 import { verifyJwt, sha256Hex } from '../utils/crypto';
 import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
+import { clientIp } from '../utils/ip';
 import type { ApiKey } from '@shared/types';
 import type { AppBindings, AppVariables, Env } from '../shared/types';
 
@@ -19,13 +20,8 @@ function getDb(c: AppContext): Db {
   return db;
 }
 
-function getClientIp(c: AppContext): string {
-  const cf = (c.req.raw as Request & { cf?: { connectingIp?: string } }).cf;
-  if (cf?.connectingIp) return cf.connectingIp;
-  const xff = c.req.header('x-forwarded-for');
-  if (xff) return xff.split(',')[0].trim();
-  return c.req.header('x-real-ip') ?? '127.0.0.1';
-}
+// 审计 SEC-03：真实客户端 IP 统一走 utils/ip（CF connecting_ip / CF-Connecting-IP 优先，
+// 不信任客户端可伪造的 XFF 首段）。
 
 function readCookieToken(c: AppContext): string | null {
   const cookie = c.req.header('cookie');
@@ -116,8 +112,8 @@ export async function ensureApiKeyUsable(c: AppContext, apiKey: ApiKey): Promise
     return fail(c, new ApiError(401, 'INVALID_TOKEN', 'API 密钥已过期'));
   }
   if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
-    const clientIp = getClientIp(c);
-    if (!apiKey.allowedIps.includes(clientIp)) {
+    const ip = clientIp(c.req.raw);
+    if (!apiKey.allowedIps.includes(ip)) {
       return fail(c, new ApiError(403, 'FORBIDDEN', '该 API 密钥不允许从当前 IP 使用'));
     }
   }
@@ -275,4 +271,4 @@ export const optionalAuthMiddleware = createMiddleware<{ Bindings: Env; Variable
   await next();
 });
 
-export { getDb, getClientIp, readCookieToken };
+export { getDb, readCookieToken };
