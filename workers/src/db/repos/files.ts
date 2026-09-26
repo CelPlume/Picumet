@@ -71,6 +71,12 @@ export const FileRepo = {
     const row = await db.first('SELECT * FROM file_metadata WHERE id = ?', [id]);
     return row ? mapFile(row) : null;
   },
+  /** 批量按 id 取文件行（审计 DESIGN-02：分享创建等批量入口一次取回，调用方按 id 建 Map 补顺序） */
+  async getFilesByIds(db: Db, ids: string[]): Promise<FileMetadata[]> {
+    if (ids.length === 0) return [];
+    const rows = await db.all(`SELECT * FROM file_metadata WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+    return rows.map(mapFile);
+  },
   async getFileByObjectKey(db: Db, mountId: string, objectKey: string): Promise<FileMetadata | null> {
     const row = await db.first('SELECT * FROM file_metadata WHERE mount_id = ? AND object_key = ?', [mountId, objectKey]);
     return row ? mapFile(row) : null;
@@ -397,10 +403,12 @@ export const SessionRepo = {
       return [];
     }
   },
+  // 审计 SEC-11：过期回收覆盖所有非终态——verifying 仍属在途（预留未落账）可过期；
+  // failed 仅存量行（新失败路径一律直接标 aborted），标 'expired' 后不再是可选中状态，无双重释放。
   async listExpired(db: Db): Promise<Row[]> {
     return db.all(
       `SELECT id, user_id, mount_id, quota_reserved, provider_id FROM upload_sessions
-       WHERE status IN ('pending', 'uploading') AND expires_at < ?`,
+       WHERE status IN ('pending', 'uploading', 'verifying', 'failed') AND expires_at < ?`,
       [Date.now()]
     );
   },

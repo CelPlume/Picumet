@@ -13,6 +13,7 @@ import { ApiError } from '../../shared/errors';
 import { hashPassword, verifyPassword, randomString, encryptSecret, decryptSecret } from '../../utils/crypto';
 import { basename, isPathWithinBoundary, normalizePath, PathError, safeDecodePath } from '../../utils/path';
 import { createDownloadToken, buildGatewayUrl } from '../shares/tokens';
+import { requestIp } from '../../utils/ip';
 import { assertNotBanned } from '../files/ban';
 import { CreateShareSchema } from './schemas';
 
@@ -21,6 +22,10 @@ export const shareRoutes = new Hono<AppBindings>();
 /** 分享密码授权 cookie 名（M-02：密码不入 URL，验证后短期授权） */
 const shareAuthCookie = (shareId: string) => `share_auth_${shareId}`;
 const SHARE_AUTH_TTL = 15 * 60; // 15 分钟
+
+/** 文件级密码授权 cookie 名（审计 SEC-04：分享密码 ≠ 文件密码，逐文件短期授权） */
+const fileAuthCookie = (shareId: string) => `share_fileauth_${shareId}`;
+const FILE_AUTH_TTL = 900; // 15 分钟
 
 /** 密文前缀：与存储凭据 / API Key secret 同一套 AES-GCM 约定 */
 const CIPHER_PREFIX = 'enc:';
@@ -64,6 +69,25 @@ async function sharePasswordAuthorized(c: Context, shareId: string, sharePasswor
   const queryPwd = c.req.query('password');
   if (!sharePasswordHash || !queryPwd) return false;
   return verifyPassword(queryPwd, sharePasswordHash);
+}
+
+/** 文件级密码授权判定（审计 SEC-04）：cookie → KV（已验证 fileId 集合）→ includes */
+async function shareFileAuthorized(c: Context, shareId: string, fileId: string): Promise<boolean> {
+  const cookie = c.req.header('cookie') ?? '';
+  const cookieValue = cookie
+    .split(';')
+    .map((s) => s.trim())
+    .find((s) => s.startsWith(`${fileAuthCookie(shareId)}=`))
+    ?.slice(`${fileAuthCookie(shareId)}=`.length);
+  if (!cookieValue) return false;
+  // 有授权 cookie → 校验 KV 中该访客已通过文件密码验证的 fileId 集合（防伪造）
+  const stored = await c.env.KV.get(`share:fileauth:${shareId}:${cookieValue}`);
+  if (!stored) return false;
+  try {
+    return (JSON.parse(stored) as string[]).includes(fileId);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -120,7 +144,7 @@ async function gateShareRead(c: Context, shareId: string, opts: { countView?: bo
   let viewCounted = false;
   if (opts.countView) {
     // 次数限制（防刷：同一 IP 60s 内重复打开只计一次浏览，KV 去重标记）
-    const dedupeKey = `share:view:${shareId}:${ipOf(c) ?? 'unknown'}`;
+    const dedupeKey = `share:view:${shareId}:${requestIp(c.req.raw) ?? 'unknown'}`;
     const alreadyCounted = (await c.env.KV.get(dedupeKey)) !== null;
     if (!alreadyCounted) {
       const canView = await ShareRepo.incrementView(db, shareId, share.maxViews);
@@ -151,12 +175,16 @@ shareRoutes.post('/', async (c) => {
   const fileIds = [...new Set(parsed.data.fileIds)];
   if (fileIds.length === 0 || fileIds.length > 50) throw ApiError.badRequest('分享项目数量必须在 1..50 之间');
 
-  // 逐个项目校验存在性与 share 权限（任一失败整体拒绝）
+  // 批量预取项目与挂载点（审计 DESIGN-02：消除逐项查询 N+1；顺序按请求 fileIds 补齐）
+  const fileRows = await FileRepo.getFilesByIds(db, fileIds);
+  const fileMap = new Map(fileRows.map((f) => [f.id, f]));
+  const mountMap = new Map((await MountRepo.listMounts(db)).map((m) => [m.id, m]));
+  // 逐个项目校验存在性与 share 权限（任一失败整体拒绝；权限判定语义不变）
   const files: FileMetadata[] = [];
   for (const fileId of fileIds) {
-    const file = await FileRepo.getFileById(db, fileId);
+    const file = fileMap.get(fileId);
     if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
-    const mount = await MountRepo.getMountById(db, file.mountId);
+    const mount = mountMap.get(file.mountId);
     if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
     await requirePermission(c, mount, file.path, 'share', file.ownerId);
     files.push(file);
@@ -168,9 +196,12 @@ shareRoutes.post('/', async (c) => {
   // 指定用户：用户名列表 → 用户 id 白名单（未知用户名直接拒绝，避免静默漏配）
   let allowedUserIds: string[] | null = null;
   if (parsed.data.allowedUsers && parsed.data.allowedUsers.length > 0) {
+    // 一次取回全部用户名（审计 DESIGN-02）；未知用户名仍逐个报同样 400 文案
+    const users = await UserRepo.getUsersByUsernames(db, parsed.data.allowedUsers);
+    const byName = new Map(users.map((u) => [u.username, u]));
     const ids: string[] = [];
     for (const username of parsed.data.allowedUsers) {
-      const target = await UserRepo.getUserByUsername(db, username);
+      const target = byName.get(username);
       if (!target) throw ApiError.badRequest(`用户不存在：${username}`);
       if (!ids.includes(target.id)) ids.push(target.id);
     }
@@ -202,7 +233,7 @@ shareRoutes.post('/', async (c) => {
     action: 'share',
     path: files[0].path,
     metadata: JSON.stringify({ shareId: share.id, itemCount: files.length }),
-    ipAddress: ipOf(c),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
 
@@ -249,6 +280,51 @@ shareRoutes.post('/:id/verify', async (c) => {
   const value = randomString(32);
   await c.env.KV.put(`share:auth:${shareId}:${value}`, '1', { expirationTtl: SHARE_AUTH_TTL });
   c.header('Set-Cookie', `${shareAuthCookie(shareId)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SHARE_AUTH_TTL}`);
+  return ok(c, { authorized: true });
+});
+
+// ============ 文件级密码验证（审计 SEC-04：分享密码 ≠ 文件密码，逐文件验证后种授权 cookie） ============
+shareRoutes.post('/:id/verify-file', async (c) => {
+  const db = getDb(c);
+  const shareId = c.req.param('id');
+  // 分享密码先行：未通过分享密码闸门 → 401（与 /:id/list 同语义）
+  const gate = await gateShareRead(c, shareId);
+  if (gate.passwordRequired) throw new ApiError(401, 'INVALID_PASSWORD', '分享密码错误');
+
+  const body = await c.req.json().catch(() => null);
+  const itemId = body?.itemId as string | undefined;
+  const password = body?.password as string | undefined;
+  const file = itemId ? await ShareRepo.resolveShareFile(db, gate.share, itemId) : null;
+  if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
+  if (file.type === 'folder') throw ApiError.badRequest('文件夹无需密码验证');
+  if (!file.accessPassword) throw ApiError.badRequest('该文件无需密码');
+  if (!password || !verifyPassword(password, file.accessPassword)) {
+    throw new ApiError(401, 'INVALID_PASSWORD', '文件密码错误');
+  }
+
+  // 已有授权 cookie → 读 KV 追加本文件 id（去重）并续期；无则新建授权记录
+  const cookieName = fileAuthCookie(shareId);
+  const existingValue = (c.req.header('cookie') ?? '')
+    .split(';')
+    .map((s) => s.trim())
+    .find((s) => s.startsWith(`${cookieName}=`))
+    ?.slice(`${cookieName}=`.length);
+  let verified: string[] = [];
+  if (existingValue) {
+    const stored = await c.env.KV.get(`share:fileauth:${shareId}:${existingValue}`);
+    if (stored) {
+      try {
+        verified = JSON.parse(stored) as string[];
+      } catch {
+        verified = [];
+      }
+    }
+  }
+  if (!Array.isArray(verified)) verified = [];
+  if (!verified.includes(file.id)) verified.push(file.id);
+  const value = existingValue ?? randomString(32);
+  await c.env.KV.put(`share:fileauth:${shareId}:${value}`, JSON.stringify(verified), { expirationTtl: FILE_AUTH_TTL });
+  c.header('Set-Cookie', `${cookieName}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${FILE_AUTH_TTL}`);
   return ok(c, { authorized: true });
 });
 
@@ -420,7 +496,8 @@ shareRoutes.get('/:id/download', async (c) => {
     name: file.name,
     mimeType: file.mimeType,
     size: file.size,
-    passwordVerified: !!share.passwordHash,
+    // 审计 SEC-04：passwordVerified = 「目标文件密码已验证」，不得由分享密码推导
+    passwordVerified: file.accessPassword ? await shareFileAuthorized(c, shareId, file.id) : false,
     shareId,
   });
   return ok(c, { url: buildGatewayUrl(c, token), expiresIn: 900 });
@@ -441,6 +518,10 @@ shareRoutes.get('/:id/preview', async (c) => {
   if (file.type === 'folder') throw ApiError.badRequest('文件夹不能预览');
   // §26 违规封禁：内容出口门禁（多项目分享解析出的每个文件在此统一拦截）
   await assertNotBanned(db, [file.id]);
+  // 审计 SEC-04：预览出口同样受文件级密码保护（分享密码 ≠ 文件密码）
+  if (file.accessPassword && !(await shareFileAuthorized(c, shareId, file.id))) {
+    throw new ApiError(401, 'PASSWORD_REQUIRED', '该文件受密码保护，请先验证密码');
+  }
 
   const mount = await MountRepo.getMountById(db, file.mountId);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
@@ -474,8 +555,3 @@ shareRoutes.delete('/:id', async (c) => {
   return ok(c, null);
 });
 
-function ipOf(c: Context): string | undefined {
-  const raw = c.req.raw as Request & { cf?: { connectingIp?: string } };
-  if (raw.cf?.connectingIp) return raw.cf.connectingIp;
-  return raw.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? raw.headers.get('x-real-ip') ?? undefined;
-}

@@ -26,6 +26,12 @@ export const UserRepo = {
     const row = await db.first('SELECT * FROM users WHERE username = ?', [username]);
     return row ? mapUser(row) : null;
   },
+  /** 批量按用户名取用户（审计 DESIGN-02：分享指定用户列表一次取回，缺失用户名由调用方逐个报错） */
+  async getUsersByUsernames(db: Db, usernames: string[]): Promise<User[]> {
+    if (usernames.length === 0) return [];
+    const rows = await db.all(`SELECT * FROM users WHERE username IN (${usernames.map(() => '?').join(',')})`, usernames);
+    return rows.map(mapUser);
+  },
   async getUserByEmail(db: Db, email: string): Promise<User | null> {
     const row = await db.first('SELECT * FROM users WHERE email = ?', [email]);
     return row ? mapUser(row) : null;
