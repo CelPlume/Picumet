@@ -1,7 +1,7 @@
 // 文件预览：图片 / 视频 / 音频 / 代码高亮
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, Link2, Lock, X, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
+import { Download, FileWarning, Link2, Lock, X, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
 import type { FileListItem } from '@shared/types';
 import { Dialog, Button, Spinner } from '@/components/ui/core';
 import { toast } from '@/components/ui/toast';
@@ -41,6 +41,9 @@ hljs.registerLanguage('yaml', yaml);
 hljs.registerLanguage('xml', xml);
 hljs.registerLanguage('bash', bash);
 
+// 代码预览体积上限：超过则不做全文转义+高亮（防超大文件卡死页面），引导下载查看
+const MAX_CODE_PREVIEW_BYTES = 2 * 1024 * 1024;
+
 export function PreviewModal({
   file,
   onClose,
@@ -61,6 +64,7 @@ export function PreviewModal({
   const [rotation, setRotation] = useState(0);
   const [content, setContent] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
+  const [tooLarge, setTooLarge] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -77,6 +81,7 @@ export function PreviewModal({
     setZoom(1);
     setRotation(0);
     setContent(null);
+    setTooLarge(false);
   }, [file?.id]);
 
   // 无密码文件：解析真实下载 URL（download 端点返回 {url}，需先取网关地址）
@@ -97,17 +102,22 @@ export function PreviewModal({
 
   const url = useMemo(() => verifiedUrl ?? contentUrl, [verifiedUrl, contentUrl]);
 
-  // 代码文件加载纯文本（先 HTML 转义再高亮，双重防注入）
+  // 代码文件加载纯文本（先 HTML 转义再高亮，双重防注入）；超上限不做全文高亮，引导下载
   useEffect(() => {
     if (!file || !isCode(file.name) || !url) return;
     setLoadingContent(true);
     fetch(url, { credentials: 'include' })
-      .then((r) => r.text())
-      .then((text) => {
-        // highlight.js 默认会转义，这里先行转义作为纵深防御，
-        // 确保任何语言定义/高亮路径都不会把原始 <script> 带进 innerHTML
-        const highlighted = hljs.highlightAuto(escapeHtml(text)).value;
-        setContent(highlighted);
+      .then((r) => r.blob())
+      .then((blob) => {
+        if (blob.size > MAX_CODE_PREVIEW_BYTES) {
+          setTooLarge(true);
+          return;
+        }
+        return blob.text().then((text) => {
+          // highlight.js 默认会转义，这里先行转义作为纵深防御，
+          // 确保任何语言定义/高亮路径都不会把原始 <script> 带进 innerHTML
+          setContent(hljs.highlightAuto(escapeHtml(text)).value);
+        });
       })
       .catch(() => setContent(`<span>${t('common.loadFailed')}</span>`))
       .finally(() => setLoadingContent(false));
@@ -182,6 +192,18 @@ export function PreviewModal({
             ) : isCode(shown.name) ? (
               loadingContent ? (
                 <CodeSkeleton />
+              ) : tooLarge ? (
+                // 复用密码门同款居中布局：图标 + 提示 + 下载
+                <div className="w-full max-w-sm p-6 text-center">
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
+                    <FileWarning className="h-6 w-6 text-muted-foreground" />
+                  </div>
+                  <h3 className="mb-2 font-medium">{t('files.previewTooLarge')}</h3>
+                  <p className="mb-4 text-sm text-muted-foreground">{t('files.previewTooLargeHint')}</p>
+                  <Button onClick={() => url && window.open(url)}>
+                    <Download className="h-4 w-4" /> {t('common.download')}
+                  </Button>
+                </div>
               ) : (
                 <pre className="h-full w-full overflow-auto p-4 text-sm scrollbar-thin">
                   <code className={`language-${codeLang}`} dangerouslySetInnerHTML={{ __html: content ?? '' }} />

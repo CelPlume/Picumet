@@ -6,7 +6,9 @@ import { isImage, isVideo } from '@/lib/utils';
 import type { FileListItem } from '@shared/types';
 
 // 图片预览 URL 缓存（download 端点返回 {url}，需先解析网关地址；按文件缓存避免重复请求）
-const imageUrlCache = new Map<string, string>();
+// 网关地址内的访问令牌 15 分钟过期，这里按 10 分钟 TTL 主动失效，过期后重新拉取并覆盖
+const IMAGE_URL_TTL_MS = 10 * 60 * 1000;
+const imageUrlCache = new Map<string, { url: string; expiresAt: number }>();
 
 export function useFilePreviewUrl(file: FileListItem | null | undefined): string | undefined {
   const [url, setUrl] = useState<string | undefined>(file?.coverUrl);
@@ -15,15 +17,15 @@ export function useFilePreviewUrl(file: FileListItem | null | undefined): string
     if (!id || !file || file.type === 'folder') return;
     if (!isImage(file.name) && !isVideo(file.name)) return;
     const cached = imageUrlCache.get(id);
-    if (cached) {
-      setUrl(cached);
+    if (cached && cached.expiresAt > Date.now()) {
+      setUrl(cached.url);
       return;
     }
     let cancelled = false;
     apiFetch<{ url: string }>(`/api/files/${id}/download`)
       .then((res) => {
         if (cancelled) return;
-        imageUrlCache.set(id, res.data.url);
+        imageUrlCache.set(id, { url: res.data.url, expiresAt: Date.now() + IMAGE_URL_TTL_MS });
         setUrl(res.data.url);
       })
       .catch(() => {});
@@ -159,14 +161,6 @@ export function useFilesQuery(
     queryKey: ['files', path, opts.search, opts.sort, opts.order, opts.page ?? 1, opts.limit ?? 0],
     queryFn: async () => (await apiFetch<FileListResponse>(`/api/files?${q.toString()}`)).data,
     enabled: opts.enabled,
-  });
-}
-
-export function useFolderOptions() {
-  // 用于"移动到..."选择器：返回可用的顶级路径
-  return useQuery({
-    queryKey: ['folder-options'],
-    queryFn: async () => (await apiFetch<FileListResponse>('/api/files?path=/&limit=200')).data,
   });
 }
 
