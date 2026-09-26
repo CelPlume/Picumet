@@ -80,7 +80,7 @@ pathPublicRoutes.get('*', async (c) => {
     const urlProviderRow = await ProviderRepo.getProviderById(db, file.providerId ?? mount.providerId);
     const urlProvider = urlProviderRow ? await getProvider(db, urlProviderRow, c.env as Env) : null;
 
-    // 公开挂载直接可读；私有挂载需登录且有读/下载权限，或持有该路径的有效签名（?sign=，P0-1）
+    // 公开挂载直接可读；私有挂载需登录且有读/下载权限，或持有该路径的有效签名（?sign=）
     const accessMode = urlProvider ? decideAccessMode(file, urlProvider, false) : 'private_gateway';
     if (accessMode !== 'public_cdn') {
       const sign = c.req.query('sign');
@@ -103,11 +103,14 @@ pathPublicRoutes.get('*', async (c) => {
       db,
       env: c.env as Env,
       mount,
-      ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
+      ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size, blobHash: file.blobHash },
       name: file.name,
       mimeType: file.mimeType,
       rangeHeader: c.req.header('range'),
       totalSize: file.size,
+      // §31/§28 读回退补判：直链内容出口按 download 动作、以访问主体角色逐候选重判（匿名 = guest）
+      principalRole: (c.get('userRole') as string) ?? 'guest',
+      action: 'download',
     });
   } catch (err) {
     if (mounted) await logServeFailure(c, err);

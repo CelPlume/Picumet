@@ -44,7 +44,7 @@ export const VerifyPasswordSchema = z.object({
   password: z.string().min(1).max(128),
 });
 
-// 文件列表查询参数（审计 M-05：query 统一 Zod 校验，限制长度/枚举/数字范围）
+// 文件列表查询参数（query 统一 Zod 校验，限制长度/枚举/数字范围）
 export const ListQuerySchema = z.object({
   path: z.string().min(1).max(2048).optional(),
   page: z.coerce.number().int().min(1).max(10000).optional(),

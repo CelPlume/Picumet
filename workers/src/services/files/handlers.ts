@@ -5,9 +5,10 @@ import type { FileMetadata, Mount } from '@shared/types';
 import { FileRepo, MountRepo, ProviderRepo, LogRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, can, getPrincipal } from '../permissions/principal';
-import { isPasswordExempt } from '../permissions/check';
+import { isPasswordExempt, checkPermission } from '../permissions/check';
 import { getProviderForFile } from '../storage/pool';
-import { childMountsOf, ensureMountFolder, isMountPointFile } from '../storage/mount-folders';
+import { childMountsOf, containsMountPointFile, ensureMountFolder, isMountPointFile } from '../storage/mount-folders';
+import { loadMountPermissionDeps, resolveVirtualListing, resolveVirtualTree } from '../storage/root-view';
 import { physicalObjectKey } from '../storage/keys';
 import { directUrl, loadRoutePrefixes } from '../storage/direct-links';
 import { ok } from '../../shared/response';
@@ -17,6 +18,7 @@ import {
   objectKeyFromPath,
   isValidFileName,
   validateFileType,
+  escapeLikePattern,
 } from '../../utils/path';
 import { hashPassword, verifyPassword } from '../../utils/crypto';
 import { clientIp, requestIp } from '../../utils/ip';
@@ -48,13 +50,25 @@ async function providerForFile(c: Parameters<typeof ok>[0], mount: Mount, file: 
 // ============ 列出文件 ============
 filesRoutes.get('/', async (c) => {
   const db = getDb(c);
-  // 审计 M-05：query 统一 Zod 校验
+  // 查询参数统一 Zod 校验（限制长度/枚举/数字范围）
   const qParse = ListQuerySchema.safeParse(c.req.query());
   if (!qParse.success) throw ApiError.badRequest('查询参数无效');
   const q = qParse.data;
   const targetPath = normalizePath(q.path ?? '/');
   const mount = await MountRepo.findMountForPath(db, targetPath);
-  if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  if (!mount) {
+    // 合成根：无覆盖该路径的挂载点、但其下存在挂载拓扑时返回虚拟目录项
+    const virtual = await resolveVirtualListing(c, targetPath);
+    if (virtual) {
+      const total = virtual.length;
+      return ok(c, {
+        items: virtual,
+        pagination: { total, page: 1, limit: Math.max(total, 1), pages: 1 },
+        mount: null,
+      });
+    }
+    throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  }
 
   // §4.4a：目录列表受目标文件夹自身可见性门控（users/public 文件夹可被其他用户列出）
   const segs = targetPath.split('/').filter(Boolean);
@@ -85,6 +99,8 @@ filesRoutes.get('/', async (c) => {
     type: typeFilter,
     limit,
     offset: (page - 1) * limit,
+    // §4.4a：非管理员看不到他人的 private 项（文件夹与文件一致；owner/admin 可见）
+    viewerId: c.get('userRole') === 'admin' ? undefined : c.get('userId'),
   });
 
   return ok(c, {
@@ -101,54 +117,72 @@ filesRoutes.get('/', async (c) => {
 
 // ============ 扁平化树视图（树视图数据源） ============
 // 返回当前挂载点整棵子树的行（文件行 path=父目录、文件夹行 path=自身全路径）。
-// 权限：入口 requirePermission(请求路径)；子挂载点（§H 嵌套挂载）逐个以其挂载根复核 read，
-// 未通过的子树整段丢弃；非管理员再按 §4.4a 过滤「不可列出」的私有文件夹自身与后代。
+// 权限：入口 requirePermission(请求路径)；行按挂载点分组，子挂载点（§H 嵌套挂载）以其挂载根复核 read。
+// 每个文件夹行再按所属挂载点的规则/矩阵做一次纯函数 read 复核（预加载一次，不逐行查库），
+// deny 的目录连其后代前缀一起隐藏；非管理员同时按 §4.4a 隐藏他人 private 文件夹自身与后代。
 filesRoutes.get('/tree', async (c) => {
   const db = getDb(c);
   const q = c.req.query();
   const targetPath = normalizePath(q.path ?? '/');
   const mount = await MountRepo.findMountForPath(db, targetPath);
-  if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  if (!mount) {
+    // 合成根：无覆盖该路径的挂载点、但其下存在挂载拓扑时返回合成 folder 行
+    const virtual = await resolveVirtualTree(c, targetPath);
+    if (virtual) return ok(c, { items: virtual, truncated: false });
+    throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  }
   await requirePermission(c, mount, targetPath, 'read');
 
   const { rows, truncated } = await FileRepo.listTree(db, { rootPath: mount.mountPath, limit: 5000 });
 
-  // 子挂载点权限复核：行可能属于嵌套挂载（mount_id ≠ 入口挂载）
-  const byMount = new Map<string, typeof rows>();
-  for (const r of rows) {
-    const list = byMount.get(r.mountId) ?? [];
-    list.push(r);
-    byMount.set(r.mountId, list);
-  }
-  const kept: typeof rows = [];
-  for (const [mountId, list] of byMount) {
-    if (mountId === mount.id) {
-      kept.push(...list);
-      continue;
-    }
-    const child = await MountRepo.getMountById(db, mountId);
-    if (!child) continue;
-    try {
-      await requirePermission(c, child, child.mountPath, 'read');
-      kept.push(...list);
-    } catch {
-      // 无读取权限的子挂载点：整段隐藏（树中仅保留其挂载点目录行所在父级视角）
-    }
-  }
+  // 预加载主体 / 各挂载点规则 / 各挂载点矩阵一次；逐行判定只用纯函数 checkPermission
+  const deps = await loadMountPermissionDeps(c);
+  const mountById = new Map(deps.mounts.map((m) => [m.id, m] as const));
+  const readDecision = (mountId: string, path: string, ownerId?: string, visibility?: Visibility): boolean => {
+    const rowMount = mountById.get(mountId);
+    if (!rowMount) return false;
+    return (
+      checkPermission(
+        deps.principal,
+        rowMount,
+        path,
+        'read',
+        deps.rulesByMount.get(mountId) ?? [],
+        ownerId,
+        undefined,
+        visibility,
+        undefined,
+        deps.matrixByMount.get(mountId)
+      ) === 'allow'
+    );
+  };
 
-  // §4.4a：私有文件夹仅 owner/管理员可见 → 隐藏其自身与后代（users/public 文件夹不受限）
+  // 子挂载点权限复核：行可能属于嵌套挂载（mount_id ≠ 入口挂载）；拒则整段丢弃
+  const kept = rows.filter(
+    (r) => r.mountId === mount.id || readDecision(r.mountId, mountById.get(r.mountId)?.mountPath ?? r.path)
+  );
+
+  // 规则 deny 的目录、以及非管理员可见性不足的 private 项（文件夹连后代）一起隐藏（§4.4a）
   const role = c.get('userRole');
   const userId = c.get('userId');
-  let visible = kept;
-  if (role !== 'admin') {
-    const hiddenPrefixes: string[] = [];
-    for (const r of kept) {
-      if (r.type === 'folder' && r.visibility === 'private' && r.ownerId !== userId) hiddenPrefixes.push(r.path);
-    }
-    if (hiddenPrefixes.length) {
-      visible = kept.filter((r) => !hiddenPrefixes.some((p) => r.path === p || r.path.startsWith(p + '/')));
+  const hiddenFolders: Array<{ mountId: string; path: string }> = [];
+  const hiddenFileIds = new Set<string>();
+  for (const r of kept) {
+    const visibilityHidden = role !== 'admin' && r.visibility === 'private' && r.ownerId !== userId;
+    // 与「直接 GET /api/files?path=<目录>」同一基准：不传 fileOwnerId，只带该目录可见性
+    const ruleHidden = r.type === 'folder' && !readDecision(r.mountId, r.path, undefined, r.visibility);
+    if (r.type === 'folder') {
+      if (ruleHidden || visibilityHidden) hiddenFolders.push({ mountId: r.mountId, path: r.path });
+    } else if (visibilityHidden) {
+      hiddenFileIds.add(r.id);
     }
   }
+  const visible = kept.filter((r) => {
+    if (hiddenFileIds.has(r.id)) return false;
+    if (hiddenFolders.length === 0) return true;
+    const abs = r.type === 'folder' ? r.path : r.path === '/' ? `/${r.name}` : `${r.path}/${r.name}`;
+    return !hiddenFolders.some((h) => h.mountId === r.mountId && (abs === h.path || abs.startsWith(h.path + '/')));
+  });
 
   return ok(c, { items: visible.map(toFileListItem), truncated });
 });
@@ -253,10 +287,11 @@ filesRoutes.put('/:id', async (c) => {
       // cascade=false：只改本项，不牵连子树（用户抱怨"点一个公开连带一串公开"）
       if (file.type === 'folder' && cascade) {
         // 级联子树：公开相册场景一次置可见
+        // folder 名允许含 % 与 _，前缀匹配必须转义后走 ESCAPE '\'
         await db.run(
           `UPDATE file_metadata SET visibility = ?, review_status = ?, updated_at = ?
-           WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
-          [visibility, reviewStatus, Date.now(), mount.id, file.path, `${file.path}/%`]
+           WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
+          [visibility, reviewStatus, Date.now(), mount.id, file.path, `${escapeLikePattern(file.path)}/%`]
         );
       }
       await LogRepo.create(db, {
@@ -279,13 +314,49 @@ filesRoutes.put('/:id', async (c) => {
     // §H 挂载点皆目录：挂载点目录行由系统维护，禁止改名（会与 mounts.mount_path 脱节）
     if (await isMountPointFile(db, file)) throw new ApiError(409, 'OPERATION_FAILED', '挂载点目录由系统维护，请在存储配置中修改挂载路径');
     await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
-    const parentPath = file.path.length > file.name.length
-      ? file.path.slice(0, -(file.name.length + 1)) || '/'
-      : '/';
+    // 目录行 path=自身全路径（父目录 = 去掉自身名）；文件行 path=父目录（直接可用）。
+    // 旧实现一律按「path 含自身名」推导，使子目录内文件改名的冲突检查与落库 path 都错指根目录。
+    const parentPath =
+      file.type === 'folder'
+        ? file.path.length > file.name.length
+          ? file.path.slice(0, -(file.name.length + 1)) || '/'
+          : '/'
+        : file.path;
     const conflict = await FileRepo.getFileAtPath(db, mount.id, parentPath, name);
     if (conflict && conflict.id !== file.id) throw new ApiError(409, 'ALREADY_EXISTS', '同名文件已存在');
     const newPath = parentPath === '/' ? `/${name}` : `${parentPath}/${name}`;
-    await FileRepo.updateFile(db, file.id, { name, path: newPath });
+    // 目标全路径下的同名目录行同样是冲突（file 行检查按 path=父目录，覆盖不到 folder 行 path=自身全路径）
+    const folderConflict = await FileRepo.getFolderAtPath(db, mount.id, newPath, name);
+    if (folderConflict && folderConflict.id !== file.id) throw new ApiError(409, 'ALREADY_EXISTS', '同名文件夹已存在');
+    if (file.type === 'folder') {
+      // 目录重命名必须原子迁移整棵子树，否则子项留在旧路径成为孤儿（列表/级联可见性/删除会作用于错误路径）。
+      // 判定挂载点目录行恒由 mounts 表对应（id=mountfolder:<mountId>，object_key 与用户目录共用 `folder:` 前缀、
+      // 无法据此区分），故以 mounts 表为准：目录内含嵌套挂载点时拒绝，避免挂载点目录行被迁离 mounts.mount_path。
+      if (await containsMountPointFile(db, file)) {
+        throw new ApiError(409, 'OPERATION_FAILED', '目录包含挂载点，无法重命名');
+      }
+      const oldPath = file.path;
+      // D1 事务是 write-only 批处理：权限/冲突/挂载点判定（读）必须已在上方完成，事务内只写
+      await db.transaction(async (tx) => {
+        await tx.query(`UPDATE file_metadata SET name = ?, path = ?, updated_at = ? WHERE id = ?`, [
+          name,
+          newPath,
+          Date.now(),
+          file.id,
+        ]);
+        // 子树前缀替换：直接子文件行 path=oldPath（substr 取空串 → newPath），深层行 path=oldPath/...（保留剩余段）。
+        // 目录名允许含 %/_，前缀匹配必须 ESCAPE '\' 且先经 escapeLikePattern，避免误伤 /a_1 这类兄弟目录。
+        await tx.query(
+          `UPDATE file_metadata SET path = ? || substr(path, ?), updated_at = ?
+           WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
+          [newPath, oldPath.length + 1, Date.now(), mount.id, oldPath, `${escapeLikePattern(oldPath)}/%`]
+        );
+      });
+    } else {
+      // 文件行的 path = 父目录（改名不改变父目录）：只改 name；写 newPath 会让文件从目录列表消失、
+      // 且 filePermPath 会拼出错误路径。newPath 仅用于上面的目录行冲突检查。
+      await FileRepo.updateFile(db, file.id, { name });
+    }
   }
 
   const fields: Record<string, unknown> = {};
@@ -322,7 +393,7 @@ filesRoutes.put('/:id', async (c) => {
 // ============ 验证密码 ============
 filesRoutes.post('/:id/verify-password', async (c) => {
   const { file, mount, db } = await resolveFile(c);
-  // 审计 SEC-10：口令校验前先做常规 download 权限初检（与下载出口语义对齐）。
+  // 口令校验前先做常规 download 权限初检（与下载出口语义对齐）。
   // passwordVerified=true 仅表示「本端点本身就是密码验证流程」，实际口令校验由本端点执行；
   // IP 条件仍按真实来源强制（与下载出口一致，又不被存量 requirePassword 规则锁死验证入口）。
   await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, { ip: clientIp(c.req.raw), passwordVerified: true }, file.visibility, undefined, file.providerId ?? undefined);

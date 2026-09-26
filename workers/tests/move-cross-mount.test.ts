@@ -1,4 +1,4 @@
-// 跨挂载点移动阻断（审计 SEC-01）与存量子树孤儿自愈
+// 跨挂载点移动阻断与存量子树孤儿自愈
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
 import { repairMovedFolderOrphans } from '../src/services/cleanup';
@@ -76,7 +76,7 @@ function insertFileRow(id: string, mountId: string, objectKey: string, path: str
     .run(id, mountId, objectKey, path, name, type, ownerId, now, now);
 }
 
-describe('SEC-01 跨挂载点移动', () => {
+describe('跨挂载点移动', () => {
   it('跨挂载点移动文件夹 → 422，文件夹原位不动', async () => {
     const providerId = await createProvider('mc-cross');
     await createMount('/mc-crossvol', '跨挂载卷', providerId);
@@ -128,7 +128,7 @@ describe('SEC-01 跨挂载点移动', () => {
   });
 });
 
-describe('SEC-01 存量孤儿自愈', () => {
+describe('存量孤儿自愈', () => {
   it('repairMovedFolderOrphans 归位跨挂载子树、跳过嵌套挂载点行', async () => {
     const providerId = await createProvider('mc-repair');
     const crossMountId = await createMount('/mc-repairvol', '自愈仓库', providerId);

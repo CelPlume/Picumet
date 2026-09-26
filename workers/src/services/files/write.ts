@@ -1,5 +1,5 @@
 // 文件写入共享路径：兼容上传 / WebDAV / S3 网关 / AList shim 统一走这里，
-// 保证配额、覆盖语义、目录行、补偿与访问日志的行为一致（P0-2 / P0-3 / P1-3.5）。
+// 保证配额、覆盖语义、目录行、补偿与访问日志的行为一致。
 //
 // §F 内容哈希寻址：物理对象按内容 SHA-256 命名（`<prefix>/picumet:blob/<h2>/<hash>`）并在文件
 // 之间共享——同内容只存一份，重命名/移动退化为元数据操作。写入策略：
@@ -8,7 +8,7 @@
 // 分片上传（上传会话 multipart）不经过这里：分片直传存储商，物理键仍为虚拟路径键（blob_hash 为空）。
 import type { Context } from 'hono';
 import type { Mount, StorageProvider } from '@shared/types';
-import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo } from '../../db';
+import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo, ReservationRepo } from '../../db';
 import type { Db } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requestIp } from '../../utils/ip';
@@ -25,7 +25,7 @@ import { writeContentAddressed, type ContentWriteResult } from '../storage/conte
 import { assertWritable } from './upload-mode';
 
 /**
- * 逐级确保祖先文件夹行存在（P0-3：无目录行的文件在列表/PROPFIND 中不可见）。
+ * 逐级确保祖先文件夹行存在（无目录行的文件在列表/PROPFIND 中不可见）。
  * 幂等：已存在的目录行跳过；目录行不消耗配额（size=0）。
  * objectKey 复用 MKCOL 的 `folder:` 前缀约定（webdav/handlers.ts）。
  */
@@ -47,6 +47,11 @@ export async function ensureFolders(db: Db, mount: Mount, targetPath: string, ow
     const fileRow = await FileRepo.getFileAtPath(db, mount.id, parent, seg);
     if (fileRow) {
       throw new ApiError(409, 'CONFLICT', `路径 ${current} 已被文件占用`);
+    }
+    // flat = 挂载点内禁止文件夹。上传到需要新建祖先目录的路径时这里会静默创建 folder 行，
+    // 使「不允许文件夹」契约只在显式建目录入口生效——写入路径同样拒绝（已存在的目录不受影响）。
+    if (mount.uploadMode === 'flat') {
+      throw new ApiError(403, 'FORBIDDEN', '该挂载点不允许文件夹，请上传到挂载根目录');
     }
     const objectKey = objectKeyFromPath(mount.mountPath, '', current);
     await FileRepo.createFile(db, {
@@ -98,7 +103,7 @@ export interface UpsertFileResult {
  * 对象落盘 + 元数据/配额事务的统一实现（§F 内容寻址）。
  * - 内容寻址：物理键由内容哈希决定，同内容跨文件共享（对象只存一份）。
  * - 新建：写对象 → 元数据事务；事务失败且库内仍无该内容 → 删除对象补偿（否则记录孤儿）。
- * - 覆盖（P0-2 安全语义）：绝不删除已写入的对象（可能承载旧文件唯一副本）；事务失败记录对账，
+ * - 覆盖（安全语义）：绝不删除已写入的对象（可能承载旧文件唯一副本）；事务失败记录对账，
  *   客户端收到错误但旧元数据仍指向已更新的对象（可通过重传恢复一致性）。
  */
 export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promise<UpsertFileResult> {
@@ -147,12 +152,24 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
     preferProviderId: isOverwrite ? (existing?.providerId ?? null) : null,
     principalRole: principal.role,
   });
-  // 虚拟对象键：文件行的稳定标识（内容寻址后不再等于物理键，但唯一性/`folder:` 约定不变）
-  const objectKey = objectKeyFromPath(opts.mount.mountPath, intentRow.pathPrefix ?? '', targetPath);
+  // 直写不创建 upload_sessions——成员预留登记到台账，对账据此合并全部预留来源
+  // （否则对账按在途会话重算会把直写预留归零）。台账随各释放路径删除，写路径并入提交事务。
+  let reservationId: string;
+  try {
+    reservationId = await ReservationRepo.create(db, {
+      mountId: opts.mount.id,
+      providerId: intentRow.id,
+      size: memberReserved,
+    });
+  } catch (err) {
+    await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
+    throw err;
+  }
 
   const reserved = await QuotaRepo.reserve(db, userId, declaredSize);
   if (!reserved) {
     await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
+    await ReservationRepo.remove(db, reservationId);
     throw new ApiError(413, 'QUOTA_EXCEEDED', '存储配额不足');
   }
   if (!existing || existing.type !== 'file') {
@@ -160,6 +177,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
     if (!canAdd) {
       await QuotaRepo.releaseReservation(db, userId, declaredSize);
       await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
+      await ReservationRepo.remove(db, reservationId);
       throw new ApiError(413, 'QUOTA_EXCEEDED', '文件数量配额已满');
     }
   }
@@ -168,8 +186,11 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
   if (!mountReserved) {
     await QuotaRepo.releaseReservation(db, userId, declaredSize);
     await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
+    await ReservationRepo.remove(db, reservationId);
     throw new ApiError(413, 'MOUNT_QUOTA_EXCEEDED', '挂载点容量不足');
   }
+  // 虚拟对象键：文件行的稳定标识（内容寻址后不再等于物理键，但唯一性/`folder:` 约定不变）
+  const objectKey = objectKeyFromPath(opts.mount.mountPath, intentRow.pathPrefix ?? '', targetPath);
 
   const fileId = isOverwrite && existing ? existing.id : uuid();
   // 已写入对象的结果（补偿用）：只在写入成功后赋值
@@ -234,12 +255,14 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
         );
       }
       // §30 成员级容量：文件行已落库（已用聚合已含本文件）→ 与落账同批释放预留，
-      // 避免「已记账 + 仍预留」的双重占额窗口。
+      // 避免「已记账 + 仍预留」的双重占额窗口。台账行同批删除。
       await MountProviderQuotaRepo.releaseTx(tx, opts.mount.id, intentRow.id, memberReserved);
-      // 内容索引登记（幂等）+ 撤销同 hash 的待回收条目；未内容寻址（hash 为空）跳过
+      await ReservationRepo.remove(tx, reservationId);
+      // 内容索引登记（幂等，按 (hash, mount_id) 隔离）+ 撤销同 hash 的待回收条目；未内容寻址（hash 为空）跳过
       if (outcome.hash) {
         await BlobRepo.registerTx(tx, {
           hash: outcome.hash,
+          mountId: opts.mount.id,
           providerId: outcome.providerId,
           objectKey: outcome.objectKey,
           size: finalSize,
@@ -266,11 +289,12 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
     await QuotaRepo.releaseReservation(db, userId, declaredSize);
     await MountQuotaRepo.releaseReservation(db, opts.mount.id, declaredSize);
     await MountProviderQuotaRepo.release(db, opts.mount.id, intentRow.id, memberReserved);
+    await ReservationRepo.remove(db, reservationId);
     if (written && !written.deduped) {
       const reason = isOverwrite ? 'overwrite_db_failed' : 'upload_db_failed';
       // 覆盖失败保留对象（可能承载旧文件唯一副本）；新建失败尝试删除，失败则记录孤儿。
-      // 删除前复查内容索引：并发写入同内容已登记时对象被共享，不能删。
-      const stillUnreferenced = !written.hash || !(await BlobRepo.get(db, written.hash));
+      // 删除前复查内容索引：并发写入同内容（本挂载内）已登记时对象被共享，不能删。
+      const stillUnreferenced = !written.hash || !(await BlobRepo.get(db, written.hash, opts.mount.id));
       if (!isOverwrite && stillUnreferenced) {
         try {
           const row = await ProviderRepo.getProviderById(db, written.providerId);
@@ -303,7 +327,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
 }
 
 /**
- * 构建外部可用的文件访问 URL（P0-1，图床命门）：
+ * 构建外部可用的文件访问 URL（图床命门）：
  * 1. provider 配置了公网域名（getPublicUrl）→ 返回 CDN 直链；
  * 2. 否则返回 `{origin}{directPrefix}{虚拟路径}?sign=` —— path-serve 用签名放行匿名 GET（能力范围=该路径）。
  * `objectKey` 传物理键（§F：内容键），CDN 直链需指向真实对象。
