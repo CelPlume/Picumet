@@ -19,6 +19,7 @@ import {
   validateFileType,
 } from '../../utils/path';
 import { hashPassword, verifyPassword } from '../../utils/crypto';
+import { clientIp, requestIp } from '../../utils/ip';
 import { toFileListItem } from '../../db/repos/files';
 import { assertNotBanned } from './ban';
 import { assertWritable, assertFolderCreateAllowed } from './upload-mode';
@@ -42,12 +43,6 @@ async function resolveFile(c: Parameters<typeof ok>[0]) {
 /** §E 存储池：按文件实际落桶定位 provider（缺省回退挂载主 provider） */
 async function providerForFile(c: Parameters<typeof ok>[0], mount: Mount, file: FileMetadata) {
   return getProviderForFile(getDb(c), file, mount, c.env as Env);
-}
-
-function ipOf(c: Parameters<typeof ok>[0]): string | undefined {
-  const cf = (c.req.raw as Request & { cf?: { connectingIp?: string } }).cf;
-  if (cf?.connectingIp) return cf.connectingIp;
-  return c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? c.req.header('x-real-ip') ?? undefined;
 }
 
 // ============ 列出文件 ============
@@ -269,7 +264,7 @@ filesRoutes.put('/:id', async (c) => {
         action: 'visibility_change',
         path: file.path,
         metadata: JSON.stringify({ from: file.visibility, to: visibility, reviewStatus }),
-        ipAddress: ipOf(c),
+        ipAddress: requestIp(c.req.raw),
         userAgent: c.req.header('user-agent'),
       });
       // 级联后仍需更新自身行（folder 行 path=自身；file 行在下方 fields 统一更新）
@@ -326,7 +321,11 @@ filesRoutes.put('/:id', async (c) => {
 
 // ============ 验证密码 ============
 filesRoutes.post('/:id/verify-password', async (c) => {
-  const { file, db } = await resolveFile(c);
+  const { file, mount, db } = await resolveFile(c);
+  // 审计 SEC-10：口令校验前先做常规 download 权限初检（与下载出口语义对齐）。
+  // passwordVerified=true 仅表示「本端点本身就是密码验证流程」，实际口令校验由本端点执行；
+  // IP 条件仍按真实来源强制（与下载出口一致，又不被存量 requirePassword 规则锁死验证入口）。
+  await requirePermission(c, mount, filePermPath(file), 'download', file.ownerId, { ip: clientIp(c.req.raw), passwordVerified: true }, file.visibility, undefined, file.providerId ?? undefined);
   const body = await c.req.json().catch(() => null);
   const password = body?.password as string | undefined;
   if (!file.accessPassword) throw ApiError.badRequest('该文件无需密码');
@@ -347,7 +346,7 @@ filesRoutes.post('/:id/verify-password', async (c) => {
     userId: c.get('userId') as string | undefined,
     action: 'password_verify',
     path: file.path,
-    ipAddress: ipOf(c),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
   return ok(c, { url: buildGatewayUrl(c, token), expiresIn: 900 });
@@ -382,7 +381,7 @@ filesRoutes.get('/:id/download', async (c) => {
     action: 'download_link',
     path: file.path,
     metadata: JSON.stringify({ fileName: file.name }),
-    ipAddress: ipOf(c),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
     bytesTransferred: file.size,
   });
@@ -447,5 +446,3 @@ function escapeHtml(s: string): string {
 function escapeMd(s: string): string {
   return s.replace(/[\\[\]()]/g, '\\$&');
 }
-
-export { ipOf };

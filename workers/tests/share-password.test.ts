@@ -1,6 +1,7 @@
 // 分享密码：可逆密文落库（enc: + AES-GCM）+ 创建者列表回看 + 公开响应零泄漏 + 带参数直进
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
+import { Db, UserRepo } from '../src/db';
 
 let ctx: TestContext;
 
@@ -302,5 +303,55 @@ describe('带参数直进（?password=）', () => {
     const viaCookie = await request(ctx, `/api/shares/${shareId}`, { cookie: `share_auth_${shareId}=${authValue}` });
     expect(viaCookie.status).toBe(200);
     expect((await json<ShareDetail>(viaCookie)).data.share.items.length).toBeGreaterThan(0);
+  });
+});
+
+// ============ verify-password 权限初检（审计 SEC-10） ============
+// 口令校验前先做与下载出口同一套 requirePermission 初检：匿名在 auth 边界即 401；
+// 被权限引擎拒绝的已登录用户（根边界/规则/矩阵）不再能凭「文件 ID + 密码」换取下载令牌。
+describe('verify-password 权限初检（审计 SEC-10）', () => {
+  it('匿名 401 / 被权限引擎拒绝的用户 403；属主正常签发', async () => {
+    const { authCookie } = await registerAndLogin(ctx, 'vp_owner');
+    const csrf = await getCsrf(ctx, authCookie);
+    const uploaded = await uploadFile(authCookie, 'vp-guard.txt', 'vp-guard-body');
+    const putRes = await request(ctx, `/api/files/${uploaded.file.id}`, {
+      method: 'PUT',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { accessPassword: 'vp-guard-pwd' },
+    });
+    expect(putRes.status).toBe(200);
+
+    // 匿名：/api/files/* 在 authMiddleware 之后，未登录一律 401（不得探测文件密码存在性）
+    const anon = await request(ctx, `/api/files/${uploaded.file.id}/verify-password`, {
+      method: 'POST',
+      body: { password: 'vp-guard-pwd' },
+    });
+    expect(anon.status).toBe(401);
+
+    // 其他登录用户：根边界收紧到自己的空间（user-rules-api.test.ts 同款做法），
+    // 私有文件不在其边界内 → requirePermission 初检 deny → 403。
+    // 即便携带**正确**密码也被拒：初检先于口令校验，密码不再是绕过权限的凭证。
+    const { authCookie: otherCookie, userId: otherId } = await registerAndLogin(ctx, 'vp_other');
+    await UserRepo.updateUser(Db.fromSqlite(ctx.db), otherId, { default_path: `/home-${otherId}` });
+    const otherCsrf = await getCsrf(ctx, otherCookie);
+    const other = await request(ctx, `/api/files/${uploaded.file.id}/verify-password`, {
+      method: 'POST',
+      cookie: otherCookie,
+      headers: { 'X-CSRF-Token': otherCsrf },
+      body: { password: 'vp-guard-pwd' },
+    });
+    expect(other.status).toBe(403);
+    expect((await json<{ error: { code: string } }>(other)).error.code).toBe('FORBIDDEN');
+
+    // 属主：初检通过 → 口令校验成功 → 签发网关下载链接
+    const owner = await request(ctx, `/api/files/${uploaded.file.id}/verify-password`, {
+      method: 'POST',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { password: 'vp-guard-pwd' },
+    });
+    expect(owner.status).toBe(200);
+    expect((await json<{ data: { url: string } }>(owner)).data.url).toContain('/api/gateway/download/');
   });
 });
