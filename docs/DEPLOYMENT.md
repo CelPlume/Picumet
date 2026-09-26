@@ -107,6 +107,7 @@ bucket_name = "picumet-storage"
 | `DB` | D1 relational database for metadata, quotas, shares, and logs. |
 | `KV` | Session revocation, rate-limit counters, free-mode credentials, and the seed marker. |
 | `R2` | Default object storage for uploaded files. |
+| `AUDIT_BUCKET` (optional) | Audit-log cold archive bucket. Create an R2 bucket (e.g. `picumet-audit`) and add `[[r2_buckets]] binding = "AUDIT_BUCKET"` to enable it: whole-hour audit windows older than the retention period (system setting `audit_retention_days`, default 90 days; `0` keeps everything) are exported as `audit/YYYY/MM/DD/HH.ndjson.gz` and their D1 hot rows are pruned after verification. Without this binding the archive task skips entirely (read-only, no deletion, no data loss). |
 
 To bind the API to `api.yourdomain.com`, add a `routes` block and point the DNS record at Cloudflare with the proxy enabled:
 
@@ -296,6 +297,39 @@ Concurrent runs for the same branch cancel each other (`concurrency.cancel-in-pr
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | secret | No | Email delivery. |
 
 Bindings in `wrangler.toml`: `DB` (D1), `KV` (KV namespace), and `R2` (R2 bucket).
+
+## Storage topology and public exposure
+
+Mount points and storage providers have hard configuration invariants: the API rejects a violating write instead of leaving a half-broken topology behind.
+
+### `publicDomain` makes a mount anonymous
+
+Setting a provider's `publicDomain` (its public origin or CDN domain) changes the sharing semantics of **everything stored through it**. `decideAccessMode` returns `public_cdn` whenever that provider can produce a public direct link and the file has no access password, and the direct-link outlets (`GET /*` path serving, the `direct` copy link, and the AList `/openlist/d` link) then serve the object from that origin **without any permission check** — no guest master switch (`allow_guest_access`), no `visibility` / `guest_visibility`, no download permission, and neither the bucket (§31) nor the mount (§28) matrix. Two gates still hold: a banned file answers `429`, and a password-protected file answers `403 PASSWORD_REQUIRED`.
+
+What this means when you configure it:
+
+- Never set `publicDomain` on a provider whose buckets hold private material — its mounts become a public bucket.
+- A pool is **all-or-nothing**: if some members have a `publicDomain` and others do not, saving answers `400` ("`publicDomain` all or nothing") because a read can fall through to a different member and the public/private verdict would otherwise depend on the recorded bucket alone.
+- Objects on a `publicDomain` mount stay reachable by direct URL after you tighten rules or matrices. Revoke by clearing the `publicDomain` (or rotating the CDN path), not by changing permissions.
+
+### Mount and provider lifecycle constraints
+
+One virtual path resolves to exactly one mount, so the API enforces the following:
+
+| Action | Constraint | On violation |
+| :--- | :--- | :--- |
+| Create / re-path a mount | No other mount on the same normalized path | `400 ALREADY_EXISTS` |
+| Create / re-path a mount | Nested mounts need `ancestor.priority <= descendant.priority` (equal is legal, depth breaks the tie); a new nested mount defaults to the covering ancestor's priority | `400` naming the ancestor or descendant that would be shrouded |
+| Create / re-path a mount | No `file_metadata` rows at or below the target path inside the parent mount (there is no overlay merge) | `409`; migrate the data first |
+| Create / re-path a mount | No user folder or file on the same display path | `409` — mount-point rows use the deterministic id `mountfolder:<mountId>` and never reuse a user row |
+| Delete a provider | No references at all: anchors, pool members, landing rows, in-flight sessions, the blob index, the blob GC queue, and bucket matrices | `409` with per-category counts, and nothing is deleted |
+| Remove a pool member | No files and no in-flight upload sessions still landing on that member | `409` with per-bucket counts; objects are not migrated automatically |
+| Save a mount configuration | In-flight reservations survive (member replacement upserts and keeps `quota_reserved`); the configuration write runs as one transaction after validation | — |
+| Scheduled reconcile | Repairs `used_storage` / `used_files` and rebuilds the **user**, **mount** and **per-member** reservation layers from in-flight sessions | — |
+
+### Listing without a root mount
+
+A topology that only has top-level mounts (for example `/storage1` … `/storage3`) with none covering `/` still opens: the file page and its tree, the public browser, AList `fs/list` and WebDAV `PROPFIND` aggregate the top-level mounts into virtual folders (the file page marks them `id = vroot:<path>`). Those entries exist for listing only — they have no metadata row, so they cannot be shared, moved, renamed or deleted, and an upload into them answers `404`. Keeping a root mount (`/`, which the seed creates) remains the recommended topology; see the architecture guide for the full semantics.
 
 ## Cost highlights
 

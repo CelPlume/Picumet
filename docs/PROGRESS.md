@@ -18,7 +18,7 @@
 | Phase 1 | 核心平台：认证、文件、配额、角色、存储源、系统设置 | Done |
 | Phase 2 | 上传（分片/断点续传）、预览、分享、管理面板、API 密钥、WebDAV、自由模式 | Done |
 | Phase 3 | AWS S3、外观主题、管理员登录、公告关闭 | 基本完成；Oracle provider 待实现 |
-| Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录、邀请码注册机制 | Planned |
+| Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录、邀请码注册机制、Cloudflare Turnstile 人机验证 | Planned |
 | 未来 | monorepo 双后端：Workers 版 + Go 高性能版（跨桶复制/DR、无配额长任务） | Planned |
 
 ## 功能区域
@@ -55,7 +55,7 @@
 | 存储核心加固 | Done | Range 读取（经统一 `serveObject` 的 206/416）、`ProviderError` 分类、批量删除（每批 ≤1000 + 逐对象回退）、Delimiter 列目录、>5 GB 移动用 `UploadPartCopy`。 |
 | Provider 统一 | Done | 类型由 `endpoint` 推导（`r2` / `s3`；`oracle` 并入 `s3`）；迁移 `0005`；`upload_domain` 移除。 |
 | 管理端 | Done | 仪表盘、用户、存储、挂载点、规则、分享、文件、日志。访问统计见「即将规划」。 |
-| 系统设置 | Done | 站点信息、注册/游客开关。Turnstile 配置已随审计 YAGNI-03 清理移除（从未接线）。 |
+| 系统设置 | Done | 站点信息、注册/游客开关。Turnstile 配置已随审计 YAGNI-03 清理移除（从未接线）；完整重实现方案见「即将规划」。 |
 | API 密钥 + 兼容协议 | Done | `pk_x.sk_y` 不透明令牌、WebDAV、PicGo/PicList、Lsky Pro V2、AList/OpenList shim、S3 兼容网关（对外中转面）。 |
 | 安全 | Done | CSP、CSRF、限流、路径遍历、SSRF、SQL 参数化、原子下载令牌。热文件检测与强制签名 URL planned。 |
 | 图片编辑器链接（Squoosh） | Done | |
@@ -118,26 +118,92 @@
 | DESIGN-04/05/06 前端 | 下载统一 apiFetch；代码预览 2 MiB 上限；预览 URL 缓存 10 分钟 TTL | — |
 | YAGNI-01..04 | 死代码删除（useFolderOptions/getProviderCfg/toFileListItem 二次导出）；公告撤回接入后端 + 前端同步；inviteCode/Turnstile 全链路移除；coverUrl/manualPosition 文档标注预留契约 | `announcement-dismiss.test.ts` |
 
+### 2026-09-26 存储拓扑与访问控制专项审计修复批次（`docs/STORAGE_TOPOLOGY_AUDIT.md` / `docs/ACCESS_CONTROL_AUDIT.md`）
+
+两份专项审计的 P0/P1/P2 全部落地（含少量明确记录的残余项）。存储拓扑：
+
+| 发现 | 修复 | 证据 |
+| :--- | :--- | :--- |
+| TOP-01/02 挂载路径冲突/优先级遮蔽无校验（高） | 创建/更新/一步创建统一 `assertMountPlacement`：同路径 400；嵌套不变量「祖先 priority <= 后代」（等值合法，省略 priority 继承祖先最大值）；被父挂载数据覆盖的路径 409；`findMountForPath` 平局按 created_at/id 稳定决胜 | `mount-placement.test.ts` |
+| TOP-03 挂载目录行复用/误删（高） | 挂载点目录行固定身份 `mountfolder:<mountId>`，创建冲突 409（后台自愈容错跳过），删除只按身份（存量复用行不再回收） | `mount-folders.test.ts` |
+| TOP-07 Provider 删除引用悬空（高） | 事务内全引用检查（mounts/members/files/sessions/blob/blob_gc/bucket 矩阵）409 + 迁移 0006 把成员/矩阵外键改 RESTRICT | `provider-lifecycle.test.ts` |
+| TOP-08 成员移除无检查（中高） | 移除前校验该成员下文件与在途会话 → 409；落桶 Provider 缺失改为 `PROVIDER_MISSING` 诊断错误不再静默换桶 | `provider-lifecycle.test.ts` |
+| TOP-16 无根拓扑不可用（高） | **合成根**：无覆盖 `/` 的挂载时，文件页/树、公开浏览、AList fs/list、WebDAV PROPFIND 聚合顶层挂载为虚拟目录（逐挂载 read 门禁；虚拟项 `vroot:` 不可分享/移动/删除，前端全入口门禁；根路径上传 404） | `api-files.test.ts`、`root-view.test.ts`、`public-root.test.ts` |
+| TOP-05/14 回退不复查桶级矩阵 / MOVE 旁路矩阵（中高） | failover 每个候选桶按 principalRole 复核挂载级+桶级矩阵（全拒 403）；网关/兼容/分享预览补挂载级矩阵；MOVE/改名改走完整 `requirePermission`（源 delete + 目标 write 含落桶）；S3 LIST 逐文件桶级过滤 | `storage-failover.test.ts`、`move-permission.test.ts` |
+| TOP-10 全局内容寻址跨挂载耦合（中高） | 去重收敛到同一挂载（`blob_objects` 复合主键 (hash, mount_id)，迁移 0007）；GC 引用检查保持全局保守；跨挂载同内容各写一份 | `blob-scope.test.ts` |
+| TOP-11 挂载 CRUD 多步落库/成员替换丢预留（中） | 配置变更单事务；成员改差异化 UPSERT（保留 quota_reserved）；对账新增**成员级**预留重算 | `provider-lifecycle.test.ts`、`upload-resume.test.ts` |
+| TOP-04 单点 DELETE 路径基准粗（中） | 单点/批量/remove.ts 全部改用文件全路径基准 | `delete-quota.test.ts` |
+| TOP-12 目录删除按单一属主扣配额（中低） | operations.ts 与 remove.ts 均按子树 `owner_id` 分组扣减，挂载总量单独扣 | `delete-quota.test.ts`、`delete-path-hardening.test.ts` |
+| TOP-09 候选上限与 schema 不一致（中低） | `MAX_CANDIDATES` 4 → 20（与成员上限对齐） | `storage-failover.test.ts` |
+| TOP-06 副桶 size-only 校验（中） | 内容键直写随对象 metadata 写 `sha256`，回退命中时比对 hash（缺失回退 size）；候选命中/校验失败记日志。残余：暂存→copy 路径无 hash 元数据 | `storage-failover.test.ts` |
+| TOP-15 删用户遗留传统路径键对象（低中） | 删除前事务内登记 `orphan_objects`（reason=user_deleted）+ 定时队列重试清理 | `orphan-queue.test.ts` |
+| TOP-13 回退桶改变公开性（中） | 池成员 `publicDomain` 保存时全有/全无校验（400）+ 部署文档明示 public_cdn 语义 + 配置界面警示 | `provider-lifecycle.test.ts` |
+
+访问控制：
+
+| 发现 | 修复 | 证据 |
+| :--- | :--- | :--- |
+| PERM-01 注册即全库全权（高） | 新用户 defaultPath 继承 `role_defaults.default_path`（显式 > 角色默认 > `/`）；默认种子保持 `/`；隔离模式的可见性/写入边界语义与角色设置对新用户生效已入文档 | `user-default-path.test.ts` |
+| PERM-10 移动/改名绕过两级矩阵（高） | 见 TOP-05/14 | `move-permission.test.ts` |
+| PERM-02 列表/树可见性不一致（中） | 列表与树统一 §4.4a：非 owner/admin 隐藏 private 文件与文件夹（`listChildren` 支持 viewerId 过滤） | `api-files.test.ts` |
+| PERM-08 树不复核子目录规则（低） | 树逐目录行以纯函数复核 read，deny 子树连后代隐藏（预加载规则/矩阵，无 N+1 查询） | `api-files.test.ts` |
+| PERM-07 级联/前缀 LIKE 未转义（中） | `escapeLikePattern` + `ESCAPE '\'` 扫全仓（级联、move、删除、listDescendants、管理端级联等）；模糊搜索类 LIKE 保持原样并记录 | `api-files.test.ts`、`move-permission.test.ts`、`delete-path-hardening.test.ts` |
+| PERM-11 分享创建权限基准父目录（中） | 改文件全路径基准 | `share-file-password.test.ts` 等 |
+| PERM-04 AList 直链缺封禁门禁（低中） | `handleDirectLink` 补 `assertNotBanned` | `alist.test.ts` |
+| PERM-05 晚绑定出口缺挂载级矩阵（低） | `mountMatrixDecision`/`assertMountMatrixPermission`；网关/兼容/分享预览补判 | `gateway-compat.test.ts` |
+| PERM-06 公开列表不滤封禁（低） | gallery 与公开目录列表过滤封禁行 | `public-root.test.ts` |
+| PERM-03 public_cdn 配置即匿名公开（中） | 配置界面警示 + 部署文档明示（CDN 直读绕过权限面）；池公有性一致性校验 | `admin.storage` 提示 + docs |
+| PERM-09/12/13 语义文档化 | 架构文档补：可见性/游客语义、属主回退与用户规则先于矩阵、匿名无第 9 步兜底 | docs/ARCHITECTURE(_CN) |
+
+### 2026-09-26 全量代码与架构审计修复批次（`docs/FULL_AUDIT_REPORT_2026-09-26.md`）
+
+报告新增发现（SEC-NEW-01..08、D-1..7、DESIGN-NEW-01..07、R-1..5）的代码类修复全部落地。记录项（不做）：SEC-NEW-04 自由模式临时主体回收、DESIGN-NEW-03 multipart 不经内容寻址（边界已写入架构/API 文档）、R-2 round-robin 计数器非原子（调度公平性）、DESIGN-NEW-05（不引入 Web Locks）。
+
+| 发现 | 修复 | 证据 |
+| :--- | :--- | :--- |
+| SEC-NEW-01 Web multipart 上传断裂（中） | 前端消费 `parts`：预签名分片逐片 PUT 收集 ETag、Worker 模式逐片调用分片端点（补发此前取到但未发送的 CSRF），完成后端按「服务端记录 → 客户端上报 → 桶 `ListParts`」取信；跨源预签名不再带 credentials | `UploadModal.test.tsx`、`upload-resume.test.ts` |
+| SEC-NEW-02 Provider 物理定位漂移（中） | `PUT /storage/providers/:id` 对 bucket/endpoint/region/pathPrefix 变更做物理引用检查（文件/在途会话/blob 索引/GC）→ 409；名称/公开域名/密钥放行 | `provider-drift-guards.test.ts` |
+| D-1 跨挂载移动绕过挂载上限（高） | 目标挂载 `max_storage` 与成员容量同时持有预留（条件 UPDATE），提交事务内转已用，失败/补偿释放；不足 413 | `move-capacity-guards.test.ts` |
+| D-2 移动目标漏查文件夹（中） | 目标冲突文件行 + 目录行双检 → 409 | `move-capacity-guards.test.ts` |
+| D-3 blob 跨挂载移动撕裂物理归属（中） | 两侧权限通过后拒绝 blob 跨挂载移动（422）并释放成员预留 | `move-capacity-guards.test.ts` |
+| D-4 Move 属主契约矛盾（中） | 统一「属主不变」：目标 user_space 按 `file.ownerId` 判定（移入他人空间 403） | `move-capacity-guards.test.ts` |
+| D-5 过期分片会话不 abort（中） | 过期清扫终止 Provider multipart upload，失败登记带 `upload_id` 的清理队列（`cleanupMultipartAborts` 重试）；显式中止失败同样入队 | `upload-lifecycle-fixes.test.ts` |
+| D-6 挂载删除 TOCTOU（低中） | 引用检查与删除收敛为一条条件 DELETE（无文件且无在途会话），竞争 409 | `provider-drift-guards.test.ts` |
+| D-7 目录重命名只改主行（中） | 同一事务迁移整棵子树（`escapeLikePattern` + `ESCAPE '\'`）、目录行冲突双检、含嵌套挂载点拒绝；顺带修复文件改名 `path` 被写成自身全路径的既有缺陷 | `folder-rename.test.ts` |
+| DESIGN-NEW-01 blob_gc 单 hash 键（低中） | 迁移 0008 重建为 `(hash, mount_id)` 复合键（存量回填），索引/回收/对账全链路按复合键 | `blob-scope.test.ts`、`content-addressing.test.ts` |
+| DESIGN-NEW-02 成员对账遗漏直写预留（低） | 新增 `quota_reservations` 台账（write.ts / 跨挂载移动登记，释放/落账删除），对账合并「在途会话 + 台账」并清理 TTL 滞留行 | `quota-ledger.test.ts` |
+| DESIGN-NEW-04 Tooltip 缺碰撞处理（低） | Portal 到 body + fixed 定位 + 视口翻转/夹紧 + 20rem 折行，箭头跟随锚点 | 浏览器多场景实测（子代理） |
+| DESIGN-NEW-06 upload-complete 竞态（中） | 条件 UPDATE 原子领取（`complete_claimed_at`），仅赢家合并/提交；失败释放领取、崩溃领取 5 分钟后可接管 | `upload-lifecycle-fixes.test.ts` |
+| DESIGN-NEW-07 审计日志宽行/OFFSET/无保留（低） | 迁移 0009 补 `(created_at,id)`、`(action,created_at,id)` 索引并删除左前缀重复单列索引；管理列表显式列 + 游标分页（去 COUNT）；整小时窗口导出 NDJSON.gz 到 R2（`AUDIT_BUCKET`）+ manifest/rollup 同批落库 + 分批清理（未配置冷层只读不删）；归档清单/下载端点（读取记事件）；趋势合并热表 + rollup | `audit-tiering.test.ts` |
+| R-1 flat 上传静默建目录（低） | flat 模式上传到需要新建祖先目录的路径 → 403 | `upload-mode.test.ts` |
+| R-3 移动事务内用外层句柄读（低） | 容量转移所需大小在事务外读取一次，事务内只写 | `move-capacity-guards.test.ts` |
+| R-4 `MountQuotaRepo.transferUsage` 死代码 | 删除；转移语义收敛到移动提交事务（预留 → 已用） | 代码审阅 |
+| R-5 failover hint 可能脱池（信息） | 采纳提示前校验 provider 属目标挂载池（或文件当前落桶） | `storage-failover.test.ts` |
+| SEC-NEW-05 分享验证限流偏宽（中） | 生产环境按 IP + 分享 5 次/分钟；连续 9 次失败进入 10 分钟冷却，成功清零（文件级同规则，按分享+文件计失败） | `security-harden.test.ts` |
+| SEC-NEW-06 AList 永久路径签名（低中） | `fs/get` 签名改为 24 小时 TTL（过期 403） | `security-harden.test.ts` |
+| SEC-NEW-07 S3 `UNSIGNED-PAYLOAD` 无大小策略（低中） | 强制可信 `Content-Length` 且 ≤100 MiB（超限 400、缺失 411），不再无界 `arrayBuffer` | `security-harden.test.ts` |
+| SEC-NEW-08 注册 OTP 非 CSPRNG（低） | `crypto.getRandomValues` 拒绝采样生成 6 位码，TTL/一次性/限流不变 | `security-harden.test.ts` |
+
 ## 当前基线
 
-- 后端：51 个测试文件 / 486 个 Vitest 用例通过；`tsc --noEmit` 干净。（2026-09-26 审计修复批次自 46/452 起新增 5 个回归测试文件）
-- 前端：4 个测试文件 / 27 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.3% functions / 93.3% lines）；构建成功；`tsc --noEmit` 干净。
+- 后端：68 个测试文件 / 583 个 Vitest 用例通过；`tsc --noEmit` 干净。（2026-09-26 全量审计批次新增 5 个回归测试文件）
+- 前端：7 个测试文件 / 43 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.3% functions / 93.3% lines）；构建成功；`tsc --noEmit` 干净。
 - 语言：中文 + 英文。
 
 ## 即将规划
 
-近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面三项新规划。
+近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面四项新规划。
 
 ### Umami 访问统计（审计来源二选一）
 
 接入 Umami（自托管或 Umami Cloud）统计站点访问与下载行为；访问统计来源在 D1 审计与 Umami 之间二选一。
 
-- 管理端系统设置新增 Umami 配置：脚本地址、`data-website-id`、启用开关；前端按配置注入 tracker（`<script defer src=… data-website-id=…>`），脚本可配 `data-host-url` 上报地址与 `data-domains` 域名白名单。
+- 管理端系统设置新增 Umami 配置：脚本地址、`data-website-id`、启用开关；前端按配置注入 tracker（`<script defer src=… data-website-id=…>`），脚本可配 `data-host-url` 上报地址与 `data-domains` 域名白名单。**拼装与信任边界（专项）**：脚本地址按官方语义即「站点自己的实例」（自托管 `https://<instance>/script.js`，采集端点 `<instance>/api/send`；Umami Cloud 为 `https://cloud.umami.is/script.js`）——它是本项目**唯一的可配置脚本执行面**，写入口按安全敏感设置对待：仅管理员可改 + 审计日志 + URL 校验（仅 `http(s):`、无内嵌凭据、无 fragment、长度上限；loopback http 仅本地联调）、`data-website-id` 按 UUID 校验、`data-domains` 逐项 hostname 校验；只支持白名单 data-* 属性（website-id / host-url / domains / performance / exclude-search / do-not-track；`data-before-send` 指向全局函数名，不支持）；注入一律 `document.createElement('script')` + `setAttribute`，禁止 HTML 字符串拼接（`dangerouslySetInnerHTML` 项目本就禁用）。
 - SPA 开箱即用：tracker 自动监听 History API（`pushState`/`replaceState`/`popstate`）记录路由切换 pageview，无需手动打点页面浏览，也避免双重计数。
 - 事件上报：文件下载、复制链接等交互用 `umami.track(event, data)` 或 `data-umami-event` 属性上报；事件名上限 50 字符。下载按钮携带文件名/大小等事件数据，使文件下载链接的访问进入统计。
 - 审计来源二选一：站点级设置选择 D1 `access_logs`（网关侧逐次日志，仅覆盖 `private_gateway` 流量）或 Umami（前端行为统计）；两者互斥，避免双写双计。
 - 边界：`public_cdn` 直链的外部热链访问（如外链图片）不经过页面，JS 无法统计——这类流量仍依赖网关审计或未来的热文件检测。
-- CSP 联动：启用后 CSP 的 `script-src` / `connect-src` 需放行 Umami 域。
+- CSP 联动（事实核对）：SPA 由 Pages 承载、仓库无 `_headers`/meta CSP——**页面当前没有 CSP**，Worker 的 CSP 只管 Worker 响应，故 tracker 无需放行即可工作；将来若给 Pages 加 CSP，动态实例域需方案（首方代理 `script.js` + `data-host-url` 指回真实实例——官方文档「bypass ad blockers」即此法，或 `script-src https:` 粗放放行），记为待决项而非默认放行。
 
 ### SSO / OIDC 登录
 
@@ -162,6 +228,28 @@
 - API：用户端 `POST /api/invites`（批量生成）与 `GET /api/invites`（自己的码与受邀记录）；管理端四个设置项走既有 `PATCH /api/admin/settings`；注册校验复用既有注册限流。
 - 测试：注册门控（关闭 / 开启必填无码 / 格式不符 / 错码 / 有效码）、生成权限矩阵（全部用户 / 仅管理员 × 管理员 / 普通用户）、生成数量上限（达到上限后拒绝）、核销原子性。
 - 文档联动：API 参考补端点与错误码；UI 指南补注册页输入与个性化设置区块（落地前，UI 指南「注册收集可选邀请码」的说法仍与代码不符）。
+
+### Cloudflare Turnstile 人机验证（登录 / 注册 / 分享下载 / 直链访问 / 文件下载）
+
+Cloudflare Turnstile 接入方案，管理端可按面开关。背景：初版只有「从未接线」的残件——设置里存 `enable_turnstile`/`turnstile_site_key`、secret 走 env `TURNSTILE_SECRET_KEY`，`RegisterSchema`/`LoginSchema` 收 `turnstileToken` 但零消费，YAGNI-03（2026-09-26）全链路移除；现存残留仅两处：`workers/migrations/0001_initial.sql:342-343` 的种子行与 CSP 对 `challenges.cloudflare.com` 的放行（`workers/src/middleware/global.ts:50,56`，25a3feb 有意保留）。本次为完整重实现。以下平台语义与测试键均取自经 Context7 MCP 检索的官方文档（`/websites/developers_cloudflare_turnstile`，developers.cloudflare.com/turnstile）。
+
+- **平台语义（官方文档核实）**：token ≤2048 字符、300 秒有效、**一次性**——过期/重放时 siteverify 返回 `timeout-or-duplicate`，失败后必须 `turnstile.reset()` 换新 token；服务端校验 `POST https://challenges.cloudflare.com/turnstile/v0/siteverify`（form 编码 `secret`/`response`/可选 `remoteip`/`idempotency_key`）→ `{success, error-codes[], action, cdata, hostname, challenge_ts}`，响应回传 `action` 可做面绑定校验；前端显式渲染 `api.js?render=explicit` + `turnstile.render(el, {sitekey, action, theme, size, appearance, language, callback, 'expired-callback', 'error-callback', 'timeout-callback'})`，生命周期 `getResponse`/`isExpired`/`reset`/`remove`；CSP 作用域要分清：Worker 侧 `script-src` + `frame-src` 已放行 `challenges.cloudflare.com`（`connect-src 'self' https:` 覆盖组件出站），**零改动**——但它只作用于 Worker 出的响应（API JSON 与过渡页 HTML）；SPA 由 Pages 承载、仓库既无 `_headers` 也无 meta CSP——**页面当前没有 CSP**，SPA 上的组件不需要任何 CSP 放行，将来若给 Pages 加 CSP 再评估。
+- **官方测试键**（仅测试环境）：sitekey `1x00000000000000000000AA` 恒过 / `2x00000000000000000000AB` 恒不过 / `3x00000000000000000000FF` 强制交互；secret `1x0000000000000000000000000000000AA` 恒过 / `2x0000000000000000000000000000000AA` 恒败 / `3x0000000000000000000000000000000AA` 恒返回 `timeout-or-duplicate`；测试 secret 只接受 dummy token，生产 secret 只接受真实 token。
+- **配置模型**（`system_settings` + 新迁移 `0002_turnstile.sql`，当前迁移目录仅 0001）：总开关 `enable_turnstile`（复用 0001 既有种子行）；`turnstile_site_key`（既有行，公开可下发）；`turnstile_secret_key` 新增——DB 内 AES-GCM `enc:` 密文存储（与 SMTP/分享密码同一套 `encryptSecret` 约定），**仅后台设置、不开 env 通道**——单一事实源：密钥与面开关同处一处才能做组合校验与审计，站点管理员改配置不应依赖 `wrangler secret` 这类平台面操作；本地/CI 直接在设置里填官方测试键。区别于 SMTP 的 env 兜底：SMTP 有日零需求（首次注册/找回密码发信要先于管理员登录可用），Turnstile/Umami/OIDC 都是管理员登录后才启用的功能，无日零场景；五个面开关新增行、默认 `false`：`turnstile_login` / `turnstile_register` / `turnstile_share_download` / `turnstile_direct_link` / `turnstile_download`。总开关关 = 全部跳过；开 + 面关 = 该面跳过。迁移仅种子行、含回滚注释，无表结构变更。
+- **管理端**：`SettingsSchema` 增上述字段（secret 写后不回读，GET 返回 `***` 掩码）；系统设置新增「人机验证」分组：总开关、sitekey、secret（password 输入）、五个面开关；保存时校验「总开关开 + 任一面开 ⇒ sitekey 与 secret 非空」，否则 400。
+- **拼装与注入安全**（专项）：① 写入口校验——sitekey 白名单 `^[0-3]x[0-9A-Za-z_-]{8,64}$`（覆盖官方测试键与生产 `0x4…` 形态；纵深防御、非协议要求），secret 只存不回读；② 全链无「配置值拼代码」——前端组件用 `document.createElement('script')` 注入**固定常量** URL `https://challenges.cloudflare.com/turnstile/v0/api.js`（脚本域不可配置，这点与 Umami 的实例地址不同），sitekey 仅作为 `turnstile.render()` 的对象属性传入，不参与任何 HTML/JS 字符串拼装；③ 过渡页是全项目唯一的服务端 HTML 拼装面，两条动态值（sitekey 管理员可控、目标路径访问者可控）必须属性转义 `&<>"'`——把 `handlers.ts:443` 的局部 `escapeHtml` 提为 `workers/src/utils/html.ts` 共享（第二个消费方出现，就地复制就是重演）；④ 目标路径另做结构约束并在 302 与页面脚本两处复核（只接受同源绝对路径：`/` 开头、拒 `//`、反斜杠、控制字符与 CR/LF）——防开放重定向，也防属性上下文破出；⑤ 过渡页**零内联脚本**：CSP `script-src` 无 `unsafe-inline`（L-1 有意移除），内联插值同时是 `</script>` 破出温床——动态值只走 `data-*` 属性、逻辑走 `'self'` 静态脚本 `GET /api/public/turnstile/pass.js`。
+- **公开面**：`GET /api/public/settings` 增 `turnstile: { enabled, siteKey, login, register, shareDownload, directLink, download }`（不含 secret）；前端据此决定是否加载脚本与渲染组件。
+- **服务端校验服务**（`workers/src/services/turnstile.ts`，各面复用）：`assertTurnstile(c, token, action)`——面未启用直接返回；token 缺失 403 `TURNSTILE_REQUIRED`；siteverify（`URLSearchParams`，`remoteip` 用 `utils/ip.ts` 的 `requestIp`，10s 超时）`success !== true` → 403 `TURNSTILE_FAILED`（`error-codes` 进服务端日志）；siteverify 网络异常/5xx → **503 fail-closed**（与认证限流 KV 故障 fail-closed 同策略）；响应 `action` 与预期不符 → 403（token 一次性是第一道防线，action 绑定是第二道）。
+- **接入面 1 登录**：`POST /api/auth/login`（`workers/src/services/auth/handlers.ts:178`）——`LoginSchema` 重新引入可选 `turnstileToken`（本次连同消费逻辑一次接线，不再「先收下、后接线」），在密码判定**之前**校验（省 bcrypt 开销），`action='login'`。
+- **接入面 2 注册**：`POST /api/auth/register`（`auth/handlers.ts:74`）——`RegisterSchema` 重新引入 `turnstileToken`，OTP 校验前验证，`action='register'`。
+- **接入面 3 分享下载**：`GET /api/shares/:id/download`（`workers/src/services/shares/handlers.ts:473`）——GET 无 body，token 走请求头 `X-Turnstile-Token`；`gateShareRead` 通过后、签发下载令牌前校验，`action='share_download'`；分享密码验证（verify-password/verify-file）不加验——密码门与人机门不叠放，避免双重摩擦。
+- **接入面 4 文件下载**：`GET /api/files/:id/download`（`workers/src/services/files/handlers.ts:356`）——同款请求头，`action='download'`。下载网关 `/api/gateway/download/:token` **不加验**：网关 URL 由浏览器 `<a>`/`window.open` 直取、无法携带头，且令牌本就一次性 + 15 分钟 TTL，签发侧已是闸门；copy-links 不加验（直链/签名链接的消费者是第三方）。
+- **接入面 5 直链访问**（path-serve `{origin}{directPrefix}/{path}`，`workers/src/services/files/path-serve.ts:52`）：浏览器导航（`Sec-Fetch-Mode: navigate` 或 `Accept` 含 `text/html`）且无有效 `?sign=` 时，返回 200 **人机验证过渡页**——服务端拼装的最小 HTML（含两个外部脚本：Turnstile 官方 `api.js` 与 `'self'` 静态页面脚本 `GET /api/public/turnstile/pass.js`；动态值只经 `data-*` 属性注入、无内联脚本，拼装与路径约束见上「拼装与注入安全」；文案随 `Accept-Language`）；widget 通过后页面脚本 `POST /api/public/turnstile/verify`（限流复用 `authRateLimitMiddleware`）`{token, action:'direct_link'}` → siteverify 通过后下发 HMAC（`ENCRYPTION_KEY`）签名 cookie `turnstile_pass`（HttpOnly、SameSite=Lax、约 10 分钟、值含过期时间戳、Path 限直链命名空间），302 回原路径；path-serve 见有效 cookie 即放行。非浏览器客户端（无 text/html）→ 403 JSON `TURNSTILE_REQUIRED`（API 调用方拿到明确错误码而非 HTML）。**边界**：AList `/openlist/d` 与 `?sign=` 签名链接不加验（sign 是显式能力凭证，API 面回 HTML 会破坏 PicList）；`public_cdn` 直链物理上不经过 Worker、无法验——开关说明文案需明示该限制。
+- **前端组件**（`frontend/src/components/turnstile.tsx`）：脚本懒加载（仅启用时注入 `api.js?render=explicit`）+ 显式渲染；props `{action, onToken}`；`theme` 跟随 theme store（light/dark/auto）、`language` 跟随 i18n（zh-cn/en）、`size: 'flexible'`（响应式，最小宽 300px）、`appearance: 'interaction-only'`；`expired-callback`/`timeout-callback` → `turnstile.reset()` + 清 token + 提示重试；`error-callback` → i18n 错误文案；表单提交收到 403 `TURNSTILE_FAILED` → reset 换新 token（旧 token 已被一次性消费）。
+- **页面接线**：`Login.tsx`/`Register.tsx` 按公开设置条件渲染组件，无 token 时提交按钮置灰，body 带 `turnstileToken`；`SharePage.tsx` 下载按钮上方渲染组件，请求带 `X-Turnstile-Token` 头（`apiFetch` 已支持自定义 headers）；文件页下载动作同款带头。i18n zh/en 两份同步（`common.turnstile*` 与管理端分组文案）。
+- **测试**：后端 `workers/tests/turnstile.test.ts`（stub fetch siteverify）——开关矩阵（总关/面关跳过）、缺 token 403、验证失败 403、action 不符 403、siteverify 异常 503 fail-closed、dummy secret 恒过/恒败矩阵；path-serve 过渡页——浏览器 UA 无 cookie 得 HTML、有效 cookie 直出、cookie 签名篡改拒绝、非浏览器 403；前端——组件按公开设置门控渲染（未启用不加载脚本）、过期回调清 token、提交失败 reset；覆盖率聚焦新组件与 Login/Register 改动（`Register.test.tsx` 有 CI 门禁先例）。
+- **文档联动**：API 参考补 `X-Turnstile-Token` 请求头、`TURNSTILE_REQUIRED`/`TURNSTILE_FAILED` 错误码与公开设置 `turnstile` 字段；架构文档安全设计补「人机验证」小节；部署指南补 Turnstile 密钥申请（Cloudflare Dashboard → Turnstile）与官方测试键说明；UI 指南补五面交互。
+- **明确不做（本期）**：pre-clearance（绑定 CF zone WAF，不适用多面 SPA）；过渡页 cookie 跨面复用（短 TTL 足够）；WebDAV/S3 网关/AList API 面（已有 API Key 认证 + 限流）；gallery 下载与找回密码（与分享下载/登录同模式，需要时一键纳入）。
 
 ## 将来规划（monorepo：Workers 版 + Go 高性能版）
 

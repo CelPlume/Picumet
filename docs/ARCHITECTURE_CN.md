@@ -151,7 +151,13 @@ services/permissions/
 
 两层矩阵与落桶 `providerId` 由 `principal.ts` 按请求查库并缓存后传入 `checkPermission`——引擎内部不查库，热路径零额外查询；不传 `providerId` 时与既有行为完全一致。
 
+**可见性与游客语义（PERM-09）**：`visibility='users'` 表示**所有登录主体**（用户或 API 密钥）可 `read` + `download`，第 3 步只对这两个动作豁免 `defaultPath` 边界；`'public'` 把同样能力额外开放给匿名访客。`file_metadata.guest_visibility` **只对匿名访客**生效：`view` = 列表 + 下载，`download` = 只给下载不给列表，`none`/未设置 = 不放行任何操作。匿名主体**没有第 9 步兜底**：缺少 `role='guest'` 规则、挂载点矩阵的 guest 条目或显式公开通道（gallery、签名直链、公开挂载）时，匿名列目录一律拒绝（设计如此）。可见性与游客可见性只放宽 `read`/`download`，从不放宽任何写入或路径边界；`deny` 规则仍压制合成规则。
+
+**属主回退与规则先于矩阵（PERM-12/13）**：第 6 步（属主回退）先于两级矩阵，因此矩阵 `deny` 无法约束属主对自己文件的 `read`/`update`/`delete`/`share`/`download`。`write` **不在**属主回退内：往「矩阵禁止 write」的挂载点上传仍会被拒。`user` 来源规则（第 5 步）同样先于矩阵且排序 `user > system`，用户对自有路径建的 allow 规则可以压过矩阵 `deny`。因此矩阵是**兜底默认权限层，不是绝对边界**——「用户可上传、管理员保留管理权」无法用矩阵表达（改用路径规则或能力位），必须是绝对边界的判定要在规则层与属主回退之前完成。
+
 **角色默认权限（用户权限模型）**：`role_defaults.permissions` 是角色的默认权限清单（`read` / `write` / `update` / `delete` / `download` 五项矩阵；**`share` 不在其中**——分享开关是能力位 `can_share`，避免同一件事两处设置）。内置角色种子：`admin` 与 `user` = 全部五项 + `capabilities=['can_share']`，`guest` = 仅 `download`。**用户级覆盖**：`users.permissions`（NULL = 跟随角色）；优先级 `users.permissions` → `role_defaults.permissions` → 常量表 `DEFAULT_ROLE_PERMISSIONS`。`getPrincipal` 把生效清单装到 `Principal.defaultPermissions`；判定流程里「自有空间回退（用户默认路径权限）」按它放行（`share` 动作在自有空间内沿用既有放行语义）。管理端「默认用户设置」可编辑矩阵、能力位、别名与默认路径/配额，**保存角色默认会覆盖该角色全部成员的个别设置**（含 `users.permissions`）。角色另有**别名**（`role_defaults.alias`，如「管理员」），规则主体除角色名外也接受该别名（`loadPrincipalRules` 解析为角色后并入候选）。
+
+**新用户默认姿态（PERM-01）**：新用户的 `defaultPath` 取值顺序为「显式入参 → `role_defaults.default_path` → `'/'`」（`UserRepo.createUser`），所有创建路径（注册、自由模式、种子）共用同一来源——管理端改角色默认路径后对**之后新建**的用户生效；「保存角色默认」仍会批量覆盖存量成员。该值**原样写入**，`default_path` 不是 `<username>` 模板（管理端表单里的占位文案只是示例）。内置种子保持 `'/'`，即默认姿态是**共享命名空间**：每个注册用户都持有整份角色词表，用户之间没有任何隔离。需要隔离的部署应把角色默认路径改为按用户的目录前缀（例如 `/users`）并收紧角色矩阵。注意隔离的边界：在自己根路径之外，第 3 步会对所有**写入**硬拦（先于规则层与属主回退），而 `users`/`public` 文件仍可经可见性豁免被 `read`/`download`——隔离限制的是写入面，不是共享读取面。
 
 **游客可见性（文件级）**：`file_metadata.guest_visibility` 为 `NULL` / `none` / `download` / `view`，未设置时跟随角色默认——即**游客默认只能下载**。判定时由 `syntheticGuestRule` 把文件的游客可见性合成一条 allow 规则并入候选集：`download` 放行下载，`view` 放行查看（列表/预览）与下载，`none` 不放行任何操作。文件属性面板的「用户权限默认设置」是它的唯一配置入口。
 
@@ -187,6 +193,8 @@ services/files/
 移动 Saga：`moveWithSaga` 先校验权限、冲突和循环，建任务，复制并校验对象，再原子切换元数据，最后异步清理源对象。主文件 API 和 WebDAV 的 `MOVE` 走同一条路径。任务状态机：`operation_jobs.state_data.phase` 依次为 `init → copying → verifying → committing`，`progress` 对应 0 → 70 → 90 → 100；`GET /api/files/jobs/:jobId` 对外只返回 `id` / `type` / `status` / `progress` / `errorMessage` / `createdAt` / `completedAt`，phase 属服务端内部状态。
 
 可见性与审核：文件有三级可见性——`private`（属主和管理员）、`users`（全站登录用户可读/下载）、`public`（审核通过后进匿名公开空间）。设为 `public` 需要属主具备 `can_publish` 能力位，否则进入 `pending` 审核队列；对文件夹设置会级联到其下所有条目。文件域的权限检查统一用文件全路径（`filePermPath`），保证用户按全路径创建的规则能命中；父目录规则仍通过模式匹配继承。
+
+**合成根（TOP-16）**：没有覆盖 `/` 的挂载点、仅保留顶层挂载（如 `/storage1` `/storage2` `/storage3`）时，列表依然可用：`findMountForPath` 找不到挂载点、但该路径下存在挂载拓扑时，`GET /api/files` 与 `GET /api/files/tree` 由 `services/storage/root-view.ts`（`resolveVirtualListing` / `resolveVirtualTree`）把顶层挂载点聚合成虚拟目录；公开浏览、AList `fs/list`、WebDAV `PROPFIND` 以各自的条目形状合成同一组虚拟目录。文件页上的虚拟项是 folder，`id = 'vroot:<虚拟全路径>'`，**没有 `file_metadata` 行**，因此不可分享、移动、重命名、删除——任何按行寻址的操作一律 404。读门禁按挂载根逐个走纯函数 `checkPermission(..., 'read')`（规则与矩阵每请求预加载一次，不逐行查库）；中间层虚拟目录在其下至少一个挂载点可读时显示，整层都不可读则保持 `404`（不泄露挂载拓扑是否存在）。写入不做合成：上传、新建文件夹、详情等按行寻址的入口对虚拟路径一律 `404`（根路径上传因无挂载点被拒）。
 
 **文件封禁（§N）**：`file_metadata.banned` 由管理员经 `PUT /api/admin/files/:id/ban` 设置；`services/files/ban.ts` 的 `assertNotBanned` 接入全部内容出口（文件下载、`path-serve.ts` 直服、分享下载/预览、下载网关），命中即抛 `429 FILE_BANNED`。封禁**不拦截删除**——属主与管理员仍可删除被封禁文件；删除流程不做封禁检查。用户侧仅是展示层幽灵态（半透明 + 菜单仅剩删除），真正的拦截在服务端。
 
@@ -258,11 +266,11 @@ services/storage/
 
 - 写入策略：S3 网关整包校验（SigV4）时哈希已知——库内已有内容则完全跳过落对象，否则直写内容键；流式写入（WebDAV/兼容上传/AList/Worker 代理）走暂存键 + 流式哈希，去重命中删除暂存，未命中复制到内容键后删除暂存。
 - 文件行同时保存虚拟对象键 `object_key`（唯一标识/占用判定）与物理键 `physical_key` + 内容哈希 `blob_hash`；读/删/移动按物理键定位，因此重命名与移动是纯元数据操作、不再复制对象。
-- 引用释放：删除/覆盖写在**同一批 SQL** 内用 `NOT EXISTS (SELECT 1 FROM file_metadata WHERE blob_hash = ?)` 判定最后一个引用，归零则把对象写入 `blob_gc` 回收队列；定时任务带保护期删除，删除前复查引用，失败累加 `attempts` 重试。
-- 分片上传（上传会话 multipart）不经内容寻址：分片直传存储商，物理键仍为虚拟路径键（`blob_hash` 为空），删除按独占对象处理。
+- 引用释放：删除/覆盖写在**同一批 SQL** 内用 `NOT EXISTS (SELECT 1 FROM file_metadata WHERE blob_hash = ?)` 判定最后一个引用，归零则把对象写入 `blob_gc` 回收队列；定时任务带保护期删除，删除前复查引用，失败累加 `attempts` 重试。索引与回收队列都按 **`(hash, mount_id)`** 复合键隔离（挂载内去重、跨挂载各写一份），避免跨挂载同内容在队列中互相覆盖；跨挂载移动 blob 文件目前返回 `422`（物理对象与源挂载索引绑定，只改元数据会撕裂容量与 GC 边界）。
+- 分片上传（上传会话 multipart）不经内容寻址：分片直传存储商，物理键仍为虚拟路径键（`blob_hash` 为空），删除按独占对象处理。完成时按「服务端记录分片 → 客户端上报分片 → 存储桶 `ListParts`」顺序取信，预签名直传在桶 CORS 未暴露 ETag 时仍可正确合并；`upload-complete` 用条件 UPDATE **原子领取**会话（并发重复完成只有一个赢家，崩溃领取 5 分钟后可被接管）。
 - 配额仍按逻辑大小计算（每个文件各计其 size），容量闸门保持保守语义。
 
-**读路径容灾（§G）**：对象读取统一走 `services/storage/failover.ts` 的 `serveFileObject` / `getFileObject`。文件在库内记录的落桶取不到对象（404）或上游故障（502/`ProviderError`）时，按「KV 命中提示 → 文件落桶 → 其余池成员（weight 降序）」依次轮询同一挂载点的其他桶（上限 4 个候选）；每次尝试有 8 秒上限，主桶连接悬挂不会拖死读请求。三项加固：**熔断**——上游故障的桶写 `pool:down:<providerId>`（45 秒 TTL），本轮排到候选末尾（仍保留一次兜底尝试 = 恢复探测），命中即清标记；**对象缺失不熔断**（数据状态而非桶健康）；**回退内容校验**——非记录桶命中后按元数据 `size` 复核（记录侧未记大小或上游未回报大小时放行），不符视作未命中（宁可 404 也不给旧/坏内容），etag 因跨后端语义不同不参与判定。在副桶命中后写入 `serve:loc:<fileId>`（值含提供方 id 与物理键指纹，10 分钟 TTL、命中即续期），后续请求直接优先访问该桶；文件被改写后指纹不匹配提示自动失效，记录桶重新供数时主动清除提示。**镜像豁免**：旧对象清理与内容对象回收只对「文件落桶」/索引登记的 provider 发删除，池内其余成员（副桶/镜像，由外部同步通道维护）永不是删除目标。跨桶「复制」不在此层——把对象真正写进副桶由未来的 Go 后端负责。 管理员界面计划提供每挂载点的「自动跨桶同步」开关——仅在 Go 后端环境可勾选，当前 Node/Workers 后端不支持该能力（界面禁用态），池化（§E）与读容灾（§G）不依赖它即可工作。
+**读路径容灾（§G）**：对象读取统一走 `services/storage/failover.ts` 的 `serveFileObject` / `getFileObject`。文件在库内记录的落桶取不到对象（404）或上游故障（502/`ProviderError`）时，按「KV 命中提示 → 文件落桶 → 其余池成员（weight 降序）」依次轮询同一挂载点的其他桶（上限 4 个候选）；每次尝试有 8 秒上限，主桶连接悬挂不会拖死读请求。三项加固：**熔断**——上游故障的桶写 `pool:down:<providerId>`（45 秒 TTL），本轮排到候选末尾（仍保留一次兜底尝试 = 恢复探测），命中即清标记；**对象缺失不熔断**（数据状态而非桶健康）；**回退内容校验**——非记录桶命中后按元数据 `size` 复核（记录侧未记大小或上游未回报大小时放行），不符视作未命中（宁可 404 也不给旧/坏内容），etag 因跨后端语义不同不参与判定。在副桶命中后写入 `serve:loc:<fileId>`（值含提供方 id 与物理键指纹，10 分钟 TTL、命中即续期），后续请求直接优先访问该桶；文件被改写后指纹不匹配提示自动失效，记录桶重新供数时主动清除提示。**镜像豁免**：旧对象清理与内容对象回收只对「文件落桶」/索引登记的 provider 发删除，池内其余成员（副桶/镜像，由外部同步通道维护）永不是删除目标。跨桶「复制」不在此层——把对象真正写进副桶由未来的 Go 后端负责。 管理员界面计划提供每挂载点的「自动跨桶同步」开关——仅在 Go 后端环境可勾选，当前 Node/Workers 后端不支持该能力（界面禁用态），池化（§E）与读容灾（§G）不依赖它即可工作。传入请求主体角色与读取动作（`read` / `download`）时，候选循环会**逐候选重判**桶级（§31）与挂载点级（§28）矩阵：deny 的候选跳过，与写路径「放不下就跳过」同构——回退读取不会命中该角色无权读取的桶；内部调用不传角色则完全不查矩阵，行为与既有一致。
 
 **挂载点皆目录（§H）**：非根挂载点在**父挂载点命名空间**内维护一行 folder 记录（`id = 'mountfolder:<mountId>'`、`path` = **自身全路径**（与 `services/files/handlers.ts` 创建文件夹的约定一致）、`name` = 挂载路径末段、`object_key = 'folder:<绝对路径>'`、`custom_title` = 挂载显示名），因此文件页、分享选择器、公开目录、WebDAV、AList 等所有「按路径列目录」的入口都能看到挂载点，无需各自做合成。三处自愈：列目录、管理端挂载页、定时任务（幂等）；管理端的挂载创建/改路径/删除会即时登记、迁移或清理该行。为保护挂载点，`isMountPointFile` / `containsMountPointFile` 会拒绝重命名/移动/删除挂载点目录行以及包含挂载点的父目录（409）。
 
@@ -272,9 +280,19 @@ services/storage/
 
 **拼好桶放置策略（§29）**：写路径选桶（`mounts.pool_strategy`）扩到五档：`least_used`（已用最小，评分 `(已用+1)/权重`）、`round_robin`、`hash`（**目录粘性**——对父目录路径哈希，同目录文件落同一桶，按前缀列举/定位连续；成员集不变则落桶确定）、`free_weighted`（`(成员容量−已用)×权重` 最大者；`mount_providers.capacity_bytes` 留空 = 不限且优先于任何有限余量；**全部成员满 → 413**，fail closed 不静默超容量写）、`ordered`（按 `mount_providers.sort_order` 升序取第一个未满成员，未配容量即不限 → 永远选它）。`weight` 与 `sort_order` 分工明确：前者是 `least_used`/`free_weighted` 的加权系数，后者是 `ordered` 的队列次序。五档都只影响新写入——读/删按 `file_metadata.provider_id` 定位，存量文件不迁移。管理端在挂载点表单里选择策略，并可为每个池成员配容量上限与上传顺序。
 
-**池成员容量是硬上限（§30）**：成员容量不能用「当前是否已满」来判——判定式必须带上**本次待写大小**与**在途预留**：`已用(按 file_metadata 聚合) + mount_providers.quota_reserved + 本次大小 <= capacity_bytes`（`NULL` = 不限，不判满也不预留）。预留通过条件原子 UPDATE 完成，受影响行数为 0 即该成员此刻放不下 → 按策略次序试下一个候选，全部放不下才 413；因此策略只决定**候选次序**，不能绕过容量（`hash` 的目录粘性在容量不足时按回退次序让步）。预留生命周期与挂载点级 `quota_reserved` 一致：写入成功/失败/补偿、上传会话完成或过期都要释放。
+**池成员容量是硬上限（§30）**：成员容量不能用「当前是否已满」来判——判定式必须带上**本次待写大小**与**在途预留**：`已用(按 file_metadata 聚合) + mount_providers.quota_reserved + 本次大小 <= capacity_bytes`（`NULL` = 不限，不判满也不预留）。预留通过条件原子 UPDATE 完成，受影响行数为 0 即该成员此刻放不下 → 按策略次序试下一个候选，全部放不下才 413；因此策略只决定**候选次序**，不能绕过容量（`hash` 的目录粘性在容量不足时按回退次序让步）。预留生命周期与挂载点级 `quota_reserved` 一致：写入成功/失败/补偿、上传会话完成或过期都要释放；直写（`write.ts`）与跨挂载移动不创建上传会话，其成员预留登记在 `quota_reservations` 台账里，定时对账按「在途会话 + 台账」两来源重算（台账行 TTL 之外视为崩溃残留清理）。
 
 **桶级默认角色矩阵与备用显式标记（§31）**：默认角色矩阵支持**按桶**配置（`mount_provider_role_permissions(mount_id, provider_id, role)`），判定优先级为 **桶级 → 挂载点级（§28）→ 角色默认**，两层都无则行为不变。落桶已知的动作（读/改/删/下载/分享）按**文件实际落桶**判定；写路径在放置的**候选成员循环**里判定——候选桶的矩阵不允许该动作就跳过该候选（等价于「放不下」），全部候选都不允许才 403，因此策略依旧只决定候选次序。`mount_providers.standby` 是**显式**「作为备用桶」标记，此前由「该桶对此挂载点 0 文件」推断——现已**完全移除推断路径**（被标记的桶即使持有文件也仍作为备用出现在图上，未标记的零文件成员不再被当作备用），挂载点视图里备用泳道会为每个备用挂载点渲染一行节点（琥珀空心环、不可展开、不接干线），点击定位到主桶泳道上的挂载点行。容量分两层且都是硬上限：桶级 `mount_providers.capacity_bytes`（放置判定，§30）与挂载点总上限 `mounts.max_storage`（写入配额），后者必须 ≤ 各桶上限之和（未设上限的桶不参与求和），违反返回 400。
+
+**挂载点与 Provider 生命周期约束（TOP-01/02/03/07/08/11）**：配置写入强制校验解析器依赖的不变量，且全部 fail closed：
+
+- **一路径一挂载**：Provider 一步创建、`POST /mounts`、`PUT`/`PATCH /mounts/:id` 共用同一个放置校验器；同一规范化路径上的第二个挂载返回 `400 ALREADY_EXISTS`。
+- **嵌套要求 `祖先.priority <= 后代.priority`**（等值合法，同值按路径深度决胜）：优先级严格更高的父挂载会遮蔽子挂载子树并使其不可达，故该组合返回 `400` 并说明原因；新建嵌套挂载缺省取覆盖它的祖先中的最高 priority。
+- **无 overlay**：新建挂载或改路径时，若父挂载命名空间下该路径或其下已有 `file_metadata` 行 → `409`（遮蔽会让父挂载数据不可达却仍计费/计容量）。请先迁移数据。
+- **挂载点目录行是系统身份行**：行登记在**父挂载点命名空间**，id 确定性生成 `mountfolder:<mountId>`；同显示路径已有用户 folder/file 时**绝不隐式复用**（管理端创建/更新返回 `409`，后台自愈路径只 warn 跳过），删除只按该 id 执行，因此删除挂载不会再误删用户目录。行的属主取最早的管理员，仅作外键占位。
+- **Provider 删除做全引用检查**：锚点、池成员、物理落桶行、在途上传会话、内容哈希索引、blob GC 队列、桶级矩阵——任一命中即 `409`（details 给出各类数量）且不改动任何数据；池成员与桶级矩阵的 provider 外键为 `ON DELETE RESTRICT` 作兜底。
+- **移除池成员被拒**（`409`，附各桶文件/会话数量）：该成员上仍有文件或未完成上传会话时不迁移对象、不允许静默移除。
+- **配置保存不丢在途预留**：成员替换是差异化 UPSERT，保留 `mount_providers.quota_reserved` 与 `created_at`，只 DELETE 真正不在新成员集里的行；整个挂载配置写入（挂载行、upload mode、角色矩阵、成员、桶级矩阵、锚点、目录行）在读/校验阶段之后于**同一事务**内完成。定时对账按在途上传会话重算**用户**、**挂载点**与**池成员**三层预留，因此漂移的成员级预留（例如历史上「删除后重建成员」造成的漂移）会在下一轮收敛。
 
 **容灾候选只认桶**：读回退的候选一律来自 `mount_providers` → `storage_providers`（真正的独立桶），**文件夹（含挂载点目录、`备用文件夹` 这类用户目录）永远不会成为容灾候选**；跨桶复制同样只以桶为单位规划（见 §G）。「文件夹级备份」不构成容灾：同一桶内的副本与目录副本都不提供独立的故障域。
 
@@ -406,15 +424,18 @@ services/public/
 
 ### 定时清理任务
 
-**职责**：过期配额释放、移动源对象清理、过期分享标记、配额对账，由定时任务统一触发（`crons = ["*/10 * * * *"]`，每 10 分钟一轮）。
+**职责**：过期配额释放、移动源对象清理、过期分享标记、配额对账、内容对象回收与索引对账、multipart abort 重试、审计日志冷归档，由定时任务统一触发（`crons = ["*/10 * * * *"]`，每 10 分钟一轮）。
 
-- `releaseExpiredReservations` 释放过期上传会话占用的配额预留。
+- `releaseExpiredReservations` 释放过期上传会话占用的配额预留，并终止其 Provider multipart upload（失败登记带 `upload_id` 的清理队列）。
 - `cleanupOldObjects` 清理移动后遗留的源对象（`source_cleanup_pending` 标记）。
 - `expireDueShares` 把到期的分享标记为过期。
-- `reconcileQuotas` 纠正 `used_storage` 和 `used_files` 计数。
-- `runScheduledTasks` 一次跑完四个任务，返回各自的处理数量。
+- `reconcileQuotas` 纠正 `used_storage` / `used_files` 计数，并按「在途会话 + `quota_reservations` 台账」重算三层预留。
+- `reconcileBlobs` / `cleanupBlobObjects` 按 `(hash, mount_id)` 补索引、入队与回收内容对象。
+- `cleanupUserDeletedObjects` / `cleanupMultipartAborts` 消费 `orphan_objects` 队列（用户删除对象、abort 失败的 multipart）。
+- `archiveAuditLogs` 把超过保留期（`audit_retention_days`）的整小时审计窗口导出到 R2 冷归档（`AUDIT_BUCKET`），校验后同批写 manifest 与 rollup，再分批清理热行；未配置冷层时只读不删。
+- `repairMovedFolderOrphans` 自愈历史跨挂载文件夹移动遗留的子树孤儿；`ensureAllMountFolders` 补齐挂载点目录行。
 
-**依赖**：会话、分享、文件、挂载、提供商、配额仓库，`storage/providers.ts`。
+**依赖**：会话、分享、文件、挂载、提供商、配额、内容索引、审计归档仓库，`storage/providers.ts`。
 
 ## 共享基础设施
 
@@ -454,8 +475,10 @@ D1 里存以下核心表：
 | `mount_role_permissions` | 挂载点级默认角色权限矩阵（§28）：`(mount_id, role)` 主键 + `permissions`（逗号分隔动作词表）。条目即封闭集合，无条目回落角色默认权限。 |
 | `file_metadata` | 文件和文件夹：虚拟对象键、物理键（§F 内容寻址）、内容哈希、路径、大小、etag、属主、可见性、审核状态、**游客可见性（`guest_visibility`：NULL/none/download/view）**、**封禁位（`banned`，§N）**、自定义属性。 |
 | `blob_objects` | 内容寻址对象索引：内容哈希 → 落桶 provider 与物理键（同内容共享一份）。 |
-| `blob_gc` | 内容对象回收队列：最后一个引用消失后入队，定时任务带保护期删除、失败重试。 |
-| `upload_sessions` | 记录上传进度、分片和预留配额。 |
+| `blob_gc` | 内容对象回收队列（主键 `(hash, mount_id)`）：最后一个引用消失后入队，定时任务带保护期删除、失败重试。 |
+| `upload_sessions` | 记录上传进度、分片和预留配额；`complete_claimed_at` 是完成请求的原子领取标记。 |
+| `quota_reservations` | 直写与跨挂载移动的成员级预留台账，供对账合并全部预留来源。 |
+| `audit_archives` / `audit_rollups` | 审计冷归档 manifest（时间范围/行数/对象键/SHA-256）与归档窗口的按小时计数聚合（趋势查询与热表合并）。 |
 | `operation_jobs` | 异步的移动、复制、删除任务。 |
 | `path_rules` | 挂在挂载点上的权限规则，带来源（admin/user/system）与创建者。 |
 | `api_keys` | API 密钥，含权限、协议和上传根目录。 |
@@ -558,6 +581,7 @@ D1 里存以下核心表：
 - **分享下载计数**：签发令牌不计数，网关消费令牌时才计一次，超限返回 `410`。
 - **分享密码**：`POST /api/shares/:id/verify` 种短期授权 Cookie，密码不进 URL。
 - **可见性与审核**：文件三级可见性 `private` / `users` / `public`；`public` 须审核通过才进匿名 gallery，未具备 `can_publish` 能力的用户设 `public` 进入 `pending`。可见性只放宽 `read` / `download`，写入类判定与路径边界永不放宽。
+- **公网 CDN 挂载**：provider 配置 `publicDomain` 后，其挂载点的**全部对象**可经该源站匿名直读，绕过游客总闸、可见性、游客可见性与两级矩阵（见部署指南）。它是有意的公开暴露开关，不是便利设置。
 - **属主绑定**：网关、WebDAV 与兼容通道按属主过滤文件，非属主一律 `404` 隐身，不泄露文件存在性。
 - **大文件内存**：PicGo 兼容上传、WebDAV、自由模式都流式转发请求体，不整包进内存。
 - **就绪探针**：`/api/public/health/live` 和 `/ready` 做探针；生产未初始化时业务接口返回 `503`。

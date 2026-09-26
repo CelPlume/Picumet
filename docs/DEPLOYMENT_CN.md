@@ -107,6 +107,7 @@ bucket_name = "picumet-storage"
 | `DB` | D1 关系型数据库,存放元数据、配额、分享与日志。 |
 | `KV` | 会话撤销、限流计数、自由模式凭据与 seed 标记。 |
 | `R2` | 上传文件的默认对象存储。 |
+| `AUDIT_BUCKET`（可选） | 审计日志冷归档桶。创建 R2 桶（如 `picumet-audit`）并加 `[[r2_buckets]] binding = "AUDIT_BUCKET"` 即启用：超过保留期（系统设置 `audit_retention_days`，默认 90 天；`0` = 永久保留）的整小时审计窗口导出为 `audit/YYYY/MM/DD/HH.ndjson.gz`，校验后清理 D1 热行。未配置该绑定时归档任务整体跳过（只读不删，热行不会丢失）。 |
 
 把 API 绑到 `api.yourdomain.com` 时,加一段 `routes` 配置,并让 DNS 记录走 Cloudflare 代理:
 
@@ -296,6 +297,39 @@ bunx wrangler pages deploy dist --project-name=picumet
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | 密钥 | 可选 | 邮件发送。 |
 
 `wrangler.toml` 里的绑定:`DB`(D1)、`KV`(KV 命名空间)、`R2`(R2 存储桶)。
+
+## 存储拓扑与公开暴露
+
+挂载点与存储提供商有硬性配置不变量:违反的写入会被 API 拒绝,而不是留下半配置拓扑。
+
+### `publicDomain` 会让整个挂载点匿名
+
+provider 配置 `publicDomain`（公网源站/CDN 域名）会改变**经它存储的全部对象**的分享语义:只要该 provider 能给出公网直链且文件没有访问密码,`decideAccessMode` 就返回 `public_cdn`,直链出口（`GET /*` 公开路径直服、`direct` 复制链接、AList `/openlist/d` 直链）随后**不做任何权限判定**直接从源站供数——不经游客总闸（`allow_guest_access`）、不看 `visibility` / `guest_visibility`、不校验 download 权限,也不经桶级（§31）与挂载点级（§28）矩阵。仍有两道门:被封禁文件返回 `429`,带密码文件返回 `403 PASSWORD_REQUIRED`。
+
+配置前务必知悉:
+
+- 不要给存放私有材料的 provider 配 `publicDomain`——它的挂载点等同公开桶。
+- 同一存储池必须**全有或全无**:成员里一部分有 `publicDomain`、一部分没有时保存返回 `400`（「同一池不得混用不同公开性策略」）;因为读取可能回退到另一个成员,公开/私有判定否则会只跟着记录桶走。
+- `publicDomain` 挂载点上的对象在收紧规则或矩阵后**仍可凭直链访问**。撤销要走清除 `publicDomain`（或轮换 CDN 路径）,改权限不管用。
+
+### 挂载点与 Provider 生命周期约束
+
+一个虚拟路径只解析到一个挂载点,因此 API 强制以下约束:
+
+| 操作 | 约束 | 违反结果 |
+| :--- | :--- | :--- |
+| 新建/改路径挂载点 | 同一规范化路径不得有另一个挂载点 | `400 ALREADY_EXISTS` |
+| 新建/改路径挂载点 | 嵌套需满足 `祖先.priority <= 后代.priority`（等值合法,按深度决胜）;新建嵌套挂载缺省继承覆盖它的祖先优先级 | `400`,并点名会被遮蔽的祖先/后代 |
+| 新建/改路径挂载点 | 父挂载点在目标路径或其下不得已有 `file_metadata` 行（无 overlay 合并） | `409`,请先迁移数据 |
+| 新建/改路径挂载点 | 同显示路径不得已有用户目录/文件 | `409`——挂载点目录行用确定性 id `mountfolder:<mountId>`,绝不复用用户行 |
+| 删除存储提供商 | 不得有任何引用:锚点、池成员、落桶行、在途会话、blob 索引、blob GC 队列、桶级矩阵 | `409` 并给出各类数量,且不删除任何数据 |
+| 移除池成员 | 该成员上不得仍有文件与未完成上传会话 | `409` 并给出各桶数量;对象不会自动迁移 |
+| 保存挂载配置 | 在途预留不丢（成员替换走 UPSERT,保留 `quota_reserved`）;配置写入在校验之后于同一事务完成 | — |
+| 定时对账 | 修复 `used_storage` / `used_files`,并按在途会话重建**用户**、**挂载点**与**池成员**三层预留 | — |
+
+### 无根挂载时的列表
+
+只保留顶层挂载（例如 `/storage1` … `/storage3`）而不创建覆盖 `/` 的挂载点时,页面依然能打开:文件页与其树、公开浏览、AList `fs/list`、WebDAV `PROPFIND` 会把顶层挂载聚合成虚拟目录(文件页上标记为 `id = vroot:<路径>`)。这些条目只用于列表——没有元数据行,因此不可分享、移动、重命名、删除,向它们上传返回 `404`。仍推荐保留根挂载（`/`,由种子创建）;完整语义见架构文档。
 
 ## 成本要点
 

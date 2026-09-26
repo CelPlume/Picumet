@@ -851,6 +851,13 @@ curl -X DELETE https://{domain}/api/files/{id} \
 
 异步移动或重命名文件、文件夹。移动走 Saga 流程：复制对象、校验副本、原子切换元数据、异步清理源。需要源路径的删除权限和目标路径的写权限。跨挂载点移动文件夹会被拒绝并返回 `422 OPERATION_FAILED`——主行与子树的挂载归属无法一致迁移；同一挂载点内的移动不受影响。
 
+**跨挂载点移动的容量与归属**：
+
+- 移动不改变文件属主（`owner_id` 保持原值），因此目标位置的 `user_space` 写入口约束按**文件属主**判定：把他人文件移入自己的用户空间会返回 `403`。
+- 跨挂载移动会同时预留目标挂载点（`max_storage`）与目标池成员容量，提交事务内转为已用；目标挂载容量不足返回 `413 MOUNT_QUOTA_EXCEEDED`。
+- 目标位置已有同名**文件夹**（不只是同名文件）同样返回 `409 ALREADY_EXISTS`。
+- 内容寻址（blob）文件的物理对象与源挂载的 `(hash, mount_id)` 索引绑定，跨挂载移动暂不支持，返回 `422`；请复制到目标挂载点后删除源文件（同挂载内改名/移动不受影响）。
+
 `POST /api/files/{id}/move`
 
 #### 路径参数
@@ -883,9 +890,11 @@ curl -X DELETE https://{domain}/api/files/{id} \
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | 目标路径缺失或不合法。 | 提供目标路径。 |
-| `FORBIDDEN` | `403` | 缺少所需权限。 | 检查权限规则。 |
+| `FORBIDDEN` | `403` | 缺少所需权限，或目标用户空间与文件属主不符。 | 检查权限规则与用户空间。 |
 | `NOT_FOUND` | `404` | 文件不存在。 | 核对标识。 |
-| `OPERATION_FAILED` | `409` / `422` | 会产生冲突或循环，或文件夹跨挂载点移动。 | 换一个目标路径；跨挂载点移动文件夹暂不支持。 |
+| `ALREADY_EXISTS` | `409` | 目标位置已有同名文件或文件夹。 | 换一个目标路径。 |
+| `MOUNT_QUOTA_EXCEEDED` | `413` | 目标挂载点容量（`max_storage`）不足。 | 清理目标挂载点或提高上限。 |
+| `OPERATION_FAILED` | `409` / `422` | 会产生冲突或循环、文件夹跨挂载点移动，或内容寻址文件跨挂载点移动。 | 换一个目标路径；跨挂载点移动文件夹/blob 文件暂不支持。 |
 
 #### 示例
 
@@ -1213,7 +1222,7 @@ curl -X DELETE https://{domain}/api/files/upload/multipart/{sessionId} \
 
 ### 完成上传
 
-提交已上传的对象。服务端先通过 HEAD 请求校验对象存在、大小和 ETag，再合并分片，最后在单个事务里提交元数据和配额。
+提交已上传的对象。服务端先通过 HEAD 请求校验对象存在、大小和 ETag，再合并分片，最后在单个事务里提交元数据和配额。完成请求会**原子领取**会话（条件更新）：并发的重复完成请求只有一个赢家执行合并/提交，其余返回 `409`（崩溃请求的领取超过 5 分钟可被重试接管）。
 
 `POST /api/files/upload-complete`
 
@@ -1223,7 +1232,7 @@ curl -X DELETE https://{domain}/api/files/upload/multipart/{sessionId} \
 | :--- | :--- | :--- | :--- |
 | `sessionId` | `string` | 是 | 会话标识。 |
 | `etag` | `string` | 否 | 原始上传返回的对象 ETag，单文件会话必须提供。 |
-| `parts` | `array` | 否 | 预签名直传场景的分片列表 `{ partNumber, etag }`。服务端已有记录时忽略。 |
+| `parts` | `array` | 否 | 预签名直传场景的分片列表 `{ partNumber, etag }`。可省略：服务端优先使用自己记录的分片（Worker 代传路径），其次用这里上报的分片；分片不全或 ETag 不可读（如桶 CORS 未暴露 ETag）时改用存储桶的分片清单（`ListParts`）。 |
 
 #### 响应
 
@@ -1573,6 +1582,8 @@ curl "https://{domain}/api/shares/abc123/list?root=folder-uuid&sub=/albums" -b c
 ### 验证分享密码
 
 验证分享密码。密码通过请求体提交，不进入 URL。验证成功后，服务端种下短期有效的 HttpOnly Cookie，后续请求分享无需再携带密码。
+
+**尝试限流（仅生产环境）**：按 IP + 分享维度 5 次/分钟；连续失败累计 9 次后进入 10 分钟冷却（第 10 次起返回 `429 RATE_LIMIT_EXCEEDED`），验证成功后计数清零。文件级密码验证（`/:id/verify-file`）同样受限，失败按分享+文件维度单独累计。
 
 `POST /api/shares/{id}/verify`
 
@@ -2724,16 +2735,18 @@ curl -X PATCH https://{domain}/api/admin/files/{id}/review \
 
 ### 查看访问日志
 
-分页返回访问日志，支持过滤。
+### 查看访问日志
 
-`GET /api/admin/logs?page={page}&limit={limit}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
+按时间倒序分页读取访问日志。列表只返回热层窄列（`id`/`userId`/`action`/`path`/`ipAddress`/`bytesTransferred`/`statusCode`/`createdAt`），不返回 `metadata` 与 `userAgent` 宽字段；完整取证记录在审计归档（见下）。
+
+`GET /api/admin/logs?limit={limit}&cursor={cursor}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
 
 #### 列表查询参数
 
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `page` | `integer` | 否 | 页码，默认 `1`。 |
 | `limit` | `integer` | 否 | 每页条数，默认 `50`，最大 `200`。 |
+| `cursor` | `string` | 否 | 游标：取上一页响应里的 `nextCursor`；缺省 = 第一页（最新）。 |
 | `userId` | `string` | 否 | 按用户过滤。 |
 | `action` | `string` | 否 | 按动作过滤，如 `upload`、`download`。 |
 | `search` | `string` | 否 | 匹配日志内容的关键字。 |
@@ -2746,18 +2759,54 @@ curl -X PATCH https://{domain}/api/admin/files/{id}/review \
 {
   "success": true,
   "data": {
-    "logs": [{ "id": "log-uuid", "userId": "user-uuid", "action": "upload", "path": "/drive/a.txt", "bytesTransferred": 1024, "statusCode": 200, "createdAt": 1710000000000 }],
-    "pagination": { "total": 5000, "page": 1, "limit": 50, "pages": 100 }
+    "logs": [{ "id": "log-uuid", "userId": "user-uuid", "action": "upload", "path": "/drive/a.txt", "ipAddress": "203.0.113.1", "bytesTransferred": 1024, "statusCode": 200, "createdAt": 1710000000000 }],
+    "nextCursor": "1710000000000_log-uuid",
+    "hasMore": true
   },
   "timestamp": 1710000000000
 }
 ```
+
+游标基于稳定排序键 `(created_at, id)`，深页无 `OFFSET` 开销；`hasMore=false` 时 `nextCursor` 为 `null`。
 
 #### 示例
 
 ```sh
 curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 ```
+
+### 查看审计归档
+
+审计日志按保留期（系统设置 `audit_retention_days`，默认 90 天）整小时导出为 NDJSON.gz 冷归档（R2 `AUDIT_BUCKET`）；未配置该桶时只读不删。归档清单与下载仅供管理员，读取行为本身记入访问日志（`audit_archive_read`）。
+
+`GET /api/admin/logs/archives`
+
+`GET /api/admin/logs/archives/{id}/download`
+
+#### 归档清单响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "archives": [{
+      "id": "archive-uuid",
+      "rangeStart": 1710000000000,
+      "rangeEnd": 1710003600000,
+      "rowCount": 1234,
+      "objectKey": "audit/2024/03/09/12.ndjson.gz",
+      "bytes": 20480,
+      "sha256": "…64 位十六进制…",
+      "version": 1,
+      "pruned": true,
+      "createdAt": 1710004000000
+    }]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+下载返回 `application/gzip` 的 NDJSON 文件（每行一个完整日志对象，含 `metadata`/`ip_address`/`user_agent`）。未配置冷层或按动作归档的窗口并入 rollup 计数时，趋势查询会合并热表与 rollup 两来源，保证曲线不缺段。
 
 ### 管理系统设置
 
@@ -2910,6 +2959,8 @@ curl -X POST https://{domain}/api/admin/announcements \
 
 `PUT /api/admin/storage/providers/{id}` 与创建走同一套校验：`endpoint` 非空时必须通过 SSRF 校验（公网 http(s) 地址、端口 80/443、非私网/保留地址），否则更新失败并返回 `400`，文案与创建一致；`endpoint` 传空串表示切回 R2 绑定，直接放行。
 
+**物理定位字段守卫**：当提供商仍有**物理引用**（`file_metadata`、在途 `upload_sessions`、`blob_objects`、`blob_gc` 任一非零）时，`bucket` / `endpoint` / `region` / `pathPrefix` 的变更会让历史对象失联，一律返回 `409`（`details` 给各类数量），需先迁移数据；`name`、`publicDomain` 与密钥轮换不改变落点，始终放行。
+
 #### 测试响应
 
 ```json
@@ -2972,7 +3023,9 @@ curl -X POST https://{domain}/api/admin/storage/providers \
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | 提供商不存在，或字段不合法。 | 修正输入。 |
-| `OPERATION_FAILED` | `409` | 挂载点下仍有文件。 | 先删除文件。 |
+| `OPERATION_FAILED` | `409` | 挂载点下仍有文件或**在途上传会话**（删除以「无文件且无在途会话」为条件原子执行）。 | 先删除文件/等待上传结束。 |
+
+**池成员移除**：`poolMembers` 全量替换时，被移除的成员若在该挂载下仍有落桶文件、在途会话、`blob_objects` 内容索引或 `blob_gc` 回收条目，返回 `409`（`details.members` 给各类数量）——对象不会自动迁移，先迁移再移除。
 
 #### 示例
 
@@ -3540,9 +3593,9 @@ curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 | `POST /openlist/api/auth/login` | `{username: keyId, password: secret}` → `data.token = pk_*.sk_*`（无服务端会话，token 即密钥） |
 | `PUT /openlist/api/fs/form` | multipart `file`；头 `Authorization: <裸 token>`、`File-Path: encodeURIComponent(完整虚拟路径)` |
 | `POST /openlist/api/fs/list` | `{path, page?, per_page?}` → `data.content[{name,size,is_dir,modified}]` |
-| `POST /openlist/api/fs/get` | `{path}` → `data.sign`（/d 直链签名）、`data.is_dir` 等 |
+| `POST /openlist/api/fs/get` | `{path}` → `data.sign`（/d 直链签名）、`data.is_dir` 等；`sign` 为**短期能力签名**（24 小时 TTL），过期需重新调用 |
 | `POST /openlist/api/fs/remove` | `{dir, names: [...]}` → 删除（复用 WebDAV 删除语义） |
-| `GET /openlist/d{encodedPath}?sign=` | 直链下载；公开挂载匿名，私有挂载凭 `fs/get` 下发的 sign |
+| `GET /openlist/d{encodedPath}?sign=` | 直链下载；公开挂载匿名，私有挂载凭 `fs/get` 下发的 sign（过期签名返回 `403`） |
 
 ### S3 兼容网关（`/s3` 前缀）
 
@@ -3550,7 +3603,9 @@ SigV4 验签的 S3 REST 子集。客户端配置：endpoint = `https://{domain}/
 
 **bucket 语义**：bucket = 虚拟路径首段（挂载路径或密钥上传根的首段，如 uploadPath=`/uploads` → bucket=`uploads`），key = 其余路径。`GET /s3` 返回密钥可达的 bucket 列表（挂载根下的一级目录名）。
 
-**签名载荷上限**：SigV4 整包校验的请求体上限 100 MiB。`content-length` 超限的请求直接返回 `400 InvalidRequest`，不读取请求体；更大的文件请改用 `UNSIGNED-PAYLOAD` 或 multipart 上传。校验通过后内容哈希直接复用，不做重复哈希。
+**签名载荷上限**：SigV4 整包校验的请求体上限 100 MiB。`content-length` 超限的请求直接返回 `400 InvalidRequest`，不读取请求体；更大的文件请改用 multipart 上传（网关当前未实现 Multipart Upload）。
+
+**UNSIGNED-PAYLOAD 大小策略**：`x-amz-content-sha256: UNSIGNED-PAYLOAD` 请求必须带可信 `Content-Length` 且不超过 100 MiB（超限 `400`，缺失返回 `411 MissingContentLength`）——网关不做无界流式接收。校验通过后内容哈希直接复用，不做重复哈希。
 
 | 操作 | 请求 |
 | :--- | :--- |

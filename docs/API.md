@@ -851,6 +851,13 @@ curl -X DELETE https://{domain}/api/files/{id} \
 
 Moves or renames a file or folder asynchronously. The move uses a Saga: it copies the object, verifies the copy, switches the metadata atomically, then cleans up the source. Requires the delete permission on the source and the write permission on the target. Moving a folder across mount points is rejected with `422 OPERATION_FAILED` — the main row and its subtree cannot migrate their mount ownership consistently; moves within one mount are unaffected.
 
+**Cross-mount capacity and ownership**:
+
+- A move never changes `owner_id`, so the `user_space` upload-mode constraint on the target is evaluated against the **file owner**: moving someone else's file into your own user space returns `403`.
+- A cross-mount move reserves the target mount's `max_storage` and the target pool member's capacity and converts them to used in the commit transaction; insufficient target capacity returns `413 MOUNT_QUOTA_EXCEEDED`.
+- A same-named **folder** (not just a file) at the target also returns `409 ALREADY_EXISTS`.
+- Content-addressed (blob) files keep their physical object and its `(hash, mount_id)` index in the source mount, so cross-mount moves are temporarily rejected with `422`; copy to the target mount and delete the source instead (same-mount renames/moves are unaffected).
+
 `POST /api/files/{id}/move`
 
 #### Path parameters
@@ -883,9 +890,11 @@ Returns the job identifier and its initial status.
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | The target path is missing or invalid. | Provide a target path. |
-| `FORBIDDEN` | `403` | The caller lacks the required permissions. | Check the permission rules. |
+| `FORBIDDEN` | `403` | The caller lacks the required permissions, or the target user space does not match the file owner. | Check the permission rules and the user space. |
 | `NOT_FOUND` | `404` | The file does not exist. | Confirm the identifier. |
-| `OPERATION_FAILED` | `409` / `422` | A conflict or a cycle would result, or a folder move crosses mount points. | Choose another target; cross-mount folder moves are not supported. |
+| `ALREADY_EXISTS` | `409` | A file or folder with the same name already exists at the target. | Choose another target. |
+| `MOUNT_QUOTA_EXCEEDED` | `413` | The target mount's capacity (`max_storage`) is insufficient. | Free space or raise the limit. |
+| `OPERATION_FAILED` | `409` / `422` | A conflict or a cycle would result, a folder move crosses mount points, or a content-addressed file crosses mount points. | Choose another target; cross-mount folder/blob moves are not supported. |
 
 #### Example
 
@@ -1213,7 +1222,7 @@ curl -X DELETE https://{domain}/api/files/upload/multipart/{sessionId} \
 
 ### Complete an upload
 
-Commits the uploaded object. The server verifies the object with a HEAD request, checks the size and ETag, merges multipart parts, then commits the metadata and quota in a single transaction.
+Commits the uploaded object. The server verifies the object with a HEAD request, checks the size and ETag, merges multipart parts, then commits the metadata and quota in a single transaction. Completion **claims the session atomically** (conditional update): only the winner of concurrent duplicate requests performs the merge/commit, the rest get `409` (a claim left by a crashed request can be taken over after 5 minutes).
 
 `POST /api/files/upload-complete`
 
@@ -1223,7 +1232,7 @@ Commits the uploaded object. The server verifies the object with a HEAD request,
 | :--- | :--- | :--- | :--- |
 | `sessionId` | `string` | Yes | The session identifier. |
 | `etag` | `string` | No | The object ETag returned by the raw upload. Required for single-file sessions. |
-| `parts` | `array` | No | The part list `{ partNumber, etag }` for pre-signed direct uploads. Ignored when the server recorded the parts. |
+| `parts` | `array` | No | The part list `{ partNumber, etag }` for pre-signed direct uploads. Optional: the server first uses the parts it recorded itself (Worker-proxied uploads), then the reported parts; when the list is incomplete or the ETags are unreadable (e.g. the bucket CORS does not expose ETag) it falls back to the bucket's part list (`ListParts`). |
 
 #### Response
 
@@ -1573,6 +1582,8 @@ curl "https://{domain}/api/shares/abc123/list?root=folder-uuid&sub=/albums" -b c
 ### Verify a share password
 
 Verifies the share password. The password is sent in the request body, never in the URL. On success the endpoint sets a short-lived HttpOnly cookie, so subsequent requests to the share do not need the password again.
+
+**Attempt throttling (production only)**: 5 attempts per minute per IP + share; after 9 accumulated failures the share enters a 10-minute cooldown (the 10th attempt returns `429 RATE_LIMIT_EXCEEDED`), and a successful verification resets the counter. File-level verification (`/:id/verify-file`) is throttled the same way with its failures counted per share + file.
 
 `POST /api/shares/{id}/verify`
 
@@ -2724,16 +2735,16 @@ curl -X PATCH https://{domain}/api/admin/files/{id}/review \
 
 ### Read access logs
 
-Returns access logs with pagination and filtering.
+Returns access logs in reverse chronological order with cursor pagination and filtering. The list returns only the hot-layer narrow columns (`id`/`userId`/`action`/`path`/`ipAddress`/`bytesTransferred`/`statusCode`/`createdAt`) and never the wide `metadata`/`userAgent` fields; full forensic records live in the audit archive (below).
 
-`GET /api/admin/logs?page={page}&limit={limit}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
+`GET /api/admin/logs?limit={limit}&cursor={cursor}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
 
 #### List query parameters
 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `page` | `integer` | No | The page number. Defaults to `1`. |
 | `limit` | `integer` | No | Items per page. Defaults to `50`, maximum `200`. |
+| `cursor` | `string` | No | Cursor: pass the `nextCursor` from the previous page; omitted = first (newest) page. |
 | `userId` | `string` | No | Filter by user. |
 | `action` | `string` | No | Filter by action, such as `upload` or `download`. |
 | `search` | `string` | No | A keyword to match log content. |
@@ -2746,12 +2757,54 @@ Returns access logs with pagination and filtering.
 {
   "success": true,
   "data": {
-    "logs": [{ "id": "log-uuid", "userId": "user-uuid", "action": "upload", "path": "/drive/a.txt", "bytesTransferred": 1024, "statusCode": 200, "createdAt": 1710000000000 }],
-    "pagination": { "total": 5000, "page": 1, "limit": 50, "pages": 100 }
+    "logs": [{ "id": "log-uuid", "userId": "user-uuid", "action": "upload", "path": "/drive/a.txt", "ipAddress": "203.0.113.1", "bytesTransferred": 1024, "statusCode": 200, "createdAt": 1710000000000 }],
+    "nextCursor": "1710000000000_log-uuid",
+    "hasMore": true
   },
   "timestamp": 1710000000000
 }
 ```
+
+The cursor uses the stable sort key `(created_at, id)`, so deep pages carry no `OFFSET` cost; `nextCursor` is `null` when `hasMore` is `false`.
+
+#### Example
+
+```sh
+curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
+```
+
+### Read audit archives
+
+Access logs are exported per whole hour into NDJSON.gz cold archives in R2 (`AUDIT_BUCKET`) after the retention period (system setting `audit_retention_days`, default 90 days). Without that bucket the task only reads, never deletes. The manifest and downloads are admin-only, and each read is itself logged (`audit_archive_read`).
+
+`GET /api/admin/logs/archives`
+
+`GET /api/admin/logs/archives/{id}/download`
+
+#### Archive list response
+
+```json
+{
+  "success": true,
+  "data": {
+    "archives": [{
+      "id": "archive-uuid",
+      "rangeStart": 1710000000000,
+      "rangeEnd": 1710003600000,
+      "rowCount": 1234,
+      "objectKey": "audit/2024/03/09/12.ndjson.gz",
+      "bytes": 20480,
+      "sha256": "…64 hex chars…",
+      "version": 1,
+      "pruned": true,
+      "createdAt": 1710004000000
+    }]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+The download returns an `application/gzip` NDJSON file (one complete log object per line, including `metadata`/`ip_address`/`user_agent`). For archived windows the trend endpoint merges the hot table with the `audit_rollups` counters, so curves never lose a segment.
 
 #### Example
 
@@ -2911,6 +2964,8 @@ Lists, creates, updates, tests, and deletes storage providers. The server stores
 
 `PUT /api/admin/storage/providers/{id}` applies the same validation as create: a non-empty `endpoint` must pass the SSRF check (public http(s) address, port 80 or 443, no private or reserved hosts) or the update fails with `400` using the same message as create. An empty `endpoint` switches the provider back to the R2 binding and is allowed.
 
+**Physical-location guard**: while the provider still has **physical references** (any of `file_metadata`, in-flight `upload_sessions`, `blob_objects`, `blob_gc` is non-zero), changing `bucket` / `endpoint` / `region` / `pathPrefix` would orphan historical objects and is rejected with `409` (`details` carries the per-kind counts); migrate the data first. `name`, `publicDomain` and credential rotation do not move objects and are always allowed.
+
 #### Test response
 
 ```json
@@ -2973,7 +3028,9 @@ Lists, creates, updates, and deletes mount points that bind a provider to a virt
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | The provider does not exist or a field is invalid. | Correct the input. |
-| `OPERATION_FAILED` | `409` | The mount still contains files. | Delete the files first. |
+| `OPERATION_FAILED` | `409` | The mount still contains files or **in-flight upload sessions** (deletion is a single conditional statement requiring both to be absent). | Delete the files or wait for uploads to finish. |
+
+**Pool member removal**: when `poolMembers` is replaced, removing a member that still has files, in-flight sessions, `blob_objects` content-index rows or `blob_gc` queue entries under that mount returns `409` (`details.members` carries the per-kind counts) — objects are never migrated automatically.
 
 #### Example
 
@@ -3541,9 +3598,9 @@ Implements a subset of the AList v3 REST protocol. In PicList pick "AList" with 
 | `POST /openlist/api/auth/login` | `{username: keyId, password: secret}` → `data.token = pk_*.sk_*` (no server-side session; the token is the key) |
 | `PUT /openlist/api/fs/form` | multipart `file`; headers `Authorization: <bare token>` and `File-Path: encodeURIComponent(full virtual path)` |
 | `POST /openlist/api/fs/list` | `{path, page?, per_page?}` → `data.content[{name,size,is_dir,modified}]` |
-| `POST /openlist/api/fs/get` | `{path}` → `data.sign` (signature for the /d direct link), `data.is_dir`, etc. |
+| `POST /openlist/api/fs/get` | `{path}` → `data.sign` (signature for the /d direct link), `data.is_dir`, etc.; the signature is a **short-lived capability** (24-hour TTL) — call again after it expires |
 | `POST /openlist/api/fs/remove` | `{dir, names: [...]}` → delete (same semantics as WebDAV delete) |
-| `GET /openlist/d{encodedPath}?sign=` | Direct download; anonymous on public mounts, signature-gated on private mounts |
+| `GET /openlist/d{encodedPath}?sign=` | Direct-link download; public mounts are anonymous, private mounts require the sign issued by `fs/get` (expired signatures return `403`) |
 
 ### S3 compatible gateway (`/s3` prefix)
 
@@ -3551,7 +3608,9 @@ A SigV4-verified subset of the S3 REST protocol. Client configuration: endpoint 
 
 **Bucket semantics**: bucket = first segment of the virtual path (mount path or the key's upload root, e.g. uploadPath=`/uploads` → bucket=`uploads`); key = the rest. `GET /s3` lists the buckets reachable by the key (top-level directory names).
 
-**Signed payload cap**: full-body SigV4 verification caps the request body at 100 MiB. A request whose `content-length` exceeds the limit is rejected with `400 InvalidRequest` without reading the body; for larger files use `UNSIGNED-PAYLOAD` or multipart upload. When the body passes verification, the verified content hash is reused directly (no duplicate hashing).
+**Signed payload cap**: full-body SigV4 verification caps the request body at 100 MiB. A request whose `content-length` exceeds the limit is rejected with `400 InvalidRequest` without reading the body; larger files must use multipart upload (the gateway does not implement Multipart Upload yet).
+
+**`UNSIGNED-PAYLOAD` size policy**: requests with `x-amz-content-sha256: UNSIGNED-PAYLOAD` must carry a trustworthy `Content-Length` of at most 100 MiB (over the cap → `400`, missing → `411 MissingContentLength`) — the gateway never reads an unbounded stream. When the body passes verification, the verified content hash is reused directly (no duplicate hashing).
 
 | Operation | Request |
 | :--- | :--- |
