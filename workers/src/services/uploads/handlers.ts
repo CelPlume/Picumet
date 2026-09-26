@@ -14,11 +14,13 @@ import { ApiError } from '../../shared/errors';
 import { normalizePath, objectKeyFromPath, isValidFileName, validateFileType } from '../../utils/path';
 import { uuid } from '../../utils/crypto';
 import { sha256Hex } from '../../utils/crypto';
+import { requestIp } from '../../utils/ip';
 import type { Env } from '../../shared/types';
 import type { StorageProvider } from '@shared/types';
 import type { StorageProviderInterface } from '../storage/types';
 import { writeContentAddressed } from '../storage/content';
 import { InitUploadSchema, CompleteUploadSchema } from './schemas';
+import type { UploadSessionRow } from '../../db/row';
 
 const SESSION_TTL = 60 * 60; // 1 小时
 const PART_SIZE = 8 * 1024 * 1024; // 分片大小 8MB
@@ -183,7 +185,14 @@ uploadRoutes.put('/upload/raw/:sessionId', async (c) => {
     await SessionRepo.updateStatus(db, sessionId, { status: 'verifying' });
     return ok(c, { etag: outcome.etag, size: outcome.size });
   } catch (err) {
-    await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+    // 审计 SEC-11：异常即终态——先释放三层预留（用户/挂载/池成员）再标 aborted，
+    // 不让预留滞留到过期清扫；'failed' 仅留给存量行由清扫任务回收。
+    await QuotaRepo.releaseReservation(db, userId, session.quotaReserved);
+    await MountQuotaRepo.releaseReservation(db, session.mountId, session.quotaReserved);
+    if (session.providerId) {
+      await MountProviderQuotaRepo.release(db, session.mountId, session.providerId, session.quotaReserved);
+    }
+    await SessionRepo.updateStatus(db, sessionId, { status: 'aborted' });
     throw err;
   }
 });
@@ -207,10 +216,17 @@ uploadRoutes.put('/upload/multipart/:sessionId/part/:partNumber', async (c) => {
   if (!body) throw ApiError.badRequest('分片内容为空');
 
   await SessionRepo.updateStatus(db, sessionId, { status: 'uploading' });
-  const res = await provider.uploadPart(session.objectKey, session.uploadId, partNumber, body);
-  // 服务端留存分片 ETag：断点续传与完成校验的依据（Worker 代理路径）
-  await SessionRepo.recordPart(db, sessionId, partNumber, res.etag);
-  return ok(c, { partNumber, etag: res.etag });
+  try {
+    const res = await provider.uploadPart(session.objectKey, session.uploadId, partNumber, body);
+    // 服务端留存分片 ETag：断点续传与完成校验的依据（Worker 代理路径）
+    await SessionRepo.recordPart(db, sessionId, partNumber, res.etag);
+    return ok(c, { partNumber, etag: res.etag });
+  } catch (err) {
+    // 审计 SEC-11：分片失败会话回到 pending——三层预留保持不变（会话仍可续传），
+    // 状态不再滞留 uploading；过期后由清扫任务按在途状态正常回收。
+    await SessionRepo.updateStatus(db, sessionId, { status: 'pending' });
+    throw err;
+  }
 });
 
 // ============ 分片状态查询（断点续传契约） ============
@@ -279,6 +295,19 @@ uploadRoutes.delete('/upload/multipart/:sessionId', async (c) => {
   return ok(c, null);
 });
 
+/**
+ * 审计 SEC-11：上传校验失败的统一终态——先释放三层预留（用户/挂载/池成员），再标 aborted。
+ * 按「终态状态约定」：失败路径一律 aborted；'failed' 仅保留给存量行，由清扫任务回收。
+ */
+async function failSession(db: Db, session: UploadSessionRow): Promise<void> {
+  await QuotaRepo.releaseReservation(db, session.userId, session.quotaReserved);
+  await MountQuotaRepo.releaseReservation(db, session.mountId, session.quotaReserved);
+  if (session.providerId) {
+    await MountProviderQuotaRepo.release(db, session.mountId, session.providerId, session.quotaReserved);
+  }
+  await SessionRepo.updateStatus(db, session.id, { status: 'aborted' });
+}
+
 // ============ 完成上传（HEAD 校验，防伪造） ============
 uploadRoutes.post('/upload-complete', async (c) => {
   const db = getDb(c);
@@ -312,20 +341,20 @@ uploadRoutes.post('/upload-complete', async (c) => {
   let finalEtag: string | undefined = head?.etag;
   if (!session.uploadId) {
     if (!head) {
-      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      await failSession(db, session);
       throw new ApiError(422, 'OPERATION_FAILED', '对象不存在，上传校验失败');
     }
 
     // 2. 校验大小
     if (head.size !== session.fileSize) {
-      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      await failSession(db, session);
       throw new ApiError(422, 'OPERATION_FAILED', `文件大小不匹配（期望 ${session.fileSize}，实际 ${head.size}）`);
     }
 
     // 3. 校验 ETag（单文件）
     if (!clientEtag) throw ApiError.badRequest('缺少 etag');
     if (head.etag && clientEtag && head.etag !== clientEtag && !head.etag.includes(clientEtag)) {
-      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      await failSession(db, session);
       throw new ApiError(422, 'OPERATION_FAILED', 'ETag 不匹配');
     }
     finalEtag = head.etag;
@@ -339,7 +368,7 @@ uploadRoutes.post('/upload-complete', async (c) => {
     const recorded = await SessionRepo.getParts(db, sessionId);
     const uploadParts = recorded.length > 0 ? recorded : (parts ?? []);
     if (total === 0 || uploadParts.length < total) {
-      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      await failSession(db, session);
       throw new ApiError(422, 'OPERATION_FAILED', `分片不完整，无法合并（已完成 ${uploadParts.length}/${total}）`);
     }
     // 校验分片编号覆盖 1..total（无缺口、无越界）
@@ -349,7 +378,7 @@ uploadRoutes.post('/upload-complete', async (c) => {
       return true;
     })();
     if (!coverageOk) {
-      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      await failSession(db, session);
       throw new ApiError(422, 'OPERATION_FAILED', '分片编号不连续，无法合并');
     }
     const sorted = [...uploadParts].sort((a, b) => a.partNumber - b.partNumber);
@@ -361,12 +390,12 @@ uploadRoutes.post('/upload-complete', async (c) => {
       );
       finalEtag = merged.etag ?? finalEtag;
     } catch (err) {
-      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      await failSession(db, session);
       throw new ApiError(422, 'OPERATION_FAILED', `合并分片失败：${err instanceof Error ? err.message : '未知错误'}`);
     }
     const finalHead = await provider.headObject(physicalKey);
     if (!finalHead || finalHead.size !== session.fileSize) {
-      await SessionRepo.updateStatus(db, sessionId, { status: 'failed' });
+      await failSession(db, session);
       throw new ApiError(422, 'OPERATION_FAILED', '合并后文件校验失败');
     }
     finalEtag = finalHead.etag;
@@ -413,7 +442,7 @@ uploadRoutes.post('/upload-complete', async (c) => {
       await tx.query(
         `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
          VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
-        [uuid(), userId, session.path, JSON.stringify({ fileName: session.fileName }), getIp(c), c.req.header('user-agent'), session.fileSize, Date.now()]
+        [uuid(), userId, session.path, JSON.stringify({ fileName: session.fileName }), requestIp(c.req.raw), c.req.header('user-agent'), session.fileSize, Date.now()]
       );
     });
   } catch (err) {
@@ -429,6 +458,9 @@ uploadRoutes.post('/upload-complete', async (c) => {
       reason: 'upload_commit_failed',
       error: err instanceof Error ? err.message : 'unknown',
     });
+    // 审计 H-5：事务已回滚，会话仍停在在途状态——显式标 aborted 清终态，
+    // 否则过期清扫会把它当在途会话二次释放预留。
+    await SessionRepo.updateStatus(db, sessionId, { status: 'aborted' });
     throw err;
   }
 
@@ -443,13 +475,6 @@ uploadRoutes.post('/upload-complete', async (c) => {
   });
 });
 
-async function getProviderCfg(db: ReturnType<typeof getDb>, providerId: string) {
-  const provider = await ProviderRepo.getProviderById(db, providerId);
-  if (!provider) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
-  return provider;
-}
-
-/** 通过挂载点解析 provider 实例 */
 /** 会话落桶 provider 行（§E 存储池：会话选定优先，缺省回退挂载主 provider） */
 async function providerRowForMount(db: Db, mountId: string, providerId?: string | null): Promise<StorageProvider> {
   const mount = await MountRepo.getMountById(db, mountId);
@@ -465,12 +490,6 @@ async function providerForMount(db: Db, mountId: string, env: Env, providerId?: 
 
 function joinPath(base: string, name: string): string {
   return base === '/' ? `/${name}` : `${base}/${name}`;
-}
-
-function getIp(c: Parameters<typeof ok>[0]): string | undefined {
-  const cf = (c.req.raw as Request & { cf?: { connectingIp?: string } }).cf;
-  if (cf?.connectingIp) return cf.connectingIp;
-  return c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? c.req.header('x-real-ip') ?? undefined;
 }
 
 export { MULTIPART_THRESHOLD, PART_SIZE };
