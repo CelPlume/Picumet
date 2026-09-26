@@ -4,6 +4,7 @@
 // P1-4 批量删除：deleteObjects（≤1000/批）
 // P1-5 Delimiter：listObjects 支持 delimiter → prefixes
 // P1-2 分片复制：copyObjectMultipart（UploadPartCopy，>5GB）
+// DESIGN-03 超时策略：控制面/元数据操作统一 15s 超时防挂死；数据面（对象 body 流）按流处理，不设总时限
 import {
   S3Client,
   PutObjectCommand,
@@ -47,6 +48,12 @@ interface S3Opts {
 export const COPY_OBJECT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 /** 分片复制单片大小（≥5MiB；256MB × 最多 10000 片 ≈ 2.5TB 覆盖面） */
 const COPY_PART_SIZE = 256 * 1024 * 1024;
+
+/**
+ * 控制面/元数据操作统一超时（ms）：防止元数据请求挂死占用 Worker 时间预算（DESIGN-03）。
+ * 数据面（putObject/getObject/uploadPart 的 body 流）不设总时限——整包时限会误杀大文件传输。
+ */
+const METADATA_TIMEOUT_MS = 15_000;
 
 function toS3Body(body: ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>) {
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
@@ -124,7 +131,10 @@ export class S3Provider implements StorageProviderInterface {
 
   async headObject(key: string): Promise<HeadResult | null> {
     try {
-      const res = await this.client.send(new HeadObjectCommand({ Bucket: this.bucketName, Key: key }));
+      const res = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucketName, Key: key }),
+        { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
+      );
       return {
         size: Number(res.ContentLength ?? 0),
         etag: res.ETag,
@@ -138,7 +148,9 @@ export class S3Provider implements StorageProviderInterface {
   }
 
   async deleteObject(key: string): Promise<void> {
-    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucketName, Key: key }));
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucketName, Key: key }), {
+      abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
+    });
   }
 
   async deleteObjects(keys: string[]): Promise<void> {
@@ -150,7 +162,8 @@ export class S3Provider implements StorageProviderInterface {
         new DeleteObjectsCommand({
           Bucket: this.bucketName,
           Delete: { Objects: batch.map((Key) => ({ Key })) },
-        })
+        }),
+        { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
       );
       if (res.Errors?.length) {
         const failed = res.Errors.map((e) => `${e.Key}: ${e.Code}`).join(', ');
@@ -167,7 +180,8 @@ export class S3Provider implements StorageProviderInterface {
         MaxKeys: opts?.limit ?? 1000,
         ContinuationToken: opts?.continuationToken,
         Delimiter: opts?.delimiter,
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
     );
     return {
       keys: (res.Contents ?? []).map((o) => ({
@@ -187,7 +201,8 @@ export class S3Provider implements StorageProviderInterface {
         Bucket: this.bucketName,
         Key: targetKey,
         CopySource: `${this.bucketName}/${encodeURIComponent(sourceKey)}`,
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
     );
     return { etag: res.CopyObjectResult?.ETag };
   }
@@ -202,7 +217,8 @@ export class S3Provider implements StorageProviderInterface {
     const size = head.size;
 
     const create = await this.client.send(
-      new CreateMultipartUploadCommand({ Bucket: this.bucketName, Key: targetKey })
+      new CreateMultipartUploadCommand({ Bucket: this.bucketName, Key: targetKey }),
+      { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
     );
     const uploadId = create.UploadId ?? '';
     try {
@@ -218,7 +234,8 @@ export class S3Provider implements StorageProviderInterface {
             PartNumber: partNumber,
             CopySource: `${this.bucketName}/${encodeURIComponent(sourceKey)}`,
             CopySourceRange: `bytes=${start}-${end}`,
-          })
+          }),
+          { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
         );
         parts.push({ PartNumber: partNumber, ETag: res.CopyPartResult?.ETag });
         partNumber += 1;
@@ -229,13 +246,15 @@ export class S3Provider implements StorageProviderInterface {
           Key: targetKey,
           UploadId: uploadId,
           MultipartUpload: { Parts: parts },
-        })
+        }),
+        { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
       );
       return { etag: complete.ETag };
     } catch (err) {
       try {
         await this.client.send(
-          new AbortMultipartUploadCommand({ Bucket: this.bucketName, Key: targetKey, UploadId: uploadId })
+          new AbortMultipartUploadCommand({ Bucket: this.bucketName, Key: targetKey, UploadId: uploadId }),
+          { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
         );
       } catch {
         // 补偿失败：未完成 multipart 由桶生命周期策略清理
@@ -250,7 +269,8 @@ export class S3Provider implements StorageProviderInterface {
         Bucket: this.bucketName,
         Key: key,
         ContentType: contentType,
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
     );
     return { uploadId: res.UploadId ?? '' };
   }
@@ -282,14 +302,16 @@ export class S3Provider implements StorageProviderInterface {
         MultipartUpload: {
           Parts: parts.map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
         },
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
     );
     return { etag: res.ETag };
   }
 
   async abortMultipartUpload(key: string, uploadId: string): Promise<void> {
     await this.client.send(
-      new AbortMultipartUploadCommand({ Bucket: this.bucketName, Key: key, UploadId: uploadId })
+      new AbortMultipartUploadCommand({ Bucket: this.bucketName, Key: key, UploadId: uploadId }),
+      { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
     );
   }
 
@@ -348,7 +370,9 @@ export class S3Provider implements StorageProviderInterface {
   async testConnection(): Promise<{ connected: boolean; latency?: number; message: string }> {
     const start = Date.now();
     try {
-      await this.client.send(new ListObjectsCommand({ Bucket: this.bucketName, MaxKeys: 1 }));
+      await this.client.send(new ListObjectsCommand({ Bucket: this.bucketName, MaxKeys: 1 }), {
+        abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
+      });
       return { connected: true, latency: Date.now() - start, message: '连接成功' };
     } catch (err) {
       return { connected: false, message: err instanceof Error ? err.message : '连接失败' };
