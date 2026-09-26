@@ -3,7 +3,6 @@ import { describe, it, expect } from 'vitest';
 import {
   checkPermission,
   checkMovePermission,
-  checkPasswordProtection,
 } from '../src/services/permissions/check';
 import {
   isPathWithinBoundary,
@@ -302,6 +301,30 @@ describe('条件检查（密码 / IP）', () => {
   });
 });
 
+// DESIGN-01：规则创建面已收紧（RuleSchema 不再接受 requirePassword/allowedIps），但存量库行可能仍带这些字段。
+// 引擎契约：存量行 fail-closed（不传 conditions 一律 deny，不放宽）；显式条件传入（文件密码验证流程构造）方可放行。
+describe('DESIGN-01 存量规则条件 fail-closed（引擎契约）', () => {
+  const alice = userPrincipal({ id: 'alice', defaultPath: '/' });
+  const legacyPwdRule = rule({ id: 'lp', role: 'user', pathPattern: '/legacy/**', effect: 'allow', requirePassword: true });
+  const legacyIpRule = rule({ id: 'li', role: 'user', pathPattern: '/legacy-ip/**', effect: 'allow', allowedIps: ['10.0.0.1'] });
+
+  it('存量 requirePassword 规则：不传 conditions → deny', () => {
+    expect(checkPermission(alice, mount, '/legacy/x.txt', 'download', [legacyPwdRule], undefined)).toBe('deny');
+  });
+  it('存量 requirePassword 规则：显式 passwordVerified → allow', () => {
+    expect(checkPermission(alice, mount, '/legacy/x.txt', 'download', [legacyPwdRule], undefined, { passwordVerified: true })).toBe('allow');
+  });
+  it('存量 allowedIps 规则：不传 conditions → deny', () => {
+    expect(checkPermission(alice, mount, '/legacy-ip/x.txt', 'download', [legacyIpRule], undefined)).toBe('deny');
+  });
+  it('存量 allowedIps 规则：IP 命中 → allow', () => {
+    expect(checkPermission(alice, mount, '/legacy-ip/x.txt', 'download', [legacyIpRule], undefined, { ip: '10.0.0.1' })).toBe('allow');
+  });
+  it('存量 allowedIps 规则：IP 不命中 → deny', () => {
+    expect(checkPermission(alice, mount, '/legacy-ip/x.txt', 'download', [legacyIpRule], undefined, { ip: '10.0.0.2' })).toBe('deny');
+  });
+});
+
 describe('移动操作双重检查（场景4）', () => {
   const apiPrincipal = (permissions: string[]): Principal => ({
     type: 'apiKey',
@@ -331,23 +354,6 @@ describe('移动操作双重检查（场景4）', () => {
     const m: Mount = { ...mount, mountPath: '/' };
     const rules = [rule({ id: 'r', role: 'user', pathPattern: '/users/u/**', effect: 'allow', permissions: ['delete'] })];
     expect(checkMovePermission(u, m, m, '/users/u/a.txt', '/public/b.txt', rules)).toBe(false);
-  });
-});
-
-describe('密码保护检查（文件级 > 路径级）', () => {
-  it('文件级密码优先', () => {
-    const res = checkPasswordProtection('file-hash', rule({ id: 'x', pathPattern: '/p/**', requirePassword: true, passwordHash: 'path-hash' }));
-    expect(res.required).toBe(true);
-    expect(res.hash).toBe('file-hash');
-  });
-  it('无文件密码时用路径规则密码', () => {
-    const res = checkPasswordProtection(undefined, rule({ id: 'x', pathPattern: '/p/**', requirePassword: true, passwordHash: 'path-hash' }));
-    expect(res.required).toBe(true);
-    expect(res.hash).toBe('path-hash');
-  });
-  it('无密码保护', () => {
-    const res = checkPasswordProtection(undefined, undefined);
-    expect(res.required).toBe(false);
   });
 });
 

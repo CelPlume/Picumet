@@ -104,7 +104,9 @@ export function checkPermission(
     if (!rule.permissions.includes(action)) {
       continue;
     }
-    // 条件检查
+    // 条件检查（DESIGN-01 保留）：规则创建面已收紧（RuleSchema 不再接受 requirePassword/allowedIps），
+    // 但存量库行可能仍带这些字段——本判定保持现状：不传 conditions 一律 fail-closed（deny，不放宽），
+    // 显式条件传入方可放行。目前唯一生产传入方是文件密码验证流程（verify-password 传 { ip, passwordVerified: true }）。
     if (rule.requirePassword && !conditions?.passwordVerified) {
       return 'deny';
     }
@@ -329,22 +331,6 @@ export function checkMovePermission(
   const canWriteTarget =
     checkPermission(principal, targetMount, targetPath, 'write', allRules, fileOwnerId) === 'allow';
   return canDeleteSource && canWriteTarget;
-}
-
-/**
- * 密码保护检查：文件级 > 路径级
- */
-export function checkPasswordProtection(
-  fileAccessPassword: string | undefined,
-  matchingRule?: PathRule
-): { required: boolean; hash?: string } {
-  if (fileAccessPassword) {
-    return { required: true, hash: fileAccessPassword };
-  }
-  if (matchingRule?.requirePassword && matchingRule.passwordHash) {
-    return { required: true, hash: matchingRule.passwordHash };
-  }
-  return { required: false };
 }
 
 export type { RuleEffect };

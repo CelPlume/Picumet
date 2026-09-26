@@ -97,18 +97,6 @@ export function getBucketMatrix(
   );
 }
 
-export function getConditions(c: Context): Conditions {
-  return { ip: getClientIpSafe(c) };
-}
-
-function getClientIpSafe(c: Context): string {
-  const cf = (c.req.raw as Request & { cf?: { connectingIp?: string } }).cf;
-  if (cf?.connectingIp) return cf.connectingIp;
-  const xff = c.req.header('x-forwarded-for');
-  if (xff) return xff.split(',')[0].trim();
-  return c.req.header('x-real-ip') ?? '127.0.0.1';
-}
-
 /**
  * 校验权限，失败抛出 403。
  * visibility：目标文件的可见性（§4.4a）——users/public 注入合成 allow 规则。

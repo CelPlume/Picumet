@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
-import { Card, Button, Input, Label, Badge, Dialog, Switch, ConfirmDialog, EmptyState } from '@/components/ui/core';
+import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -23,8 +23,6 @@ interface Rule {
   userId?: string;
   apiKeyId?: string;
   permissions: string[];
-  requirePassword: boolean;
-  allowedIps?: string[];
   priority: number;
   origin?: 'admin' | 'user' | 'system';
   createdBy?: string;
@@ -97,14 +95,12 @@ export default function AdminPermissions() {
       pathPattern: form.pathPattern,
       effect: form.effect,
       permissions: (form.permissions as string[]) ?? [],
-      requirePassword: Boolean(form.requirePassword),
       priority: Number(form.priority ?? 0),
     };
     if (form.mountId) body.mountId = form.mountId;
     if (subject === 'role') body.role = form.role;
     if (subject === 'user') body.userId = form.userId;
     if (subject === 'guest') body.role = 'guest';
-    if (form.password) body.password = form.password;
     try {
       await apiFetch('/api/admin/rules', { method: 'POST', body });
       toast('success', t('admin.permissions.created'));
@@ -173,7 +169,6 @@ export default function AdminPermissions() {
                 <td className="px-4 py-2">
                   <div className="flex flex-wrap items-center gap-1.5">
                     {r.permissions.map((p) => <Badge key={p} variant="secondary">{p}</Badge>)}
-                    {r.requirePassword && <Badge variant="warning">{t('admin.permissions.badgePassword')}</Badge>}
                   </div>
                 </td>
                 <td className="px-4 py-2 tabular-nums text-muted-foreground">{r.priority}</td>
@@ -299,22 +294,10 @@ export default function AdminPermissions() {
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 items-end gap-3">
-            <div>
-              <Label>{t('admin.rulePriority')}</Label>
-              <Input type="number" className="mt-1" value={form.priority as string} onChange={(e) => set('priority', e.target.value)} />
-            </div>
-            <div className="flex items-center justify-between pb-1">
-              <span className="text-sm">{t('admin.ruleRequirePassword')}</span>
-              <Switch checked={Boolean(form.requirePassword)} onChange={(v) => set('requirePassword', v)} />
-            </div>
+          <div>
+            <Label>{t('admin.rulePriority')}</Label>
+            <Input type="number" className="mt-1" value={form.priority as string} onChange={(e) => set('priority', e.target.value)} />
           </div>
-          {form.requirePassword && (
-            <div>
-              <Label>{t('admin.permissions.password')}</Label>
-              <Input type="password" className="mt-1" value={(form.password as string) ?? ''} onChange={(e) => set('password', e.target.value)} />
-            </div>
-          )}
           </TabsContent>
 
           <TabsContent value="code" className="mt-0">
@@ -336,7 +319,6 @@ export default function AdminPermissions() {
                     if (parsed.role !== undefined) set('role', String(parsed.role));
                     if (parsed.userId !== undefined) set('userId', String(parsed.userId));
                     if (parsed.priority !== undefined) set('priority', String(parsed.priority));
-                    if (parsed.requirePassword !== undefined) set('requirePassword', Boolean(parsed.requirePassword));
                     if (Array.isArray(parsed.permissions)) setForm((f) => ({ ...f, permissions: parsed.permissions }));
                   } catch {
                     setJsonError(t('admin.permissions.jsonInvalid'));
