@@ -62,8 +62,6 @@ export const SettingsSchema = z.object({
   allowRegistration: z.boolean().optional(),
   allowGuestAccess: z.boolean().optional(),
   requireEmailVerification: z.boolean().optional(),
-  enableTurnstile: z.boolean().optional(),
-  turnstileSiteKey: z.string().max(1000).nullable().optional(),
   rateLimitEnabled: z.boolean().optional(),
   rateLimitRequestsPerMinute: z.number().int().min(1).max(10000).optional(),
   maxConcurrentTransfers: z.number().int().min(0).max(1000).optional(),

@@ -7,7 +7,6 @@ SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
 SMTP_FROM=Picumet <noreply@example.com>
-TURNSTILE_SECRET_KEY=
 ENVIRONMENT=development
 # 初始管理员（审计 H-02）：生产必填强密码；开发默认 admin/admin123456，可在此覆盖
 ADMIN_USERNAME=admin

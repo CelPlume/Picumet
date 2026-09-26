@@ -5,15 +5,12 @@ export const RegisterSchema = z.object({
   username: z.string().min(3).max(20).regex(/^[a-zA-Z0-9_]+$/, '用户名只能包含字母、数字、下划线'),
   password: z.string().min(8).max(128),
   email: z.string().email(),
-  inviteCode: z.string().optional(),
-  turnstileToken: z.string().optional(),
   emailCode: z.string().regex(/^\d{6}$/, '验证码为 6 位数字').optional(),
 });
 
 export const LoginSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
-  turnstileToken: z.string().optional(),
 });
 
 // 审计 M-05：密码找回/重置 body 统一 Zod 校验

@@ -75,14 +75,11 @@ export interface RegisterInput {
   username: string;
   password: string;
   email: string;
-  inviteCode?: string;
-  turnstileToken?: string;
 }
 
 export interface LoginInput {
   username: string;
   password: string;
-  turnstileToken?: string;
 }
 
 // ============ 权限 ============
@@ -430,8 +427,6 @@ export interface SystemSettings {
   allowRegistration: boolean;
   allowGuestAccess: boolean;
   requireEmailVerification: boolean;
-  enableTurnstile: boolean;
-  turnstileSiteKey?: string;
   rateLimitEnabled: boolean;
   rateLimitRequestsPerMinute: number;
   [key: string]: unknown;

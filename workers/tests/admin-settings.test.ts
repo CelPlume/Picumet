@@ -14,7 +14,6 @@ const fullForm = {
   allowRegistration: true,
   allowGuestAccess: false,
   requireEmailVerification: false,
-  enableTurnstile: false,
   rateLimitEnabled: true,
   rateLimitRequestsPerMinute: 50,
   maxConcurrentTransfers: 4,
