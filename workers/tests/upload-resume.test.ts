@@ -1,4 +1,4 @@
-// 分片上传断点续传契约回归（审计 Fix 3）
+// 分片上传断点续传契约：记录分片、缺口拒绝完成、补齐后完成
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
 import { Db, SessionRepo } from '../src/db';
@@ -96,7 +96,7 @@ describe('分片上传断点续传契约', () => {
   });
 });
 
-// ============ 上传会话异常预留回收（审计 SEC-11） ============
+// ============ 上传会话异常预留回收 ============
 
 describe('上传会话异常预留回收', () => {
   const MB = 1024 * 1024;

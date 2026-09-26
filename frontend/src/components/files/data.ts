@@ -258,6 +258,8 @@ export interface UploadResult {
   uploadId?: string;
   uploadMode: 'presigned' | 'worker';
   totalParts?: number;
+  /** 分片预签名 URL（仅 S3 预签名分片会话下发；R2/Worker 分片会话为空，走代理分片端点） */
+  parts?: Array<{ partNumber: number; url: string }>;
   expiresAt: number;
 }
 
@@ -270,7 +272,11 @@ export async function initUploadSession(input: {
   return (await apiFetch<UploadResult>('/api/files/upload-session', { method: 'POST', body: input })).data;
 }
 
-export async function completeUpload(input: { sessionId: string; etag: string; parts?: Array<{ partNumber: number; etag: string }> }) {
+export async function completeUpload(input: {
+  sessionId: string;
+  etag?: string;
+  parts?: Array<{ partNumber: number; etag: string }>;
+}) {
   return (await apiFetch('/api/files/upload-complete', { method: 'POST', body: input })).data as {
     file: { id: string; name: string; path: string; size: number };
   };

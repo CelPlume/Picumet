@@ -11,7 +11,7 @@ export const InitUploadSchema = z.object({
   idempotencyKey: z.string().optional(),
 });
 
-// 完成上传（审计 M-05：sessionId/etag/parts 统一校验）
+// 完成上传：sessionId/etag/parts 统一校验
 export const CompleteUploadSchema = z.object({
   sessionId: z.string().min(1).max(200),
   etag: z.string().max(200).optional(),

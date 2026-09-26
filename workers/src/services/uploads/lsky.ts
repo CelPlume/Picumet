@@ -1,4 +1,4 @@
-// Lsky Pro V2 兼容壳（P1-1）：POST /api/v1/upload
+// Lsky Pro V2 兼容壳：POST /api/v1/upload
 // PicList lsky.ts 契约：multipart 字段 file；Authorization 用户自填（可含 Bearer 前缀）；
 // 成败判据 body.status === true；URL = body.data.links.url；body.data.key 作为删除定位 hash。
 // 复用 uploadBytes（路径模板 / 上传根边界 / 配额 / 覆盖语义 / 目录行与 /api/upload 完全一致）。
@@ -30,7 +30,7 @@ lskyRoutes.post('/upload', async (c) => {
     const form = await c.req.formData();
     const file = form.get('file');
     if (!(file instanceof File)) return lskyError('缺少 file 字段');
-    // {localFolder:N} 等重命名可让 multipart 文件名携带嵌套路径段（P1-3.6）
+    // {localFolder:N} 等重命名可让 multipart 文件名携带嵌套路径段
     const customPath = (form.get('path') as string | null) ?? undefined;
     const split = splitNestedFileName(file.name, customPath);
 

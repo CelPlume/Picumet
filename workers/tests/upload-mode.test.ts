@@ -1,4 +1,4 @@
-// §28 写入口模式（mounts.upload_mode）回归：
+// §28 写入口模式（mounts.upload_mode）：
 //   user_space —— 写路径强制落在 <mountPath>/<用户名>，该目录首用自动创建；
 //   flat       —— 挂载点内禁止新建文件夹（平铺上传），上传路径本身不额外约束；
 //   free       —— 现状（无额外约束）。
@@ -151,7 +151,7 @@ describe('挂载点写入口模式（§28）', () => {
     expect(res.status).toBe(200);
     expect(await uploadPathOf(res)).toBe('/public/usalice/photo.txt');
 
-    // P0-3 目录行自愈：用户空间目录已自动创建
+    // 目录行自愈：用户空间目录已自动创建
     const folder = ctx.db
       .prepare(`SELECT type FROM file_metadata WHERE mount_id = ? AND path = ? AND name = ?`)
       .get(publicMountId, '/public/usalice', 'usalice') as { type?: string } | undefined;
@@ -205,6 +205,19 @@ describe('挂载点写入口模式（§28）', () => {
       headers: { Authorization: davAuth },
     });
     expect(mkcol.status).toBe(403);
+  });
+
+  it('flat：上传到需要新建祖先目录的嵌套路径 → 403（不再静默建目录行）', async () => {
+    await setMode('flat');
+    const key = await createKey('flatnest');
+    const res = await compatUpload(key.fullToken, 'nested.txt', 'body', '/public/sub');
+    expect(res.status).toBe(403);
+    expect(await errorCodeOf(res)).toBe('FORBIDDEN');
+    // 目录行与文件行都未产生（写入先于 ensureFolders 的建目录被拒）
+    const rows = ctx.db
+      .prepare(`SELECT COUNT(*) AS c FROM file_metadata WHERE name IN ('sub', 'nested.txt')`)
+      .get() as { c: number };
+    expect(Number(rows.c)).toBe(0);
   });
 
   it('flat：第二个用户上传同名文件仍是既有 409 CONFLICT', async () => {

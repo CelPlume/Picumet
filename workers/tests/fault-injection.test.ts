@@ -1,4 +1,4 @@
-// 故障注入回归（审计 H-5）：对象已写入但 DB 提交失败 → 释放预留 + 清理对象 / 记孤儿
+// 故障注入：对象已写入但 DB 提交失败 → 释放预留 + 清理对象 / 记孤儿
 // §F 内容寻址补充：内容对象删除改为引用释放 + 回收队列（blob_gc），因此对象清理失败的
 // 对账路径分两类——内容寻址对象走队列重试，独占物理键的存量/分片对象仍记孤儿。
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
@@ -68,7 +68,7 @@ function insertLegacyFile(opts: { id: string; objectKey: string; ownerId: string
     .run(opts.size, opts.ownerId);
 }
 
-describe('H-5 一致性边界（故障注入）', () => {
+describe('一致性边界（故障注入）', () => {
   it('兼容上传：DB 提交失败 → 释放预留 + 清理已写内容对象 + 无元数据残留', async () => {
     const { authCookie, userId } = await registerAndLogin(ctx, 'cfault' + Math.random().toString(36).slice(2, 7));
     const csrf = await getCsrf(ctx, authCookie);

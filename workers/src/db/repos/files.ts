@@ -3,6 +3,7 @@ import type { FileMetadata, Permission } from '@shared/types';
 import { Db, type Tx } from '../db';
 import { mapFile, mapUploadSession, toFileListItem, num, str, type Row } from '../row';
 import { uuid } from '../../utils/crypto';
+import { escapeLikePattern } from '../../utils/path';
 
 export interface FileInsert {
   mountId: string;
@@ -48,10 +49,10 @@ export const FileRepo = {
     );
     return (await this.getFileById(db, id)) as FileMetadata;
   },
-  /** 事务内插入（D1 batch / node:sqlite 事务均可）。审计 H-5：元数据 + 配额 + 日志应同批提交。 */
-  async createFileTx(tx: Tx, f: FileInsert & { id: string }): Promise<void> {
+  /** 事务内插入（D1 batch / node:sqlite 事务均可）：元数据 + 配额 + 日志同批提交，任一失败整批回滚 */
+  async createFileTx(db: Db | Tx, f: FileInsert & { id: string }): Promise<void> {
     const now = f.createdAt ?? Date.now();
-    await tx.query(
+    await db.query(
       `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, mime_type, size, etag, checksum_md5,
         custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, provider_id,
         physical_key, blob_hash, created_at, updated_at)
@@ -61,17 +62,17 @@ export const FileRepo = {
         f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, now, now]
     );
   },
-  async updateFileTx(tx: Tx, id: string, fields: Record<string, unknown>): Promise<void> {
+  async updateFileTx(db: Db | Tx, id: string, fields: Record<string, unknown>): Promise<void> {
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
     if (entries.length === 0) return;
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
-    await tx.query(`UPDATE file_metadata SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
+    await db.query(`UPDATE file_metadata SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
   },
   async getFileById(db: Db, id: string): Promise<FileMetadata | null> {
     const row = await db.first('SELECT * FROM file_metadata WHERE id = ?', [id]);
     return row ? mapFile(row) : null;
   },
-  /** 批量按 id 取文件行（审计 DESIGN-02：分享创建等批量入口一次取回，调用方按 id 建 Map 补顺序） */
+  /** 批量按 id 取文件行：分享创建等批量入口一次取回，免去逐条查询，调用方按 id 建 Map 补顺序 */
   async getFilesByIds(db: Db, ids: string[]): Promise<FileMetadata[]> {
     if (ids.length === 0) return [];
     const rows = await db.all(`SELECT * FROM file_metadata WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
@@ -95,7 +96,7 @@ export const FileRepo = {
     );
     return row ? mapFile(row) : null;
   },
-  async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number }, ownerId?: string): Promise<{ rows: FileMetadata[]; total: number }> {
+  async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number; viewerId?: string }, ownerId?: string): Promise<{ rows: FileMetadata[]; total: number }> {
     // 文件行 path = 父目录；文件夹行 path = 自身全路径 → 需额外匹配深度 1 的子文件夹
     const base: string[] = [];
     const params: unknown[] = [mountId];
@@ -104,21 +105,30 @@ export const FileRepo = {
       base.push("(type = 'folder' OR owner_id = ?)");
       params.push(ownerId);
     }
+    // 子文件夹前缀匹配：目录名可含 %/_，前缀先转义再拼 `/%`，否则通配符会误伤兄弟子树
+    const prefix = path === '/' ? '' : escapeLikePattern(path);
+    const childLike = `${prefix}/%`;
+    const grandchildLike = `${prefix}/%/%`;
     if (opts.type) {
       if (opts.type === 'file') {
         base.push("type = 'file' AND path = ?");
         params.push(path);
       } else if (opts.type === 'folder') {
-        base.push("type = 'folder' AND path LIKE ? AND path NOT LIKE ?");
-        params.push(`${path === '/' ? '' : path}/%`, `${path === '/' ? '' : path}/%/%`);
+        base.push("type = 'folder' AND path LIKE ? ESCAPE '\\' AND path NOT LIKE ? ESCAPE '\\'");
+        params.push(childLike, grandchildLike);
       }
     } else {
-      base.push("(type = 'file' AND path = ?) OR (type = 'folder' AND path LIKE ? AND path NOT LIKE ?)");
-      params.push(path, `${path === '/' ? '' : path}/%`, `${path === '/' ? '' : path}/%/%`);
+      base.push("(type = 'file' AND path = ?) OR (type = 'folder' AND path LIKE ? ESCAPE '\\' AND path NOT LIKE ? ESCAPE '\\')");
+      params.push(path, childLike, grandchildLike);
     }
     if (opts.search) {
       base.push('name LIKE ?');
       params.push(`%${opts.search}%`);
+    }
+    if (opts.viewerId) {
+      // §4.4a：非管理员看不到他人的 private 项（文件夹与文件同一条件，owner/admin 可见）
+      base.push("(visibility <> 'private' OR owner_id = ?)");
+      params.push(opts.viewerId);
     }
     const whereSql = base.map((b) => `(${b})`).join(' AND ');
     const countRow = await db.first(`SELECT COUNT(*) AS c FROM file_metadata WHERE mount_id = ? AND ${whereSql}`, params);
@@ -143,8 +153,10 @@ export const FileRepo = {
   },
   /** 列出某路径下所有子项（含子文件夹，递归），用于文件夹删除/移动；ownerId 传入时限定属主 */
   async listDescendants(db: Db, mountId: string, path: string, ownerId?: string): Promise<FileMetadata[]> {
-    const sql = `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)${ownerId ? ' AND owner_id = ?' : ''}`;
-    const rows = await db.all(sql, ownerId ? [mountId, path, `${path}/%`, ownerId] : [mountId, path, `${path}/%`]);
+    // 目录名可含 %/_，前缀必须转义后拼 `/%`，否则 `/a/100%` 的级联会误伤 `/a/100x/…` 兄弟子树
+    const sql = `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')${ownerId ? ' AND owner_id = ?' : ''}`;
+    const like = `${escapeLikePattern(path)}/%`;
+    const rows = await db.all(sql, ownerId ? [mountId, path, like, ownerId] : [mountId, path, like]);
     return rows.map(mapFile);
   },
 
@@ -169,7 +181,7 @@ export const FileRepo = {
     const root = opts.rootPath && opts.rootPath !== '/' ? opts.rootPath : null;
     // LIKE 通配符转义（目录名可含 % _ \）；root 为空 = 全命名空间（管理端树）
     const where: string[] = root ? ["(f.path = ? OR f.path LIKE ? ESCAPE '\\')"] : ['1=1'];
-    const params: unknown[] = root ? [root, `${root.replace(/([\\%_])/g, '\\$1')}/%`] : [];
+    const params: unknown[] = root ? [root, `${escapeLikePattern(root)}/%`] : [];
     const f = opts.filters;
     if (opts.mountId || f?.mountId) {
       where.push('f.mount_id = ?');
@@ -220,13 +232,15 @@ export const FileRepo = {
     await db.query('DELETE FROM file_metadata WHERE id = ?', [id]);
   },
   async deleteByPath(db: Db | Tx, mountId: string, path: string): Promise<FileMetadata[]> {
+    // 子树前缀同样需要转义（与 listDescendants / operations 的子树谓词一致）
+    const like = `${escapeLikePattern(path)}/%`;
     const rows = await db.all(
-      `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
-      [mountId, path, `${path}/%`]
+      `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
+      [mountId, path, like]
     );
     await db.query(
-      `DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
-      [mountId, path, `${path}/%`]
+      `DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
+      [mountId, path, like]
     );
     return rows.map(mapFile);
   },
@@ -302,12 +316,13 @@ export const FileRepo = {
     );
     return rows.map(mapFile);
   },
-  /** 公开空间 gallery（§4.2）：visibility=public 且审核通过的直接文件行 */
+  /** 公开空间 gallery（§4.2）：visibility=public 且审核通过、未封禁的直接文件行 */
   async listPublic(db: Db, opts: { page: number; limit: number }): Promise<{ rows: FileMetadata[]; total: number }> {
     const page = Math.max(1, opts.page);
     const limit = Math.min(100, Math.max(1, opts.limit));
     const offset = (page - 1) * limit;
-    const where = `type = 'file' AND visibility = 'public' AND review_status = 'approved'`;
+    // §26 违规封禁：公开列表与内容出口一致，封禁行不计入也不返回（total 同步扣减）
+    const where = `type = 'file' AND visibility = 'public' AND review_status = 'approved' AND banned = 0`;
     const countRow = await db.first(`SELECT COUNT(*) AS c FROM file_metadata WHERE ${where}`);
     const total = num(countRow?.c);
     const rows = await db.all(
@@ -383,6 +398,23 @@ export const SessionRepo = {
       id,
     ]);
   },
+  /**
+   * upload-complete 的原子领取（条件 UPDATE）——只有 changes > 0 的请求执行合并/提交，
+   * 并发重复完成请求不再各自跑昂贵路径；崩溃请求的领取在 staleMs 之后可被重试请求接管。
+   */
+  async claimComplete(db: Db, id: string, staleMs: number): Promise<boolean> {
+    const now = Date.now();
+    const res = await db.run(
+      `UPDATE upload_sessions SET complete_claimed_at = ?
+       WHERE id = ? AND (complete_claimed_at IS NULL OR complete_claimed_at < ?)`,
+      [now, id, now - staleMs]
+    );
+    return res.changes > 0;
+  },
+  /** 完成失败后释放领取——会话若可续传（补齐分片重试）必须能再次领取 */
+  async releaseCompleteClaim(db: Db, id: string): Promise<void> {
+    await db.run('UPDATE upload_sessions SET complete_claimed_at = NULL WHERE id = ?', [id]);
+  },
   /** 记录已成功上传的分片（断点续传依据，Worker 代理路径服务端留存） */
   async recordPart(db: Db, sessionId: string, partNumber: number, etag: string): Promise<void> {
     const row = await db.first('SELECT parts_completed FROM upload_sessions WHERE id = ?', [sessionId]);
@@ -403,11 +435,12 @@ export const SessionRepo = {
       return [];
     }
   },
-  // 审计 SEC-11：过期回收覆盖所有非终态——verifying 仍属在途（预留未落账）可过期；
+  // 过期回收覆盖所有非终态——verifying 仍属在途（预留未落账）可过期；
   // failed 仅存量行（新失败路径一律直接标 aborted），标 'expired' 后不再是可选中状态，无双重释放。
+  // 查询包含 object_key/upload_id：过期清扫需据此终止 Provider 的未完成 multipart upload，否则分片对象滞留桶内持续计费。
   async listExpired(db: Db): Promise<Row[]> {
     return db.all(
-      `SELECT id, user_id, mount_id, quota_reserved, provider_id FROM upload_sessions
+      `SELECT id, user_id, mount_id, quota_reserved, provider_id, object_key, upload_id FROM upload_sessions
        WHERE status IN ('pending', 'uploading', 'verifying', 'failed') AND expires_at < ?`,
       [Date.now()]
     );

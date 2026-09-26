@@ -1,5 +1,5 @@
 // 兼容上传核心：路径模板渲染 + 边界校验 + 统一写入
-// 供 /api/upload（compat）、Lsky V2 壳、AList shim 复用（P0-1/P0-2/P0-3 统一在此收口）。
+// 供 /api/upload（compat）、Lsky V2 壳、AList shim 复用（可用直链 / 覆盖语义 / 祖先目录行统一在此收口）。
 import type { Context } from 'hono';
 import type { Env } from '../../shared/types';
 import { MountRepo, ProviderRepo } from '../../db';
@@ -32,7 +32,7 @@ export async function uploadBytes(
   if (!isValidFileName(fileName)) throw ApiError.badRequest('文件名包含非法字符');
   validateFileType(fileName, mimeType);
 
-  // M-3：密钥上传根（规范化），最终目标必须落在其边界内
+  // 密钥上传根（规范化），最终目标必须落在其边界内
   const uploadRoot = normalizePath(uploadPathTemplate || '/uploads');
 
   // 渲染路径模板
@@ -55,14 +55,14 @@ export async function uploadBytes(
         ? rendered
         : normalizePath(`${rendered}/${fileName}`);
 
-  // M-3：customPath 与模板结果都不得越过密钥上传根
+  // customPath 与模板结果都不得越过密钥上传根
   if (!isPathWithinBoundary(targetPath, uploadRoot)) {
     throw new ApiError(403, 'FORBIDDEN', '上传目标超出密钥配置的上传根目录');
   }
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '目标挂载点不存在');
-  // M-3/H-3：最终路径再次通过统一权限服务（API Key 权限 ∩ 路径规则）
+  // 最终路径再次通过统一权限服务（API Key 权限 ∩ 路径规则）
   await requirePermission(c, mount, targetPath, 'write');
   // §E 存储池：写路径由 upsertFileObject 内部按挂载策略选桶（覆盖写粘住原 provider）
   const result = await upsertFileObject(c, {
@@ -75,7 +75,7 @@ export async function uploadBytes(
     via: 'api',
   });
 
-  // P0-1：返回外部可用的直链（provider 公网域名 → CDN；否则 path-serve + 签名）
+  // 返回外部可用的直链（provider 公网域名 → CDN；否则 path-serve + 签名）
   // §E：用实际落桶 provider 构造 URL（池内可能不是主 provider）
   const resultProviderRow = await ProviderRepo.getProviderById(db, result.providerId);
   const resultProvider = resultProviderRow ? await getProvider(db, resultProviderRow, c.env as Env) : null;

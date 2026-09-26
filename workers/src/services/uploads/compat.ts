@@ -1,5 +1,5 @@
 // 兼容上传 API：PicGo/PicList 自定义上传（Bearer API Key 认证）
-// P0-1 可用直链 / P0-2 覆盖语义 / P0-3 祖先目录行 —— 统一委托 files/write.ts
+// 可用直链 / 覆盖语义 / 祖先目录行 —— 统一委托 files/write.ts
 import { Hono } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
 import {
@@ -11,7 +11,7 @@ import { getProvider } from '../storage/providers';
 import { getProviderForFile } from '../storage/pool';
 import { serveFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
-import { requirePermission, assertBucketPermission } from '../permissions/principal';
+import { requirePermission, assertBucketPermission, assertMountMatrixPermission } from '../permissions/principal';
 import { serveObject } from '../storage/serve';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
@@ -33,7 +33,7 @@ compatRoutes.post('/', handleCompatUpload);
 compatRoutes.post('/upload', handleCompatUpload);
 
 /**
- * GET /api/compat/file?path=/uploads/a.png（P1-4：密钥可用的程序化只读端点）
+ * GET /api/compat/file?path=/uploads/a.png（密钥可用的程序化只读端点）
  * 要求 read 权限；目标必须位于密钥上传根内。
  */
 compatRoutes.get('/file', handleCompatDownload);
@@ -56,9 +56,9 @@ async function handleCompatUpload(c: Parameters<typeof ok>[0]) {
     const file = form.get('file');
     customPath = (form.get('path') as string | null) ?? undefined;
     if (!(file instanceof File)) throw ApiError.badRequest('缺少 file 字段');
-    // P1-3.6：{localFolder:N} 等重命名可让 multipart 文件名携带嵌套路径段
+    // {localFolder:N} 等重命名可让 multipart 文件名携带嵌套路径段
     const split = splitNestedFileName(file.name, customPath);
-    // 审计 H-03：multipart 用 file.stream() 流式写入，避免 arrayBuffer 整包入内存
+    // multipart 用 file.stream() 流式写入，避免 arrayBuffer 整包入内存
     const stream = file.stream();
     return uploadBytes(c, db, userId, apiKey.uploadPath, split.fileName, file.type, file.size, stream, split.customPath);
   }
@@ -71,7 +71,7 @@ async function handleCompatUpload(c: Parameters<typeof ok>[0]) {
   const split = splitNestedFileName(rawName, customPath);
   fileName = split.fileName;
   customPath = split.customPath;
-  // 审计 H-03：raw body 流式转发；Content-Length 已知则流式，缺失（chunked）回退读取
+  // raw body 流式转发；Content-Length 已知则流式，缺失（chunked）回退读取
   const rawLength = Number(c.req.header('content-length') ?? '');
   const hasLength = Number.isFinite(rawLength) && rawLength > 0;
   let size: number;
@@ -123,6 +123,8 @@ async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
 
   // §31 桶级矩阵：路径级初检早于文件行解析，此处按文件实际落桶补判（桶级明确禁止 → 403）
   await assertBucketPermission(c, mount.id, file.providerId, 'read');
+  // §28 挂载点级矩阵：与桶级同形补判
+  await assertMountMatrixPermission(c, mount.id, 'read');
 
   // §E 存储池：读路径按文件实际落桶定位
 
@@ -131,7 +133,7 @@ async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
     action: 'download',
     path: file.path,
     metadata: JSON.stringify({ fileName: file.name, via: 'compat-api' }),
-    // SEC-03（审计 §SEC-03）：日志 IP 统一走 requestIp（cf.connectingIp 优先，不信任 XFF 首段）
+    // 日志 IP 统一走 requestIp（cf.connectingIp 优先，不信任 XFF 首段）
     ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
     bytesTransferred: file.size,
@@ -141,11 +143,14 @@ async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
     db,
     env: c.env as Env,
     mount,
-    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size, blobHash: file.blobHash },
     name: file.name,
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),
     totalSize: file.size,
+    // §31/§28 读回退补判：程序化只读端点按 read 动作、以密钥持有者角色逐候选重判
+    principalRole: (c.get('userRole') as string) ?? 'guest',
+    action: 'read',
   });
 }
 
