@@ -1,4 +1,4 @@
-// SEC-08 回归（审计 §SEC-08）：非 ApiError 的普通 Error 在生产环境不得回传底层异常消息
+// 非 ApiError 的普通 Error 在生产环境不得回传底层异常消息（消息里可能含数据库约束、内网地址等内部细节）
 // 构造方式：测试 app 挂 /throw 路由 + 复用真实 errorHandler（与 src/index.ts 同一装配路径）
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Hono } from 'hono';
@@ -24,7 +24,7 @@ interface FailBody {
   error: { code: string; message: string; details?: unknown };
 }
 
-describe('SEC-08：生产错误响应不泄露内部异常', () => {
+describe('生产环境错误响应不泄露内部异常', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });

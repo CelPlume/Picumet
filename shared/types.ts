@@ -45,7 +45,7 @@ export interface User {
   lastLoginAt?: number;
   /** 服务端内部字段，不返回前端 */
   passwordHash?: string;
-  /** 会话版本：登出/改密/禁用时递增，使旧 JWT 立即失效（审计 H-05） */
+  /** 会话版本：登出/改密/禁用时递增，使旧 JWT 立即失效 */
   sessionVersion: number;
   /** 能力位 JSON（can_publish/can_share/can_grant）；NULL = 空集 */
   capabilities?: string[];
@@ -144,6 +144,8 @@ export interface Mount {
   usedStorage: number;
   /** 上传会话在途预留（字节） */
   quotaReserved: number;
+  /** 创建时间（排序稳定平局决胜用） */
+  createdAt: number;
   /** 存储池写入选桶策略（§E）；池成员见 mount_providers */
   poolStrategy: PoolStrategy;
   /** 挂载点展示容量（字节，§26 仪表盘占用率）；null = 未设置 */
@@ -179,7 +181,7 @@ export interface Conditions {
 
 export interface PathRule {
   id: string;
-  /** 挂载点 ID（NULL = 全局规则，适用于所有挂载；审计 H-01） */
+  /** 挂载点 ID（NULL = 全局规则，适用于所有挂载） */
   mountId?: string;
   pathPattern: string;
   effect: RuleEffect;
@@ -393,7 +395,7 @@ export interface ApiKey {
 
 // ============ 存储与挂载 ============
 
-// type 收敛（报告 §5.2）：'r2' = Worker R2 绑定（endpoint 空），'s3' = S3 兼容端点（AWS/R2 S3 API/Oracle/MinIO）。
+// type 收敛（§5.2）：'r2' = Worker R2 绑定（endpoint 空），'s3' = S3 兼容端点（AWS/R2 S3 API/Oracle/MinIO）。
 // 由「有无 endpoint」在后端推导，不再是用户选择项。
 export type ProviderType = 'r2' | 's3';
 

@@ -7,6 +7,12 @@ export interface Env {
   KV: KVNamespace;
   R2: R2Bucket;
 
+  /**
+   * 审计日志冷归档桶（可选）。未配置 = 冷层不可用 → 归档任务整体跳过（只读不删），
+   * D1 热行不会因归档缺失被清理。部署时创建 R2 桶并加 `[[r2_buckets]] binding = "AUDIT_BUCKET"` 即启用。
+   */
+  AUDIT_BUCKET?: R2Bucket;
+
   // 环境变量
   ENVIRONMENT: string;
   APP_BASE_URL: string;
@@ -21,7 +27,7 @@ export interface Env {
   SMTP_USER?: string;
   SMTP_PASS?: string;
   SMTP_FROM?: string;
-  /** 初始管理员用户名（默认 admin；审计 H-02 生产凭据外部注入） */
+  /** 初始管理员用户名（默认 admin；生产环境凭据由外部注入） */
   ADMIN_USERNAME?: string;
   /** 初始管理员密码：生产必填（强密码），开发可选（默认 admin123456） */
   ADMIN_PASSWORD?: string;

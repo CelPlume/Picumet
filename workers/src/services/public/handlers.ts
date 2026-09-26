@@ -45,7 +45,7 @@ publicRoutes.get('/health', (c) => {
   return c.json({ status: 'ok', time: Date.now() });
 });
 
-// 健康检查（M-06：就绪探针报告初始化状态，供部署/负载均衡判定；置于公开路由避免认证拦截）
+// 健康检查（就绪探针报告初始化状态，供部署/负载均衡判定；置于公开路由避免认证拦截）
 publicRoutes.get('/health/live', (c) => c.json({ service: 'picumet-api', status: 'ok' }));
 publicRoutes.get('/health/ready', async (c) => {
   const env = c.env;

@@ -1,6 +1,7 @@
 // 仪表盘聚合仓库：/admin/dashboard 与 /admin/stats 共用的只读统计（§26）
 import { Db } from '../db';
 import { num, str, b } from '../row';
+import { escapeLikePattern } from '../../utils/path';
 
 /** 顶层统计：与前端 AdminDashboard 契约的 stats 字段一一对应 */
 export interface DashboardStats {
@@ -86,24 +87,32 @@ export interface TrendBucket {
 /**
  * 指标 → 数据源：全部按 created_at 落桶，一次 GROUP BY 出全桶。
  * downloads/logins/share_visits 复用 access_logs 的既有动作命名；shares 直接数新建分享行（各状态都算创建事件）。
+ * action 字段供趋势合并 audit_rollups（已归档窗口的计数来源）。
  */
-const TREND_SOURCES: Record<TrendMetric, { table: string; where: string }> = {
-  downloads: { table: 'access_logs', where: `action = 'download'` },
-  logins: { table: 'access_logs', where: `action = 'login'` },
-  share_visits: { table: 'access_logs', where: `action = 'share'` },
+const TREND_SOURCES: Record<TrendMetric, { table: string; where: string; action?: string }> = {
+  downloads: { table: 'access_logs', where: `action = 'download'`, action: 'download' },
+  logins: { table: 'access_logs', where: `action = 'login'`, action: 'login' },
+  share_visits: { table: 'access_logs', where: `action = 'share'`, action: 'share' },
   shares: { table: 'shares', where: '1 = 1' },
 };
 
 /**
- * 粒度 → SQLite 分桶表达式（UTC；created_at 是毫秒时间戳，先整除 1000 再 unixepoch）。
+ * 粒度 → SQLite 分桶表达式（UTC；毫秒时间戳先整除 1000 再 unixepoch）。column 可换成
+ * `bucket_start`（rollup 表同为小时对齐的毫秒时间戳，分桶键与明细行一致，两源可直接相加）。
  * 周：'weekday 0' 前进到最近的周日后回退 6 天 = 该日所在周的周一（周日归属前一个周一）。
  */
-const TREND_GROUP_EXPR: Record<TrendGranularity, string> = {
-  hour: `strftime('%Y-%m-%d %H:00', created_at / 1000, 'unixepoch')`,
-  day: `strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')`,
-  week: `strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'weekday 0', '-6 days')`,
-  month: `strftime('%Y-%m', created_at / 1000, 'unixepoch')`,
-};
+function trendGroupExpr(granularity: TrendGranularity, column: string): string {
+  switch (granularity) {
+    case 'hour':
+      return `strftime('%Y-%m-%d %H:00', ${column} / 1000, 'unixepoch')`;
+    case 'day':
+      return `strftime('%Y-%m-%d', ${column} / 1000, 'unixepoch')`;
+    case 'week':
+      return `strftime('%Y-%m-%d', ${column} / 1000, 'unixepoch', 'weekday 0', '-6 days')`;
+    case 'month':
+      return `strftime('%Y-%m', ${column} / 1000, 'unixepoch')`;
+  }
+}
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -200,15 +209,30 @@ export const DashboardRepo = {
   ): Promise<TrendBucket[]> {
     const { metric, granularity, from, to } = opts;
     const source = TREND_SOURCES[metric];
+    // 已归档窗口的明细行已移入冷层（rollups 计其数），热表查询排除这些小时桶，
+    // 避免「rollup 已计数 + 热行未删完」的短暂重叠被双计；rollups 侧按同一分桶表达式给出同桶键。
+    const archivedFilter = source.action
+      ? `AND NOT EXISTS (SELECT 1 FROM audit_rollups r WHERE r.bucket_start = CAST(created_at / 3600000 AS INTEGER) * 3600000)`
+      : '';
     const rows = await db.all(
-      `SELECT ${TREND_GROUP_EXPR[granularity]} AS k, COUNT(*) AS c
+      `SELECT ${trendGroupExpr(granularity, 'created_at')} AS k, COUNT(*) AS c
        FROM ${source.table}
-       WHERE ${source.where} AND created_at >= ? AND created_at < ?
+       WHERE ${source.where} AND created_at >= ? AND created_at < ? ${archivedFilter}
        GROUP BY k`,
       [from, to]
     );
     const counts = new Map<string, number>();
     for (const r of rows) counts.set(String(r.k), num(r.c));
+    if (source.action) {
+      const rollupRows = await db.all(
+        `SELECT ${trendGroupExpr(granularity, 'bucket_start')} AS k, SUM(event_count) AS c
+         FROM audit_rollups
+         WHERE action = ? AND bucket_start >= ? AND bucket_start < ?
+         GROUP BY k`,
+        [source.action, from, to]
+      );
+      for (const r of rollupRows) counts.set(String(r.k), (counts.get(String(r.k)) ?? 0) + num(r.c));
+    }
     const buckets: TrendBucket[] = [];
     for (let t = trendBucketStart(from, granularity); t < to; t = trendNextBucket(t, granularity)) {
       buckets.push({ t, count: counts.get(trendBucketKey(t, granularity)) ?? 0 });
@@ -379,7 +403,7 @@ export const DashboardRepo = {
   }> {
     const root = mount.mountPath;
     // 顶层文件夹 = 挂载点根下一级（文件夹行 path=自身全路径 → LIKE root/% 且不含更深一层）
-    const esc = root.replace(/([\\%_])/g, '\\$1');
+    const esc = escapeLikePattern(root);
     const [folderRows, fileRows] = await Promise.all([
       db.all(
         `SELECT id, name, path FROM file_metadata

@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import {
   UserRepo, QuotaRepo, ShareRepo, LogRepo, SettingsRepo, AnnouncementRepo,
-  DashboardRepo, FileRepo, MountRepo, Db, trendBucketCount,
+  DashboardRepo, FileRepo, MountRepo, ReconciliationRepo, Db, trendBucketCount,
 } from '../../db';
 import type { FileListItem, Share } from '@shared/types';
 import { getDb } from '../../middleware/auth';
@@ -14,7 +14,9 @@ import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
 import { parseJson } from '../../db';
 import { UserUpdateSchema, SettingsSchema, AnnouncementSchema, RoleNameSchema, RoleDefaultsSchema, FileBanSchema, TrendsQuerySchema } from './schemas';
 import { sendMail, type SmtpConfig, resolveSmtpConfig } from '../../utils/smtp';
+import { requestIp } from '../../utils/ip';
 import { encryptSecret, hashPassword } from '../../utils/crypto';
+import { escapeLikePattern } from '../../utils/path';
 import { loadRoutePrefixes } from '../storage/direct-links';
 import { AdminUpdateShareSchema } from '../shares/schemas';
 import { encipherSharePassword } from '../shares/handlers';
@@ -148,7 +150,7 @@ adminRoutes.put('/users/:id', async (c) => {
   if (capabilities !== undefined) fields.capabilities = JSON.stringify(capabilities);
   // 用户个别默认权限（§4.4 第 8 步）：null = 清除个别设置、跟随角色默认
   if (permissions !== undefined) fields.permissions = permissions === null ? null : JSON.stringify(permissions);
-  // 审计 H-05：禁用/封禁账户时递增会话版本，使其已签发 JWT 立即失效
+  // 禁用/封禁账户时递增会话版本，使其已签发 JWT 立即失效
   const disableChange = rest.status !== undefined && rest.status !== 'active';
   if (Object.keys(fields).length) {
     await UserRepo.updateUser(db, id, fields);
@@ -166,7 +168,14 @@ adminRoutes.delete('/users/:id', async (c) => {
   if (id === c.get('userId')) throw new ApiError(400, 'VALIDATION_ERROR', '不能删除自己');
   const user = await UserRepo.getUserById(db, id);
   if (!user) throw new ApiError(404, 'NOT_FOUND', '用户不存在');
-  await UserRepo.deleteUser(db, id);
+  // 传统路径键/分片对象（blob_hash IS NULL）没有内容索引，users 级联删除后 file_metadata 行
+  // 消失会让物理对象永久失去对账依据 → 删除前把落桶信息登记进 orphan_objects（与删除同事务，避免
+  // 「已登记但删除失败」时清理队列指向仍被引用的对象），由 cleanupUserDeletedObjects 重试清理。
+  const now = Date.now();
+  await db.transaction(async (tx) => {
+    await ReconciliationRepo.enqueueUserDeletedObjectsTx(tx, id, now);
+    await UserRepo.deleteUserTx(tx, id);
+  });
   return ok(c, null);
 });
 
@@ -335,11 +344,11 @@ adminRoutes.patch('/files/:id/review', async (c) => {
   if (parsed.data.status !== undefined) fields.review_status = parsed.data.status;
   await FileRepo.updateFile(db, id, fields);
   if (file.type === 'folder' && parsed.data.visibility !== undefined) {
-    // folder 级联（与用户侧行为一致）
+    // folder 级联（与用户侧行为一致）：目录名可含 %/_，子树前缀先转义再拼「/%」，否则会误伤兄弟子树
     await db.run(
       `UPDATE file_metadata SET visibility = ?, review_status = ?, updated_at = ?
-       WHERE mount_id = ? AND (path = ? OR path LIKE ?)`,
-      [parsed.data.visibility, fields.review_status, Date.now(), file.mountId, file.path, `${file.path}/%`]
+       WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
+      [parsed.data.visibility, fields.review_status, Date.now(), file.mountId, file.path, `${escapeLikePattern(file.path)}/%`]
     );
   }
   await LogRepo.create(db, {
@@ -410,10 +419,13 @@ adminRoutes.get('/files', async (c) => {
     : [];
   const mountName = new Map(mountRows.map((m) => [String(m.id), String(m.name)]));
   const hashes = [...new Set(rows.map((r) => r.blobHash).filter((v): v is string => !!v))];
+  // blob_objects 按 (hash, mount_id) 隔离，每挂载一行；同一 hash 可有多行（各挂载落桶的副本）。
+  // 按展示行自身的 mount 匹配其 provider（匹配不到再退化为任取一行），避免把别的挂载的落桶误展示成本文件所在桶。
   const blobRows = hashes.length
-    ? await db.all(`SELECT hash, provider_id FROM blob_objects WHERE hash IN (${hashes.map(() => '?').join(',')})`, hashes)
+    ? await db.all(`SELECT hash, mount_id, provider_id FROM blob_objects WHERE hash IN (${hashes.map(() => '?').join(',')})`, hashes)
     : [];
-  const hashProviderId = new Map(blobRows.map((r) => [String(r.hash), String(r.provider_id)]));
+  const blobProviderByHashMount = new Map(blobRows.map((r) => [`${String(r.hash)}\u0000${String(r.mount_id)}`, String(r.provider_id)]));
+  const blobProviderByHash = new Map(blobRows.map((r) => [String(r.hash), String(r.provider_id)]));
   const providerIds = [...new Set([
     ...rows.map((r) => r.providerId).filter((v): v is string => !!v),
     ...blobRows.map((r) => String(r.provider_id)),
@@ -430,7 +442,9 @@ adminRoutes.get('/files', async (c) => {
         const name = providerName.get(r.providerId);
         if (name) bucketNames.add(name);
       }
-      const blobProviderId = r.blobHash ? hashProviderId.get(r.blobHash) : undefined;
+      const blobProviderId = r.blobHash
+        ? blobProviderByHashMount.get(`${r.blobHash}\u0000${r.mountId}`) ?? blobProviderByHash.get(r.blobHash)
+        : undefined;
       if (blobProviderId) {
         const name = providerName.get(blobProviderId);
         if (name) bucketNames.add(name);
@@ -461,21 +475,61 @@ adminRoutes.put('/files/:id/ban', async (c) => {
 });
 
 // ============ 访问日志 ============
+// 游标分页（(created_at, id) 稳定排序键、无 OFFSET、无每页 COUNT(*)）；
+// 显式列不返回 metadata/user_agent 宽字段（热层只留可检索窄列，完整取证在审计归档冷层）。
 adminRoutes.get('/logs', async (c) => {
   const db = getDb(c);
   const q = c.req.query();
-  const page = Math.max(1, Number(q.page ?? 1) || 1);
   const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50) || 50));
-  const { rows, total } = await LogRepo.list(db, {
-    page,
+  const { rows, nextCursor, hasMore } = await LogRepo.listCursor(db, {
     limit,
+    cursor: q.cursor,
     userId: q.userId,
     action: q.action,
     search: q.search,
     from: q.from ? Number(q.from) : undefined,
     to: q.to ? Number(q.to) : undefined,
   });
-  return ok(c, { logs: rows, pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) } });
+  return ok(c, { logs: rows, nextCursor, hasMore });
+});
+
+// 审计归档清单（冷层 manifest；仅管理员可见）
+adminRoutes.get('/logs/archives', async (c) => {
+  const db = getDb(c);
+  const archives = await LogRepo.listArchives(db, 100);
+  return ok(c, { archives });
+});
+
+// 归档对象下载（仅管理员；读取行为本身记录事件，便于审计追溯）
+adminRoutes.get('/logs/archives/:id/download', async (c) => {
+  const db = getDb(c);
+  const bucket = c.env.AUDIT_BUCKET;
+  if (!bucket) throw ApiError.badRequest('审计冷归档未配置（缺少 AUDIT_BUCKET 绑定）');
+  const archive = await LogRepo.getArchive(db, c.req.param('id'));
+  if (!archive) throw new ApiError(404, 'NOT_FOUND', '归档不存在');
+  const object = await bucket.get(archive.objectKey);
+  if (!object) throw new ApiError(404, 'NOT_FOUND', '归档对象不存在');
+  await LogRepo.create(db, {
+    userId: c.get('userId') as string,
+    action: 'audit_archive_read',
+    path: archive.objectKey,
+    metadata: JSON.stringify({
+      archiveId: archive.id,
+      rangeStart: archive.rangeStart,
+      rangeEnd: archive.rangeEnd,
+      rowCount: archive.rowCount,
+      sha256: archive.sha256,
+    }),
+    ipAddress: requestIp(c.req.raw),
+    userAgent: c.req.header('user-agent'),
+  });
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': 'application/gzip',
+      'Content-Disposition': `attachment; filename="${archive.objectKey.replace(/^audit\//, '').replace(/\//g, '-')}"`,
+      ...(object.httpEtag ? { ETag: object.httpEtag } : {}),
+    },
+  });
 });
 
 // ============ 系统设置 ============

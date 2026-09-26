@@ -5,7 +5,7 @@
 // 浏览器直接命中本地缓存，刷新不再触网。
 // 防开放代理：只中转 system_settings 里「当前配置」的那两个地址，其余一律 404；
 // 再过 validateEndpoint 拒绝私网/保留地址（管理员误配内网地址时不放行）。
-// SEC-07：重定向不交给 fetch 自动跟随，逐跳重新过 validateEndpoint（见下方手动循环）。
+// 重定向不交给 fetch 自动跟随，逐跳重新过 validateEndpoint（见下方手动循环）。
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import { SettingsRepo } from '../../db';
@@ -48,7 +48,7 @@ siteAssetRoutes.get('/site-asset/:kind', async (c) => {
   const hit = await caches.default.match(cacheKey);
   if (hit) return hit;
 
-  // SEC-07：重定向目标可能是攻击者控制的 302 → 私网/云元数据地址，交给 fetch 自动跟随等于绕过校验；
+  // 重定向目标可能是攻击者控制的 302 → 私网/云元数据地址，交给 fetch 自动跟随等于绕过校验；
   // 必须手动逐跳：redirect: 'manual'，每一跳重新过 validateEndpoint（失败走上方 NOT_FOUND 分支），
   // location 缺失或超过 3 跳视为异常上游（502）。
   const REDIRECT_LIMIT = 3;

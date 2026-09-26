@@ -5,6 +5,7 @@
 import { Hono } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo, SettingsRepo } from '../../db';
+import type { FileMetadataRow } from '../../db/row';
 import { getDb } from '../../middleware/auth';
 import { ApiError } from '../../shared/errors';
 import { ok } from '../../shared/response';
@@ -14,6 +15,7 @@ import { checkPermission, loadPrincipalRules } from '../permissions/check';
 import { getProvider } from '../storage/providers';
 import { physicalObjectKey } from '../storage/keys';
 import { loadRoutePrefixes } from '../storage/direct-links';
+import { resolveVirtualListing } from '../storage/root-view';
 import { buildFileAccessUrl } from '../files/write';
 
 export const publicFsRoutes = new Hono<AppBindings>();
@@ -46,7 +48,26 @@ publicFsRoutes.get('/fs', async (c) => {
   if (virtualPath.split('/').includes('..')) throw new ApiError(400, 'VALIDATION_ERROR', '路径非法');
 
   const mount = await MountRepo.findMountForPath(db, virtualPath);
-  if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  if (!mount) {
+    // 合成根：无挂载点覆盖该路径、但其下存在挂载拓扑时，聚合虚拟目录项。
+    // 逐挂载点的 read 门禁由 root-view 纯函数判定（规则/矩阵每请求只查一次）；
+    // 全部不可读或非挂载祖先 → null，保持既有 404，不泄露挂载拓扑存在性。
+    const virtual = await resolveVirtualListing(c, virtualPath);
+    if (!virtual) throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+    return ok(c, {
+      path: virtualPath,
+      mountPath: null,
+      items: virtual.map((item) => ({
+        name: item.name,
+        type: 'folder',
+        path: item.path,
+        size: item.size,
+        updatedAt: item.updatedAt,
+        hasPassword: false,
+        url: null,
+      })),
+    });
+  }
 
   const principal = await getPrincipal(c);
   const rules = await loadPrincipalRules(db, principal, mount.id);
@@ -89,6 +110,8 @@ publicFsRoutes.get('/fs', async (c) => {
 
   const items: PublicFsItem[] = [];
   for (const row of rows) {
+    // §26 违规封禁：列表与出口一致——封禁行不出现在公开目录（内容出口另有 assertNotBanned）
+    if ((row as FileMetadataRow).banned) continue;
     const itemPath = row.type === 'folder' ? row.path : (row.path === '/' ? `/${row.name}` : `${row.path}/${row.name}`);
     // §31 桶级矩阵：文件按实际落桶判定（每请求按 (挂载点, 桶) 缓存，逐项不产生重复往返）；
     // 目录行无桶语义 → 不传落桶，与既有行为一致

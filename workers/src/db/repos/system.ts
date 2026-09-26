@@ -244,7 +244,7 @@ export const ShareRepo = {
     return res.changes > 0;
   },
   async getShareWithFile(db: Db, id: string) {
-    // 显式列名避免 SELECT * 中 shares.id 被 file_metadata.id 覆盖（审计发现）
+    // 显式列名避免 SELECT * 中 shares.id 被 file_metadata.id 覆盖
     const row = await db.first(
       `SELECT f.id AS file_row_id, f.*, s.id, s.file_id, s.creator_id, s.title, s.password_hash, s.expires_at,
               s.max_views, s.view_count, s.max_downloads, s.download_count,
@@ -309,6 +309,72 @@ export interface LogEntry {
   bytesTransferred?: number;
   statusCode?: number;
   createdAt: number;
+}
+
+/**
+ * 管理端日志列表的**热层行**：只含可检索的窄列，不返回 metadata/user_agent 宽字段。
+ */
+export interface LogHotRow {
+  id: string;
+  userId?: string;
+  action: string;
+  path?: string;
+  ipAddress?: string;
+  bytesTransferred: number;
+  statusCode?: number;
+  createdAt: number;
+}
+
+/** 归档清单行（D1 audit_archives）：冷层对象的可检索元数据 */
+export interface AuditArchiveRecord {
+  id: string;
+  rangeStart: number;
+  rangeEnd: number;
+  rowCount: number;
+  objectKey: string;
+  bytes: number;
+  sha256: string;
+  version: number;
+  pruned: boolean;
+  createdAt: number;
+}
+
+/** 归档窗口的按小时聚合（D1 audit_rollups）：status_code 无值时以 0 占位 */
+export interface AuditRollupAggregate {
+  bucketStart: number;
+  action: string;
+  statusCode: number;
+  eventCount: number;
+  bytesTransferred: number;
+}
+
+/** 游标编码：`<created_at>_<id>`（id 为 uuid，不含下划线） */
+function encodeLogCursor(createdAt: number, id: string): string {
+  return `${createdAt}_${id}`;
+}
+
+function parseLogCursor(cursor: string): { createdAt: number; id: string } | null {
+  const cut = cursor.indexOf('_');
+  if (cut <= 0) return null;
+  const createdAt = Number(cursor.slice(0, cut));
+  const id = cursor.slice(cut + 1);
+  if (!Number.isFinite(createdAt) || !id) return null;
+  return { createdAt, id };
+}
+
+function mapArchive(row: Row): AuditArchiveRecord {
+  return {
+    id: str(row.id)!,
+    rangeStart: num(row.range_start),
+    rangeEnd: num(row.range_end),
+    rowCount: num(row.row_count),
+    objectKey: str(row.object_key)!,
+    bytes: num(row.bytes),
+    sha256: str(row.sha256)!,
+    version: num(row.version),
+    pruned: num(row.pruned) === 1,
+    createdAt: num(row.created_at),
+  };
 }
 
 export const LogRepo = {
@@ -382,6 +448,127 @@ export const LogRepo = {
       message: `${str(r.user_id) ?? 'anonymous'} → ${str(r.action)} ${str(r.path) ?? ''}`.trim(),
       timestamp: num(r.created_at),
     }));
+  },
+
+  /**
+   * 管理端游标分页：显式列（不返回 metadata/user_agent 宽字段）、稳定排序键
+   * `(created_at, id)` 深页无 OFFSET、无每页 COUNT(*)。多取 1 行探测 hasMore，nextCursor 供下一页
+   * （取更旧的行）。搜索仍走 path/metadata 的 LIKE（前导 % 不可索引，属已知取舍，不追加宽索引）。
+   */
+  async listCursor(
+    db: Db,
+    opts: {
+      limit: number;
+      cursor?: string | null;
+      userId?: string;
+      action?: string;
+      search?: string;
+      from?: number;
+      to?: number;
+    }
+  ): Promise<{ rows: LogHotRow[]; nextCursor: string | null; hasMore: boolean }> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (opts.userId) {
+      where.push('user_id = ?');
+      params.push(opts.userId);
+    }
+    if (opts.action) {
+      where.push('action = ?');
+      params.push(opts.action);
+    }
+    if (opts.search) {
+      where.push('(path LIKE ? OR metadata LIKE ?)');
+      const like = `%${opts.search}%`;
+      params.push(like, like);
+    }
+    if (opts.from) {
+      where.push('created_at >= ?');
+      params.push(opts.from);
+    }
+    if (opts.to) {
+      where.push('created_at <= ?');
+      params.push(opts.to);
+    }
+    const parsed = opts.cursor ? parseLogCursor(opts.cursor) : null;
+    if (parsed) {
+      where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+      params.push(parsed.createdAt, parsed.createdAt, parsed.id);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const rows = await db.all(
+      `SELECT id, user_id, action, path, ip_address, status_code, bytes_transferred, created_at
+       FROM access_logs ${whereSql}
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      [...params, opts.limit + 1]
+    );
+    const hasMore = rows.length > opts.limit;
+    const page = hasMore ? rows.slice(0, opts.limit) : rows;
+    const mapped: LogHotRow[] = page.map((r) => ({
+      id: str(r.id)!,
+      userId: str(r.user_id),
+      action: str(r.action)!,
+      path: str(r.path),
+      ipAddress: str(r.ip_address),
+      bytesTransferred: num(r.bytes_transferred),
+      statusCode: r.status_code === null || r.status_code === undefined ? undefined : num(r.status_code),
+      createdAt: num(r.created_at),
+    }));
+    const last = mapped[mapped.length - 1];
+    return { rows: mapped, nextCursor: hasMore && last ? encodeLogCursor(last.createdAt, last.id) : null, hasMore };
+  },
+
+  /** 归档清单（最新在前，管理端只读展示） */
+  async listArchives(db: Db, limit = 100): Promise<AuditArchiveRecord[]> {
+    const rows = await db.all('SELECT * FROM audit_archives ORDER BY range_start DESC LIMIT ?', [limit]);
+    return rows.map(mapArchive);
+  },
+
+  async getArchive(db: Db, id: string): Promise<AuditArchiveRecord | null> {
+    const row = await db.first('SELECT * FROM audit_archives WHERE id = ?', [id]);
+    return row ? mapArchive(row) : null;
+  },
+
+  /** 窗口是否已归档（存在 manifest = 导出/校验已完成，剩删除批次） */
+  async getArchiveByRange(db: Db, rangeStart: number): Promise<AuditArchiveRecord | null> {
+    const row = await db.first('SELECT * FROM audit_archives WHERE range_start = ? ORDER BY created_at DESC LIMIT 1', [rangeStart]);
+    return row ? mapArchive(row) : null;
+  },
+
+  /** 未完成热行清理的归档窗口（归档先落库、删除分批；崩溃后由这里续跑，绝不重导/重复计数） */
+  async listPendingPrunes(db: Db, limit: number): Promise<AuditArchiveRecord[]> {
+    const rows = await db.all('SELECT * FROM audit_archives WHERE pruned = 0 ORDER BY range_start ASC LIMIT ?', [limit]);
+    return rows.map(mapArchive);
+  },
+
+  /** 归档 manifest 落库（与 rollup 聚合同批，保证「清单存在 = 计数已入 rollup」） */
+  async insertArchiveTx(tx: Tx, archive: Omit<AuditArchiveRecord, 'pruned'>): Promise<void> {
+    await tx.query(
+      `INSERT OR IGNORE INTO audit_archives (id, range_start, range_end, row_count, object_key, bytes, sha256, version, pruned, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      [archive.id, archive.rangeStart, archive.rangeEnd, archive.rowCount, archive.objectKey, archive.bytes, archive.sha256, archive.version, archive.createdAt]
+    );
+  },
+
+  /**
+   * 归档窗口的按小时计数入 rollup。同一 (bucket_start, action, status_code) 以 SET 覆盖（非累加）——
+   * 窗口只归档一次，重复执行幂等，不会重复计数。
+   */
+  async upsertRollupsTx(tx: Tx, aggregates: AuditRollupAggregate[]): Promise<void> {
+    for (const a of aggregates) {
+      await tx.query(
+        `INSERT INTO audit_rollups (bucket_start, action, status_code, event_count, bytes_transferred)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(bucket_start, action, status_code) DO UPDATE SET
+           event_count = excluded.event_count,
+           bytes_transferred = excluded.bytes_transferred`,
+        [a.bucketStart, a.action, a.statusCode, a.eventCount, a.bytesTransferred]
+      );
+    }
+  },
+
+  async markArchivePruned(db: Db, id: string): Promise<void> {
+    await db.run('UPDATE audit_archives SET pruned = 1 WHERE id = ?', [id]);
   },
 };
 
@@ -481,11 +668,29 @@ export const ReconciliationRepo = {
   async listReports(db: Db): Promise<Row[]> {
     return db.all('SELECT * FROM reconciliation_reports ORDER BY created_at DESC LIMIT 100');
   },
-  async createOrphanObject(db: Db, o: { mountId: string; objectKey: string; reason?: string; error?: string }): Promise<void> {
+  async createOrphanObject(
+    db: Db,
+    o: { mountId: string; objectKey: string; reason?: string; error?: string; providerId?: string | null; uploadId?: string | null }
+  ): Promise<void> {
     await db.run(
-      `INSERT INTO orphan_objects (id, mount_id, object_key, reason, error, created_at, cleaned)
-       VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      [uuid(), o.mountId, o.objectKey, o.reason ?? null, o.error ?? null, Date.now()]
+      `INSERT INTO orphan_objects (id, mount_id, object_key, reason, error, created_at, cleaned, provider_id, upload_id)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [uuid(), o.mountId, o.objectKey, o.reason ?? null, o.error ?? null, Date.now(), o.providerId ?? null, o.uploadId ?? null]
+    );
+  },
+  /**
+   * 登记「用户删除」前需要清理的传统路径键/分片对象（blob_hash IS NULL 的 file 行）。
+   * 这些对象没有内容索引，users 级联删除会带走 file_metadata 行（唯一对账依据），因此必须在删除用户的
+   * **同一事务内**先登记：orphan id 复用文件行 id（幂等），object_key 取物理键、provider_id 记录落桶
+   * （为 NULL 的池化前存量行由消费端回退挂载锚点）。
+   */
+  async enqueueUserDeletedObjectsTx(tx: Tx, ownerId: string, now: number): Promise<void> {
+    await tx.query(
+      `INSERT OR IGNORE INTO orphan_objects (id, mount_id, object_key, reason, error, provider_id, created_at, cleaned)
+       SELECT id, mount_id, COALESCE(physical_key, object_key), 'user_deleted', NULL, provider_id, ?, 0
+       FROM file_metadata
+       WHERE owner_id = ? AND type = 'file' AND blob_hash IS NULL`,
+      [now, ownerId]
     );
   },
   async listOrphanObjects(db: Db): Promise<Row[]> {

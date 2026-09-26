@@ -15,7 +15,7 @@ export async function ensureSeed(env: Env): Promise<void> {
 const isProduction = (env: Env): boolean => (env.ENVIRONMENT ?? 'development') === 'production';
 
 /**
- * 初始管理员密码解析（审计 H-02）：
+ * 初始管理员密码解析：
  * - 生产：必须通过 env.ADMIN_PASSWORD 提供，强制强密码；缺失则不创建（fail-closed）
  * - 开发：默认 admin123456（本地便利），可用 env 覆盖
  */

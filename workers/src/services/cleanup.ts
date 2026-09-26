@@ -1,7 +1,8 @@
 // 定时任务：过期配额释放、移动源对象清理、过期分享标记
-import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo } from '../db';
+import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo, ReconciliationRepo, ReservationRepo } from '../db';
 import { getProvider } from './storage/providers';
 import { ensureAllMountFolders } from './storage/mount-folders';
+import { archiveAuditLogs } from './audit/archive';
 import { isPathWithinBoundary } from '../utils/path';
 import type { Env } from '../shared/types';
 
@@ -32,9 +33,45 @@ export async function releaseExpiredReservations(env: Env): Promise<number> {
       }
       await tx.query(`UPDATE upload_sessions SET status = 'expired' WHERE id = ?`, [session.id]);
     });
+    // 过期清扫必须同时终止 Provider 的未完成 multipart upload——分片对象留在桶里持续计费，
+    // 而 cleanupOldObjects / orphan_objects 都没有该 uploadId 的定位信息。abort 失败登记带 upload_id 的
+    // 可重试队列（cleanupMultipartAborts），释放预留与终止 Provider 会话互不阻塞（可重入）。
+    if (session.upload_id) {
+      await abortExpiredMultipart(db, env, {
+        mountId: String(session.mount_id),
+        objectKey: String(session.object_key),
+        uploadId: String(session.upload_id),
+        providerId: session.provider_id ? String(session.provider_id) : null,
+      });
+    }
     released++;
   }
   return released;
+}
+
+/** 终止过期会话的 Provider multipart upload；失败登记清理队列（reason='multipart_abort'） */
+async function abortExpiredMultipart(
+  db: Db,
+  env: Env,
+  ref: { mountId: string; objectKey: string; uploadId: string; providerId: string | null }
+): Promise<void> {
+  try {
+    const mount = await MountRepo.getMountById(db, ref.mountId);
+    const providerId = ref.providerId ?? mount?.providerId ?? null;
+    const providerRow = providerId ? await ProviderRepo.getProviderById(db, providerId) : null;
+    if (!providerRow) return; // provider 已删除：没有可终止的会话
+    const provider = await getProvider(db, providerRow, env);
+    await provider.abortMultipartUpload(ref.objectKey, ref.uploadId);
+  } catch (err) {
+    await ReconciliationRepo.createOrphanObject(db, {
+      mountId: ref.mountId,
+      objectKey: ref.objectKey,
+      providerId: ref.providerId,
+      uploadId: ref.uploadId,
+      reason: 'multipart_abort',
+      error: err instanceof Error ? err.message : 'unknown',
+    });
+  }
 }
 
 /** 清理移动后遗留的源对象（source_cleanup_pending） */
@@ -72,7 +109,7 @@ export async function expireDueShares(env: Env): Promise<number> {
 }
 
 /**
- * SEC-01 自愈：修复历史「跨挂载点移动文件夹」遗留的子树孤儿。
+ * 自愈：修复跨挂载点移动文件夹遗留的子树孤儿。
  * 修复放行时代码只把文件夹主行切到目标挂载，子项 UPDATE 只改 path 前缀、mount_id 仍留在源挂载点。
  * 判定：folder 行 p（path=自身全路径）与子行 c（c.path 位于 p.path 子树内且 c.mount_id != p.mount_id）。
  * 例外：c 所在挂载点的 mount_path 位于 p.path 子树内 = 嵌套挂载点目录行（挂载点行归属父挂载点命名空间），
@@ -84,10 +121,12 @@ export async function repairMovedFolderOrphans(env: Env): Promise<number> {
   const mountPathById: Record<string, string> = {};
   for (const m of mounts) mountPathById[m.id] = m.mountPath;
   const rows = await db.all(
+    // 不用 `path LIKE p.path || '/%'`——p.path（目录名可含 %/_）会被当通配符误命中兄弟子树，
+    // 且 SQLite LIKE 对 ASCII 大小写不敏感；改用精确前缀切片比较（等价语义、无通配歧义）。
     `SELECT p.id AS pid, p.path AS ppath, p.mount_id AS pmount, c.id AS cid, c.mount_id AS cmount
      FROM file_metadata p
      JOIN file_metadata c
-       ON c.mount_id != p.mount_id AND c.path LIKE p.path || '/%'
+       ON c.mount_id != p.mount_id AND substr(c.path, 1, length(p.path) + 1) = p.path || '/'
      WHERE p.type = 'folder'`
   );
   let repaired = 0;
@@ -106,7 +145,7 @@ export async function repairMovedFolderOrphans(env: Env): Promise<number> {
   return repaired;
 }
 
-/** 配额对账：纠正 used_storage / used_files（用户与挂载点双层）与三层预留（DESIGN-02：消除 N+1） */
+/** 配额对账：纠正 used_storage / used_files（用户与挂载点双层）与三层预留（聚合对账，消除 N+1） */
 export async function reconcileQuotas(env: Env): Promise<number> {
   const db = Db.fromAny(env.DB);
   let fixed = 0;
@@ -169,12 +208,32 @@ export async function reconcileQuotas(env: Env): Promise<number> {
      ), updated_at = ?`,
     [Date.now()]
   );
+  // §30 池成员级预留：合并**两个来源**——在途会话（分片/直传会话）+ 直写预留台账
+  // （write.ts / 跨挂载移动不建会话，只按会话重算会把这些预留归零，短窗口削弱成员硬容量上限）。
+  // 先清理 TTL 之外的滞留台账行（崩溃/异常路径残留），再按两来源重算；成员行此时必在
+  // （移除仍有未完成会话/索引的成员会被 409 阻断）。与在途上传的极小竞态窗口语义同上层（下一轮收敛）。
+  await ReservationRepo.purgeStale(db, Date.now() - RESERVATION_TTL_MS);
+  await db.run(
+    `UPDATE mount_providers SET quota_reserved = (
+       SELECT COALESCE(SUM(quota_reserved), 0) FROM upload_sessions s
+       WHERE s.mount_id = mount_providers.mount_id AND s.provider_id = mount_providers.provider_id
+         AND s.status IN ('pending', 'uploading', 'verifying')
+     ) + (
+       SELECT COALESCE(SUM(size), 0) FROM quota_reservations r
+       WHERE r.mount_id = mount_providers.mount_id AND r.provider_id = mount_providers.provider_id
+     )`
+  );
   return fixed;
 }
+
+/** 直写预留台账行保护期：超过此时长的行视为崩溃残留（直写是单请求窗口，正常远短于此） */
+const RESERVATION_TTL_MS = 2 * 3600_000;
 
 /** 内容对象回收保护期：期满且复查无引用才真正删除（避开在途写入/去重的竞争窗口） */
 const BLOB_GC_GRACE_MS = 60_000;
 const BLOB_GC_BATCH = 100;
+/** 「用户删除」孤儿对象每轮处理量 */
+const ORPHAN_OBJECT_BATCH = 100;
 
 /**
  * 内容对象回收（§F）：处理 blob_gc 队列。
@@ -187,7 +246,7 @@ export async function cleanupBlobObjects(env: Env, now: number = Date.now()): Pr
   for (const entry of entries) {
     if (now - entry.createdAt < BLOB_GC_GRACE_MS) continue;
     if (await BlobRepo.isReferenced(db, entry.hash)) {
-      await BlobRepo.removeGc(db, entry.hash);
+      await BlobRepo.removeGc(db, entry.hash, entry.mountId);
       continue;
     }
     try {
@@ -195,15 +254,15 @@ export async function cleanupBlobObjects(env: Env, now: number = Date.now()): Pr
       const providerRow = await ProviderRepo.getProviderById(db, entry.providerId);
       if (!providerRow) {
         // provider 已删除：对象不可达，直接出队
-        await BlobRepo.removeGc(db, entry.hash);
+        await BlobRepo.removeGc(db, entry.hash, entry.mountId);
         continue;
       }
       const provider = await getProvider(db, providerRow, env);
       await provider.deleteObject(entry.objectKey);
-      await BlobRepo.removeGc(db, entry.hash);
+      await BlobRepo.removeGc(db, entry.hash, entry.mountId);
       cleaned++;
     } catch {
-      await BlobRepo.bumpGcAttempts(db, entry.hash); // 下次重试
+      await BlobRepo.bumpGcAttempts(db, entry.hash, entry.mountId); // 下次重试
     }
   }
   return cleaned;
@@ -215,20 +274,99 @@ export async function reconcileBlobs(env: Env, now: number = Date.now()): Promis
   let fixed = 0;
   const missing = await BlobRepo.listMissingIndex(db, BLOB_GC_BATCH);
   for (const m of missing) {
-    await BlobRepo.register(db, { hash: m.hash, providerId: m.providerId, objectKey: m.objectKey, size: m.size, etag: m.etag }, now);
+    await BlobRepo.register(db, { hash: m.hash, mountId: m.mountId, providerId: m.providerId, objectKey: m.objectKey, size: m.size, etag: m.etag }, now);
     fixed++;
   }
   const orphans = await BlobRepo.listOrphanIndex(db, now - BLOB_GC_GRACE_MS, BLOB_GC_BATCH);
   for (const o of orphans) {
-    await BlobRepo.enqueueGc(db, { hash: o.hash, providerId: o.providerId, objectKey: o.objectKey }, now);
+    await BlobRepo.enqueueGc(db, { hash: o.hash, mountId: o.mountId }, now);
     fixed++;
   }
   return fixed;
 }
 
+/**
+ * 消费「用户删除」登记的对象清理队列。
+ * 传统路径键/分片对象没有 blob_hash，users 级联删除会带走 file_metadata 行——那是它们唯一的对账依据，
+ * 因此在删除用户前先把落桶信息登记进 orphan_objects（reason='user_deleted'），这里逐条删除并标 cleaned=1。
+ * provider_id 缺失（池化前的存量行）回退挂载锚点；provider/挂载都已不存在 = 对象不可达，直接出队。
+ * 删除失败写 error 并保留 cleaned=0，下轮重试。
+ */
+export async function cleanupUserDeletedObjects(env: Env): Promise<number> {
+  const db = Db.fromAny(env.DB);
+  const rows = await db.all(
+    `SELECT id, mount_id, provider_id, object_key FROM orphan_objects
+     WHERE cleaned = 0 AND reason = 'user_deleted' ORDER BY created_at ASC LIMIT ?`,
+    [ORPHAN_OBJECT_BATCH]
+  );
+  let cleaned = 0;
+  for (const row of rows) {
+    const id = String(row.id);
+    const objectKey = String(row.object_key);
+    try {
+      const mount = await MountRepo.getMountById(db, String(row.mount_id));
+      const providerId = row.provider_id ? String(row.provider_id) : mount?.providerId;
+      const providerRow = providerId ? await ProviderRepo.getProviderById(db, providerId) : null;
+      if (providerRow && !objectKey.startsWith('folder:')) {
+        const provider = await getProvider(db, providerRow, env);
+        await provider.deleteObject(objectKey);
+      }
+      await db.run('UPDATE orphan_objects SET cleaned = 1 WHERE id = ?', [id]);
+      cleaned++;
+    } catch (err) {
+      await db.run('UPDATE orphan_objects SET error = ? WHERE id = ?', [
+        err instanceof Error ? err.message : 'unknown',
+        id,
+      ]);
+    }
+  }
+  return cleaned;
+}
+
+/**
+ * 消费「multipart abort 失败」登记队列——过期会话/显式中止未能终止的 Provider 分片上传，
+ * 在这里带 upload_id 重试。终止成功或 upload_id 缺失（无法定位）即出队；provider 已删除 = 无会话可终止。
+ * 失败写 error 并保留 cleaned=0，下轮重试。
+ */
+export async function cleanupMultipartAborts(env: Env): Promise<number> {
+  const db = Db.fromAny(env.DB);
+  const rows = await db.all(
+    `SELECT id, mount_id, provider_id, object_key, upload_id FROM orphan_objects
+     WHERE cleaned = 0 AND reason = 'multipart_abort' ORDER BY created_at ASC LIMIT ?`,
+    [ORPHAN_OBJECT_BATCH]
+  );
+  let cleaned = 0;
+  for (const row of rows) {
+    const id = String(row.id);
+    const uploadId = row.upload_id ? String(row.upload_id) : null;
+    if (!uploadId) {
+      await db.run('UPDATE orphan_objects SET cleaned = 1 WHERE id = ?', [id]);
+      cleaned++;
+      continue;
+    }
+    try {
+      const mount = await MountRepo.getMountById(db, String(row.mount_id));
+      const providerId = row.provider_id ? String(row.provider_id) : mount?.providerId;
+      const providerRow = providerId ? await ProviderRepo.getProviderById(db, providerId) : null;
+      if (providerRow) {
+        const provider = await getProvider(db, providerRow, env);
+        await provider.abortMultipartUpload(String(row.object_key), uploadId);
+      }
+      await db.run('UPDATE orphan_objects SET cleaned = 1 WHERE id = ?', [id]);
+      cleaned++;
+    } catch (err) {
+      await db.run('UPDATE orphan_objects SET error = ? WHERE id = ?', [
+        err instanceof Error ? err.message : 'unknown',
+        id,
+      ]);
+    }
+  }
+  return cleaned;
+}
+
 /** 全部定时任务 */
 export async function runScheduledTasks(env: Env): Promise<Record<string, number>> {
-  // SEC-01 自愈先行：先把跨挂载点移动遗留的子树孤儿 mount_id 归位，
+  // 子树孤儿自愈先行：先把跨挂载点移动遗留的子树孤儿 mount_id 归位，
   // 随后 reconcileQuotas 的挂载容量对账才能按正确归属把容量跟着搬过去
   const moveOrphansRepaired = await repairMovedFolderOrphans(env);
   const [released, cleaned, expired, reconciled] = await Promise.all([
@@ -240,7 +378,13 @@ export async function runScheduledTasks(env: Env): Promise<Record<string, number
   // §F：内容对象回收与索引对账（依赖上面的配额/落桶回填完成后再跑）
   const blobsFixed = await reconcileBlobs(env);
   const blobGc = await cleanupBlobObjects(env);
+  // 用户删除登记的传统路径键/分片对象清理（非内容寻址，不在上面的 blob GC 范围内）
+  const userDeletedObjects = await cleanupUserDeletedObjects(env);
+  // multipart abort 失败队列重试（带 upload_id）
+  const multipartAborts = await cleanupMultipartAborts(env);
   // §H：挂载点目录行自愈（存量挂载点在首次列目录/管理页访问前也能被补齐）
   const mountFolders = await ensureAllMountFolders(Db.fromAny(env.DB));
-  return { released, cleaned, expired, reconciled, moveOrphansRepaired, blobsFixed, blobGc, mountFolders };
+  // 审计日志冷归档（未配置 AUDIT_BUCKET 或保留期 <= 0 时整体跳过，绝不先删后归档）
+  const auditArchived = await archiveAuditLogs(env);
+  return { released, cleaned, expired, reconciled, moveOrphansRepaired, blobsFixed, blobGc, userDeletedObjects, multipartAborts, mountFolders, auditArchived };
 }

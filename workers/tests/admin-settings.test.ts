@@ -1,4 +1,4 @@
-// 系统设置 schema 回归：整表单 PATCH 场景下的字段语义（§ 2026-09-24）
+// 系统设置 schema：整表单 PATCH 场景下的字段语义
 // - smtpFromEmail 空串 = 清空发件地址：未配置时 GET 返回 ''，整表单回传不能被 .email() 判 400
 //   （历史 bug：z.string().email() 拒绝 ''，改 Logo/任意字段保存整体失败）
 // - siteHeaderTitle 三态：undefined（未设置，跟随 siteTitle）/ ''（只显示 Logo）/ 字符串

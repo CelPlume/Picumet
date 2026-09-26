@@ -26,7 +26,7 @@ export function fail(c: Context, err: unknown) {
     message = err.message;
     details = err.details;
   } else if (err instanceof Error) {
-    // SEC-08（审计 §SEC-08）：生产环境不回传底层异常消息（可能含数据库/Provider/网络内部细节），
+    // 生产环境不回传底层异常消息（可能含数据库/Provider/网络内部细节），
     // 固定通用文案并写入受控日志留痕；开发环境维持 message + stack details 便于排查。
     if (isDev) {
       message = err.message;

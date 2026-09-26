@@ -1,7 +1,7 @@
 // 站点标识资源中转（services/public/site-asset.ts）：防开放代理守卫
 // - 只中转 system_settings 里「当前配置」的 site_logo / site_favicon，其余 404
 // - validateEndpoint 拦截私网/保留地址（管理员误配内网地址时不放行）
-// - SEC-07：重定向逐跳校验——302 到私网不二次出网、公网跟随后正常返回、超过 3 跳 502；
+// - 重定向逐跳校验：302 到私网不二次出网、公网跟随后正常返回、超过 3 跳 502；
 //   跳转用例 stub 全局 fetch 与 caches，不触外网（真实抓取 + 边缘缓存仍由浏览器端到端验证覆盖）
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestContext, initSeeded, request, json, type TestContext } from './helpers';
@@ -58,7 +58,7 @@ describe('GET /api/public/site-asset/:kind', () => {
   });
 });
 
-describe('重定向逐跳校验（SEC-07）', () => {
+describe('重定向逐跳校验', () => {
   // 缓存命中判断在 fetch 之前执行，所有跳转用例都需替换 caches；测后还原避免污染其他用例
   beforeEach(() => {
     const entries = new Map<string, Response>();

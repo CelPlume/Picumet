@@ -137,7 +137,7 @@ app.notFound((c) => fail(c, new ApiError(404, 'NOT_FOUND', '接口不存在')));
 // ---------- 入口 ----------
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // 生产 fail-closed（审计 H-02/M-06）：未完成初始化（缺管理员或 seed 失败）时，
+    // 生产 fail-closed：未完成初始化（缺管理员或 seed 失败）时，
     // 业务 API 返回 503，仅放行健康检查与公共路由；不再静默吞错继续服务。
     const isProd = (env.ENVIRONMENT as string) === 'production';
     let seedReady = false;
