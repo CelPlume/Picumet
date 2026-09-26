@@ -1,7 +1,8 @@
 // 定时任务：过期配额释放、移动源对象清理、过期分享标记
-import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo, QuotaRepo } from '../db';
+import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo } from '../db';
 import { getProvider } from './storage/providers';
 import { ensureAllMountFolders } from './storage/mount-folders';
+import { isPathWithinBoundary } from '../utils/path';
 import type { Env } from '../shared/types';
 
 /** 释放过期上传会话的配额预留（用户 / 挂载点 / 池成员三层） */
@@ -70,23 +71,61 @@ export async function expireDueShares(env: Env): Promise<number> {
   return ShareRepo.expireDueShares(db);
 }
 
-/** 配额对账：纠正 used_storage / used_files（用户与挂载点双层） */
+/**
+ * SEC-01 自愈：修复历史「跨挂载点移动文件夹」遗留的子树孤儿。
+ * 修复放行时代码只把文件夹主行切到目标挂载，子项 UPDATE 只改 path 前缀、mount_id 仍留在源挂载点。
+ * 判定：folder 行 p（path=自身全路径）与子行 c（c.path 位于 p.path 子树内且 c.mount_id != p.mount_id）。
+ * 例外：c 所在挂载点的 mount_path 位于 p.path 子树内 = 嵌套挂载点目录行（挂载点行归属父挂载点命名空间），
+ * 属合法结构，跳过。只纠正 mount_id：provider_id 不动（对象物理位置未变），容量差值由随后的配额对账重算。
+ */
+export async function repairMovedFolderOrphans(env: Env): Promise<number> {
+  const db = Db.fromAny(env.DB);
+  const mounts = await MountRepo.listMounts(db);
+  const mountPathById: Record<string, string> = {};
+  for (const m of mounts) mountPathById[m.id] = m.mountPath;
+  const rows = await db.all(
+    `SELECT p.id AS pid, p.path AS ppath, p.mount_id AS pmount, c.id AS cid, c.mount_id AS cmount
+     FROM file_metadata p
+     JOIN file_metadata c
+       ON c.mount_id != p.mount_id AND c.path LIKE p.path || '/%'
+     WHERE p.type = 'folder'`
+  );
+  let repaired = 0;
+  for (const row of rows) {
+    const parentPath = String(row.ppath);
+    const childMountPath = mountPathById[String(row.cmount)];
+    // 嵌套挂载点行：子行挂载点位于父文件夹路径子树内，mount_id 不同是合法结构
+    if (childMountPath && isPathWithinBoundary(childMountPath, parentPath)) continue;
+    await db.run(`UPDATE file_metadata SET mount_id = ?, updated_at = ? WHERE id = ?`, [
+      String(row.pmount),
+      Date.now(),
+      String(row.cid),
+    ]);
+    repaired++;
+  }
+  return repaired;
+}
+
+/** 配额对账：纠正 used_storage / used_files（用户与挂载点双层）与三层预留（DESIGN-02：消除 N+1） */
 export async function reconcileQuotas(env: Env): Promise<number> {
   const db = Db.fromAny(env.DB);
-  const users = await db.all('SELECT id FROM users');
   let fixed = 0;
-  for (const u of users) {
-    const row = await db.first(
-      `SELECT COALESCE(SUM(size), 0) AS s, COUNT(*) AS c FROM file_metadata WHERE owner_id = ?`,
-      [u.id]
-    );
-    const storage = Number(row?.s ?? 0);
-    const files = Number(row?.c ?? 0);
-    const quota = await QuotaRepo.getQuota(db, u.id as string);
-    if (quota && (quota.usedStorage !== storage || quota.usedFiles !== files)) {
+
+  // 用户层：单条 GROUP BY 聚合 + 配额行一次查出，内存比对后仅 UPDATE 漂移行
+  const userAggRows = await db.all(
+    `SELECT owner_id, COALESCE(SUM(size), 0) AS s, COUNT(*) AS c FROM file_metadata GROUP BY owner_id`
+  );
+  const aggByOwner: Record<string, { storage: number; files: number }> = {};
+  for (const r of userAggRows) {
+    aggByOwner[String(r.owner_id)] = { storage: Number(r.s ?? 0), files: Number(r.c ?? 0) };
+  }
+  const quotaRows = await db.all('SELECT user_id, used_storage, used_files FROM user_quotas');
+  for (const q of quotaRows) {
+    const agg = aggByOwner[String(q.user_id)] ?? { storage: 0, files: 0 };
+    if (Number(q.used_storage ?? 0) !== agg.storage || Number(q.used_files ?? 0) !== agg.files) {
       await db.run(
-        `UPDATE user_quotas SET used_storage = ?, used_files = ?, quota_reserved = MAX(0, quota_reserved), updated_at = ? WHERE user_id = ?`,
-        [storage, files, Date.now(), u.id]
+        `UPDATE user_quotas SET used_storage = ?, used_files = ?, updated_at = ? WHERE user_id = ?`,
+        [agg.storage, agg.files, Date.now(), String(q.user_id)]
       );
       fixed++;
     }
@@ -98,22 +137,38 @@ export async function reconcileQuotas(env: Env): Promise<number> {
      ) WHERE provider_id IS NULL`
   );
 
-  // 挂载点已用容量对账（跨挂载移动/历史漂移自愈）
-  const mounts = await db.all('SELECT id, used_storage FROM mounts');
-  for (const m of mounts) {
-    const row = await db.first(
-      `SELECT COALESCE(SUM(size), 0) AS s FROM file_metadata WHERE mount_id = ? AND type = 'file'`,
-      [m.id]
-    );
-    const storage = Number(row?.s ?? 0);
+  // 挂载点已用容量对账（跨挂载移动/历史漂移自愈）：同样单条聚合（仅文件行计入容量，文件夹伪行 size=0）
+  const mountAggRows = await db.all(
+    `SELECT mount_id, COALESCE(SUM(size), 0) AS s FROM file_metadata WHERE type = 'file' GROUP BY mount_id`
+  );
+  const storageByMount: Record<string, number> = {};
+  for (const r of mountAggRows) storageByMount[String(r.mount_id)] = Number(r.s ?? 0);
+  const mountRows = await db.all('SELECT id, used_storage FROM mounts');
+  for (const m of mountRows) {
+    const storage = storageByMount[String(m.id)] ?? 0;
     if (Number(m.used_storage ?? 0) !== storage) {
-      await db.run(
-        `UPDATE mounts SET used_storage = ?, updated_at = ? WHERE id = ?`,
-        [storage, Date.now(), m.id]
-      );
+      await db.run(`UPDATE mounts SET used_storage = ?, updated_at = ? WHERE id = ?`, [storage, Date.now(), String(m.id)]);
       fixed++;
     }
   }
+
+  // 预留对账自愈：以实际在途会话（pending/uploading/verifying）为准重算用户/挂载两层预留。
+  // 注意：与在途上传存在极小竞态窗口（读到会话快照后、UPDATE 前会话可能刚好完成/失败）——
+  // 完成路径在同一事务里扣减预留并落账，此处重算可能短暂覆盖该扣减，下一轮对账即按在途会话收敛。
+  await db.run(
+    `UPDATE user_quotas SET quota_reserved = (
+       SELECT COALESCE(SUM(quota_reserved), 0) FROM upload_sessions s
+       WHERE s.user_id = user_quotas.user_id AND s.status IN ('pending', 'uploading', 'verifying')
+     ), updated_at = ?`,
+    [Date.now()]
+  );
+  await db.run(
+    `UPDATE mounts SET quota_reserved = (
+       SELECT COALESCE(SUM(quota_reserved), 0) FROM upload_sessions s
+       WHERE s.mount_id = mounts.id AND s.status IN ('pending', 'uploading', 'verifying')
+     ), updated_at = ?`,
+    [Date.now()]
+  );
   return fixed;
 }
 
@@ -173,6 +228,9 @@ export async function reconcileBlobs(env: Env, now: number = Date.now()): Promis
 
 /** 全部定时任务 */
 export async function runScheduledTasks(env: Env): Promise<Record<string, number>> {
+  // SEC-01 自愈先行：先把跨挂载点移动遗留的子树孤儿 mount_id 归位，
+  // 随后 reconcileQuotas 的挂载容量对账才能按正确归属把容量跟着搬过去
+  const moveOrphansRepaired = await repairMovedFolderOrphans(env);
   const [released, cleaned, expired, reconciled] = await Promise.all([
     releaseExpiredReservations(env),
     cleanupOldObjects(env),
@@ -184,5 +242,5 @@ export async function runScheduledTasks(env: Env): Promise<Record<string, number
   const blobGc = await cleanupBlobObjects(env);
   // §H：挂载点目录行自愈（存量挂载点在首次列目录/管理页访问前也能被补齐）
   const mountFolders = await ensureAllMountFolders(Db.fromAny(env.DB));
-  return { released, cleaned, expired, reconciled, blobsFixed, blobGc, mountFolders };
+  return { released, cleaned, expired, reconciled, moveOrphansRepaired, blobsFixed, blobGc, mountFolders };
 }

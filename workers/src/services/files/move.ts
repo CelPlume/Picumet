@@ -87,6 +87,13 @@ export async function moveWithSaga(
   const targetMount = await MountRepo.findMountForPath(db, targetFullPath);
   if (!targetMount) throw new ApiError(404, 'NOT_FOUND', '目标路径不存在');
 
+  // 审计 SEC-01：跨挂载点移动文件夹会撕裂子树——主行切到目标挂载后，子项 UPDATE 只改 path 前缀，
+  // 子树的 mount_id 无法在同一事务内一致迁移（还与嵌套挂载点目录行、容量统计纠缠），
+  // 直接阻断以避免产生新的孤儿子树；存量孤儿由清扫任务 repairMovedFolderOrphans 自愈。
+  if (file.type === 'folder' && file.mountId !== targetMount.id) {
+    throw new ApiError(422, 'OPERATION_FAILED', '暂不支持跨挂载点移动文件夹');
+  }
+
   // 源 delete + 目标 write 双重权限
   const principal = await getPrincipal(c);
   // 网关密钥数据层所有者隔离：密钥不能移动属主之外的文件
