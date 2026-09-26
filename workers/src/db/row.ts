@@ -111,6 +111,7 @@ export function mapMount(row: Row): Mount {
     maxStorage: row.max_storage == null ? null : num(row.max_storage),
     usedStorage: num(row.used_storage),
     quotaReserved: num(row.quota_reserved),
+    createdAt: num(row.created_at),
     poolStrategy: (str(row.pool_strategy) ?? 'least_used') as Mount['poolStrategy'],
     capacityBytes: row.capacity_bytes == null ? null : num(row.capacity_bytes),
     uploadMode: (str(row.upload_mode) ?? 'free') as Mount['uploadMode'],

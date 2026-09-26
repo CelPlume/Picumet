@@ -7,8 +7,10 @@ export {
   MountQuotaRepo,
   MountProviderRepo,
   MountProviderQuotaRepo,
+  ReservationRepo,
   writableMembers,
   firstWritableMember,
+  normalizeMemberInputs,
   type MountProviderMember,
   type MountProviderMemberInput,
 } from './repos/storage';
@@ -25,7 +27,17 @@ export {
   type TrendBucket,
 } from './repos/dashboard';
 export { RuleRepo, ApiKeyRepo } from './repos/rules';
-export { ShareRepo, LogRepo, SettingsRepo, AnnouncementRepo, ReconciliationRepo, type LogEntry } from './repos/system';
+export {
+  ShareRepo,
+  LogRepo,
+  SettingsRepo,
+  AnnouncementRepo,
+  ReconciliationRepo,
+  type LogEntry,
+  type LogHotRow,
+  type AuditArchiveRecord,
+  type AuditRollupAggregate,
+} from './repos/system';
 export { BlobRepo, type BlobObject, type BlobGcEntry } from './repos/blob';
 export {
   MountRolePermissionsRepo,

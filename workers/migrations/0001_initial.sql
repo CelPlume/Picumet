@@ -345,7 +345,7 @@ INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALU
 ('rate_limit_requests_per_minute', '50', '每分钟最大请求数', unixepoch() * 1000);
 
 -- ============ 初始管理员账户 ============
--- 管理员账户由 seed 逻辑创建：生产环境从 env.ADMIN_PASSWORD 注入（审计 H-02），
+-- 管理员账户由 seed 逻辑创建：生产环境从 env.ADMIN_PASSWORD 注入，
 -- 不在代码中硬编码固定凭据。
 
 -- ============================================================
@@ -365,8 +365,8 @@ CREATE INDEX IF NOT EXISTS idx_download_tokens_expires_at ON download_tokens(exp
 
 -- ============================================================
 
--- 审计 H-01：path_rules 增加 mount_id（挂载隔离）
--- 审计 H-05：users 增加 session_version（会话撤销）
+-- path_rules 增加 mount_id（挂载隔离）
+-- users 增加 session_version（会话撤销）
 
 -- 1) path_rules.mount_id：绑定规则到挂载点（NULL = 全局规则，兼容旧数据）
 ALTER TABLE path_rules ADD COLUMN mount_id TEXT;
@@ -406,7 +406,7 @@ INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALU
 
 -- ============================================================
 
--- Provider type 收敛（对照报告 §5.2）：运行时唯一语义 = 绑定与否。
+-- Provider type 收敛（§5.2）：运行时唯一语义 = 绑定与否。
 --   type='r2' 且无 endpoint → R2 绑定；其余 → S3 兼容协议（AWS / R2 S3 API / Oracle / MinIO）。
 -- 不重建 storage_providers 表：该表被 mounts.provider_id 外键引用，重建需停外键，风险高；
 -- CHECK 约束保持 ('r2','s3','oracle')，'oracle' 历史值折叠为 's3'，此后新增值只会是 'r2'/'s3'。
@@ -424,12 +424,12 @@ UPDATE storage_providers SET endpoint = '' WHERE endpoint = '__binding__';
 UPDATE storage_providers SET access_key_id = '' WHERE access_key_id = '__binding__';
 UPDATE storage_providers SET secret_access_key = '' WHERE secret_access_key = '__binding__';
 
--- 4) upload_domain 死配置删除（报告 P1-6：建表/读写/schema 全链路存在但无消费者）
+-- 4) upload_domain 死配置删除：建表/读写/schema 全链路存在但无消费者
 ALTER TABLE storage_providers DROP COLUMN upload_domain;
 
 -- ============================================================
 
--- S3 兼容网关支持（docs/PICLIST_COMPAT_CN.md P2-2）
+-- S3 兼容网关支持（docs/PICLIST_COMPAT_CN.md）
 -- SigV4 验签需要服务端持有可逆的 secretAccessKey（sha256 哈希不可用），
 -- 故为 API 密钥增加 AES-GCM 加密的 secret 密文列（enc: 前缀，密钥来自 ENCRYPTION_KEY）。
 -- 存量密钥该列为 NULL：S3 网关对其实例返回明确错误，重建密钥后即可使用。
@@ -438,7 +438,7 @@ ALTER TABLE api_keys ADD COLUMN secret_cipher TEXT;
 
 -- ============================================================
 
--- 用户模型完善（对照报告 §4.4）：
+-- 用户模型完善（§4.4）：
 --   a) file_metadata.visibility    三级可见性（private | users | public）
 --   b) file_metadata.review_status 公开审核状态（public 需 approved 才进 gallery）
 --   c) path_rules.origin           规则来源（admin | user；system 仅内存合成规则，不入库）
@@ -484,7 +484,7 @@ UPDATE mounts SET used_storage = (
   WHERE file_metadata.mount_id = mounts.id AND file_metadata.type = 'file'
 );
 
--- 3) 用户默认限额 10GiB → 1GiB（用户决策：存量一并回填）
+-- 3) 用户默认限额 10GiB → 1GiB（存量一并回填）
 UPDATE user_quotas SET max_storage = 1073741824;
 
 -- ============================================================

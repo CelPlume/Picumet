@@ -28,6 +28,14 @@ binding = "R2"
 bucket_name = "picumet-storage"
 preview_bucket_name = "picumet-storage"
 
-# 定时任务：过期上传预留释放、内容对象回收（§F 保护期后删除）、孤立对象与内容索引对账、分享过期标记
+# 审计日志冷归档桶（可选）。创建 R2 桶后取消注释即启用：
+# 超保留期（system_settings.audit_retention_days，默认 90 天）的整小时审计窗口导出 NDJSON.gz 到此桶。
+# 未配置 = 归档任务整体跳过（只读不删，D1 热行不会因归档缺失被清理）。
+# [[r2_buckets]]
+# binding = "AUDIT_BUCKET"
+# bucket_name = "picumet-audit"
+
+# 定时任务：过期上传预留释放（含 multipart abort）、内容对象回收（§F 保护期后删除）、孤立对象与内容索引对账、
+# 分享过期标记、审计日志冷归档
 [triggers]
 crons = ["*/10 * * * *"]
