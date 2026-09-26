@@ -140,4 +140,58 @@ describe('AList/OpenList 兼容 shim（/openlist）', () => {
     });
     expect((await json(get) as { code: number }).code).toBe(403);
   });
+
+  // SEC-06（审计 §SEC-06）：协议面授权矩阵——不含 api 的密钥 login/fs/list 一律拒绝
+  it('SEC-06：protocols 不含 api 的密钥 login 与 fs/list 均 403，含 api 的密钥正常', async () => {
+    // 仅声明 webdav 协议的密钥（凭据/状态/IP 均有效，仅协议不匹配）
+    const { authCookie } = await registerAndLogin(ctx, 'alistproto');
+    const csrf = await getCsrf(ctx, authCookie);
+    const createRes = await request(ctx, '/api/keys', {
+      method: 'POST',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { name: 'alist-webdav-only', permissions: ['read', 'write', 'delete'], protocols: ['webdav'], uploadPath: '/uploads' },
+    });
+    expect(createRes.status).toBe(201);
+    const webdavOnly = await json(createRes) as { data: { key: { keyId: string; secret: string } } };
+    const keyId = webdavOnly.data.key.keyId;
+    const token = `${keyId}.${webdavOnly.data.key.secret}`;
+    await grantApiKeyRule(ctx, keyId, ['read', 'write', 'delete'], '/uploads/**');
+
+    // login：AList 契约恒为 HTTP 200 + code 表达结果；失败走 AListFail 形状
+    const login = await request(ctx, '/openlist/api/auth/login', {
+      method: 'POST',
+      body: { username: keyId, password: webdavOnly.data.key.secret },
+    });
+    expect(login.status).toBe(200);
+    const loginData = await json(login) as { code: number; message: string; data: null };
+    expect(loginData).toEqual({ code: 403, message: '用户名或密码错误', data: null });
+
+    // fs/list：token 本身有效（已过认证/IP 校验），被 fsApi 统一协议中间件拦截
+    const list = await request(ctx, '/openlist/api/fs/list', {
+      method: 'POST',
+      headers: { Authorization: token },
+      body: { path: '/uploads/alist' },
+    });
+    expect(list.status).toBe(200);
+    const listData = await json(list) as { code: number; message: string; data: null };
+    expect(listData).toEqual({ code: 403, message: '该密钥未授权 api 协议', data: null });
+
+    // 对照组：含 api 协议的密钥 login 与 fs/list 正常放行
+    const k = await createAlistKey('alistprotook');
+    const okLogin = await request(ctx, '/openlist/api/auth/login', {
+      method: 'POST',
+      body: { username: k.keyId, password: k.token.slice(k.keyId.length + 1) },
+    });
+    expect(okLogin.status).toBe(200);
+    expect((await json(okLogin) as { code: number; data: { token: string } }).code).toBe(200);
+
+    const okList = await request(ctx, '/openlist/api/fs/list', {
+      method: 'POST',
+      headers: { Authorization: k.token },
+      body: { path: '/uploads/alist' },
+    });
+    expect(okList.status).toBe(200);
+    expect((await json(okList) as { code: number }).code).toBe(200);
+  });
 });

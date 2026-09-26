@@ -13,7 +13,8 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo } from '../../db';
-import { getDb, getClientIp, apiKeyTokenAuthMiddleware, assertApiKeyProtocol, resolveApiKeyByToken } from '../../middleware/auth';
+import { getDb, apiKeyTokenAuthMiddleware, assertApiKeyProtocol, resolveApiKeyByToken } from '../../middleware/auth';
+import { clientIp } from '../../utils/ip';
 import { getProvider } from '../storage/providers';
 import { serveFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
@@ -61,7 +62,13 @@ alistRoutes.post('/api/auth/login', async (c) => {
   if (!apiKey || apiKey.status !== 'active') return fail();
   if (apiKey.expiresAt && Date.now() > apiKey.expiresAt) return fail();
   if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
-    if (!apiKey.allowedIps.includes(getClientIp(c))) return fail();
+    if (!apiKey.allowedIps.includes(clientIp(c.req.raw))) return fail();
+  }
+  // SEC-06（审计 §SEC-06）：登录换取 token 前校验 api 协议面，防止仅声明其他协议的密钥借道 AList
+  try {
+    assertApiKeyProtocol(apiKey, 'api');
+  } catch {
+    return fail();
   }
   return c.json(AListOk({ token }));
 });
@@ -72,16 +79,24 @@ const fsApi = new Hono<AppBindings>();
 
 fsApi.use('*', apiKeyTokenAuthMiddleware);
 
-// PUT /api/fs/form：multipart 上传，File-Path 为完整虚拟路径（encodeURIComponent）
-fsApi.put('/form', async (c) => {
-  const db = getDb(c);
-  const apiKey = c.get('apiKey')!;
-  if (!apiKey.permissions.includes('write')) return c.json(AListFail(403, '密钥无上传权限'));
+// SEC-06（审计 §SEC-06）：协议面统一入口校验——fs/list、fs/get、fs/remove 与 fs/form 一致受控，
+// 认证后立即执行，替代各路由内的内联 try/catch。
+fsApi.use('*', async (c, next) => {
+  const apiKey = c.get('apiKey');
   try {
     assertApiKeyProtocol(apiKey, 'api');
   } catch {
     return c.json(AListFail(403, '该密钥未授权 api 协议'));
   }
+  await next();
+});
+
+// PUT /api/fs/form：multipart 上传，File-Path 为完整虚拟路径（encodeURIComponent）
+fsApi.put('/form', async (c) => {
+  const db = getDb(c);
+  const apiKey = c.get('apiKey')!;
+  if (!apiKey.permissions.includes('write')) return c.json(AListFail(403, '密钥无上传权限'));
+  // 协议校验已上移至 fsApi 统一中间件（SEC-06）
 
   const rawFilePath = c.req.header('file-path');
   if (!rawFilePath) return c.json(AListFail(400, '缺少 File-Path 头'));
