@@ -28,6 +28,7 @@ import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
 import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, formatBytes } from '@/lib/utils';
+import { ApiError, apiFetch } from '@/lib/api';
 import { revealDelay } from '@/components/ui/reveal';
 import { useMinLoading } from '@/hooks/useMinLoading';
 import type { FileListItem } from '@shared/types';
@@ -495,12 +496,10 @@ export default function Files() {
         setPreviewFile(f);
         return;
       }
-      const res = await fetch(`/api/files/${f.id}/download`, { credentials: 'include' });
-      if (!res.ok) throw new Error(t('files.downloadFailed'));
-      const data = (await res.json()) as { data: { url: string } };
-      window.open(data.data.url, '_blank');
+      const res = await apiFetch<{ url: string }>(`/api/files/${f.id}/download`);
+      window.open(res.data.url, '_blank');
     } catch (err) {
-      toast('error', err instanceof Error ? err.message : t('files.downloadFailed'));
+      toast('error', err instanceof ApiError ? err.message : t('files.downloadFailed'));
     }
   }, [t]);
 

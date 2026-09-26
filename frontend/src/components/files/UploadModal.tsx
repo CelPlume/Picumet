@@ -37,6 +37,8 @@ export function UploadModal({
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // 每个任务一个 AbortController：暂停时真实中止在途 XHR
+  const controllersRef = useRef(new Map<string, AbortController>());
 
   const addFiles = (files: FileList | File[]) => {
     const list = Array.from(files).map((file) => ({
@@ -57,6 +59,8 @@ export function UploadModal({
   // 上传单个任务
   const uploadOne = async (task: UploadTask) => {
     if (task.status === 'completed' || task.status === 'uploading') return;
+    const controller = new AbortController();
+    controllersRef.current.set(task.id, controller);
     update(task.id, { status: 'uploading', error: undefined, progress: 0 });
     try {
       const session = await initUploadSession({
@@ -68,14 +72,24 @@ export function UploadModal({
 
       let etag: string;
       if (session.uploadMode === 'presigned' && session.uploadUrl) {
-        const res = await putWithProgress(session.uploadUrl, task.file, task.mime, (p) => update(task.id, { progress: p }));
+        const res = await putWithProgress(
+          session.uploadUrl,
+          task.file,
+          task.mime,
+          (p) => update(task.id, { progress: p }),
+          controller.signal
+        );
         if (!res.ok) throw new ApiError(res.status, 'UPLOAD_FAILED', t('upload.failedStatus', { status: res.status }));
         etag = res.headers.get('etag') ?? 'etag';
       } else {
         // Worker 代理上传
         const csrf = await getCsrfToken();
-        const res = await putWithProgress(`/api/files/upload/raw/${session.sessionId}`, task.file, task.mime, (p) =>
-          update(task.id, { progress: p * 0.9 })
+        const res = await putWithProgress(
+          `/api/files/upload/raw/${session.sessionId}`,
+          task.file,
+          task.mime,
+          (p) => update(task.id, { progress: p * 0.9 }),
+          controller.signal
         );
         if (!res.ok) throw new ApiError(res.status, 'UPLOAD_FAILED', t('upload.failedStatus', { status: res.status }));
         const body = (await res.json()) as { data?: { etag?: string } };
@@ -85,7 +99,14 @@ export function UploadModal({
       await completeUpload({ sessionId: session.sessionId, etag });
       update(task.id, { status: 'completed', progress: 100 });
     } catch (err) {
+      // 暂停：在途请求被 abort → 置 paused（非 failed），保留已上传进度，等「继续」重新入队
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        update(task.id, { status: 'paused', error: undefined });
+        return;
+      }
       update(task.id, { status: 'failed', error: err instanceof Error ? err.message : t('upload.uploadFailed') });
+    } finally {
+      controllersRef.current.delete(task.id);
     }
   };
 
@@ -177,6 +198,10 @@ export function UploadModal({
             variant="outline"
             size="sm"
             onClick={() => {
+              // 先真实中止在途 XHR（Network 面板可见 canceled），再标 paused
+              tasks.forEach((t) => {
+                if (t.status === 'uploading') controllersRef.current.get(t.id)?.abort();
+              });
               setTasks((prev) =>
                 prev.map((t) =>
                   t.status === 'uploading' ? { ...t, status: 'paused' } : t
@@ -207,12 +232,13 @@ export function UploadModal({
   );
 }
 
-/** 带进度的 PUT（XMLHttpRequest） */
+/** 带进度的 PUT（XMLHttpRequest）；signal 中止时真实取消在途请求 */
 export function putWithProgress(
   url: string,
   body: Blob,
   contentType: string,
-  onProgress: (p: number) => void
+  onProgress: (p: number) => void,
+  signal?: AbortSignal
 ): Promise<Response> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -234,6 +260,14 @@ export function putWithProgress(
       resolve(res);
     };
     xhr.onerror = () => reject(new Error(i18n.t('common.networkError')));
+    xhr.onabort = () => reject(new DOMException('Aborted', 'AbortError'));
+    if (signal) {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      signal.addEventListener('abort', () => xhr.abort(), { once: true });
+    }
     xhr.send(body);
   });
 }

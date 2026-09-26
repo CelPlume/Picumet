@@ -53,7 +53,11 @@ export async function apiFetch<T = unknown>(
     }
   }
 
-  const res = await fetch(path, { method, headers, body, credentials: 'include', signal: options.signal });
+  // 默认 30s 超时只兜底元数据/JSON 请求；上传大文件走 XHR/rawRequest 不受影响。
+  // 调用方显式传 signal 时合并（AbortSignal.any），不改变现有可取消语义。
+  const timeout = AbortSignal.timeout(30_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  const res = await fetch(path, { method, headers, body, credentials: 'include', signal });
   let json: ApiResponse<T>;
   try {
     json = (await res.json()) as ApiResponse<T>;
