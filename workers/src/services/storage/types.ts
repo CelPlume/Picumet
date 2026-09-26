@@ -66,7 +66,7 @@ export interface StorageProviderInterface {
   listObjects(prefix: string, opts?: ListOptions): Promise<ListResult>;
   copyObject(sourceKey: string, targetKey: string): Promise<{ etag?: string }>;
   /**
-   * 服务端分片复制（>5GB，UploadPartCopy；对照报告 P1-2）。
+   * 服务端分片复制（>5GB，UploadPartCopy）。
    * 可选能力：未实现时调用方回退 copyObject（≤5GB / 流式中转）。
    */
   copyObjectMultipart?(sourceKey: string, targetKey: string): Promise<{ etag?: string }>;
@@ -81,6 +81,11 @@ export interface StorageProviderInterface {
   getPublicUrl(key: string): string | null;
   /** 分片预签名 URL（可选）：支持时返回可直传地址；返回 null 表示需走 Worker 代理上传 */
   getMultipartUploadUrl?(key: string, uploadId: string, partNumber: number, expiresInSeconds?: number): Promise<string | null>;
+  /**
+   * 分片清单（可选能力，完整性兜底）：预签名直传时客户端可能读不到 ETag
+   * （桶 CORS 未暴露 ETag）或上报不完整，完成合并前以 Provider 的分片清单为准；不可用返回 null。
+   */
+  listParts?(key: string, uploadId: string): Promise<UploadedPart[] | null>;
   /** 连通性测试 */
   testConnection(): Promise<{ connected: boolean; latency?: number; message: string }>;
 }

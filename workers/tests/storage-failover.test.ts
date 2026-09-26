@@ -1,8 +1,10 @@
-// §G 读路径容灾回归：文件落桶取不到对象（缺失/上游故障）时轮询池内其余桶取回；
+// §G 读路径容灾：文件落桶取不到对象（缺失/上游故障）时轮询池内其余桶取回；
 // 副桶命中写入位置提示（含物理键指纹），后续请求优先访问副桶；主桶正常时不产生提示。
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { createTestContext, initSeeded, request, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
+import { Db, MountProviderRolePermissionsRepo, MountRepo } from '../src/db';
 import { R2BindingProvider } from '../src/services/storage/r2';
+import { getFileObject } from '../src/services/storage/failover';
 import { ProviderError } from '../src/services/storage/errors';
 import { cleanupOldObjects } from '../src/services/cleanup';
 import type { Env } from '../src/shared/types';
@@ -34,6 +36,10 @@ interface PoolFixture {
   fileId: string;
   keyId: string;
   secret: string;
+  authCookie: string;
+  mountId: string;
+  primaryId: string;
+  replicaId: string;
 }
 
 /** 两个 r2 绑定 provider（共用同一个 mock 桶，靠实例名区分）+ 挂载 /vol（池成员含两者）+ 一个文件行/对象 */
@@ -82,7 +88,7 @@ async function seedPoolFixture(): Promise<PoolFixture> {
   const keyId = data.data.key.keyId;
   const secret = data.data.key.fullToken;
   await grantApiKeyRule(ctx, keyId, ['write', 'read'], '/**');
-  return { fileId, keyId, secret };
+  return { fileId, keyId, secret, authCookie, mountId, primaryId, replicaId };
 }
 
 /** 记录 provider 实例调用顺序；primaryMissing=true 时主桶返回"对象不存在"，fail=true 时抛上游故障 */
@@ -314,5 +320,92 @@ describe('§G 读路径容灾（副桶轮询）', () => {
       .get(fixture.fileId) as { old_object_key: string | null; source_cleanup_pending: number };
     expect(row.old_object_key).toBeNull();
     expect(row.source_cleanup_pending).toBe(0);
+  });
+});
+
+/** 覆盖副桶的桶级角色矩阵（§31）；传 [] 清空。用于验证读回退逐候选重判 */
+function setReplicaMatrix(entries: Array<{ role: string; permissions: string[] }>): Promise<void> {
+  return MountProviderRolePermissionsRepo.setForMount(Db.fromSqlite(ctx.db), fixture.mountId, fixture.replicaId, entries);
+}
+
+describe('读回退逐候选权限复核（§31/§28）', () => {
+  it('普通用户：记录桶读取失败 + 备用桶桶级 deny download → 403（不从备用桶读出）', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    // 备用桶矩阵仅放行 read → download 在封闭集合外 = deny
+    await setReplicaMatrix([{ role: 'user', permissions: ['read'] }]);
+    try {
+      const calls = spyProviders({ primaryFails: true });
+      const res = await request(ctx, `${MOUNT_PATH}/report.txt`, { cookie: fixture.authCookie });
+      expect(res.status).toBe(403);
+      // 记录桶被尝试并失败；备用桶因权限被跳过，未产生任何对象读取
+      expect(calls).toEqual([PRIMARY_NAME]);
+      expect(await ctx.kv.get(`serve:loc:${fixture.fileId}`)).toBeNull();
+    } finally {
+      await setReplicaMatrix([]);
+    }
+  });
+
+  it('普通用户：无矩阵条目时备用桶正常回退（download 动作）', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    const calls = spyProviders({ primaryMissing: true });
+    const res = await request(ctx, `${MOUNT_PATH}/report.txt`, { cookie: fixture.authCookie });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(CONTENT);
+    expect(calls).toEqual([PRIMARY_NAME, REPLICA_NAME]);
+  });
+
+  it('未传 principalRole 的内部调用行为不变：备用桶桶级 deny 也不介入', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    await setReplicaMatrix([{ role: 'user', permissions: ['read'] }]);
+    try {
+      spyProviders({ primaryMissing: true });
+      const db = Db.fromSqlite(ctx.db);
+      const mount = await MountRepo.getMountById(db, fixture.mountId);
+      expect(mount).toBeTruthy();
+      const result = await getFileObject({
+        db,
+        env: ctx.env as Env,
+        mount: mount!,
+        ref: {
+          fileId: fixture.fileId,
+          mountId: fixture.mountId,
+          providerId: fixture.primaryId,
+          physicalKey: OBJECT_KEY,
+          size: CONTENT.length,
+        },
+      });
+      expect(result.providerId).toBe(fixture.replicaId);
+      expect(await new Response(result.object.body).text()).toBe(CONTENT);
+    } finally {
+      await setReplicaMatrix([]);
+    }
+  });
+});
+
+describe('回退 sha256 元数据比对', () => {
+  it('备用桶对象 sha256 与文件 blobHash 不符 → 404；一致 → 命中', async () => {
+    await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+    const hash = 'a'.repeat(64);
+    const withMeta = (sha256: string): void =>
+      ctx.r2.putRaw(OBJECT_KEY, new TextEncoder().encode(CONTENT), {
+        httpMetadata: { contentType: 'text/plain' },
+        customMetadata: { sha256 },
+      });
+    ctx.db.prepare('UPDATE file_metadata SET blob_hash = ? WHERE id = ?').run(hash, fixture.fileId);
+    try {
+      spyProviders({ primaryMissing: true });
+      withMeta('b'.repeat(64));
+      expect((await fetchCompat(fixture)).status).toBe(404);
+
+      // 元数据与文件哈希一致 → 该候选通过校验，正常回退命中
+      await ctx.kv.delete(`serve:loc:${fixture.fileId}`);
+      withMeta(hash);
+      const ok = await fetchCompat(fixture);
+      expect(ok.status).toBe(200);
+      expect(await ok.text()).toBe(CONTENT);
+    } finally {
+      ctx.db.prepare('UPDATE file_metadata SET blob_hash = NULL WHERE id = ?').run(fixture.fileId);
+      ctx.r2.putRaw(OBJECT_KEY, new TextEncoder().encode(CONTENT), { 'Content-Type': 'text/plain' } as never);
+    }
   });
 });

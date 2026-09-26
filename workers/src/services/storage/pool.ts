@@ -164,8 +164,8 @@ export interface PickWriteOpts {
   preferProviderId?: string | null;
   /**
    * false = 只做容量判定、不持有成员预留。
-   * 供「用量在事务内同步转移、不存在在途窗口」的入口使用（跨挂载移动，与 MountQuotaRepo.transferUsage 同语义）；
-   * 写路径一律保持缺省 true，由调用方在成功/失败/补偿处释放。
+   * 供「用量在事务内同步转移、不存在在途窗口」的入口使用（同挂载移动复用源落桶）；
+   * 跨挂载移动与写路径一律保持缺省 true，由调用方在成功/失败/补偿处释放。
    */
   reserve?: boolean;
   /**
@@ -204,7 +204,7 @@ export async function pickWriteProvider(
       '存储池没有可用于写入的非备用桶（全部成员都被标记为备用），请至少保留一个非备用桶'
     );
   }
-  // 未配置池成员的存量挂载（表为空）没有容量配置：不预留、不判满（回归池化前行为）
+  // 未配置池成员的存量挂载（表为空）没有容量配置：不预留、不判满（退化为池化前行为）
   const poolMemberIds = new Set(memberRows.map((m) => m.providerId));
   const ordered = writable.length === 1 ? writable : await orderCandidates(db, mount, targetPath, env, writable);
   // 覆盖写偏好：原落桶成员作为首选候选（装不下才按策略回退）；它已被移出池时保持粘性，
@@ -259,11 +259,23 @@ export async function pickWriteProvider(
   throw new ApiError(413, 'MOUNT_QUOTA_EXCEEDED', '存储池成员容量不足');
 }
 
-/** 读/删路径定位：文件实际落桶优先，缺失回退挂载主 provider */
+/**
+ * 读/删路径定位：文件实际落桶优先，缺失回退挂载主 provider。
+ *
+ * 文件行记录了落桶（providerId 非空）却查不到 provider 行——池成员/provider 被删且未迁移——
+ * 时不再静默回退锚点桶（换桶只会掩盖数据不可达，甚至按同一物理键去错误的桶查找），改为可诊断的 500。
+ * 仅当文件行本就没有落桶（存量行 provider_id IS NULL）时才回退主 provider。
+ */
 export async function resolveFileProviderId(db: Db, file: { providerId?: string | null }, mount: Mount): Promise<string> {
-  const providerId = file.providerId ?? mount.providerId;
-  const row = await ProviderRepo.getProviderById(db, providerId);
-  return row ? providerId : mount.providerId;
+  if (file.providerId) {
+    const row = await ProviderRepo.getProviderById(db, file.providerId);
+    if (!row) {
+      console.error(`[storage] 文件落桶 provider 缺失 providerId=${file.providerId} mountId=${mount.id}`);
+      throw new ApiError(500, 'PROVIDER_MISSING', '文件落桶提供商缺失，请联系管理员处理');
+    }
+    return file.providerId;
+  }
+  return mount.providerId;
 }
 
 /** 读路径实例化：按文件落桶 provider 构造实例（池内文件分散时读路径与写路径解耦） */

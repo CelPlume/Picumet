@@ -1,10 +1,10 @@
 // S3 协议 Provider：适用于 R2（S3 API）、AWS S3、Oracle Cloud（S3 兼容）
-// P0-2 错误分类：getObject/headObject 仅 not-found 返回 null，其余抛 ProviderError
-// P0-1 Range：getObject 支持 {start,end}（inclusive）
-// P1-4 批量删除：deleteObjects（≤1000/批）
-// P1-5 Delimiter：listObjects 支持 delimiter → prefixes
-// P1-2 分片复制：copyObjectMultipart（UploadPartCopy，>5GB）
-// DESIGN-03 超时策略：控制面/元数据操作统一 15s 超时防挂死；数据面（对象 body 流）按流处理，不设总时限
+// 错误分类：getObject/headObject 仅 not-found 返回 null，其余抛 ProviderError
+// Range：getObject 支持 {start,end}（inclusive）
+// 批量删除：deleteObjects（≤1000/批）
+// Delimiter：listObjects 支持 delimiter → prefixes
+// 分片复制：copyObjectMultipart（UploadPartCopy，>5GB）
+// 超时策略：控制面/元数据操作统一 15s 超时防挂死；数据面（对象 body 流）按流处理，不设总时限
 import {
   S3Client,
   PutObjectCommand,
@@ -19,6 +19,7 @@ import {
   UploadPartCopyCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListPartsCommand,
   ListObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -44,13 +45,13 @@ interface S3Opts {
   publicDomain?: string;
 }
 
-/** AWS CopyObject 单命令上限 5GB；超过走 copyObjectMultipart（对照报告 P1-2） */
+/** AWS CopyObject 单命令上限 5GB；超过走 copyObjectMultipart */
 export const COPY_OBJECT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 /** 分片复制单片大小（≥5MiB；256MB × 最多 10000 片 ≈ 2.5TB 覆盖面） */
 const COPY_PART_SIZE = 256 * 1024 * 1024;
 
 /**
- * 控制面/元数据操作统一超时（ms）：防止元数据请求挂死占用 Worker 时间预算（DESIGN-03）。
+ * 控制面/元数据操作统一超时（ms）：防止元数据请求挂死占用 Worker 时间预算。
  * 数据面（putObject/getObject/uploadPart 的 body 流）不设总时限——整包时限会误杀大文件传输。
  */
 const METADATA_TIMEOUT_MS = 15_000;
@@ -73,7 +74,7 @@ export class S3Provider implements StorageProviderInterface {
     this.publicDomain = opts.publicDomain;
     this.client = new S3Client({
       endpoint: opts.endpoint,
-      // 空 region 会让 SDK 签名失败（报告 §5.1.7）：统一兜底 auto
+      // 空 region 会让 SDK 签名失败：统一兜底 auto
       region: opts.region || 'auto',
       forcePathStyle: true,
       credentials: {
@@ -112,7 +113,7 @@ export class S3Provider implements StorageProviderInterface {
         })
       );
     } catch (err) {
-      // 仅确认的 not-found 返回 null；auth/throttled/other 上抛（P0-2）
+      // 仅确认的 not-found 返回 null；auth/throttled/other 上抛
       if (toProviderError(err).kind === 'not-found') return null;
       throw err;
     }
@@ -313,6 +314,38 @@ export class S3Provider implements StorageProviderInterface {
       new AbortMultipartUploadCommand({ Bucket: this.bucketName, Key: key, UploadId: uploadId }),
       { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
     );
+  }
+
+  /**
+   * 分片清单（完整性兜底）：预签名直传路径客户端 ETag 不可读/上报不完整时，
+   * 由服务端列出桶内真实分片（分页取全），完成合并前以其为准。
+   */
+  async listParts(key: string, uploadId: string): Promise<UploadedPart[] | null> {
+    const parts: UploadedPart[] = [];
+    let marker: string | undefined;
+    try {
+      for (;;) {
+        const res = await this.client.send(
+          new ListPartsCommand({
+            Bucket: this.bucketName,
+            Key: key,
+            UploadId: uploadId,
+            ...(marker ? { PartNumberMarker: marker } : {}),
+          }),
+          { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
+        );
+        for (const part of res.Parts ?? []) {
+          if (part.PartNumber != null && part.ETag) parts.push({ partNumber: part.PartNumber, etag: part.ETag });
+        }
+        if (!res.IsTruncated) break;
+        marker = res.NextPartNumberMarker;
+        if (!marker) break;
+      }
+      return parts;
+    } catch {
+      // 列出失败按「不可用」处理：调用方回退既有分片来源，不因兜底能力失败而中断完成流程
+      return null;
+    }
   }
 
   async getUploadUrl(key: string, contentType?: string, expiresInSeconds = 900): Promise<string | null> {

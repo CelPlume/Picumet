@@ -28,7 +28,7 @@ export interface ContentWriteResult {
 }
 
 export interface ContentWriteOpts {
-  /** 选定落桶 provider（去重命中时以既有内容的落点为最终结果） */
+  /** 选定落桶 provider（本挂载内去重命中时以既有内容的落点为最终结果） */
   providerRow: StorageProvider;
   /** 归属挂载点（孤儿对象对账记录用） */
   mountId: string;
@@ -45,9 +45,12 @@ export interface ContentWriteOpts {
 
 /**
  * 内容寻址写入：确定内容哈希与物理对象键，返回落点。
- * - 已知哈希 + 库内已有内容 → 不写对象（去重完全命中）；
- * - 已知哈希 + 库内没有 → 直写内容键（键由哈希决定，无需暂存）；
- * - 未知哈希 → 暂存写入并流式哈希 → 命中删除暂存，未命中复制到内容键并删除暂存。
+ * - 已知哈希 + **本挂载内**已有内容 → 不写对象（去重完全命中）；
+ * - 已知哈希 + 本挂载内没有 → 直写内容键（键由哈希决定，无需暂存）；
+ * - 未知哈希 → 暂存写入并流式哈希 → 本挂载命中删除暂存，未命中复制到内容键并删除暂存。
+ *
+ * 去重只在同一挂载内成立——跨挂载同内容各写一份并各自登记索引行，否则文件行会指向
+ * 其他挂载池的 provider/对象键（failover、桶级矩阵、容量与对象生命周期跨挂载耦合）。
  */
 export async function writeContentAddressed(db: Db, env: Env, opts: ContentWriteOpts): Promise<ContentWriteResult> {
   const { providerRow, mountId, mimeType, declaredSize, metadata } = opts;
@@ -72,9 +75,9 @@ export async function writeContentAddressed(db: Db, env: Env, opts: ContentWrite
   }
 
   if (knownHash) {
-    const blob = await BlobRepo.get(db, knownHash);
+    const blob = await BlobRepo.get(db, knownHash, mountId);
     if (blob) {
-      // 去重命中：内容已在库，丢弃上传流（不再写对象）
+      // 去重命中（本挂载内）：内容已在库，丢弃上传流（不再写对象）
       opts.body.cancel().catch(() => undefined);
       return {
         providerId: blob.providerId,
@@ -87,7 +90,13 @@ export async function writeContentAddressed(db: Db, env: Env, opts: ContentWrite
     }
     const provider = await getProvider(db, providerRow, env);
     const key = blobObjectKey(providerRow.pathPrefix, knownHash);
-    const put = await provider.putObject(key, withKnownLength(opts.body, declaredSize, needsKnownLength), mimeType, metadata);
+    // 随对象写入 `sha256=<hash>` 元数据，供容灾回退按 HEAD 比对镜像内容（size-only 弱校验的补强）。
+    const put = await provider.putObject(
+      key,
+      withKnownLength(opts.body, declaredSize, needsKnownLength),
+      mimeType,
+      withHashMetadata(metadata, knownHash)
+    );
     // 未计数字节的路径：以 HEAD 结果为准（大小/ETag 校验，防止流被截断）
     const head = await provider.headObject(key);
     if (!head) throw new ApiError(422, 'OPERATION_FAILED', '上传校验失败');
@@ -114,7 +123,7 @@ export async function writeContentAddressed(db: Db, env: Env, opts: ContentWrite
     throw new ApiError(422, 'OPERATION_FAILED', '上传校验失败：对象大小与请求不一致');
   }
 
-  const blob = await BlobRepo.get(db, hex);
+  const blob = await BlobRepo.get(db, hex, mountId);
   if (blob) {
     await deleteObjectQuietly(db, provider, stagingKey, mountId, 'staging_dedupe_hit');
     return { providerId: blob.providerId, objectKey: blob.objectKey, size, etag: blob.etag, hash: hex, deduped: true };
@@ -122,6 +131,8 @@ export async function writeContentAddressed(db: Db, env: Env, opts: ContentWrite
 
   const key = blobObjectKey(providerRow.pathPrefix, hex);
   try {
+    // 暂存写入时哈希尚未算出（边写边哈希），而 copyObject 无 metadata 入参（R2 绑定/S3 均
+    // 沿用源对象 metadata）→ 该路径的内容键对象暂无 `sha256` 元数据；回退读侧的元数据缺失分支覆盖此情形。
     const copied = await provider.copyObject(stagingKey, key);
     await deleteObjectQuietly(db, provider, stagingKey, mountId, 'staging_after_copy');
     return { providerId: providerRow.id, objectKey: key, size, etag: copied.etag, hash: hex, deduped: false };
@@ -129,6 +140,14 @@ export async function writeContentAddressed(db: Db, env: Env, opts: ContentWrite
     await deleteObjectQuietly(db, provider, stagingKey, mountId, 'staging_copy_failed');
     throw err;
   }
+}
+
+/**
+ * 把内容哈希并入对象自定义元数据（键 `sha256`，小写十六进制），供容灾回退按 HEAD 比对镜像内容。
+ * R2 绑定（customMetadata）与 S3 协议（Metadata）的 putObject 均支持该入参；调用方 metadata 原样保留。
+ */
+function withHashMetadata(metadata: Record<string, string> | undefined, hash: string): Record<string, string> {
+  return { ...(metadata ?? {}), sha256: hash };
 }
 
 /** 尽力删除对象；失败记录孤儿供对账（暂存对象清理路径） */

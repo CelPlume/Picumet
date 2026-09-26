@@ -1,5 +1,5 @@
 // R2 绑定 Provider：本地开发与生产均可使用（基于 env.R2）
-// 对照 Cloudflare Workers API（2026-07 文档核实）：
+// 对照 Cloudflare Workers API：
 // - get(key, { range: { offset, length } }) 原生支持区间读
 // - delete(key | key[]) 原生支持批量删除（≤1000/次）
 // - list({ delimiter }) 返回 delimitedPrefixes

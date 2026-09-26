@@ -1,17 +1,18 @@
 // 管理员路由：存储提供商、挂载点、权限规则
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { ProviderRepo, MountRepo, MountProviderRepo, MountRolePermissionsRepo, MountProviderRolePermissionsRepo, RuleRepo, writableMembers, firstWritableMember } from '../../db';
-import type { Db, MountProviderMemberInput } from '../../db';
+import type { Mount, StorageProvider } from '@shared/types';
+import { ProviderRepo, MountRepo, MountProviderRepo, MountRolePermissionsRepo, MountProviderRolePermissionsRepo, RuleRepo, normalizeMemberInputs } from '../../db';
+import type { Db, MountProviderMemberInput, Tx } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { encryptSecret, uuid } from '../../utils/crypto';
-import { normalizePath } from '../../utils/path';
+import { escapeLikePattern, normalizePath } from '../../utils/path';
 import type { Env } from '../../shared/types';
 import { validateEndpoint } from '../../utils/ssrf';
-import { ensureAllMountFolders, ensureMountFolder, removeMountFolder } from '../storage/mount-folders';
+import { applyMountFolderPlan, ensureAllMountFolders, removeMountFolder, resolveMountFolderPlan } from '../storage/mount-folders';
 import { ProviderSchema, ProviderSchemaBase, MountSchema, RuleSchema } from './storage-schemas';
 
 export const adminStorageRoutes = new Hono<AppBindings>();
@@ -22,6 +23,28 @@ type PoolMemberInput = MountProviderMemberInput & {
 };
 
 // ============ 存储提供商 ============
+
+/**
+ * Provider **物理引用**计数（PUT 物理定位守卫与 DELETE 全引用检查共用）：
+ * 这些引用意味着桶内已有（或在途）对象，改变 bucket/endpoint/region/pathPrefix 会让它们失联。
+ * 配置引用（mounts / mount_providers / 桶级矩阵）不改变落点，单列在各自调用点统计。
+ */
+async function providerPhysicalReferenceCounts(
+  db: Db,
+  id: string
+): Promise<{ files: number; uploadSessions: number; blobObjects: number; blobGc: number }> {
+  const files = Number((await db.first('SELECT COUNT(*) AS c FROM file_metadata WHERE provider_id = ?', [id]))?.c ?? 0);
+  const uploadSessions = Number(
+    (await db.first(
+      `SELECT COUNT(*) AS c FROM upload_sessions WHERE provider_id = ? AND status IN ('pending','uploading','verifying')`,
+      [id]
+    ))?.c ?? 0
+  );
+  const blobObjects = Number((await db.first('SELECT COUNT(*) AS c FROM blob_objects WHERE provider_id = ?', [id]))?.c ?? 0);
+  const blobGc = Number((await db.first('SELECT COUNT(*) AS c FROM blob_gc WHERE provider_id = ?', [id]))?.c ?? 0);
+  return { files, uploadSessions, blobObjects, blobGc };
+}
+
 adminStorageRoutes.get('/storage/providers', async (c) => {
   const db = getDb(c);
   const providers = await ProviderRepo.listProviders(db);
@@ -53,19 +76,19 @@ adminStorageRoutes.post('/storage/providers', async (c) => {
 
   // §5.2：type 由「有无 endpoint」推导，不再是用户选择项
   const isBinding = !endpoint;
-  // M-1：统一 SSRF 校验（scheme/端口/userinfo + IPv4/IPv6 私网保留段）
+  // 统一 SSRF 校验（scheme/端口/userinfo + IPv4/IPv6 私网保留段）
   if (!isBinding && !validateEndpoint(endpoint)) {
     throw ApiError.badRequest('存储端点无效：必须为公网 http(s) 地址，且不允许私网/保留地址');
   }
 
   // 可选一步创建挂载点：同事务 provider + mount（§2.5 交互合并，90% 场景 1:1）
   let normalizedMountPath: string | null = null;
+  let mountPriority = 0;
   if (mountPath) {
     normalizedMountPath = normalizePath(mountPath);
-    const existing = await MountRepo.listMounts(db);
-    if (existing.some((m) => m.mountPath === normalizedMountPath)) {
-      throw new ApiError(409, 'ALREADY_EXISTS', '挂载路径已存在');
-    }
+    // 一步创建同样走统一放置校验；未提供 priority → 取覆盖路径的祖先优先级（等值合法、深度决胜）
+    mountPriority = await nestedDefaultPriority(db, normalizedMountPath);
+    await assertMountPlacement(db, { mountPath: normalizedMountPath, priority: mountPriority });
   }
 
   const now = Date.now();
@@ -92,8 +115,8 @@ adminStorageRoutes.post('/storage/providers', async (c) => {
     if (normalizedMountPath) {
       await tx.query(
         `INSERT INTO mounts (id, provider_id, mount_path, name, sort_by, sort_order, priority, created_at, updated_at, status)
-         VALUES (?, ?, ?, ?, 'name', 'asc', 0, ?, ?, 'active')`,
-        [uuid(), providerId, normalizedMountPath, name, now, now]
+         VALUES (?, ?, ?, ?, 'name', 'asc', ?, ?, ?, 'active')`,
+        [uuid(), providerId, normalizedMountPath, name, mountPriority, now, now]
       );
     }
   });
@@ -104,13 +127,35 @@ adminStorageRoutes.post('/storage/providers', async (c) => {
 adminStorageRoutes.put('/storage/providers/:id', async (c) => {
   const db = getDb(c);
   const id = c.req.param('id');
+  const provider = await ProviderRepo.getProviderById(db, id);
+  if (!provider) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
   const body = await c.req.json().catch(() => null);
   const parsed = ProviderSchemaBase.partial().safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('存储配置无效');
-  // SEC-02：更新路径与创建路径同一 SSRF 校验——有凭据的 Provider 不能被改指私网/云元数据/任意外部主机；
+  // 更新路径与创建路径同一 SSRF 校验——有凭据的 Provider 不能被改指私网/云元数据/任意外部主机；
   // 空串 = 切回 R2 绑定（不发起 S3 请求），放行。
   if (parsed.data.endpoint !== undefined && parsed.data.endpoint !== '' && !validateEndpoint(parsed.data.endpoint)) {
     throw ApiError.badRequest('存储端点无效：必须为公网 http(s) 地址，且不允许私网/保留地址');
+  }
+  // 物理定位字段（bucket/endpoint/region/pathPrefix，endpoint 置空/填写同时翻转 type）
+  // 变更会让同 providerId 下的历史文件行、内容索引与在途会话指向新的物理位置（旧对象批量 404）。
+  // 存在任一物理引用 → 409 要求先迁移；名称、公开域名与密钥轮换不改变落点，按无损规则放行。
+  const physicalChanged =
+    (parsed.data.bucket !== undefined && parsed.data.bucket !== provider.bucket) ||
+    (parsed.data.region !== undefined && parsed.data.region !== provider.region) ||
+    (parsed.data.pathPrefix !== undefined && (parsed.data.pathPrefix ?? '') !== (provider.pathPrefix ?? '')) ||
+    (parsed.data.endpoint !== undefined && (parsed.data.endpoint ?? '') !== (provider.endpoint ?? ''));
+  if (physicalChanged) {
+    const counts = await providerPhysicalReferenceCounts(db, id);
+    const total = counts.files + counts.uploadSessions + counts.blobObjects + counts.blobGc;
+    if (total > 0) {
+      throw new ApiError(
+        409,
+        'OPERATION_FAILED',
+        '该存储提供商仍被文件/内容索引/在途会话引用，修改物理定位字段会让历史对象失联；请先迁移数据',
+        counts
+      );
+    }
   }
   const fields: Record<string, unknown> = {};
   const map: Record<string, string> = {
@@ -151,61 +196,197 @@ adminStorageRoutes.post('/storage/providers/:id/test', async (c) => {
   return ok(c, result);
 });
 
+/**
+ * Provider 删除：全引用检查，存在任一引用 → 409（details 给各类数量），否则在事务内删除。
+ * 覆盖：mounts.provider_id（锚点）、mount_providers.provider_id（含其他挂载的池成员）、
+ * file_metadata.provider_id（物理落桶）、未完成 upload_sessions.provider_id、
+ * blob_objects/blob_gc.provider_id（内容寻址索引与回收队列）、
+ * mount_provider_role_permissions.provider_id（桶级矩阵）。
+ * 迁移 0006 起 mount_providers / mount_provider_role_permissions 的 provider 外键为 ON DELETE RESTRICT，
+ * 作为绕过应用层的兜底；其余无外键的引用由这里的应用层检查保证。
+ */
 adminStorageRoutes.delete('/storage/providers/:id', async (c) => {
   const db = getDb(c);
   const id = c.req.param('id');
-  const mounts = await MountRepo.allMounts(db);
-  if (mounts.some((m) => m.providerId === id)) {
-    throw new ApiError(409, 'OPERATION_FAILED', '该存储提供商仍有挂载点，请先删除挂载点');
+  const provider = await ProviderRepo.getProviderById(db, id);
+  if (!provider) throw new ApiError(404, 'NOT_FOUND', '存储提供商不存在');
+  const physical = await providerPhysicalReferenceCounts(db, id);
+  const counts = {
+    mounts: Number((await db.first('SELECT COUNT(*) AS c FROM mounts WHERE provider_id = ?', [id]))?.c ?? 0),
+    poolMembers: Number((await db.first('SELECT COUNT(*) AS c FROM mount_providers WHERE provider_id = ?', [id]))?.c ?? 0),
+    ...physical,
+    bucketMatrices: Number(
+      (await db.first('SELECT COUNT(*) AS c FROM mount_provider_role_permissions WHERE provider_id = ?', [id]))?.c ?? 0
+    ),
+  };
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  if (total > 0) {
+    throw new ApiError(409, 'OPERATION_FAILED', '存储提供商仍被引用，请先迁移挂载点/文件/会话与内容索引', counts);
   }
-  await ProviderRepo.deleteProvider(db, id);
+  await db.transaction(async (tx) => {
+    await ProviderRepo.deleteProvider(tx, id);
+  });
   return ok(c, null);
 });
 
-/** §E 存储池：校验成员 provider 存在后整体替换（§32：池 = 入参成员集，主存储锚点随后派生） */
-async function setPoolMembersValidated(
-  db: Db,
+/**
+ * §E 存储池写阶段（写-only，由调用方包在 db.transaction 内）：
+ * 成员差异化落库（保留 quota_reserved）+ §31 桶级矩阵全量替换（缺省 = 不改，[] = 清空该桶矩阵）。
+ * 成员存在性 / 公开性一致性 / 移除前检查等读操作在事务外的校验阶段完成。
+ */
+async function applyPoolMembers(
+  tx: Tx,
   mountId: string,
   primaryProviderId: string,
   members: PoolMemberInput[]
 ): Promise<void> {
-  for (const member of members) {
-    const provider = await ProviderRepo.getProviderById(db, member.providerId);
-    if (!provider) throw ApiError.badRequest(`存储提供商不存在：${member.providerId}`);
-  }
-  await MountProviderRepo.setMembers(db, mountId, primaryProviderId, members);
-  // §31 桶级默认角色权限矩阵：按 (挂载点, 桶) 全量替换——缺省 = 不改，[] = 清空该桶矩阵
+  await MountProviderRepo.setMembers(tx, mountId, primaryProviderId, members);
   for (const member of members) {
     if (member.rolePermissions !== undefined) {
-      await MountProviderRolePermissionsRepo.setForMount(db, mountId, member.providerId, member.rolePermissions);
+      await MountProviderRolePermissionsRepo.setForMount(tx, mountId, member.providerId, member.rolePermissions);
+    }
+  }
+}
+
+/** 池成员 provider 批量读取（读阶段：存在性 + 公开性一致性）；重复 providerId 只取一次。 */
+async function loadMemberProviders(db: Db, members: Array<{ providerId: string }>): Promise<StorageProvider[]> {
+  const providers: StorageProvider[] = [];
+  const seen = new Set<string>();
+  for (const member of members) {
+    if (seen.has(member.providerId)) continue;
+    seen.add(member.providerId);
+    const provider = await ProviderRepo.getProviderById(db, member.providerId);
+    if (!provider) throw ApiError.badRequest(`存储提供商不存在：${member.providerId}`);
+    providers.push(provider);
+  }
+  return providers;
+}
+
+/**
+ * 池公开性一致性：同一池成员的 publicDomain 必须「全有或全无」。
+ * 否则读回退命中不同桶时，直链的公开/私有语义会随记录桶而变（公开 CDN 桶可能匿名直读私有回退桶）。
+ */
+function assertPoolPublicDomainConsistent(providers: StorageProvider[]): void {
+  const withDomain = providers.filter((p) => Boolean(p.publicDomain)).length;
+  if (withDomain !== 0 && withDomain !== providers.length) {
+    throw new ApiError(400, 'VALIDATION_ERROR', '同一池不得混用不同公开性策略（publicDomain 全有或全无）');
+  }
+}
+
+/**
+ * 成员移除前检查：对**将被移除**的成员，该挂载下仍有落桶文件（file_metadata.provider_id）、
+ * 未完成上传会话（upload_sessions.provider_id）、内容索引行（blob_objects）或回收队列条目（blob_gc）
+ * → 409。对象不会自动迁移，静默移除会让历史文件不可达。
+ * blob 索引/GC 与 Provider 删除路径的检查对齐——含内容寻址索引的成员不能移出池，
+ * 否则会留下悬空索引（对象不可达、清理语义失真）。
+ */
+async function assertMembersRemovable(db: Db, mountId: string, removedProviderIds: string[]): Promise<void> {
+  if (removedProviderIds.length === 0) return;
+  const blocking: Array<{ providerId: string; files: number; sessions: number; blobs: number; gc: number }> = [];
+  for (const providerId of removedProviderIds) {
+    const files = Number(
+      (await db.first('SELECT COUNT(*) AS c FROM file_metadata WHERE mount_id = ? AND provider_id = ?', [mountId, providerId]))?.c ?? 0
+    );
+    const sessions = Number(
+      (await db.first(
+        `SELECT COUNT(*) AS c FROM upload_sessions WHERE mount_id = ? AND provider_id = ? AND status IN ('pending','uploading','verifying')`,
+        [mountId, providerId]
+      ))?.c ?? 0
+    );
+    const blobs = Number(
+      (await db.first('SELECT COUNT(*) AS c FROM blob_objects WHERE mount_id = ? AND provider_id = ?', [mountId, providerId]))?.c ?? 0
+    );
+    const gc = Number(
+      (await db.first('SELECT COUNT(*) AS c FROM blob_gc WHERE mount_id = ? AND provider_id = ?', [mountId, providerId]))?.c ?? 0
+    );
+    if (files > 0 || sessions > 0 || blobs > 0 || gc > 0) blocking.push({ providerId, files, sessions, blobs, gc });
+  }
+  if (blocking.length > 0) {
+    throw new ApiError(409, 'OPERATION_FAILED', '成员仍有文件/在途会话/内容索引，无法移除，请先迁移', { members: blocking });
+  }
+}
+
+/**
+ * §32 主存储锚点派生（内存版，写阶段只落库）：池内**第一个可写成员**
+ * （sort_order 升序、同序 provider_id 升序）；请求里显式给的可写成员优先保留（兼容既有管理端调用方）。
+ * 池内无可写成员：成员集为空 = 单桶语义（显式请求即锚点，否则不动）；成员全为备用 = 坏配置（不动）。
+ */
+function deriveAnchor(members: Required<MountProviderMemberInput>[], requestedProviderId: string | null): string | null {
+  const writable = members.filter((m) => !m.standby);
+  if (writable.length === 0) return members.length === 0 ? requestedProviderId : null;
+  const first = writable
+    .slice()
+    .sort((a, b) => ((a.sortOrder ?? 0) !== (b.sortOrder ?? 0) ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0) : a.providerId.localeCompare(b.providerId)))[0];
+  if (!first) return null;
+  return writable.find((m) => m.providerId === requestedProviderId)?.providerId ?? first.providerId;
+}
+
+/**
+ * 挂载放置统一校验（Provider 一步创建 / POST /mounts / PATCH|PUT /mounts/:id 共用）：
+ * 1) 同规范化路径的另一个挂载 → 400 ALREADY_EXISTS；
+ * 2) 嵌套不变量（**非严格**）：对任一现存祖先要求 X.priority >= 祖先.priority，
+ *    对任一现存后代要求 X.priority <= 后代.priority（等值合法，深度决胜）；
+ *    只禁止「祖先优先级严格高于后代」的遮蔽组合 → 400 并说明原因；
+ * 3) 数据遮蔽守卫（checkDataShadow 时）：新/改路径 P 被现存祖先挂载 E 覆盖（E 为 P 的严格祖先），
+ *    且 E 命名空间下已有 P 子树的 file_metadata 行（path = P 或 path LIKE 'P/%'）→ 409。
+ */
+async function assertMountPlacement(
+  db: Db,
+  input: { mountPath: string; priority: number; excludeMountId?: string; checkDataShadow?: boolean }
+): Promise<void> {
+  const path = normalizePath(input.mountPath);
+  const others = (await MountRepo.allMounts(db)).filter((m) => m.id !== input.excludeMountId);
+  for (const other of others) {
+    if (other.mountPath === path) throw new ApiError(400, 'ALREADY_EXISTS', `挂载路径已存在：${path}`);
+  }
+  const ancestors = others.filter((m) => m.mountPath === '/' || path.startsWith(m.mountPath + '/'));
+  const descendants = others.filter((m) => path === '/' || m.mountPath.startsWith(path + '/'));
+  for (const ancestor of ancestors) {
+    if (input.priority < ancestor.priority) {
+      throw new ApiError(
+        400,
+        'VALIDATION_ERROR',
+        `优先级遮蔽：挂载 ${path}(priority=${input.priority}) 低于祖先 ${ancestor.mountPath}(priority=${ancestor.priority})，该子树将被祖先覆盖而不可达；要求子挂载 priority >= 祖先（等值合法，深度决胜）`
+      );
+    }
+  }
+  for (const descendant of descendants) {
+    if (input.priority > descendant.priority) {
+      throw new ApiError(
+        400,
+        'VALIDATION_ERROR',
+        `优先级遮蔽：挂载 ${path}(priority=${input.priority}) 高于后代 ${descendant.mountPath}(priority=${descendant.priority})，后代将被遮蔽；要求祖先 priority <= 后代（等值合法，深度决胜）`
+      );
+    }
+  }
+  if (input.checkDataShadow === false) return;
+  const like = `${escapeLikePattern(path)}/%`;
+  for (const ancestor of ancestors) {
+    const row = await db.first(
+      `SELECT 1 AS x FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\') LIMIT 1`,
+      [ancestor.id, path, like]
+    );
+    if (row) {
+      throw new ApiError(
+        409,
+        'OPERATION_FAILED',
+        `目标路径已有父挂载数据，无 overlay 合并语义，请先迁移：${path}（父挂载 ${ancestor.mountPath}）`
+      );
     }
   }
 }
 
 /**
- * §32 主存储锚点维护：`mounts.provider_id` 已降级为**内部锚点**，不再由用户选择，只承载三件事：
- * ① 池成员为空（清空成员 / 池化前的存量挂载）时的写路径兜底（单桶语义）；
- * ② `file_metadata.provider_id IS NULL` 存量行的读回退与用量归属（含 §30 成员容量聚合）；
- * ③ 删除提供商时的级联判定。
- *
- * 池成员全量替换后按池内次序重新派生：**第一个非备用成员**（sort_order 升序、同序 provider_id 升序，
- * 与 ordered 策略一致）——锚点被移出池、被标为备用、或成员集合重排都会随之更新。
- * 请求里显式给的可写成员优先保留（兼容既有管理端调用方）；池内没有成员时不改动（单桶语义的锚点即唯一成员）。
+ * 缺省 priority：取覆盖该路径的现存祖先挂载的最高 priority（等值合法、深度决胜，新建挂载不会被祖先遮蔽）。
+ * 无祖先（创建根挂载）→ 0。显式提供 priority 时不走这里，按 assertMountPlacement 的非严格不等式校验。
  */
-async function syncPrimaryAnchor(db: Db, mountId: string, requestedProviderId: string | null): Promise<void> {
-  const members = await MountProviderRepo.listMembers(db, mountId);
-  const writable = writableMembers(members);
-  const first = firstWritableMember(members);
-  // 池内没有可写成员：无成员行 = 单桶语义（显式请求即锚点，否则不动）；成员全为备用 = 坏配置（不动，写路径拒写）
-  const anchor =
-    first !== null
-      ? (writable.find((m) => m.providerId === requestedProviderId)?.providerId ?? first.providerId)
-      : members.length === 0
-        ? requestedProviderId
-        : null;
-  if (!anchor) return;
-  const mount = await MountRepo.getMountById(db, mountId);
-  if (mount && mount.providerId !== anchor) await MountRepo.updateMount(db, mountId, { provider_id: anchor });
+async function nestedDefaultPriority(db: Db, mountPath: string): Promise<number> {
+  const path = normalizePath(mountPath);
+  const mounts = await MountRepo.allMounts(db);
+  return mounts.reduce(
+    (max, m) => (m.mountPath === '/' || path.startsWith(m.mountPath + '/') ? Math.max(max, m.priority) : max),
+    0
+  );
 }
 
 /** 池成员入参归一化：poolMembers 优先；poolProviderIds 为等价简写（weight=1、不限容量、sortOrder=0） */
@@ -319,7 +500,7 @@ adminStorageRoutes.post('/mounts', async (c) => {
   const parsed = MountSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest('挂载点参数无效');
   const mountPath = normalizePath(parsed.data.mountPath);
-  // §32 主存储锚点：providerId 缺省时取入池的第一个桶（锚点随后由 syncPrimaryAnchor 派生，不再由用户选择）
+  // §32 主存储锚点：providerId 缺省时取入池的第一个桶（锚点随后派生，不再由用户选择）
   const poolMemberInput = normalizePoolMembers(parsed.data);
   const requestedProviderId = parsed.data.providerId ?? poolMemberInput[0]?.providerId ?? null;
   if (!requestedProviderId) {
@@ -327,40 +508,52 @@ adminStorageRoutes.post('/mounts', async (c) => {
   }
   const provider = await ProviderRepo.getProviderById(db, requestedProviderId);
   if (!provider) throw ApiError.badRequest('存储提供商不存在');
-  // §31/§32 校验：先校验再落库（非法组合不留半成品挂载点）
+
+  // 读阶段：先校验后落库（非法组合不留半成品挂载点）
+  const priority = parsed.data.priority ?? (await nestedDefaultPriority(db, mountPath));
+  await assertMountPlacement(db, { mountPath, priority });
   assertTotalWithinBuckets(parsed.data.maxStorage ?? null, poolMemberInput);
   assertWritableMemberPresent(poolMemberInput);
-  const mount = await MountRepo.createMount(db, {
-    providerId: requestedProviderId,
-    mountPath,
-    name: parsed.data.name,
-    sortBy: parsed.data.sortBy,
-    sortOrder: parsed.data.sortOrder,
-    priority: parsed.data.priority,
-    maxStorage: parsed.data.maxStorage ?? null,
-    poolStrategy: parsed.data.poolStrategy,
-    capacityBytes: parsed.data.capacityBytes ?? null,
+  const finalMembers = normalizeMemberInputs(poolMemberInput, requestedProviderId);
+  assertPoolPublicDomainConsistent(await loadMemberProviders(db, finalMembers));
+  const anchor = deriveAnchor(finalMembers, parsed.data.providerId ?? null);
+
+  // 目录行登记计划（读阶段解析）：同路径已有用户目录/文件 → 409（不隐式复用用户行）
+  const mountId = uuid();
+  const mountSource = { id: mountId, mountPath, name: parsed.data.name };
+  const folderPlan = await resolveMountFolderPlan(db, mountSource, c.get('userId') as string | undefined, {
+    strict: true,
   });
-  // §28 写入口模式：createMount 签名不覆盖该列，缺省由列默认 'free' 兜底
-  if (parsed.data.uploadMode !== undefined) {
-    await MountRepo.updateMount(db, mount.id, { upload_mode: parsed.data.uploadMode });
-    mount.uploadMode = parsed.data.uploadMode;
-  }
-  // §28 挂载点级默认角色权限矩阵（全量替换：新建挂载点即为完整目标状态）
-  if (parsed.data.rolePermissions !== undefined) {
-    await MountRolePermissionsRepo.setForMount(db, mount.id, parsed.data.rolePermissions);
-  }
-  if (poolMemberInput.length > 0) {
-    await setPoolMembersValidated(db, mount.id, requestedProviderId, poolMemberInput);
-    // §32 池成员替换后派生主存储锚点（锚点被移出池 / 被标备用 / 成员重排都会随之更新）
-    await syncPrimaryAnchor(db, mount.id, parsed.data.providerId ?? null);
-  }
-  // §H：挂载点必须是父命名空间里可见的目录（锚点可能已被派生改写，取最终行）
-  const finalMount = (await MountRepo.getMountById(db, mount.id)) ?? mount;
-  await ensureMountFolder(db, finalMount, c.get('userId') as string | undefined);
+
+  // 写阶段（挂载行 / upload mode / 角色矩阵 / 成员 / 锚点 / 目录行登记同一事务）
+  await db.transaction(async (tx) => {
+    await MountRepo.insertMount(tx, {
+      id: mountId,
+      providerId: requestedProviderId,
+      mountPath,
+      name: parsed.data.name,
+      sortBy: parsed.data.sortBy,
+      sortOrder: parsed.data.sortOrder,
+      priority,
+      maxStorage: parsed.data.maxStorage ?? null,
+      poolStrategy: parsed.data.poolStrategy,
+      capacityBytes: parsed.data.capacityBytes ?? null,
+      uploadMode: parsed.data.uploadMode,
+    });
+    // §28 挂载点级默认角色权限矩阵（全量替换：新建挂载点即为完整目标状态）
+    if (parsed.data.rolePermissions !== undefined) {
+      await MountRolePermissionsRepo.setForMount(tx, mountId, parsed.data.rolePermissions);
+    }
+    await applyPoolMembers(tx, mountId, requestedProviderId, poolMemberInput);
+    // §32 主存储锚点：池内第一个可写成员（显式请求的可写成员优先保留）
+    if (anchor) await MountRepo.updateMount(tx, mountId, { provider_id: anchor });
+    if (folderPlan) await applyMountFolderPlan(tx, folderPlan, mountSource);
+  });
+
+  const finalMount = (await MountRepo.getMountById(db, mountId)) as Mount;
   return ok(
     c,
-    { mount: finalMount, rolePermissions: await MountRolePermissionsRepo.listByMount(db, mount.id) },
+    { mount: finalMount, rolePermissions: await MountRolePermissionsRepo.listByMount(db, mountId) },
     undefined,
     201
   );
@@ -376,62 +569,104 @@ adminStorageRoutes.on(['PUT', 'PATCH'], '/mounts/:id', async (c) => {
   if (!parsed.success) throw ApiError.badRequest('挂载点参数无效');
   const before = await MountRepo.getMountById(db, id);
   if (!before) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+
+  const nextPath = parsed.data.mountPath !== undefined ? normalizePath(parsed.data.mountPath) : before.mountPath;
+  const nextName = parsed.data.name ?? before.name;
+  const nextPriority = parsed.data.priority ?? before.priority;
+  const pathChanged = nextPath !== before.mountPath;
+  const nameChanged = parsed.data.name !== undefined && parsed.data.name !== before.name;
+
   const fields: Record<string, unknown> = {};
-  if (parsed.data.mountPath !== undefined) fields.mount_path = normalizePath(parsed.data.mountPath);
+  if (parsed.data.mountPath !== undefined) fields.mount_path = nextPath;
   if (parsed.data.name !== undefined) fields.name = parsed.data.name;
   if (parsed.data.sortBy !== undefined) fields.sort_by = parsed.data.sortBy;
   if (parsed.data.sortOrder !== undefined) fields.sort_order = parsed.data.sortOrder;
   if (parsed.data.priority !== undefined) fields.priority = parsed.data.priority;
-  // §32：providerId 不直接落库——锚点由 syncPrimaryAnchor 按「池内可写成员」派生（不再是用户直选字段）
+  // §32：providerId 不直接落库——锚点按「池内可写成员」派生（不再是用户直选字段）
   if (parsed.data.maxStorage !== undefined) fields.max_storage = parsed.data.maxStorage;
   if (parsed.data.capacityBytes !== undefined) fields.capacity_bytes = parsed.data.capacityBytes;
   if (parsed.data.poolStrategy !== undefined) fields.pool_strategy = parsed.data.poolStrategy;
   if (parsed.data.uploadMode !== undefined) fields.upload_mode = parsed.data.uploadMode;
-  // §31/§32 校验：以「本请求后的最终状态」判定（总上限、桶上限与备用标记都可能来自本次请求或库内现值），
-  // 先校验再落库，非法组合不产生部分写入。
+
+  // 读阶段：放置校验（改路径或改优先级时；改路径时查父挂载数据遮蔽）
+  if (pathChanged || parsed.data.priority !== undefined) {
+    await assertMountPlacement(db, {
+      mountPath: nextPath,
+      priority: nextPriority,
+      excludeMountId: id,
+      checkDataShadow: pathChanged,
+    });
+  }
+
   const replacesMembers = parsed.data.poolMembers !== undefined || parsed.data.poolProviderIds !== undefined;
   const memberInput = replacesMembers ? normalizePoolMembers(parsed.data) : [];
-  const finalMembers = replacesMembers ? memberInput : await MountProviderRepo.listMembers(db, id);
+  // 成员集总是读出：即使本次不替换成员，总上限校验（§31）也需要既有桶上限参与判定
+  const existingMembers = await MountProviderRepo.listMembers(db, id);
+  const effectivePrimary = parsed.data.providerId ?? before.providerId;
+  // 最终成员集（空成员集 = 单桶语义：回填主锚点），用于总上限校验与锚点派生
+  const finalMembers = replacesMembers
+    ? normalizeMemberInputs(memberInput, effectivePrimary)
+    : normalizeMemberInputs(existingMembers, before.providerId);
   assertTotalWithinBuckets(
     parsed.data.maxStorage !== undefined ? parsed.data.maxStorage : before.maxStorage,
     finalMembers
   );
   assertWritableMemberPresent(finalMembers);
-  await MountRepo.updateMount(db, id, fields);
-  // §28 挂载点级默认角色权限矩阵：全量替换（传 [] = 清空），缺省字段不改
-  if (parsed.data.rolePermissions !== undefined) {
-    await MountRolePermissionsRepo.setForMount(db, id, parsed.data.rolePermissions);
-  }
+
+  // 读阶段：成员校验（存在性 / 公开性一致性 / 移除前检查）
   if (replacesMembers) {
-    const existing = await MountRepo.getMountById(db, id);
-    if (!existing) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
-    // 空成员集 = 清空池（回到单桶语义）→ 以「请求锚点 ?? 当前锚点」作为唯一成员落库
-    await setPoolMembersValidated(db, id, parsed.data.providerId ?? existing.providerId, memberInput);
+    assertPoolPublicDomainConsistent(await loadMemberProviders(db, finalMembers));
+    const finalIds = new Set(finalMembers.map((m) => m.providerId));
+    const removed = existingMembers.map((m) => m.providerId).filter((providerId) => !finalIds.has(providerId));
+    await assertMembersRemovable(db, id, removed);
   }
-  // §32 主存储锚点派生：成员替换后按池内次序重算；只改 providerId 时同样以「可写成员」为准（非法值不会写库）
-  if (replacesMembers || parsed.data.providerId !== undefined) {
-    await syncPrimaryAnchor(db, id, parsed.data.providerId ?? null);
-  }
-  // §H：路径或显示名变化时同步挂载点目录行
-  const after = await MountRepo.getMountById(db, id);
-  if (after) {
-    if (before.mountPath !== after.mountPath) await removeMountFolder(db, before);
-    await ensureMountFolder(db, after, c.get('userId') as string | undefined);
-  }
+  const anchor =
+    replacesMembers || parsed.data.providerId !== undefined
+      ? deriveAnchor(finalMembers, parsed.data.providerId ?? null)
+      : null;
+
+  // 读阶段：目录行登记计划（改路径或改显示名）；同路径已有用户目录/文件 → 409
+  const mountSource = { id, mountPath: nextPath, name: nextName };
+  const folderPlan =
+    pathChanged || nameChanged
+      ? await resolveMountFolderPlan(db, mountSource, c.get('userId') as string | undefined, { strict: true })
+      : null;
+
+  // 写阶段（挂载行 / 角色矩阵 / 成员 / 锚点 / 目录行同一事务）
+  await db.transaction(async (tx) => {
+    await MountRepo.updateMount(tx, id, fields);
+    // §28 挂载点级默认角色权限矩阵：全量替换（传 [] = 清空），缺省字段不改
+    if (parsed.data.rolePermissions !== undefined) {
+      await MountRolePermissionsRepo.setForMount(tx, id, parsed.data.rolePermissions);
+    }
+    if (replacesMembers) await applyPoolMembers(tx, id, effectivePrimary, memberInput);
+    if (anchor) await MountRepo.updateMount(tx, id, { provider_id: anchor });
+    // §H：改路径 → 先按身份删旧行，再登记新路径目录行；仅改显示名 → 更新身份行标题
+    if (pathChanged) await removeMountFolder(tx, before);
+    if (folderPlan) await applyMountFolderPlan(tx, folderPlan, mountSource);
+  });
+
   return ok(c, { message: '已更新' });
 });
 
 adminStorageRoutes.delete('/mounts/:id', async (c) => {
   const db = getDb(c);
   const id = c.req.param('id');
-  const countRow = await db.first(`SELECT COUNT(*) AS c FROM file_metadata WHERE mount_id = ?`, [id]);
-  if (Number(countRow?.c ?? 0) > 0) {
-    throw new ApiError(409, 'OPERATION_FAILED', '挂载点下仍有文件，无法删除');
-  }
   const mount = await MountRepo.getMountById(db, id);
-  await MountRepo.deleteMount(db, id);
+  if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+  // 删除用一条条件 DELETE 同时判定无文件、无在途会话：消除「先查后删」的 TOCTOU；
+  // 子表（池成员/角色矩阵/会话）由外键 ON DELETE CASCADE 清理——在途会话会带走预留行，故必须在条件里排除。
+  const res = await db.run(
+    `DELETE FROM mounts WHERE id = ?
+       AND NOT EXISTS (SELECT 1 FROM file_metadata WHERE mount_id = ?)
+       AND NOT EXISTS (SELECT 1 FROM upload_sessions WHERE mount_id = ? AND status IN ('pending','uploading','verifying'))`,
+    [id, id, id]
+  );
+  if (res.changes === 0) {
+    throw new ApiError(409, 'OPERATION_FAILED', '挂载点下仍有文件或在途上传会话，无法删除');
+  }
   // §H：连带清理父命名空间里的挂载点目录行
-  if (mount) await removeMountFolder(db, mount);
+  await removeMountFolder(db, mount);
   return ok(c, null);
 });
 

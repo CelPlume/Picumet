@@ -166,3 +166,124 @@ describe('挂载点皆目录', () => {
     expect(rowByPath('/mflegacy', 'mflegacy')).toHaveLength(1);
   });
 });
+
+describe('挂载点目录行身份化', () => {
+  /** 测试夹具：单列查询的已知列形状 */
+  function scalarId(sql: string, ...params: Array<string | number>): string {
+    const row = ctx.db.prepare(sql).get(...params) as { id: string } | undefined;
+    if (!row) throw new Error(`expected a row for: ${sql}`);
+    return row.id;
+  }
+
+  function folderRow(name: string): { id: string; custom_title: string | null } | undefined {
+    return ctx.db
+      .prepare(`SELECT id, custom_title FROM file_metadata WHERE name = ? AND type = 'folder'`)
+      .get(name) as { id: string; custom_title: string | null } | undefined;
+  }
+
+  it('同路径被用户目录行占用时拒绝创建挂载（不隐式复用用户行）', async () => {
+    const providerId = await createProvider('mfi-provider-1');
+    const csrf = await getCsrf(ctx, adminCookie);
+    const created = await request(ctx, '/api/files/folder', {
+      method: 'POST',
+      cookie: adminCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { path: '/', name: 'mfi-occ' },
+    });
+    expect(created.status).toBe(201);
+    const before = folderRow('mfi-occ');
+    expect(before).toBeTruthy();
+
+    const res = await request(ctx, '/api/admin/mounts', {
+      method: 'POST',
+      cookie: adminCookie,
+      headers: { 'X-CSRF-Token': adminCsrf },
+      body: { providerId, mountPath: '/mfi-occ', name: '占用挂载', priority: 300 },
+    });
+    expect(res.status).toBe(409);
+    const after = folderRow('mfi-occ');
+    expect(after?.id).toBe(before?.id);
+    expect(after?.custom_title ?? null).toBe(before?.custom_title ?? null);
+  });
+
+  it('同路径被用户文件行占用时拒绝创建挂载（file 行 path=父目录，仍按显示路径判定）', async () => {
+    const providerId = await createProvider('mfi-provider-2');
+    const rootId = scalarId(`SELECT id FROM mounts WHERE mount_path = '/'`);
+    const owner = scalarId(`SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1`);
+    const now = Date.now();
+    ctx.db
+      .prepare(
+        `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, size, owner_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'file', 1, ?, ?, ?)`
+      )
+      .run('mfi-user-file', rootId, 'mfi-file', '/', 'mfi-file', owner, now, now);
+
+    const res = await request(ctx, '/api/admin/mounts', {
+      method: 'POST',
+      cookie: adminCookie,
+      headers: { 'X-CSRF-Token': adminCsrf },
+      body: { providerId, mountPath: '/mfi-file', name: '文件占用挂载', priority: 300 },
+    });
+    expect(res.status).toBe(409);
+    expect((await json<{ error: { message: string } }>(res)).error.message).toContain('目标路径已被现有目录/文件占用');
+    // 未登记任何挂载身份行（不隐式覆盖用户文件）
+    expect(
+      ctx.db.prepare(`SELECT id FROM file_metadata WHERE name = 'mfi-file' AND type = 'folder'`).all()
+    ).toHaveLength(0);
+  });
+
+  it('后台自愈容错：存量挂载点被用户行占用时跳过登记并保留用户行', async () => {
+    const providerId = await createProvider('mfi-provider-3');
+    const rootId = scalarId(`SELECT id FROM mounts WHERE mount_path = '/'`);
+    const owner = scalarId(`SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1`);
+    const now = Date.now();
+    const legacyMountId = 'mfi-legacy-mount';
+    ctx.db
+      .prepare(
+        `INSERT INTO mounts (id, provider_id, mount_path, name, priority, created_at, updated_at, status)
+         VALUES (?, ?, '/mfi-legacy', '存量挂载', 300, ?, ?, 'active')`
+      )
+      .run(legacyMountId, providerId, now, now);
+    ctx.db
+      .prepare(
+        `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, size, owner_id, custom_title, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'folder', 0, ?, ?, ?, ?)`
+      )
+      .run('mfi-legacy-user', rootId, 'folder:/mfi-legacy', '/mfi-legacy', 'mfi-legacy', owner, '用户目录', now, now);
+
+    const res = await request(ctx, '/api/admin/mounts', { cookie: adminCookie });
+    expect(res.status).toBe(200);
+    const rows = ctx.db
+      .prepare(`SELECT id, custom_title FROM file_metadata WHERE name = 'mfi-legacy' AND type = 'folder'`)
+      .all() as Array<{ id: string; custom_title: string | null }>;
+    expect(rows.map((r) => r.id)).toEqual(['mfi-legacy-user']);
+    expect(rows[0].custom_title).toBe('用户目录');
+  });
+
+  it('删除挂载只按确定性身份删行：身份行缺失时用户行不被回收', async () => {
+    const providerId = await createProvider('mfi-provider-4');
+    const mountId = await createMount('/mfi-idvol', '身份挂载', providerId);
+    const rootId = scalarId(`SELECT id FROM mounts WHERE mount_path = '/'`);
+    const owner = scalarId(`SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1`);
+    const now = Date.now();
+    // 模拟存量复用：删掉身份行，改成用户行（同 mount_id/path/name/type）
+    ctx.db.prepare(`DELETE FROM file_metadata WHERE id = ?`).run(`mountfolder:${mountId}`);
+    ctx.db
+      .prepare(
+        `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, size, owner_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'folder', 0, ?, ?, ?)`
+      )
+      .run('mfi-idvol-user', rootId, 'folder:/mfi-idvol', '/mfi-idvol', 'mfi-idvol', owner, now, now);
+
+    const removed = await request(ctx, `/api/admin/mounts/${mountId}`, {
+      method: 'DELETE',
+      cookie: adminCookie,
+      headers: { 'X-CSRF-Token': adminCsrf },
+    });
+    expect(removed.status).toBe(200);
+    const rows = ctx.db
+      .prepare(`SELECT id FROM file_metadata WHERE name = 'mfi-idvol' AND type = 'folder'`)
+      .all() as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).toEqual(['mfi-idvol-user']);
+  });
+});

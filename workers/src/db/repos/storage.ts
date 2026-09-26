@@ -29,22 +29,59 @@ export const ProviderRepo = {
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
     await db.run(`UPDATE storage_providers SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
   },
-  async deleteProvider(db: Db, id: string): Promise<void> {
-    await db.run('DELETE FROM storage_providers WHERE id = ?', [id]);
+  async deleteProvider(db: Db | Tx, id: string): Promise<void> {
+    await db.query('DELETE FROM storage_providers WHERE id = ?', [id]);
   },
 };
 
 export const MountRepo = {
-  async createMount(db: Db, m: { providerId: string; mountPath: string; name: string; sortBy?: string; sortOrder?: string; priority?: number; maxStorage?: number | null; poolStrategy?: string; capacityBytes?: number | null }): Promise<Mount> {
+  /**
+   * 写入挂载行（write-only，接受 Db|Tx 以便事务内调用）。
+   * 只做 INSERT，**不回读**（D1 事务内不支持读）；调用方在事务外按 id 读回。
+   */
+  async insertMount(
+    db: Db | Tx,
+    m: {
+      id: string;
+      providerId: string;
+      mountPath: string;
+      name: string;
+      sortBy?: string;
+      sortOrder?: string;
+      priority?: number;
+      maxStorage?: number | null;
+      poolStrategy?: string;
+      capacityBytes?: number | null;
+      uploadMode?: string;
+    }
+  ): Promise<void> {
+    const now = Date.now();
+    await db.query(
+      `INSERT INTO mounts (id, provider_id, mount_path, name, sort_by, sort_order, priority, max_storage, pool_strategy, capacity_bytes, upload_mode, created_at, updated_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [
+        m.id,
+        m.providerId,
+        m.mountPath,
+        m.name,
+        m.sortBy ?? 'name',
+        m.sortOrder ?? 'asc',
+        m.priority ?? 0,
+        m.maxStorage ?? null,
+        m.poolStrategy ?? 'least_used',
+        m.capacityBytes ?? null,
+        m.uploadMode ?? 'free',
+        now,
+        now,
+      ]
+    );
+  },
+  async createMount(db: Db, m: { providerId: string; mountPath: string; name: string; sortBy?: string; sortOrder?: string; priority?: number; maxStorage?: number | null; poolStrategy?: string; capacityBytes?: number | null; uploadMode?: string }): Promise<Mount> {
     const id = uuid();
     const now = Date.now();
-    await db.run(
-      `INSERT INTO mounts (id, provider_id, mount_path, name, sort_by, sort_order, priority, max_storage, pool_strategy, capacity_bytes, created_at, updated_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [id, m.providerId, m.mountPath, m.name, m.sortBy ?? 'name', m.sortOrder ?? 'asc', m.priority ?? 0, m.maxStorage ?? null, m.poolStrategy ?? 'least_used', m.capacityBytes ?? null, now, now]
-    );
+    await this.insertMount(db, { id, ...m });
     // §E 存储池：主 provider 自动成为池成员
-    await db.run(
+    await db.query(
       `INSERT OR IGNORE INTO mount_providers (mount_id, provider_id, weight, created_at) VALUES (?, ?, 1, ?)`,
       [id, m.providerId, now]
     );
@@ -55,14 +92,19 @@ export const MountRepo = {
     return row ? mapMount(row) : null;
   },
   async listMounts(db: Db): Promise<Mount[]> {
-    const rows = await db.all('SELECT * FROM mounts WHERE status = \'active\' ORDER BY priority DESC, mount_path ASC');
+    // 末位键 created_at/id 让平局次序确定，不依赖 SQL 的隐式行序
+    const rows = await db.all('SELECT * FROM mounts WHERE status = \'active\' ORDER BY priority DESC, mount_path ASC, created_at ASC, id ASC');
     return rows.map(mapMount);
   },
   async allMounts(db: Db): Promise<Mount[]> {
-    const rows = await db.all('SELECT * FROM mounts ORDER BY priority DESC, mount_path ASC');
+    const rows = await db.all('SELECT * FROM mounts ORDER BY priority DESC, mount_path ASC, created_at ASC, id ASC');
     return rows.map(mapMount);
   },
-  /** 找到能包含该路径的挂载点（priority 高优先，同 priority 路径更深优先） */
+  /**
+   * 找到能包含该路径的挂载点（priority 高优先，同 priority 路径更深优先）。
+   * 同 priority 且同路径长度时按 created_at ASC、id ASC 稳定决胜：
+   * 平局不依赖 listMounts 的输入次序或 SQL 的隐式顺序。
+   */
   async findMountForPath(db: Db, canonicalPath: string): Promise<Mount | null> {
     const mounts = await this.listMounts(db);
     const candidates = mounts.filter((m) => {
@@ -72,15 +114,17 @@ export const MountRepo = {
     if (candidates.length === 0) return null;
     candidates.sort((a, b) => {
       if (a.priority !== b.priority) return b.priority - a.priority;
-      return b.mountPath.length - a.mountPath.length;
+      if (b.mountPath.length !== a.mountPath.length) return b.mountPath.length - a.mountPath.length;
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      return a.id.localeCompare(b.id);
     });
     return candidates[0];
   },
-  async updateMount(db: Db, id: string, fields: Record<string, unknown>): Promise<void> {
+  async updateMount(db: Db | Tx, id: string, fields: Record<string, unknown>): Promise<void> {
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
     if (entries.length === 0) return;
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
-    await db.run(`UPDATE mounts SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
+    await db.query(`UPDATE mounts SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
   },
   async deleteMount(db: Db, id: string): Promise<void> {
     await db.run('DELETE FROM mounts WHERE id = ?', [id]);
@@ -122,18 +166,6 @@ export const MountQuotaRepo = {
       [size, Date.now(), mountId]
     );
   },
-  /** 跨挂载移动：源扣减 + 目标落账（无预留语义，移动不改用户配额） */
-  async transferUsage(db: Db, sourceMountId: string, targetMountId: string, size: number): Promise<void> {
-    if (sourceMountId === targetMountId || size <= 0) return;
-    await db.run(
-      `UPDATE mounts SET used_storage = MAX(0, used_storage - ?), updated_at = ? WHERE id = ?`,
-      [size, Date.now(), sourceMountId]
-    );
-    await db.run(
-      `UPDATE mounts SET used_storage = used_storage + ?, updated_at = ? WHERE id = ?`,
-      [size, Date.now(), targetMountId]
-    );
-  },
 };
 
 /** 池成员（§E）：weight = 加权系数；capacityBytes = 成员容量上限（null = 不限）；sortOrder = ordered 队列次序 */
@@ -155,6 +187,33 @@ export interface MountProviderMemberInput {
   capacityBytes?: number | null;
   sortOrder?: number | null;
   standby?: boolean | null;
+}
+
+/**
+ * 池成员入参归一化（§E）：去重、weight >= 1、capacityBytes >= 0 或 null（不限）、
+ * sortOrder >= 0、standby = 显式布尔。**空成员集 = 单桶语义**：回填 primaryProviderId 作为唯一成员。
+ * 供 MountProviderRepo.setMembers 与管理端主锚点派生共用，保证两处对「最终成员集」的理解一致。
+ */
+export function normalizeMemberInputs(
+  members: MountProviderMemberInput[],
+  primaryProviderId: string
+): Required<MountProviderMemberInput>[] {
+  const normalized: Required<MountProviderMemberInput>[] = [];
+  const seen = new Set<string>();
+  const push = (m: MountProviderMemberInput) => {
+    if (!m.providerId || seen.has(m.providerId)) return;
+    seen.add(m.providerId);
+    normalized.push({
+      providerId: m.providerId,
+      weight: m.weight == null ? 1 : Math.max(1, Math.trunc(m.weight)),
+      capacityBytes: m.capacityBytes == null ? null : Math.max(0, Math.trunc(m.capacityBytes)),
+      sortOrder: m.sortOrder == null ? 0 : Math.max(0, Math.trunc(m.sortOrder)),
+      standby: m.standby === true,
+    });
+  };
+  for (const m of members) push(m);
+  if (normalized.length === 0) push({ providerId: primaryProviderId });
+  return normalized;
 }
 
 /**
@@ -198,47 +257,72 @@ export const MountProviderRepo = {
     }));
   },
   /**
-   * 全量替换池成员（事务内先删后插）。§32：池 = 调用方给出的成员集——主 provider **不再强制保留**
-   * （「除备用桶外都是主桶」，mounts.provider_id 是自动维护的内部锚点，由调用方随后派生）；
-   * 只有成员集为空（清空池 = 回到单桶语义）时才落库主 provider 作为唯一成员，供写路径兜底。
+   * 池成员**差异化**替换（接受 Db|Tx，调用方负责事务边界）：
+   * - 保留成员走 UPSERT（DO UPDATE SET weight/capacity_bytes/sort_order/standby），
+   *   **不动 quota_reserved 与 created_at**——在途预留不因配置保存而丢失；
+   * - 只 DELETE 真正被移除的行（不在最终成员集里）；
+   * - 空成员集 = 单桶语义：回填主 provider 作为唯一成员。
+   * 传入 Db 时自包一层事务（独立调用仍原子）；传入 Tx 时直接并入外层事务（禁止嵌套事务）。
    */
   async setMembers(
-    db: Db,
+    db: Db | Tx,
     mountId: string,
     primaryProviderId: string,
     members: MountProviderMemberInput[]
   ): Promise<void> {
-    const now = Date.now();
-    const normalized: Required<MountProviderMemberInput>[] = [];
-    const seen = new Set<string>();
-    const push = (m: MountProviderMemberInput) => {
-      if (!m.providerId || seen.has(m.providerId)) return;
-      seen.add(m.providerId);
-      normalized.push({
-        providerId: m.providerId,
-        weight: m.weight == null ? 1 : Math.max(1, Math.trunc(m.weight)),
-        capacityBytes: m.capacityBytes == null ? null : Math.max(0, Math.trunc(m.capacityBytes)),
-        sortOrder: m.sortOrder == null ? 0 : Math.max(0, Math.trunc(m.sortOrder)),
-        standby: m.standby === true,
-      });
-    };
-    for (const m of members) push(m);
-    if (normalized.length === 0) push({ providerId: primaryProviderId });
-
-    await db.transaction(async (tx) => {
-      await tx.query(`DELETE FROM mount_providers WHERE mount_id = ?`, [mountId]);
+    const normalized = normalizeMemberInputs(members, primaryProviderId);
+    const apply = async (writer: Db | Tx) => {
+      const now = Date.now();
       for (const m of normalized) {
-        await tx.query(
-          `INSERT OR IGNORE INTO mount_providers (mount_id, provider_id, weight, capacity_bytes, sort_order, standby, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        await writer.query(
+          `INSERT INTO mount_providers (mount_id, provider_id, weight, capacity_bytes, sort_order, standby, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(mount_id, provider_id) DO UPDATE SET
+             weight = excluded.weight,
+             capacity_bytes = excluded.capacity_bytes,
+             sort_order = excluded.sort_order,
+             standby = excluded.standby`,
           [mountId, m.providerId, m.weight, m.capacityBytes, m.sortOrder, m.standby ? 1 : 0, now]
         );
       }
-    });
+      const placeholders = normalized.map(() => '?').join(', ');
+      await writer.query(
+        `DELETE FROM mount_providers WHERE mount_id = ? AND provider_id NOT IN (${placeholders})`,
+        [mountId, ...normalized.map((m) => m.providerId)]
+      );
+    };
+    if (db instanceof Db) await db.transaction(apply);
+    else await apply(db);
   },
 };
 
 export type { Row };
+
+/**
+ * 直写预留台账：
+ * write.ts（兼容/WebDAV/S3/AList 直写）与跨挂载移动不创建 upload_sessions——它们的成员级预留
+ * 此前不在对账来源内，reconcileQuotas 按在途会话重算时会把这类预留归零（短窗口削弱成员硬容量上限）。
+ * 台账行在预留建立后写入、释放/落账时删除；对账合并「在途会话 + 台账」两来源，并清理 TTL 之外的滞留行。
+ */
+export const ReservationRepo = {
+  async create(db: Db, r: { mountId: string; providerId: string; size: number }): Promise<string> {
+    const id = uuid();
+    await db.run(
+      `INSERT INTO quota_reservations (id, mount_id, provider_id, size, created_at) VALUES (?, ?, ?, ?, ?)`,
+      [id, r.mountId, r.providerId, r.size, Date.now()]
+    );
+    return id;
+  },
+  /** 释放/落账时删除台账行（写路径可并入提交事务：Db|Tx 通用） */
+  async remove(db: Db | Tx, id: string): Promise<void> {
+    await db.query('DELETE FROM quota_reservations WHERE id = ?', [id]);
+  },
+  /** 清理滞留台账行（TTL 之外的崩溃残留；返回删除行数）。对账在重算成员预留前调用。 */
+  async purgeStale(db: Db, before: number): Promise<number> {
+    const res = await db.run('DELETE FROM quota_reservations WHERE created_at < ?', [before]);
+    return res.changes;
+  },
+};
 
 const MEMBER_RELEASE_SQL = `UPDATE mount_providers SET quota_reserved = MAX(0, quota_reserved - ?) WHERE mount_id = ? AND provider_id = ?`;
 
@@ -272,7 +356,7 @@ export const MountProviderQuotaRepo = {
   },
   /**
    * 只判定不预留：同一条件式，读路径无记账副作用。
-   * 供「用量在事务内同步转移、没有在途窗口」的入口使用（如跨挂载移动，与 MountQuotaRepo.transferUsage 同语义）。
+   * 供不持有在途窗口的入口使用（如跨挂载移动的候选预检；正式预留走 reserve）。
    */
   async fits(db: Db, mountId: string, providerId: string, primaryProviderId: string, size: number): Promise<boolean> {
     const row = await db.first(

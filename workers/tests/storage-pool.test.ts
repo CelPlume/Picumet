@@ -1,5 +1,5 @@
 // 存储池（§E）：五档策略（least_used / round_robin / hash / free_weighted / ordered）、
-// 管理端池成员管道（capacityBytes / sortOrder 往返与全量替换）、按文件落桶读路径、删除与存量回归。
+// 管理端池成员管道（capacityBytes / sortOrder 往返与全量替换）、按文件落桶读路径、删除与存量数据行为。
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   createTestContext,
@@ -433,7 +433,7 @@ describe('存储池', () => {
     expect((await json(rejected)).error.code).toBe('MOUNT_QUOTA_EXCEEDED');
   });
 
-  it('存量回归：未配置池成员的挂载不受容量判定影响；单成员池仍守成员容量', async () => {
+  it('存量数据：未配置池成员的挂载不受容量判定影响；单成员池仍守成员容量', async () => {
     const p1 = await createProvider('pool-solo1');
     // 未配置池成员：写路径回退主 provider（单桶语义），无容量配置 → 不判满也不预留
     await createMount({ providerId: p1, mountPath: '/pool-solo1', name: '单桶挂载', poolStrategy: 'ordered' });
@@ -687,7 +687,7 @@ describe('池成员容量判定与预留（§30）', () => {
     expect(memberReserved(mountId, providerId)).toBe(0);
   });
 
-  it('不限容量成员：capacity_bytes IS NULL 不判满也不预留（回归）', async () => {
+  it('不限容量成员：capacity_bytes IS NULL 不判满也不预留', async () => {
     const p1 = await createProvider('pool-cap-null1');
     const p2 = await createProvider('pool-cap-null2');
     const mountId = await createPoolMount('/pool-cap-null', [p1, p2], 'least_used');

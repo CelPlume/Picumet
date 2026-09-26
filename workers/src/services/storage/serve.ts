@@ -1,6 +1,6 @@
-// 对象 HTTP 响应构建器：网关 / 公开路径 / WebDAV 共用（P0-1 Range → 206）
+// 对象 HTTP 响应构建器：网关 / 公开路径 / WebDAV 共用（Range → 206）
 import { ApiError } from '../../shared/errors';
-import type { StorageProviderInterface } from './types';
+import type { ObjectBody, StorageProviderInterface } from './types';
 import { parseRangeHeader } from './range';
 import { ProviderError } from './errors';
 
@@ -18,6 +18,11 @@ export interface ServeObjectOptions {
   /** 强制 attachment（如 WebDAV） */
   forceAttachment?: boolean;
   cacheControl?: string;
+  /**
+   * 命中后的对象内容校验（如回退候选的 sha256 元数据比对）：返回 false 视为该对象不可用，
+   * 抛 404 交由上层（failover 候选循环）继续回退。缺省不校验（既有调用点行为不变）。
+   */
+  verifyObject?: (obj: ObjectBody) => boolean;
 }
 
 function contentDisposition(name: string, mimeType: string | undefined, forceAttachment?: boolean): string {
@@ -55,6 +60,9 @@ export async function serveObject(opts: ServeObjectOptions): Promise<Response> {
     throw err;
   }
   if (!obj) throw new ApiError(404, 'NOT_FOUND', '文件对象不存在或已被删除');
+  if (opts.verifyObject && !opts.verifyObject(obj)) {
+    throw new ApiError(404, 'NOT_FOUND', '对象内容校验失败');
+  }
 
   const effectiveTotal = knownTotal ?? obj.totalSize ?? obj.size;
   const headers = new Headers();

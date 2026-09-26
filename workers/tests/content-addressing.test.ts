@@ -1,4 +1,4 @@
-// §F 内容哈希寻址回归：同内容单份物理对象、移动免拷贝、引用释放与回收、覆盖写、已知哈希直写。
+// §F 内容哈希寻址：同内容单份物理对象、移动免拷贝、引用释放与回收、覆盖写、已知哈希直写。
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
 import { Db, BlobRepo, ProviderRepo } from '../src/db';
@@ -160,7 +160,8 @@ describe('§F 内容哈希寻址', () => {
     expect(ctx.db.prepare('SELECT * FROM blob_gc WHERE hash = ?').get(hash)).toBeTruthy();
     expect(await ctx.r2.head(key)).not.toBeNull();
     const db = Db.fromAny(ctx.env.DB);
-    expect(await BlobRepo.get(db, hash)).toBeNull();
+    const mountRow = ctx.db.prepare('SELECT id FROM mounts LIMIT 1').get() as { id: string };
+    expect(await BlobRepo.get(db, hash, mountRow.id)).toBeNull();
 
     // 保护期满：对象删除、队列清空
     await cleanupBlobObjects(ctx.env, Date.now() + 120_000);

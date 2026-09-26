@@ -1,4 +1,4 @@
-// 管理端 Provider 更新（PUT /api/admin/storage/providers/:id）：SEC-02 SSRF 回归
+// 管理端 Provider 更新（PUT /api/admin/storage/providers/:id）：endpoint 的 SSRF 校验
 // - endpoint 改为私网/云元数据地址 → 400（与创建路径同一文案），且不覆盖库中原值
 // - endpoint 改为空串 = 切回 R2 绑定 → 成功，type 变 r2、凭据清空
 // - endpoint 改为合法公网地址 → 成功（防误伤正常更新路径）
@@ -68,7 +68,7 @@ async function providerRow(id: string): Promise<ProviderRow> {
   return row!;
 }
 
-describe('PUT /api/admin/storage/providers/:id 的 endpoint SSRF 校验（SEC-02）', () => {
+describe('PUT /api/admin/storage/providers/:id 的 endpoint SSRF 校验', () => {
   it('endpoint 改为私网/云元数据地址 → 400，且库中原 endpoint 不被覆盖', async () => {
     const id = await createS3Provider('sec-metadata');
     const res = await putProvider(id, { endpoint: 'http://169.254.169.254' });
@@ -104,7 +104,7 @@ describe('PUT /api/admin/storage/providers/:id 的 endpoint SSRF 校验（SEC-02
   });
 });
 
-describe('publicDomain 私网/保留地址拒绝（SEC-12）', () => {
+describe('publicDomain 私网/保留地址拒绝', () => {
   const base = { name: 'sec-domain', bucket: 'sec-bucket' };
 
   it('https 公网域名通过', () => {

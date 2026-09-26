@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { isPrivateHost } from '../../utils/ssrf';
 
-// 审计 M-03：公网/上传域名必须为合法 URL，且生产仅允许 https（本地 localhost 允许 http）。
+// 公网/上传域名必须为合法 URL，且生产仅允许 https（本地 localhost 允许 http）。
 // 防止管理员误配 http/非预期主机导致混合内容或数据外传。
 function httpsUrl(message: string) {
   return z
@@ -24,7 +24,7 @@ function httpsUrl(message: string) {
       return false;
     }, '仅允许 https 公网地址（本地开发可使用 http://localhost）')
     .refine((v) => {
-      // SEC-12：publicDomain 是浏览器直接访问的公开对象域名，禁止把内网/保留地址下发给用户浏览器。
+      // publicDomain 是浏览器直接访问的公开对象域名，禁止把内网/保留地址下发给用户浏览器。
       // localhost / 127.0.0.1 沿用上方「本地开发」口径豁免；https 公网域名不允许内网/保留地址。
       let url: URL;
       try {
@@ -37,7 +37,7 @@ function httpsUrl(message: string) {
     }, '公网域名不允许内网/保留地址');
 }
 
-// 存储提供商（报告 §5.2 单表单平铺）：
+// 存储提供商（§5.2 单表单平铺）：
 // type 由「有无 endpoint」在后端推导，不再是入参；绑定模式 = endpoint/AK/SK 全留空。
 export const ProviderSchemaBase = z.object({
   name: z.string().min(1).max(100),
@@ -116,7 +116,7 @@ export const MountSchema = z.object({
 });
 
 // 权限规则
-// DESIGN-01：不再接受 requirePassword/password/allowedIps——条件接口从未接入生产调用链，
+// 不接受 requirePassword/password/allowedIps——条件接口从未接入生产调用链，
 // 允许配置只会造成「看似生效」的锁死。存量行不受影响：引擎第 6 步对未验证/未匹配条件 fail-closed（deny）。
 export const RuleSchema = z.object({
   pathPattern: z.string().min(1),
