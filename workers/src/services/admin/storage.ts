@@ -7,7 +7,7 @@ import { getDb } from '../../middleware/auth';
 import { getProvider } from '../storage/providers';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
-import { encryptSecret, hashPassword, uuid } from '../../utils/crypto';
+import { encryptSecret, uuid } from '../../utils/crypto';
 import { normalizePath } from '../../utils/path';
 import type { Env } from '../../shared/types';
 import { validateEndpoint } from '../../utils/ssrf';
@@ -107,6 +107,11 @@ adminStorageRoutes.put('/storage/providers/:id', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = ProviderSchemaBase.partial().safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('存储配置无效');
+  // SEC-02：更新路径与创建路径同一 SSRF 校验——有凭据的 Provider 不能被改指私网/云元数据/任意外部主机；
+  // 空串 = 切回 R2 绑定（不发起 S3 请求），放行。
+  if (parsed.data.endpoint !== undefined && parsed.data.endpoint !== '' && !validateEndpoint(parsed.data.endpoint)) {
+    throw ApiError.badRequest('存储端点无效：必须为公网 http(s) 地址，且不允许私网/保留地址');
+  }
   const fields: Record<string, unknown> = {};
   const map: Record<string, string> = {
     name: 'name',
@@ -458,16 +463,13 @@ adminStorageRoutes.post('/rules', async (c) => {
   if (subjectCount !== 1) {
     throw ApiError.badRequest('规则必须且只能指定 role、userId、apiKeyId 中的一个');
   }
-  const { password, ...rest } = parsed.data;
   const rule = await RuleRepo.createRule(db, {
-    ...rest,
-    mountId: rest.mountId ?? undefined,
-    role: rest.role ?? undefined,
-    userId: rest.userId ?? undefined,
-    apiKeyId: rest.apiKeyId ?? undefined,
+    ...parsed.data,
+    mountId: parsed.data.mountId ?? undefined,
+    role: parsed.data.role ?? undefined,
+    userId: parsed.data.userId ?? undefined,
+    apiKeyId: parsed.data.apiKeyId ?? undefined,
     pathPattern: pattern,
-    requirePassword: parsed.data.requirePassword,
-    passwordHash: password ? hashPassword(password) : undefined,
   });
   return ok(c, { rule }, undefined, 201);
 });
@@ -486,12 +488,7 @@ adminStorageRoutes.put('/rules/:id', async (c) => {
   if (parsed.data.userId !== undefined) fields.user_id = parsed.data.userId;
   if (parsed.data.apiKeyId !== undefined) fields.api_key_id = parsed.data.apiKeyId;
   if (parsed.data.permissions !== undefined) fields.permissions = JSON.stringify(parsed.data.permissions);
-  if (parsed.data.requirePassword !== undefined) fields.require_password = parsed.data.requirePassword ? 1 : 0;
-  if (parsed.data.allowedIps !== undefined) fields.allowed_ips = parsed.data.allowedIps.join(',');
   if (parsed.data.priority !== undefined) fields.priority = parsed.data.priority;
-  if (parsed.data.password) {
-    fields.password_hash = hashPassword(parsed.data.password);
-  }
   await RuleRepo.updateRule(db, id, fields);
   return ok(c, { message: '已更新' });
 });
