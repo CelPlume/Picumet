@@ -11,7 +11,7 @@ import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import type { FileMetadata } from '@shared/types';
 import { normalizePath } from '../../utils/path';
-import { toFileListItem } from '../../db/repos/files';
+import { requestIp } from '../../utils/ip';
 import { MoveFileSchema, BatchOpSchema } from './schemas';
 
 export const fileOpsRoutes = new Hono<AppBindings>();
@@ -26,11 +26,7 @@ async function resolveFile(c: Parameters<typeof ok>[0]) {
   return { file, mount, db };
 }
 
-function ipOf(c: Parameters<typeof ok>[0]): string | undefined {
-  const cf = (c.req.raw as Request & { cf?: { connectingIp?: string } }).cf;
-  if (cf?.connectingIp) return cf.connectingIp;
-  return c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? c.req.header('x-real-ip') ?? undefined;
-}
+// 审计 SEC-03：日志 IP 统一走 utils/ip（requestIp，无来源时 undefined，不落回退值）。
 
 // ============ 删除（硬删除） ============
 fileOpsRoutes.delete('/:id', async (c) => {
@@ -82,7 +78,7 @@ fileOpsRoutes.delete('/:id', async (c) => {
     await tx.query(
       `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
        VALUES (?, ?, 'delete', ?, ?, ?, ?, ?, 200, ?)`,
-      [crypto.randomUUID(), c.get('userId'), file.path, JSON.stringify({ fileCount }), ipOf(c), c.req.header('user-agent'), totalSize, Date.now()]
+      [crypto.randomUUID(), c.get('userId'), file.path, JSON.stringify({ fileCount }), requestIp(c.req.raw), c.req.header('user-agent'), totalSize, Date.now()]
     );
     await tx.query(`DELETE FROM shares WHERE file_id = ?`, [file.id]);
     await ShareRepo.deleteEmptyShares(tx);
@@ -222,5 +218,3 @@ fileOpsRoutes.post('/batch', async (c) => {
 
   return ok(c, { succeeded, failed });
 });
-
-export { toFileListItem };

@@ -2,7 +2,8 @@
 import { Hono } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo, SettingsRepo, LogRepo } from '../../db';
-import { getDb, getClientIp } from '../../middleware/auth';
+import { getDb } from '../../middleware/auth';
+import { requestIp } from '../../utils/ip';
 import { getProvider } from '../storage/providers';
 import { ApiError } from '../../shared/errors';
 import { normalizePath, safeDecodePath } from '../../utils/path';
@@ -125,7 +126,7 @@ async function logServeFailure(c: Parameters<typeof getDb>[0], err: unknown): Pr
       action: 'download_failed',
       path: safeDecodePath(c.req.path),
       metadata: JSON.stringify({ code, method: c.req.method, sign: c.req.query('sign') !== undefined, range: c.req.header('range') ?? null }),
-      ipAddress: getClientIp(c),
+      ipAddress: requestIp(c.req.raw),
       userAgent: c.req.header('user-agent'),
       statusCode: status,
     });

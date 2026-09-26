@@ -11,7 +11,8 @@ import { SettingsRepo } from '../db';
 import { Db } from '../db';
 import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
-import { getDb, getClientIp } from './auth';
+import { getDb } from './auth';
+import { clientIp } from '../utils/ip';
 import { uuid } from '../utils/crypto';
 
 /** 默认允许的同时传输数（0 = 不限） */
@@ -51,7 +52,7 @@ export const transferConcurrencyMiddleware = createMiddleware(async (c, next) =>
     }
     const userId = (c.get('userId') as string | undefined) ?? null;
     const scope = userId ? 'user' : 'ip';
-    const scopeId = userId ?? getClientIp(c);
+    const scopeId = userId ?? clientIp(c.req.raw);
 
     requestCounter += 1;
     if (requestCounter % CLEANUP_EVERY === 0) {

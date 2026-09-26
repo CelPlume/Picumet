@@ -7,6 +7,7 @@ import { getDb } from '../../middleware/auth';
 import { getPrincipal } from '../permissions/principal';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
+import { requestIp } from '../../utils/ip';
 import { validateUserRule, type UserRuleInput } from './rule-guard';
 import { z } from 'zod';
 
@@ -70,7 +71,7 @@ userRuleRoutes.post('/rules', async (c) => {
       target: input.allUsers ? 'role:user' : `user:${input.targetUserId}`,
       permissions: rule.permissions,
     }),
-    ipAddress: c.req.header('x-forwarded-for')?.split(',')[0].trim(),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
 
@@ -92,7 +93,7 @@ userRuleRoutes.delete('/rules/:id', async (c) => {
     action: 'revoke',
     path: rule.pathPattern,
     metadata: JSON.stringify({ ruleId: rule.id }),
-    ipAddress: c.req.header('x-forwarded-for')?.split(',')[0].trim(),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
   return ok(c, null);

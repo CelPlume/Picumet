@@ -3,7 +3,8 @@ import { createMiddleware } from 'hono/factory';
 import { SettingsRepo } from '../db';
 import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
-import { getDb, getClientIp } from './auth';
+import { getDb } from './auth';
+import { clientIp } from '../utils/ip';
 
 const DEFAULT_LIMIT = 50;
 
@@ -45,7 +46,7 @@ export const rateLimitMiddleware = createMiddleware(async (c, next) => {
     const limitRaw = await SettingsRepo.get(db, 'rate_limit_requests_per_minute');
     const limit = limitRaw ? Number(limitRaw) || DEFAULT_LIMIT : DEFAULT_LIMIT;
 
-    const ip = getClientIp(c);
+    const ip = clientIp(c.req.raw);
     const ipOk = await checkLimit(c.env.KV as KVNamespace, `ip:${ip}`, limit, 60_000);
     if (!ipOk) {
       return fail(c, new ApiError(429, 'RATE_LIMIT_EXCEEDED', '请求过于频繁，请稍后再试'));
@@ -75,7 +76,7 @@ export const authRateLimitMiddleware = createMiddleware(async (c, next) => {
     await next();
     return;
   }
-  const ip = getClientIp(c);
+  const ip = clientIp(c.req.raw);
   const ok = await checkLimit(c.env.KV as KVNamespace, `auth:${ip}`, 5, 60_000);
   if (!ok) {
     return fail(c, new ApiError(429, 'RATE_LIMIT_EXCEEDED', '尝试过于频繁，请稍后再试'));

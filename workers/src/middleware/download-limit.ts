@@ -7,7 +7,8 @@ import { createMiddleware } from 'hono/factory';
 import { SettingsRepo } from '../db';
 import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
-import { getDb, getClientIp } from './auth';
+import { getDb } from './auth';
+import { clientIp } from '../utils/ip';
 
 /** 默认每分钟下载次数（0 = 不限） */
 export const DEFAULT_DOWNLOAD_LIMIT_PER_MINUTE = 120;
@@ -45,7 +46,7 @@ export const downloadRateLimitMiddleware = createMiddleware(async (c, next) => {
     const limit = raw === null || raw === undefined ? DEFAULT_DOWNLOAD_LIMIT_PER_MINUTE : Number(raw);
     if (Number.isFinite(limit) && limit > 0) {
       const userId = c.get('userId') as string | undefined;
-      const owner = userId ? `user:${userId}` : `ip:${getClientIp(c)}`;
+      const owner = userId ? `user:${userId}` : `ip:${clientIp(c.req.raw)}`;
       const now = Date.now();
       const windowStart = now - (now % 60_000);
       const key = `dl:${owner}:${windowStart}`;

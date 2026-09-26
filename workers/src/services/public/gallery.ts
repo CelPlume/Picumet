@@ -10,6 +10,7 @@ import { physicalObjectKey } from '../storage/keys';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { verifyPassword } from '../../utils/crypto';
+import { requestIp } from '../../utils/ip';
 
 export const galleryRoutes = new Hono<AppBindings>();
 
@@ -77,7 +78,7 @@ galleryRoutes.get('/:id/download', async (c) => {
     action: 'gallery_download',
     path: file.path,
     metadata: JSON.stringify({ fileName: file.name }),
-    ipAddress: c.req.header('x-forwarded-for')?.split(',')[0].trim(),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
     bytesTransferred: file.size,
   });
@@ -106,7 +107,7 @@ galleryRoutes.post('/:id/verify-password', async (c) => {
   await LogRepo.create(db, {
     action: 'gallery_password_verify',
     path: file.path,
-    ipAddress: c.req.header('x-forwarded-for')?.split(',')[0].trim(),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
   return ok(c, { url: buildGatewayUrl(c, token), expiresIn: 900 });

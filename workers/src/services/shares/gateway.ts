@@ -1,7 +1,6 @@
 // 下载网关路由：/api/gateway/download/:token → 流式代理对象
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import type { Context } from 'hono';
 import { FileRepo, MountRepo, ProviderRepo, LogRepo, ShareRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { getProviderForFile } from '../storage/pool';
@@ -11,6 +10,7 @@ import { consumeDownloadToken } from '../shares/tokens';
 import { assertNotBanned } from '../files/ban';
 import { serveObject } from '../storage/serve';
 import { serveFileObject } from '../storage/failover';
+import { requestIp } from '../../utils/ip';
 import type { Env } from '../../shared/types';
 
 export const gatewayRoutes = new Hono<AppBindings>();
@@ -91,7 +91,7 @@ gatewayRoutes.get('/download/:token', async (c) => {
       action: 'download',
       path: file?.path ?? payload.objectKey,
       metadata: JSON.stringify({ fileName: payload.name, shareId: payload.shareId, via: 'gateway' }),
-      ipAddress: ipOf(c),
+      ipAddress: requestIp(c.req.raw),
       userAgent: c.req.header('user-agent'),
       bytesTransferred: payload.size,
       statusCode: 200,
@@ -102,9 +102,3 @@ gatewayRoutes.get('/download/:token', async (c) => {
 
   return response;
 });
-
-function ipOf(c: Context): string | undefined {
-  const raw = c.req.raw as Request & { cf?: { connectingIp?: string } };
-  if (raw.cf?.connectingIp) return raw.cf.connectingIp;
-  return raw.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? raw.headers.get('x-real-ip') ?? undefined;
-}

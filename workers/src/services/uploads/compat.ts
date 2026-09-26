@@ -5,8 +5,8 @@ import type { AppBindings, Env } from '../../shared/types';
 import {
   FileRepo, MountRepo, ProviderRepo, LogRepo,
 } from '../../db';
-import { getDb } from '../../middleware/auth';
-import { assertApiKeyProtocol } from '../../middleware/auth';
+import { getDb, assertApiKeyProtocol } from '../../middleware/auth';
+import { requestIp } from '../../utils/ip';
 import { getProvider } from '../storage/providers';
 import { getProviderForFile } from '../storage/pool';
 import { serveFileObject } from '../storage/failover';
@@ -131,7 +131,8 @@ async function handleCompatDownload(c: Parameters<typeof ok>[0]) {
     action: 'download',
     path: file.path,
     metadata: JSON.stringify({ fileName: file.name, via: 'compat-api' }),
-    ipAddress: c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? undefined,
+    // SEC-03（审计 §SEC-03）：日志 IP 统一走 requestIp（cf.connectingIp 优先，不信任 XFF 首段）
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
     bytesTransferred: file.size,
   });

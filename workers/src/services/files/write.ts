@@ -10,7 +10,8 @@ import type { Context } from 'hono';
 import type { Mount, StorageProvider } from '@shared/types';
 import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo } from '../../db';
 import type { Db } from '../../db';
-import { getDb, getClientIp } from '../../middleware/auth';
+import { getDb } from '../../middleware/auth';
+import { requestIp } from '../../utils/ip';
 import { ApiError } from '../../shared/errors';
 import { normalizePath, objectKeyFromPath, validateFileType } from '../../utils/path';
 import { uuid, signPath } from '../../utils/crypto';
@@ -248,7 +249,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
       await tx.query(
         `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
          VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
-        [uuid(), userId, targetPath, JSON.stringify({ fileName, via: opts.via, deduped: outcome.deduped }), getClientIp(c), c.req.header('user-agent'), finalSize, now]
+        [uuid(), userId, targetPath, JSON.stringify({ fileName, via: opts.via, deduped: outcome.deduped }), requestIp(c.req.raw) ?? null, c.req.header('user-agent'), finalSize, now]
       );
     });
 

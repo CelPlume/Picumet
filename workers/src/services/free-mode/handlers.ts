@@ -8,6 +8,7 @@ import { S3Provider } from '../storage/providers';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { hashPassword, randomString, encryptSecret } from '../../utils/crypto';
+import { clientIp, requestIp } from '../../utils/ip';
 import { isPrivateHost, validateEndpoint } from '../../utils/ssrf';
 import { normalizePath, isPathWithinBoundary, isValidFileName, validateFileType } from '../../utils/path';
 import { freeModeOriginGuard, freeModeInitGuard, freeModeSessionGuard } from '../../middleware/free-mode';
@@ -134,7 +135,8 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
     mountPath: '/',
     createdAt: Date.now(),
     expiresAt: Date.now() + parsed.data.sessionHours * 3600 * 1000,
-    ip: ipOf(c),
+    // SEC-03（审计 §SEC-03）：会话 IP 绑定属安全判定，用 clientIp（cf.connectingIp 优先）
+    ip: clientIp(c.req.raw),
   };
 
   const ttl = parsed.data.sessionHours * 3600;
@@ -153,7 +155,7 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
     userId: user.id,
     action: 'free_mode_init',
     path: '/',
-    ipAddress: ipOf(c),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
 
@@ -316,9 +318,3 @@ freeModeRoutes.post('/logout', async (c) => {
   c.header('Set-Cookie', `${FM_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
   return ok(c, null);
 });
-
-function ipOf(c: Context): string {
-  const raw = c.req.raw as Request & { cf?: { connectingIp?: string } };
-  if (raw.cf?.connectingIp) return raw.cf.connectingIp;
-  return raw.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? raw.headers.get('x-real-ip') ?? '127.0.0.1';
-}

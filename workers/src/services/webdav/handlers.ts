@@ -10,7 +10,8 @@ import type { FileMetadata } from '@shared/types';
 import {
   FileRepo, MountRepo, ProviderRepo, LogRepo,
 } from '../../db';
-import { getDb, getClientIp, apiKeyAuthMiddleware, assertApiKeyProtocol } from '../../middleware/auth';
+import { getDb, apiKeyAuthMiddleware, assertApiKeyProtocol } from '../../middleware/auth';
+import { requestIp } from '../../utils/ip';
 import { getProvider } from '../storage/providers';
 import { getProviderForFile } from '../storage/pool';
 import { serveFileObject } from '../storage/failover';
@@ -302,7 +303,7 @@ webdavRoutes.get('*', async (c) => {
     action: 'download',
     path: file.path,
     metadata: JSON.stringify({ fileName: file.name, via: 'webdav' }),
-    ipAddress: getClientIp(c),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
     bytesTransferred: file.size,
   });

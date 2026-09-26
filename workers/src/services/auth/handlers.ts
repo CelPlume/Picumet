@@ -6,7 +6,8 @@ import { z } from 'zod';
 import { hashPassword, verifyPassword, signJwt, verifyJwt, randomString } from '../../utils/crypto';
 import { ApiError } from '../../shared/errors';
 import { ok, fail } from '../../shared/response';
-import { getDb, getClientIp } from '../../middleware/auth';
+import { getDb } from '../../middleware/auth';
+import { requestIp } from '../../utils/ip';
 import { authRateLimitMiddleware } from '../../middleware/rate-limit';
 import { issueCsrfToken } from '../../middleware/csrf';
 import { hasSmtp, sendMail, resolveSmtpConfig } from '../../utils/smtp';
@@ -135,7 +136,7 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
     userId: user.id,
     action: 'register',
     path: '/',
-    ipAddress: getClientIp(c),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
 
@@ -188,7 +189,7 @@ authRoutes.post('/login', authRateLimitMiddleware, async (c) => {
       userId: user?.id,
       action: 'login_failed',
       path: '/',
-      ipAddress: getClientIp(c),
+      ipAddress: requestIp(c.req.raw),
       userAgent: c.req.header('user-agent'),
     });
     throw new ApiError(401, 'INVALID_CREDENTIALS', '用户名或密码错误');
@@ -207,7 +208,7 @@ authRoutes.post('/login', authRateLimitMiddleware, async (c) => {
     userId: user.id,
     action: 'login',
     path: '/',
-    ipAddress: getClientIp(c),
+    ipAddress: requestIp(c.req.raw),
     userAgent: c.req.header('user-agent'),
   });
   const quota = await QuotaRepo.getQuota(db, user.id);

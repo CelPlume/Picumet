@@ -26,5 +26,5 @@ services/auth/
 
 ## 依赖
 
-- `middleware/auth.ts`（getDb/getClientIp）、`middleware/rate-limit.ts`、`middleware/csrf.ts`
-- `utils/crypto.ts`（JWT/bcrypt）、`utils/smtp.ts`、`db`（UserRepo/QuotaRepo/SettingsRepo/LogRepo）
+- `middleware/auth.ts`（getDb）、`middleware/rate-limit.ts`、`middleware/csrf.ts`
+- `utils/crypto.ts`（JWT/bcrypt）、`utils/ip.ts`（requestIp）、`utils/smtp.ts`、`db`（UserRepo/QuotaRepo/SettingsRepo/LogRepo）
