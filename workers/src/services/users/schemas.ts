@@ -27,6 +27,11 @@ export const VerifyOtpSchema = z.object({
   code: z.string().regex(/^\d{6}$/, '验证码必须为 6 位数字'),
 });
 
+// 公告撤回（body 可整体缺省；forever 缺省 true＝永久不再提示）
+export const DismissAnnouncementSchema = z.object({
+  forever: z.boolean().default(true),
+});
+
 export type ProfileRequest = z.infer<typeof ProfileSchema>;
 export type PasswordRequest = z.infer<typeof PasswordSchema>;
 export type SendOtpRequest = z.infer<typeof SendOtpSchema>;

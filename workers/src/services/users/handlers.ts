@@ -1,14 +1,14 @@
-// 用户设置路由：个人资料、外观、修改密码
+// 用户设置路由：个人资料、外观、修改密码、公告撤回
 import { Hono } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
 import type { Db } from '../../db';
-import { UserRepo, QuotaRepo, SettingsRepo, num, str, parseJson } from '../../db';
+import { UserRepo, QuotaRepo, SettingsRepo, AnnouncementRepo, num, str, parseJson } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { verifyPassword, hashPassword, uuid } from '../../utils/crypto';
 import { sendMail, resolveSmtpConfig } from '../../utils/smtp';
-import { ProfileSchema, PasswordSchema as ChangePasswordSchema, SendOtpSchema, VerifyOtpSchema } from './schemas';
+import { ProfileSchema, PasswordSchema as ChangePasswordSchema, SendOtpSchema, VerifyOtpSchema, DismissAnnouncementSchema } from './schemas';
 
 export const userRoutes = new Hono<AppBindings>();
 
@@ -269,4 +269,28 @@ userRoutes.post('/me/email/verify-otp', async (c) => {
   await UserRepo.updateUser(db, userId, { email, email_verified: 1 });
   await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
   return ok(c, { success: true });
+});
+
+// ============ 公告撤回 ============
+
+// 当前用户已撤回的公告 id 列表（前端据此过滤横幅/弹窗）
+// 注意：字面路由注册在任何 /:id 形态路由之前
+userRoutes.get('/announcements/dismissed-ids', async (c) => {
+  const db = getDb(c);
+  const userId = c.get('userId');
+  return ok(c, { ids: await AnnouncementRepo.dismissedIds(db, userId) });
+});
+
+// 撤回公告：body 可选 { forever?: boolean }（缺省 true＝永久不再提示）；重复撤回幂等
+userRoutes.post('/announcements/:id/dismiss', async (c) => {
+  const db = getDb(c);
+  const userId = c.get('userId');
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  const parsed = DismissAnnouncementSchema.safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('请求参数无效');
+  const exists = (await AnnouncementRepo.listAll(db)).some((a) => a.id === id);
+  if (!exists) throw ApiError.notFound('公告不存在');
+  await AnnouncementRepo.dismiss(db, userId, id, parsed.data.forever);
+  return ok(c, null);
 });
