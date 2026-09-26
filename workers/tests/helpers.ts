@@ -305,7 +305,7 @@ export async function getCsrf(ctx: TestContext, cookie: string): Promise<string>
 }
 
 /**
- * 为 API 密钥授予路径规则（H-3 交集语义：API Key 需要规则才能访问）。
+ * 为 API 密钥授予路径规则（API Key 需规则才可访问，规则按交集语义生效）。
  * 直接经 RuleRepo 落库，避免测试走管理员 HTTP 流程。
  */
 export async function grantApiKeyRule(

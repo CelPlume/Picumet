@@ -4,7 +4,7 @@ import type { AppBindings } from '../../shared/types';
 import { FileRepo, MountRepo, ProviderRepo, LogRepo, ShareRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { getProviderForFile } from '../storage/pool';
-import { assertBucketPermission } from '../permissions/principal';
+import { assertBucketPermission, assertMountMatrixPermission } from '../permissions/principal';
 import { ApiError } from '../../shared/errors';
 import { consumeDownloadToken } from '../shares/tokens';
 import { assertNotBanned } from '../files/ban';
@@ -33,13 +33,15 @@ gatewayRoutes.get('/download/:token', async (c) => {
   // §31 桶级矩阵：下载网关凭令牌放行（含分享令牌），此处按文件实际落桶补判下载权限，
   // 桶级条目明确禁止该角色下载 → 403（无桶级条目时与既有令牌语义一致）
   await assertBucketPermission(c, mount.id, file.providerId, 'download');
+  // §28 挂载点级矩阵：与桶级同形；令牌晚解析，故在此出口把两级矩阵一并复核
+  await assertMountMatrixPermission(c, mount.id, 'download');
 
   // 文件设置了密码但 token 未验证 → 拒绝
   if (file?.accessPassword && !payload.passwordVerified) {
     throw new ApiError(403, 'PASSWORD_REQUIRED', '该文件受密码保护');
   }
 
-  // 审计 H-04：网关消费令牌成功后计数一次（下载次数在令牌消费阶段绑定）；
+  // 网关消费令牌成功后计数一次（下载次数在令牌消费阶段绑定）；
   // 超限则拒绝本次下载，避免先拉对象浪费资源。
   if (payload.shareId) {
     const share = await ShareRepo.getShare(db, payload.shareId);
@@ -76,11 +78,15 @@ gatewayRoutes.get('/download/:token', async (c) => {
       providerId: file.providerId,
       physicalKey: payload.objectKey,
       size: payload.size,
+      blobHash: file.blobHash,
     },
     name: payload.name,
     mimeType: payload.mimeType,
     rangeHeader: c.req.header('range'),
     totalSize: payload.size || undefined,
+    // §31/§28 读回退补判：按消费主体角色逐候选重判两级矩阵（匿名消费 = guest）
+    principalRole: (c.get('userRole') as string) ?? 'guest',
+    action: 'download',
   });
 
   // 记录下载日志（统一下载出口：直链 token 与分享 token 同记 action='download'，

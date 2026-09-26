@@ -31,6 +31,7 @@ const mount: Mount = {
   maxStorage: null,
   usedStorage: 0,
   quotaReserved: 0,
+  createdAt: 0,
   poolStrategy: 'least_used',
   capacityBytes: null,
   uploadMode: 'free',

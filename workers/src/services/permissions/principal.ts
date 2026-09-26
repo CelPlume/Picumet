@@ -2,7 +2,7 @@
 import type { Context } from 'hono';
 import type { Principal, Mount, Permission, Conditions, PathRule, Visibility, GuestVisibility } from '@shared/types';
 import { getDb } from '../../middleware/auth';
-import { loadPrincipalRules, checkPermission, bucketMatrixDecision, DEFAULT_ROLE_PERMISSIONS } from './check';
+import { loadPrincipalRules, checkPermission, bucketMatrixDecision, DEFAULT_ROLE_PERMISSIONS, type PermissionResult } from './check';
 import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
 import { MountRolePermissionsRepo } from '../../db/repos/mount-role-permissions';
 import { MountProviderRolePermissionsRepo } from '../../db/repos/mount-provider-role-permissions';
@@ -84,6 +84,23 @@ function cachedMatrix(c: Context, key: string, load: () => Promise<Map<string, P
 
 export function getMountMatrix(c: Context, mountId: string): Promise<Map<string, Permission[]>> {
   return cachedMatrix(c, mountId, () => MountRolePermissionsRepo.getMatrix(getDb(c), mountId));
+}
+
+/**
+ * §28 挂载点级矩阵判定：与桶级 `bucketMatrixDecision` 同语义——条目存在时构成该挂载点内该角色的
+ * **封闭集合**（动作在条目内 → allow，不在 → deny）；无条目（Map 缺该角色 / 未传矩阵）→ undefined（不介入）。
+ * share 不参与矩阵（同 §28/§31），一律不介入。
+ * 导出供读路径容灾候选过滤（storage/failover.ts，补齐读侧）与晚解析入口门禁复用。
+ */
+export function mountMatrixDecision(
+  role: string,
+  action: Permission,
+  mountMatrix?: Map<string, Permission[]> | null
+): PermissionResult | undefined {
+  if (action === 'share') return undefined;
+  const entry = mountMatrix?.get(role);
+  if (!entry) return undefined;
+  return entry.includes(action) ? 'allow' : 'deny';
 }
 
 /** §31 桶级矩阵（键含 providerId，与挂载点级互不覆盖） */
@@ -181,5 +198,23 @@ export async function assertBucketPermission(
   const principal = await getPrincipal(c);
   if (bucketMatrixDecision(principal.role, action, bucketMatrix) === 'deny') {
     throw new ApiError(403, 'FORBIDDEN', '当前存储桶的角色权限不允许此操作');
+  }
+}
+
+/**
+ * §28 挂载点级门禁（晚解析入口用）：挂载点级条目明确禁止该动作时抛 403，无条目 → 放行（不介入）。
+ *
+ * 与 §31 `assertBucketPermission` 同形、互补，补在它之后（两层矩阵在「令牌晚解析」出口对齐）：
+ * 用于「权限初检先于文件行解析」的入口（下载网关的分享令牌流、兼容读端点、分享预览）——
+ * 这些入口的初检不含挂载点级矩阵，或令牌签发时的判定无法覆盖消费主体。
+ * 与引擎第 8 步同源（mountMatrixDecision），因此「条目明确禁止」的语义两处一致。
+ */
+export async function assertMountMatrixPermission(c: Context, mountId: string, action: Permission): Promise<void> {
+  const mountMatrix = await getMountMatrix(c, mountId);
+  // 无挂载点级条目（绝大多数部署）：不解析主体，与既有语义完全一致
+  if (mountMatrix.size === 0) return;
+  const principal = await getPrincipal(c);
+  if (mountMatrixDecision(principal.role, action, mountMatrix) === 'deny') {
+    throw new ApiError(403, 'FORBIDDEN', '当前挂载点的角色权限不允许此操作');
   }
 }

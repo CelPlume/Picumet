@@ -1,4 +1,4 @@
-// WebDAV P1-3 兼容缝隙回归：href 编码、自项属性、OPTIONS、MOVE Overwrite、MKCOL 递归、所有者隔离
+// WebDAV（PicList）兼容缝隙：href 编码、自项属性、OPTIONS、MOVE Overwrite、MKCOL 递归、所有者隔离
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule,
@@ -36,7 +36,7 @@ async function createDavKey(username: string): Promise<DavBundle> {
 
 const dav = (basic: string): Record<string, string> => ({ Authorization: basic });
 
-describe('WebDAV P1-3（PicList 兼容缝隙）', () => {
+describe('WebDAV（PicList 兼容缝隙）', () => {
   it('OPTIONS 不再宣告未实现的 COPY', async () => {
     const k = await createDavKey('davopts');
     const res = await request(ctx, '/webdav/', { method: 'OPTIONS', headers: dav(k.basic) });
@@ -78,7 +78,7 @@ describe('WebDAV P1-3（PicList 兼容缝隙）', () => {
     expect(await get.text()).toBe('weird-content');
   });
 
-  it('MKCOL 递归补齐缺失祖先目录行；PUT 也补父（P1-3.5 / P0-3）', async () => {
+  it('MKCOL 递归补齐缺失祖先目录行；PUT 也补父', async () => {
     const k = await createDavKey('davmkcol');
     const mk = await request(ctx, `/webdav/uploads/${encodeURIComponent('deep')}/${encodeURIComponent('nest')}/${encodeURIComponent('dir')}`, {
       method: 'MKCOL',

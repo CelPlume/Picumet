@@ -1,4 +1,4 @@
-// WebDAV 权限回归（审计 H-3/H-4/M-3）：
+// WebDAV 权限：
 // 统一路径级权限（读/写/删）、上传根边界、MOVE 复用移动 Saga
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule, type TestContext } from './helpers';
@@ -25,26 +25,26 @@ async function createKey(permissions: string[], uploadPath = '/'): Promise<{ key
   });
   expect(res.status).toBe(201);
   const data = await json(res);
-  // H-3 交集语义：授予密钥相同权限的路径规则（deny 类断言仍由 allowedPermissions 控制）
+  // 密钥权限与路径规则取交集：给密钥授予与之一致的路径规则（deny 类断言仍由 allowedPermissions 控制）
   await grantApiKeyRule(ctx, data.data.key.keyId as string, permissions, '/');
   return { keyId: data.data.key.keyId as string, secret: data.data.key.secret as string };
 }
 
-describe('WebDAV 统一权限（H-3/H-4/M-3）', () => {
-  it('H-3：无 read 权限的密钥 PROPFIND → 403', async () => {
+describe('WebDAV 统一权限', () => {
+  it('无 read 权限的密钥 PROPFIND → 403', async () => {
     const { keyId, secret } = await createKey(['write', 'delete']);
     const auth = { Authorization: basicAuth(keyId, secret), Depth: '1' };
     const res = await request(ctx, '/webdav/', { method: 'PROPFIND', headers: auth });
     expect(res.status).toBe(403);
   });
 
-  it('H-3：无 read 权限的密钥 GET → 403', async () => {
+  it('无 read 权限的密钥 GET → 403', async () => {
     const { keyId, secret } = await createKey(['write', 'delete']);
     const res = await request(ctx, '/webdav/README.md', { headers: { Authorization: basicAuth(keyId, secret) } });
     expect(res.status).toBe(403);
   });
 
-  it('M-3：PUT 超出密钥上传根 → 403', async () => {
+  it('PUT 超出密钥上传根 → 403', async () => {
     const { keyId, secret } = await createKey(['write', 'read'], '/uploads');
     const res = await request(ctx, '/webdav/other/x.txt', {
       method: 'PUT',
@@ -54,7 +54,7 @@ describe('WebDAV 统一权限（H-3/H-4/M-3）', () => {
     expect(res.status).toBe(403);
   });
 
-  it('M-3：密钥创建时非法 uploadPath（..）→ 400', async () => {
+  it('密钥创建时非法 uploadPath（..）→ 400', async () => {
     const { authCookie } = await registerAndLogin(ctx, 'wdpath' + Math.random().toString(36).slice(2, 7));
     const csrf = await getCsrf(ctx, authCookie);
     const res = await request(ctx, '/api/keys', {
@@ -66,7 +66,7 @@ describe('WebDAV 统一权限（H-3/H-4/M-3）', () => {
     expect(res.status).toBe(400);
   });
 
-  it('H-4：MOVE 需要源 delete 权限，缺失 → 403', async () => {
+  it('MOVE 需要源 delete 权限，缺失 → 403', async () => {
     const { keyId, secret } = await createKey(['write', 'read']);
     const auth = { Authorization: basicAuth(keyId, secret) };
     const put = await request(ctx, '/webdav/mv-src.txt', {
@@ -82,7 +82,7 @@ describe('WebDAV 统一权限（H-3/H-4/M-3）', () => {
     expect(move.status).toBe(403);
   });
 
-  it('H-4：MOVE 复用 Saga，成功后元数据切换且源对象清理', async () => {
+  it('MOVE 复用 Saga，成功后元数据切换且源对象清理', async () => {
     const { keyId, secret } = await createKey(['write', 'read', 'delete']);
     const auth = { Authorization: basicAuth(keyId, secret) };
     const put = await request(ctx, '/webdav/mv-a.txt', {
@@ -106,7 +106,7 @@ describe('WebDAV 统一权限（H-3/H-4/M-3）', () => {
     expect(getOld.status).toBe(404);
   });
 
-  it('L-1：PROPFIND 响应中 href 被 XML 转义', async () => {
+  it('PROPFIND 响应中 href 被 XML 转义', async () => {
     const { keyId, secret } = await createKey(['write', 'read', 'delete']);
     const auth = { Authorization: basicAuth(keyId, secret) };
     const res = await request(ctx, '/webdav/', { method: 'PROPFIND', headers: { ...auth, Depth: '1' } });

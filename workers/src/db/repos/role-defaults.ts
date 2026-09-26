@@ -153,10 +153,20 @@ export const RoleDefaultsRepo = {
   },
 
   /**
+   * 角色默认路径（role_defaults.default_path）：新建用户时的默认落点来源。
+   * 未登记 / NULL / 非绝对路径（脏值）→ '/'，与建表默认及 mapRoleDefault 的缺省一致。
+   */
+  async defaultPathOf(db: Db, role: Role): Promise<string> {
+    const row = await db.first('SELECT * FROM role_defaults WHERE role = ?', [role]);
+    const path = str(row?.default_path);
+    return path !== undefined && path.startsWith('/') ? path : '/';
+  },
+
+  /**
    * 将角色默认设置立即覆盖到该角色下全部用户（事务内，任一步失败整体回滚）：
    *   1. users：default_path 恒更；permissions 恒更（写成角色权限值，**覆盖用户个别设置**）；
    *      status / capabilities 仅在参数提供时更新
-   *      （角色级禁用沿用审计 H-05 约定，递增 session_version 使已签发 JWT 立即失效）；
+   *      （角色级禁用递增 session_version，使已签发 JWT 立即失效）；
    *   2. user_quotas：批量 upsert（缺行则插入，有行则更新 max_storage / max_files）。
    * 返回 affected（该角色用户数）。D1 事务批不回传真实 changes，
    * 故统一以应用后的成员计数为准（node:sqlite 语义相同）。

@@ -306,10 +306,10 @@ describe('带参数直进（?password=）', () => {
   });
 });
 
-// ============ verify-password 权限初检（审计 SEC-10） ============
+// ============ verify-password 权限初检 ============
 // 口令校验前先做与下载出口同一套 requirePermission 初检：匿名在 auth 边界即 401；
 // 被权限引擎拒绝的已登录用户（根边界/规则/矩阵）不再能凭「文件 ID + 密码」换取下载令牌。
-describe('verify-password 权限初检（审计 SEC-10）', () => {
+describe('verify-password 权限初检', () => {
   it('匿名 401 / 被权限引擎拒绝的用户 403；属主正常签发', async () => {
     const { authCookie } = await registerAndLogin(ctx, 'vp_owner');
     const csrf = await getCsrf(ctx, authCookie);

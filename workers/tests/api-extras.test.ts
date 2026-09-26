@@ -125,7 +125,7 @@ describe('API 密钥与兼容上传', () => {
     const fullToken = createData.data.key.fullToken;
     const keyIdForRule = createData.data.key.keyId as string;
     expect(fullToken).toMatch(/^pk_[A-Za-z0-9]+\.sk_[A-Za-z0-9]+$/);
-    // H-3：API Key 交集语义——授予上传根内写权限规则
+    // API Key 交集语义：给密钥授予上传根内的写权限规则
     await grantApiKeyRule(ctx, keyIdForRule, ['write', 'read'], '/uploads/**');
 
     // 列表
@@ -144,7 +144,7 @@ describe('API 密钥与兼容上传', () => {
     });
     expect(upRes.status).toBe(200);
     const upData = await json(upRes);
-    // P0-1：返回外部可用的直链（path-serve + 签名），可匿名取回（图床命门）
+    // 返回外部可用的直链（path-serve + 签名）且可匿名取回，这是图床的核心用途
     expect(upData.data.url).toContain('/uploads/picgo.png?sign=');
     const directUrl = new URL(upData.data.url);
     const directRes = await request(ctx, directUrl.pathname + directUrl.search);
@@ -189,7 +189,7 @@ describe('WebDAV', () => {
     });
     const createData = await json(createRes);
     const { keyId, secret } = createData.data.key;
-    // H-3：API Key 交集语义——授予根路径全部权限规则
+    // API Key 交集语义：给密钥授予根路径的全部权限规则
     await grantApiKeyRule(ctx, keyId, ['write', 'read', 'delete'], '/');
     const basic = Buffer.from(`${keyId}:${secret}`).toString('base64');
     const auth = { Authorization: `Basic ${basic}` };

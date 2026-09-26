@@ -5,7 +5,7 @@ import type { FileMetadata, Share } from '@shared/types';
 import type { Context } from 'hono';
 import { ShareRepo, FileRepo, MountRepo, LogRepo, UserRepo, toShareItemView } from '../../db';
 import { getDb } from '../../middleware/auth';
-import { requirePermission } from '../permissions/principal';
+import { requirePermission, assertBucketPermission, assertMountMatrixPermission } from '../permissions/principal';
 import { getFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
 import { ok } from '../../shared/response';
@@ -13,17 +13,18 @@ import { ApiError } from '../../shared/errors';
 import { hashPassword, verifyPassword, randomString, encryptSecret, decryptSecret } from '../../utils/crypto';
 import { basename, isPathWithinBoundary, normalizePath, PathError, safeDecodePath } from '../../utils/path';
 import { createDownloadToken, buildGatewayUrl } from '../shares/tokens';
-import { requestIp } from '../../utils/ip';
+import { requestIp, clientIp } from '../../utils/ip';
+import { checkLimit, resetLimit, shareVerifyRateLimitMiddleware } from '../../middleware/rate-limit';
 import { assertNotBanned } from '../files/ban';
 import { CreateShareSchema } from './schemas';
 
 export const shareRoutes = new Hono<AppBindings>();
 
-/** 分享密码授权 cookie 名（M-02：密码不入 URL，验证后短期授权） */
+/** 分享密码授权 cookie 名：密码不入 URL，验证后短期授权 */
 const shareAuthCookie = (shareId: string) => `share_auth_${shareId}`;
 const SHARE_AUTH_TTL = 15 * 60; // 15 分钟
 
-/** 文件级密码授权 cookie 名（审计 SEC-04：分享密码 ≠ 文件密码，逐文件短期授权） */
+/** 文件级密码授权 cookie 名：分享密码与文件密码分离，逐文件独立短期授权 */
 const fileAuthCookie = (shareId: string) => `share_fileauth_${shareId}`;
 const FILE_AUTH_TTL = 900; // 15 分钟
 
@@ -52,7 +53,7 @@ async function revealSharePassword(cipher: string | undefined, encryptionKey: st
   }
 }
 
-/** 从请求解析分享密码授权：cookie 优先（KV 校验），query 兼容（审计 M-02） */
+/** 从请求解析分享密码授权：cookie 优先（KV 校验），query 兼容旧客户端 */
 async function sharePasswordAuthorized(c: Context, shareId: string, sharePasswordHash?: string): Promise<boolean> {
   const cookie = c.req.header('cookie') ?? '';
   const cookieValue = cookie
@@ -71,7 +72,7 @@ async function sharePasswordAuthorized(c: Context, shareId: string, sharePasswor
   return verifyPassword(queryPwd, sharePasswordHash);
 }
 
-/** 文件级密码授权判定（审计 SEC-04）：cookie → KV（已验证 fileId 集合）→ includes */
+/** 文件级密码授权判定：cookie → KV（已验证 fileId 集合）→ includes */
 async function shareFileAuthorized(c: Context, shareId: string, fileId: string): Promise<boolean> {
   const cookie = c.req.header('cookie') ?? '';
   const cookieValue = cookie
@@ -88,6 +89,25 @@ async function shareFileAuthorized(c: Context, shareId: string, fileId: string):
   } catch {
     return false;
   }
+}
+
+/**
+ * 分享密码失败冷却：同一分享（+文件）同一 IP 在窗口内累计 9 次失败后，
+ * 后续尝试直接 429；冷却计数在密码校验前累加（密码错误即自然计一次），验证成功则清零。
+ * 非生产环境跳过，避免影响本地调试与测试。
+ */
+const SHARE_VERIFY_FAIL_LIMIT = 9;
+const SHARE_VERIFY_FAIL_WINDOW_MS = 600_000;
+
+async function assertShareVerifyCooldown(c: Context, key: string): Promise<void> {
+  if ((c.env.ENVIRONMENT as string) !== 'production') return;
+  const ok = await checkLimit(c.env.KV as KVNamespace, `svfail:${key}`, SHARE_VERIFY_FAIL_LIMIT, SHARE_VERIFY_FAIL_WINDOW_MS);
+  if (!ok) throw new ApiError(429, 'RATE_LIMIT_EXCEEDED', '尝试过于频繁，请稍后再试');
+}
+
+async function resetShareVerifyCooldown(c: Context, key: string): Promise<void> {
+  if ((c.env.ENVIRONMENT as string) !== 'production') return;
+  await resetLimit(c.env.KV as KVNamespace, `svfail:${key}`, SHARE_VERIFY_FAIL_WINDOW_MS);
 }
 
 /**
@@ -162,6 +182,16 @@ async function gateShareRead(c: Context, shareId: string, opts: { countView?: bo
 }
 
 // ============ 创建分享（1..50 个项目，文件与文件夹混合） ============
+/**
+ * 文件全路径基准（与 files/handlers.ts、files/move.ts 的 filePermPath 同义）：文件行 path=父目录，
+ * 文件夹行 path=自身全路径。分享创建若按 file.path（父目录）判定，文件级 deny/allow share
+ * 规则便匹配不到父目录基准，故与文件域其余出口统一为全路径。
+ */
+function filePermPath(f: { path: string; name: string; type: 'file' | 'folder' }): string {
+  if (f.type === 'folder') return f.path;
+  return f.path === '/' ? `/${f.name}` : `${f.path}/${f.name}`;
+}
+
 shareRoutes.post('/', async (c) => {
   const db = getDb(c);
   const userId = c.get('userId') as string | undefined;
@@ -175,7 +205,7 @@ shareRoutes.post('/', async (c) => {
   const fileIds = [...new Set(parsed.data.fileIds)];
   if (fileIds.length === 0 || fileIds.length > 50) throw ApiError.badRequest('分享项目数量必须在 1..50 之间');
 
-  // 批量预取项目与挂载点（审计 DESIGN-02：消除逐项查询 N+1；顺序按请求 fileIds 补齐）
+  // 批量预取项目与挂载点，消除逐项查询 N+1；顺序按请求 fileIds 补齐
   const fileRows = await FileRepo.getFilesByIds(db, fileIds);
   const fileMap = new Map(fileRows.map((f) => [f.id, f]));
   const mountMap = new Map((await MountRepo.listMounts(db)).map((m) => [m.id, m]));
@@ -186,7 +216,7 @@ shareRoutes.post('/', async (c) => {
     if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
     const mount = mountMap.get(file.mountId);
     if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
-    await requirePermission(c, mount, file.path, 'share', file.ownerId);
+    await requirePermission(c, mount, filePermPath(file), 'share', file.ownerId);
     files.push(file);
   }
 
@@ -196,7 +226,7 @@ shareRoutes.post('/', async (c) => {
   // 指定用户：用户名列表 → 用户 id 白名单（未知用户名直接拒绝，避免静默漏配）
   let allowedUserIds: string[] | null = null;
   if (parsed.data.allowedUsers && parsed.data.allowedUsers.length > 0) {
-    // 一次取回全部用户名（审计 DESIGN-02）；未知用户名仍逐个报同样 400 文案
+    // 一次取回全部用户名，避免逐个查询；未知用户名仍逐个报同样 400 文案
     const users = await UserRepo.getUsersByUsernames(db, parsed.data.allowedUsers);
     const byName = new Map(users.map((u) => [u.username, u]));
     const ids: string[] = [];
@@ -255,8 +285,9 @@ shareRoutes.post('/', async (c) => {
   }, undefined, 201);
 });
 
-// ============ 密码验证（M-02：POST 提交密码，成功后种短期授权 cookie） ============
-shareRoutes.post('/:id/verify', async (c) => {
+// ============ 密码验证（POST 提交密码，成功后种短期授权 cookie） ============
+// 路由级严格限流（5 次/分钟/IP/分享）+ 失败冷却（9 次/10 分钟）
+shareRoutes.post('/:id/verify', shareVerifyRateLimitMiddleware, async (c) => {
   const db = getDb(c);
   const shareId = c.req.param('id');
   const info = await ShareRepo.getShareWithFile(db, shareId);
@@ -273,9 +304,13 @@ shareRoutes.post('/:id/verify', async (c) => {
     c.header('Set-Cookie', `${shareAuthCookie(shareId)}=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SHARE_AUTH_TTL}`);
     return ok(c, { authorized: true });
   }
+  // 密码校验前先过失败冷却（密码错误即计一次）；成功则清零
+  const cooldownKey = `${shareId}:${clientIp(c.req.raw)}`;
+  await assertShareVerifyCooldown(c, cooldownKey);
   if (!password || !verifyPassword(password, share.passwordHash)) {
     throw new ApiError(401, 'INVALID_PASSWORD', '分享密码错误');
   }
+  await resetShareVerifyCooldown(c, cooldownKey);
   // 签发短期授权 cookie（值随机，仅作已验证标记；密码不落 URL/日志）
   const value = randomString(32);
   await c.env.KV.put(`share:auth:${shareId}:${value}`, '1', { expirationTtl: SHARE_AUTH_TTL });
@@ -283,8 +318,8 @@ shareRoutes.post('/:id/verify', async (c) => {
   return ok(c, { authorized: true });
 });
 
-// ============ 文件级密码验证（审计 SEC-04：分享密码 ≠ 文件密码，逐文件验证后种授权 cookie） ============
-shareRoutes.post('/:id/verify-file', async (c) => {
+// ============ 文件级密码验证（分享密码与文件密码分离，逐文件验证后种授权 cookie） ============
+shareRoutes.post('/:id/verify-file', shareVerifyRateLimitMiddleware, async (c) => {
   const db = getDb(c);
   const shareId = c.req.param('id');
   // 分享密码先行：未通过分享密码闸门 → 401（与 /:id/list 同语义）
@@ -298,9 +333,13 @@ shareRoutes.post('/:id/verify-file', async (c) => {
   if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
   if (file.type === 'folder') throw ApiError.badRequest('文件夹无需密码验证');
   if (!file.accessPassword) throw ApiError.badRequest('该文件无需密码');
+  // 文件密码校验前先过失败冷却（按 分享+文件+IP 维度，成功则清零）
+  const cooldownKey = `${shareId}:${file.id}:${clientIp(c.req.raw)}`;
+  await assertShareVerifyCooldown(c, cooldownKey);
   if (!password || !verifyPassword(password, file.accessPassword)) {
     throw new ApiError(401, 'INVALID_PASSWORD', '文件密码错误');
   }
+  await resetShareVerifyCooldown(c, cooldownKey);
 
   // 已有授权 cookie → 读 KV 追加本文件 id（去重）并续期；无则新建授权记录
   const cookieName = fileAuthCookie(shareId);
@@ -487,7 +526,7 @@ shareRoutes.get('/:id/download', async (c) => {
   // §26 违规封禁：内容出口门禁（多项目分享解析出的每个文件在此统一拦截）
   await assertNotBanned(db, [file.id]);
 
-  // 审计 H-04：签发下载令牌阶段不计数（防止攻击者反复签发不消费、先耗尽额度）。
+  // 签发下载令牌阶段不计数：否则攻击者可反复签发而不消费，先耗尽分享额度。
   // 下载计数仅在网关实际消费令牌、开始返回对象时增加一次。
   const token = await createDownloadToken(db, {
     fileId: file.id,
@@ -496,7 +535,7 @@ shareRoutes.get('/:id/download', async (c) => {
     name: file.name,
     mimeType: file.mimeType,
     size: file.size,
-    // 审计 SEC-04：passwordVerified = 「目标文件密码已验证」，不得由分享密码推导
+    // passwordVerified = 「目标文件密码已验证」，不得由分享密码推导
     passwordVerified: file.accessPassword ? await shareFileAuthorized(c, shareId, file.id) : false,
     shareId,
   });
@@ -518,19 +557,24 @@ shareRoutes.get('/:id/preview', async (c) => {
   if (file.type === 'folder') throw ApiError.badRequest('文件夹不能预览');
   // §26 违规封禁：内容出口门禁（多项目分享解析出的每个文件在此统一拦截）
   await assertNotBanned(db, [file.id]);
-  // 审计 SEC-04：预览出口同样受文件级密码保护（分享密码 ≠ 文件密码）
+  const mount = await MountRepo.getMountById(db, file.mountId);
+  if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+  // 分享预览同样复核两级矩阵：记录桶的桶级（§31）+ 挂载点级（§28）
+  await assertBucketPermission(c, mount.id, file.providerId, 'download');
+  await assertMountMatrixPermission(c, mount.id, 'download');
+  // 预览出口同样受文件级密码保护（分享密码与文件密码分离）
   if (file.accessPassword && !(await shareFileAuthorized(c, shareId, file.id))) {
     throw new ApiError(401, 'PASSWORD_REQUIRED', '该文件受密码保护，请先验证密码');
   }
 
-  const mount = await MountRepo.getMountById(db, file.mountId);
-  if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
-  // §G：预览读取带池内回退（落桶取不到时轮询其余桶）
+  // §G：预览读取带池内回退（落桶取不到时轮询其余桶）；按访客角色逐候选重判两级矩阵（匿名 = guest）
   const { object: obj } = await getFileObject({
     db,
     env: c.env as Env,
     mount,
-    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size, blobHash: file.blobHash },
+    principalRole: (c.get('userRole') as string) ?? 'guest',
+    action: 'read',
   });
   return new Response(obj.body, {
     status: 200,

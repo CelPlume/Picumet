@@ -2,7 +2,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   checkPermission,
-  checkMovePermission,
 } from '../src/services/permissions/check';
 import {
   isPathWithinBoundary,
@@ -25,6 +24,7 @@ const mount: Mount = {
   maxStorage: null,
   usedStorage: 0,
   quotaReserved: 0,
+  createdAt: 0,
   poolStrategy: 'least_used',
   capacityBytes: null,
   uploadMode: 'free',
@@ -301,9 +301,9 @@ describe('条件检查（密码 / IP）', () => {
   });
 });
 
-// DESIGN-01：规则创建面已收紧（RuleSchema 不再接受 requirePassword/allowedIps），但存量库行可能仍带这些字段。
+// 规则创建面已收紧（RuleSchema 不再接受 requirePassword/allowedIps），但存量库行可能仍带这些字段。
 // 引擎契约：存量行 fail-closed（不传 conditions 一律 deny，不放宽）；显式条件传入（文件密码验证流程构造）方可放行。
-describe('DESIGN-01 存量规则条件 fail-closed（引擎契约）', () => {
+describe('存量规则条件 fail-closed（引擎契约）', () => {
   const alice = userPrincipal({ id: 'alice', defaultPath: '/' });
   const legacyPwdRule = rule({ id: 'lp', role: 'user', pathPattern: '/legacy/**', effect: 'allow', requirePassword: true });
   const legacyIpRule = rule({ id: 'li', role: 'user', pathPattern: '/legacy-ip/**', effect: 'allow', allowedIps: ['10.0.0.1'] });
@@ -325,40 +325,7 @@ describe('DESIGN-01 存量规则条件 fail-closed（引擎契约）', () => {
   });
 });
 
-describe('移动操作双重检查（场景4）', () => {
-  const apiPrincipal = (permissions: string[]): Principal => ({
-    type: 'apiKey',
-    id: 'kuser',
-    role: 'user',
-    apiKeyId: 'k1',
-    defaultPath: '/',
-    allowedPermissions: permissions as Principal['allowedPermissions'],
-  });
-  const delRule = rule({ id: 'r1', role: 'user', pathPattern: '/shared/**', effect: 'allow', permissions: ['delete'] });
-  const writeRule = rule({ id: 'r2', role: 'user', pathPattern: '/shared/**', effect: 'allow', permissions: ['write'] });
-
-  it('规则授予源 delete + 目标 write → 可移动', () => {
-    expect(checkMovePermission(apiPrincipal(['delete', 'write']), mount, mount, '/shared/a.txt', '/shared/b.txt', [delRule, writeRule])).toBe(true);
-  });
-  it('源 delete 无规则授予 → 不可移动', () => {
-    expect(checkMovePermission(apiPrincipal(['delete', 'write']), mount, mount, '/shared/a.txt', '/shared/b.txt', [writeRule])).toBe(false);
-  });
-  it('目标 write 无规则授予 → 不可移动', () => {
-    expect(checkMovePermission(apiPrincipal(['delete', 'write']), mount, mount, '/shared/a.txt', '/shared/b.txt', [delRule])).toBe(false);
-  });
-  it('密钥未配置 delete 权限 → 不可移动', () => {
-    expect(checkMovePermission(apiPrincipal(['write']), mount, mount, '/shared/a.txt', '/shared/b.txt', [delRule, writeRule])).toBe(false);
-  });
-  it('默认路径限定用户无法移到自己的默认路径之外', () => {
-    const u = userPrincipal({ id: 'u', defaultPath: '/users/u' });
-    const m: Mount = { ...mount, mountPath: '/' };
-    const rules = [rule({ id: 'r', role: 'user', pathPattern: '/users/u/**', effect: 'allow', permissions: ['delete'] })];
-    expect(checkMovePermission(u, m, m, '/users/u/a.txt', '/public/b.txt', rules)).toBe(false);
-  });
-});
-
-// 审计 H-01：挂载隔离 —— 同路径、不同挂载的规则互不影响；全局规则（mountId 为空）跨挂载生效
-describe('H-01 挂载隔离（findCandidates / loadPrincipalRules）', () => {
+describe('挂载隔离（findCandidates / loadPrincipalRules）', () => {
   it('findCandidates 按 mountId 过滤：另一挂载的规则不会返回', async () => {
     const { createTestContext, initSeeded } = await import('./helpers');
     const ctx = createTestContext();

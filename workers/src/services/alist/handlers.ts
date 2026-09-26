@@ -1,4 +1,4 @@
-// AList v3 / OpenList 兼容 shim（P2-1，docs/PICLIST_COMPAT_CN.md）：挂载于 /openlist 前缀。
+// AList v3 / OpenList 兼容 shim（docs/PICLIST_COMPAT_CN.md）：挂载于 /openlist 前缀。
 // 独立前缀原因：Picumet 已占用 /api/auth/login（自有 JWT 登录），PicList url 填 https://host/openlist。
 // 契约（PicList-Core uploader/alist.ts 实测钉死）：
 //   POST /openlist/api/auth/login  {username:keyId, password:secret} → {code:200,message:'success',data:{token}}
@@ -20,8 +20,10 @@ import { serveFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
 import { requirePermission } from '../permissions/principal';
 import { deleteFileInternal } from '../files/remove';
+import { assertNotBanned } from '../files/ban';
 import { serveObject } from '../storage/serve';
 import { uploadBytes } from '../uploads/upload-bytes';
+import { resolveVirtualListing } from '../storage/root-view';
 import { normalizePath, isPathWithinBoundary } from '../../utils/path';
 import { signPath, verifyPathSign } from '../../utils/crypto';
 import { decideAccessMode } from '../shares/tokens';
@@ -64,7 +66,7 @@ alistRoutes.post('/api/auth/login', async (c) => {
   if (apiKey.allowedIps && apiKey.allowedIps.length > 0) {
     if (!apiKey.allowedIps.includes(clientIp(c.req.raw))) return fail();
   }
-  // SEC-06（审计 §SEC-06）：登录换取 token 前校验 api 协议面，防止仅声明其他协议的密钥借道 AList
+  // 登录换取 token 前校验 api 协议面：仅声明其他协议的密钥不得借道 AList 登录
   try {
     assertApiKeyProtocol(apiKey, 'api');
   } catch {
@@ -79,8 +81,8 @@ const fsApi = new Hono<AppBindings>();
 
 fsApi.use('*', apiKeyTokenAuthMiddleware);
 
-// SEC-06（审计 §SEC-06）：协议面统一入口校验——fs/list、fs/get、fs/remove 与 fs/form 一致受控，
-// 认证后立即执行，替代各路由内的内联 try/catch。
+// 协议面统一入口校验：fs/list、fs/get、fs/remove 与 fs/form 一致受控，认证后立即执行，
+// 各路由无需再各自判定。
 fsApi.use('*', async (c, next) => {
   const apiKey = c.get('apiKey');
   try {
@@ -96,7 +98,7 @@ fsApi.put('/form', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey')!;
   if (!apiKey.permissions.includes('write')) return c.json(AListFail(403, '密钥无上传权限'));
-  // 协议校验已上移至 fsApi 统一中间件（SEC-06）
+  // 协议校验由 fsApi 统一中间件完成
 
   const rawFilePath = c.req.header('file-path');
   if (!rawFilePath) return c.json(AListFail(400, '缺少 File-Path 头'));
@@ -131,7 +133,21 @@ fsApi.post('/list', async (c) => {
   const scopeError = assertScope(apiKey, dir, false);
   if (scopeError) return c.json(AListFail(403, scopeError));
   const mount = await MountRepo.findMountForPath(db, dir);
-  if (!mount) return c.json(AListFail(500, '挂载点不存在'));
+  if (!mount) {
+    // 合成根：无挂载点覆盖该路径、但其下存在挂载拓扑时返回虚拟目录项
+    // （逐挂载点 read 门禁由 root-view 判定；不可读/非挂载祖先 → 维持既有 500）
+    const virtual = await resolveVirtualListing(c, dir);
+    if (virtual) {
+      const content = virtual.map((r) => ({
+        name: r.name,
+        size: r.size,
+        is_dir: true,
+        modified: Math.floor(r.updatedAt / 1000),
+      }));
+      return c.json(AListOk({ content, total: content.length, readme: '', header: '', write: true, provider: 'Picumet' }));
+    }
+    return c.json(AListFail(500, '挂载点不存在'));
+  }
   try {
     await requirePermission(c, mount, dir, 'read');
   } catch {
@@ -170,8 +186,9 @@ fsApi.post('/get', async (c) => {
   } catch {
     return c.json(AListFail(403, '无权读取'));
   }
-  // 长期路径签名（能力范围 = 该精确路径的匿名 GET）
-  const sign = await signPath(virtualPath, env.ENCRYPTION_KEY);
+  // 能力直链签名有效期 24h：短期能力令牌，泄露后暴露窗口有限。
+  // 需要长期公共访问的场景必须走显式公共 CDN / 分享契约，而非无限期直链签名。
+  const sign = await signPath(virtualPath, env.ENCRYPTION_KEY, Date.now() + 24 * 3600 * 1000);
   return c.json(AListOk({
     name: file.name,
     size: file.size,
@@ -241,6 +258,8 @@ async function handleDirectLink(c: Context<AppBindings>): Promise<Response> {
   const parent = '/' + segs.join('/');
   const file = await FileRepo.getFileAtPath(db, mount.id, parent, name);
   if (!file || file.type !== 'file') return c.text('not found', 404);
+  // §26 违规封禁：直链内容出口门禁，与 path-serve 同语义（封禁后凭有效 sign 也不得流出）
+  await assertNotBanned(db, [file.id]);
   if (file.accessPassword) return c.text('password required', 403);
 
   // 直链公开判定用文件落桶 provider（§F）；对象读取由 serveFileObject 做池内回退（§G）
@@ -264,6 +283,9 @@ async function handleDirectLink(c: Context<AppBindings>): Promise<Response> {
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),
     totalSize: file.size,
+    // §31/§28 读回退补判：直链按 download 动作、以访问主体角色逐候选重判（匿名 = guest）
+    principalRole: (c.get('userRole') as string) ?? 'guest',
+    action: 'download',
   });
 }
 

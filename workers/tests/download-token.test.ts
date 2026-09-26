@@ -1,4 +1,4 @@
-// 下载令牌原子消费回归（审计 Fix 5）
+// 下载令牌原子消费：令牌只能成功消费一次，重复使用返回 401
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
 
@@ -64,8 +64,8 @@ describe('下载令牌原子消费', () => {
   });
 });
 
-// 审计 H-04：下载计数只在网关消费时增加一次，签发阶段不计数
-describe('H-04 分享下载计数', () => {
+// 下载计数只在网关消费时增加一次，签发阶段不计数
+describe('分享下载计数', () => {
   it('签发下载令牌不计数，实际下载才计数一次', async () => {
     const { authCookie } = await registerAndLogin(ctx, 'dlcount1');
     const csrf = await getCsrf(ctx, authCookie);

@@ -7,7 +7,7 @@ import { hmacSha256Raw, hmacSha256Hex, sha256HexBytes, timingSafeEqualStr } from
 
 const encoder = new TextEncoder();
 
-// SEC-09：SigV4 整包校验需把请求体完整读入内存，设置独立上限（与 uploads 的 MULTIPART_THRESHOLD
+// SigV4 整包校验需把请求体完整读入内存，故设独立上限（与 uploads 的 MULTIPART_THRESHOLD
 // 同档）：更大的文件应改用 UNSIGNED-PAYLOAD（配合服务端大小校验）或 multipart 上传。
 export const MAX_SIGNED_PAYLOAD_BYTES = 100 * 1024 * 1024;
 
@@ -244,7 +244,7 @@ export async function verifySigV4(req: Request, secret: string): Promise<SigV4Ve
   if (auth.kind === 'query') {
     payloadHash = 'UNSIGNED-PAYLOAD';
   } else if (/^[0-9a-fA-F]{64}$/.test(auth.payloadHash)) {
-    // SEC-09：读 body 前先按 content-length 头拒绝超限请求（避免为大 body 分配内存）
+    // 读 body 前先按 content-length 头拒绝超限请求（避免为大 body 分配内存）
     const declaredLength = Number(req.headers.get('content-length') ?? '');
     if (Number.isFinite(declaredLength) && declaredLength > MAX_SIGNED_PAYLOAD_BYTES) {
       throw new SigV4Error('InvalidRequest', '请求体过大，请使用 UNSIGNED-PAYLOAD 或 multipart 上传');

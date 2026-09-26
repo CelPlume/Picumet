@@ -7,7 +7,7 @@
 import type { Permission } from '@shared/types';
 import { PERMISSION_MATRIX } from '@shared/types';
 import { ApiError } from '../../shared/errors';
-import { Db } from '../db';
+import { Db, type Tx } from '../db';
 import { str, type Row } from '../row';
 
 /** 矩阵条目（管理端读写与 GET /api/admin/mounts 的 rolePermissions 同形） */
@@ -108,9 +108,10 @@ export const MountRolePermissionsRepo = {
    * - 词表去重、过滤 share；同一 role 重复出现时后者覆盖前者（避免主键冲突）；
    * - 非法 role 抛 ApiError(400)，此时事务尚未开始，落库零影响。
    * 并发语义：整表按挂载点替换，等价于管理端「矩阵编辑器整体保存」。
+   * 接受 Db|Tx：传入 Tx 时并入外层事务（不再自开事务，禁止嵌套）。
    */
   async setForMount(
-    db: Db,
+    db: Db | Tx,
     mountId: string,
     entries: Array<{ role: string; permissions: readonly string[] }>
   ): Promise<void> {
@@ -124,15 +125,17 @@ export const MountRolePermissionsRepo = {
       targets.set(entry.role, serialized);
     }
     const now = Date.now();
-    await db.transaction(async (tx) => {
-      await tx.query('DELETE FROM mount_role_permissions WHERE mount_id = ?', [mountId]);
+    const apply = async (writer: Db | Tx) => {
+      await writer.query('DELETE FROM mount_role_permissions WHERE mount_id = ?', [mountId]);
       for (const [role, permissions] of targets) {
-        await tx.query(
+        await writer.query(
           `INSERT INTO mount_role_permissions (mount_id, role, permissions, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?)`,
           [mountId, role, permissions, now, now]
         );
       }
-    });
+    };
+    if (db instanceof Db) await db.transaction(apply);
+    else await apply(db);
   },
 };

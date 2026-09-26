@@ -1,4 +1,4 @@
-// S3 兼容网关（P2-2，docs/PICLIST_COMPAT_CN.md）：SigV4 验签 → 网关密钥 → 统一权限/配额/审计
+// S3 兼容网关（docs/PICLIST_COMPAT_CN.md）：SigV4 验签 → 网关密钥 → 统一权限/配额/审计
 // 产品定位：Picumet 作为 R2/S3/Oracle/MinIO 的"中转"，对外提供 S3 兼容协议面
 //（图床上传只是用途之一）。密钥 pk_*/sk_* 即 AccessKeyId/SecretAccessKey。
 // 路由（路径式寻址，endpoint = https://host/s3）：
@@ -27,7 +27,7 @@ import { upsertFileObject } from '../files/write';
 import { serveObject } from '../storage/serve';
 import { verifySigV4, SigV4Error, parseSigV4Request, MAX_SIGNED_PAYLOAD_BYTES } from './sigv4';
 import type { SigV4ErrorCode } from './sigv4';
-import { decryptSecret, sha256HexBytes } from '../../utils/crypto';
+import { decryptSecret } from '../../utils/crypto';
 import { normalizePath, isPathWithinBoundary } from '../../utils/path';
 import type { ApiKey, Mount } from '@shared/types';
 
@@ -262,28 +262,27 @@ s3gwRoutes.put('*', async (c) => {
   });
 
   const payloadBytes = c.get('s3Payload');
-  const contentLength = Number(c.req.header('content-length') ?? '');
+  // UNSIGNED-PAYLOAD 请求体必须有界：content-length 是唯一可信上限来源；
+  // 缺失/分块（chunked）无法预判大小，直接拒绝，避免 arrayBuffer() 读入无界流占满内存。
+  const contentLengthHeader = c.req.header('content-length');
+  const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
   let size = 0;
   let body: ReadableStream<Uint8Array>;
   // §F 内容寻址：SigV4 整包校验已把载荷缓存在内存并算出哈希 → 写入路径据此完全跳过落对象
-  //（去重命中）或直写内容键（无需暂存 + 复制），且无需再对载荷做第二次 SHA-256（SEC-09）。
+  //（去重命中）或直写内容键（无需暂存 + 复制），且无需再对载荷做第二次 SHA-256。
   let contentHash: string | undefined;
   if (payloadBytes) {
     size = payloadBytes.byteLength;
     body = streamFromBytes(payloadBytes);
     contentHash = c.get('s3PayloadHash');
-  } else if (Number.isFinite(contentLength) && contentLength > 0) {
-    size = contentLength;
-    body = c.req.raw.body as ReadableStream<Uint8Array>;
-  } else {
-    // 无 content-length 兜底（UNSIGNED-PAYLOAD 且流式/分块传输）：只能整包读入后按实际大小校验
-    const bytes = new Uint8Array(await c.req.raw.arrayBuffer());
-    if (bytes.byteLength > MAX_SIGNED_PAYLOAD_BYTES) {
-      return s3ErrorResponse(400, 'InvalidRequest', '请求体过大，请使用 UNSIGNED-PAYLOAD 或 multipart 上传', virtualPath);
+  } else if (Number.isFinite(contentLength) && contentLength >= 0) {
+    if (contentLength > MAX_SIGNED_PAYLOAD_BYTES) {
+      return s3ErrorResponse(400, 'InvalidRequest', '对象超过 100 MiB 上限，请使用分片上传', virtualPath);
     }
-    size = bytes.byteLength;
-    body = streamFromBytes(bytes);
-    contentHash = await sha256HexBytes(bytes);
+    size = contentLength;
+    body = contentLength === 0 ? streamFromBytes(new Uint8Array(0)) : (c.req.raw.body as ReadableStream<Uint8Array>);
+  } else {
+    return s3ErrorResponse(411, 'MissingContentLength', '缺少 Content-Length，拒绝无界请求体', virtualPath);
   }
 
   const result = await upsertFileObject(c, {
@@ -358,11 +357,14 @@ async function getObjectOrHead(c: Ctx, bucket: string, key: string, head: boolea
     db,
     env: c.env,
     mount,
-    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size },
+    ref: { fileId: file.id, mountId: file.mountId, providerId: file.providerId, physicalKey: physicalObjectKey(file), size: file.size, blobHash: file.blobHash },
     name: file.name,
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),
     totalSize: file.size,
+    // §31/§28 读回退补判：GetObject/HeadObject 按 read 动作、以密钥持有者角色逐候选重判
+    principalRole: (c.get('userRole') as string) ?? 'guest',
+    action: 'read',
   });
   if (head) return new Response(null, { status: res.status, headers: res.headers });
   return res;

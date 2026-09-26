@@ -1,4 +1,4 @@
-// AList/OpenList 兼容 shim 回归：login → fs/form → fs/list → fs/get → /d 直链 → fs/remove 全流程
+// AList/OpenList 兼容 shim：login → fs/form → fs/list → fs/get → /d 直链 → fs/remove 全流程
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule,
@@ -141,8 +141,8 @@ describe('AList/OpenList 兼容 shim（/openlist）', () => {
     expect((await json(get) as { code: number }).code).toBe(403);
   });
 
-  // SEC-06（审计 §SEC-06）：协议面授权矩阵——不含 api 的密钥 login/fs/list 一律拒绝
-  it('SEC-06：protocols 不含 api 的密钥 login 与 fs/list 均 403，含 api 的密钥正常', async () => {
+  // 协议面授权矩阵：不含 api 的密钥 login/fs/list 一律拒绝
+  it('protocols 不含 api 的密钥 login 与 fs/list 均 403，含 api 的密钥正常', async () => {
     // 仅声明 webdav 协议的密钥（凭据/状态/IP 均有效，仅协议不匹配）
     const { authCookie } = await registerAndLogin(ctx, 'alistproto');
     const csrf = await getCsrf(ctx, authCookie);
@@ -193,5 +193,39 @@ describe('AList/OpenList 兼容 shim（/openlist）', () => {
     });
     expect(okList.status).toBe(200);
     expect((await json(okList) as { code: number }).code).toBe(200);
+  });
+
+  // 封禁文件即使持有有效 sign，经 /d 直链与 path-serve 同路径均被拒绝
+  it('封禁文件 + 有效 sign 直链被拒绝（与 path-serve 同语义）', async () => {
+    const k = await createAlistKey('alistban');
+    const filePath = '/uploads/alist/banned.png';
+    const upload = await request(ctx, '/openlist/api/fs/form', {
+      method: 'PUT',
+      headers: { Authorization: k.token, 'File-Path': encodeURIComponent(filePath) },
+      body: multipart('banned.png', 'banned-content'),
+    });
+    expect((await json<{ code: number }>(upload)).code).toBe(200);
+
+    const get = await request(ctx, '/openlist/api/fs/get', {
+      method: 'POST',
+      headers: { Authorization: k.token },
+      body: { path: filePath },
+    });
+    const sign = (await json<{ data: { sign: string } }>(get)).data.sign;
+    expect(sign).toBeTruthy();
+
+    // 对照组：未封禁时直链可正常取回
+    const before = await request(ctx, `/openlist/d${encodeURIComponent(filePath)}?sign=${sign}`);
+    expect(before.status).toBe(200);
+    expect(await before.text()).toBe('banned-content');
+
+    // §26 封禁后：AList 直链与 path-serve 同路径直链同样拒绝（429 FILE_BANNED）
+    ctx.db.exec("UPDATE file_metadata SET banned = 1 WHERE name = 'banned.png'");
+    const alistBlocked = await request(ctx, `/openlist/d${encodeURIComponent(filePath)}?sign=${sign}`);
+    expect(alistBlocked.status).toBe(429);
+    expect((await json<{ error: { code: string } }>(alistBlocked)).error.code).toBe('FILE_BANNED');
+
+    const pathBlocked = await request(ctx, `${filePath}?sign=${sign}`);
+    expect(pathBlocked.status).toBe(429);
   });
 });

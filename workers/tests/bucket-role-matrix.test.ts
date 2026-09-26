@@ -38,6 +38,7 @@ const mount: Mount = {
   maxStorage: null,
   usedStorage: 0,
   quotaReserved: 0,
+  createdAt: 0,
   poolStrategy: 'least_used',
   capacityBytes: null,
   uploadMode: 'free',
@@ -299,7 +300,7 @@ describe('权限引擎：桶级默认角色权限矩阵', () => {
 
 // ============ 2. 仓库：mount_provider_role_permissions ============
 
-/** 仓库按 provider_id 升序返回，而 provider_id 是随机 UUID → 断言前按稳定键排序（顺序本身已有引擎无关的回归覆盖） */
+/** 仓库按 provider_id 升序返回，而 provider_id 是随机 UUID → 断言前按稳定键排序（顺序本身已有引擎无关的覆盖测试） */
 function sortedEntries<T extends { providerId: string; role: string }>(entries: T[]): T[] {
   return [...entries].sort((a, b) => a.providerId.localeCompare(b.providerId) || a.role.localeCompare(b.role));
 }
@@ -613,15 +614,15 @@ describe('写路径：候选桶按桶级矩阵过滤', () => {
   });
 });
 
-// ============ 5. §28/§30 语义未被改写（回归） ============
+// ============ 5. §28/§30 语义未被改写 ============
 
-describe('回归：挂载点级矩阵与既有行为', () => {
+describe('挂载点级矩阵与既有行为', () => {
   it('挂载点级矩阵在无桶级条目时照旧生效（§28 未被改写）', async () => {
     const providerId = (await ProviderRepo.listProviders(db))[0].id;
     const mountId = await createMount({
       providerId,
       mountPath: '/bm-mountlevel',
-      name: '挂载点级矩阵回归',
+      name: '挂载点级矩阵',
     });
     // 挂载点级矩阵：user 只给 read → 新建文件被入口判定拒绝（写路径入口按挂载点级/角色默认，桶级只追加候选过滤）
     const setMount = await patchMount(mountId, {

@@ -1,8 +1,8 @@
 // WebDAV 兼容协议：PicGo/PicList（Basic Auth：keyId:secret）
-// 审计 H-3/H-4：全部方法接入统一路径级权限服务；MOVE 复用移动 Saga，不再直接改 file_metadata。
+// 全部方法接入统一路径级权限服务；MOVE 复用移动 Saga，不直接改 file_metadata（否则绕过权限与冲突校验）。
 // 网关密钥数据层所有者隔离：文件行查询全部限定属主（check.ts + repos ownerId 过滤）。
-// P1-3（docs/PICLIST_COMPAT_CN.md）：href 逐段 URI 编码、PROPFIND 自项真实属性、
-// getcontenttype/getetag、OPTIONS 不再宣告未实现的 COPY、MOVE Overwrite 头、MKCOL/PUT 递归建父。
+// 兼容契约见 docs/PICLIST_COMPAT_CN.md：href 逐段 URI 编码、PROPFIND 自项真实属性、
+// getcontenttype/getetag、OPTIONS 不宣告未实现的 COPY、MOVE Overwrite 头、MKCOL/PUT 递归建父。
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
@@ -16,7 +16,8 @@ import { getProvider } from '../storage/providers';
 import { getProviderForFile } from '../storage/pool';
 import { serveFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
-import { requirePermission, assertBucketPermission } from '../permissions/principal';
+import { requirePermission, assertBucketPermission, assertMountMatrixPermission } from '../permissions/principal';
+import { resolveVirtualListing } from '../storage/root-view';
 import { moveWithSaga } from '../files/move';
 import { deleteFileInternal } from '../files/remove';
 import { ensureFolders, upsertFileObject } from '../files/write';
@@ -30,7 +31,7 @@ export const webdavRoutes = new Hono<AppBindings>();
 
 webdavRoutes.use('*', apiKeyAuthMiddleware);
 
-// P1-2：protocols 非空的密钥必须声明 webdav 面
+// protocols 非空的密钥必须声明 webdav 面：只声明其他协议的密钥不得借 WebDAV 面访问
 webdavRoutes.use('*', async (c, next) => {
   assertApiKeyProtocol(c.get('apiKey'), 'webdav');
   await next();
@@ -40,7 +41,7 @@ function davPath(p: string): string {
   return normalizePath(p);
 }
 
-/** M-3：WebDAV 写目标必须位于密钥配置的上传根目录内 */
+/** WebDAV 写目标必须位于密钥配置的上传根目录内 */
 function assertWithinUploadRoot(apiKey: { uploadPath: string }, targetPath: string): void {
   const root = normalizePath(apiKey.uploadPath || '/');
   if (!isPathWithinBoundary(targetPath, root)) {
@@ -82,7 +83,7 @@ interface DavItem {
   props?: string;
 }
 
-/** P1-3.1：href 逐路径段 encodeURIComponent（整体 encodeURI 不转义 `#`，`%` 会炸 decodeURIComponent） */
+/** href 逐路径段 encodeURIComponent：整体 encodeURI 不转义 `#`，且 `%` 会炸 decodeURIComponent */
 function davHrefFor(fullPath: string): string {
   const segs = fullPath.split('/').filter(Boolean).map(encodeURIComponent);
   return `/webdav/${segs.join('/')}`;
@@ -98,7 +99,7 @@ interface DavPropsInput {
   etag?: string;
 }
 
-/** P1-3.2：自项按真实类型返回；文件补 getcontenttype / getetag */
+/** 自项按真实类型返回；文件补 getcontenttype / getetag */
 function davProps(item: DavPropsInput): DavItem {
   const parts = [
     `<d:displayname>${escapeXml(item.name)}</d:displayname>`,
@@ -115,7 +116,7 @@ function davProps(item: DavPropsInput): DavItem {
   };
 }
 
-// ============ OPTIONS：声明 WebDAV 能力（不再宣告未实现的 COPY，P1-3.3） ============
+// ============ OPTIONS：声明 WebDAV 能力（不宣告未实现的 COPY） ============
 webdavRoutes.options('*', (c) => {
   c.header('DAV', '1,2');
   c.header('Allow', 'OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, PROPFIND, MOVE');
@@ -133,8 +134,29 @@ webdavRoutes.on(['PROPFIND'], '*', async (c) => {
   const targetPath = davPath(c.req.path.replace(/^\/webdav/, '') || '/');
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
-  if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
-  // H-3：读操作走统一路径级权限
+  if (!mount) {
+    // 合成根：无挂载点覆盖该路径、但其下存在挂载拓扑时，按现有 XML 构造返回 collection 骨架
+    // （自项 + 下一级虚拟目录；逐挂载点 read 门禁由 root-view 判定，全部不可读 → 维持既有 404）
+    const virtual = await resolveVirtualListing(c, targetPath);
+    if (!virtual) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
+    const virtualSegs = targetPath.split('/').filter(Boolean);
+    const items: DavItem[] = [
+      davProps({
+        name: virtualSegs.pop() ?? '',
+        fullPath: targetPath,
+        isFolder: true,
+        size: 0,
+        mtime: Date.now(),
+      }),
+    ];
+    if (depth !== '0') {
+      for (const v of virtual) {
+        items.push(davProps({ name: v.name, fullPath: v.path, isFolder: true, size: v.size, mtime: v.updatedAt }));
+      }
+    }
+    return xmlResponse(207, {}, makeMultistatus(items));
+  }
+  // 读操作走统一路径级权限
   await requirePermission(c, mount, targetPath, 'read');
 
   const segs = targetPath.split('/').filter(Boolean);
@@ -148,10 +170,14 @@ webdavRoutes.on(['PROPFIND'], '*', async (c) => {
   if (selfRow && selfRow.type === 'file' && selfRow.ownerId !== apiKey.userId) {
     throw new ApiError(404, 'NOT_FOUND', '路径不存在');
   }
-  // 自项不存在且非挂载根 → 404（此前对不存在路径返回空列表，客户端会误判）
+  // 自项不存在且非挂载根 → 404（若返回空列表，客户端会误判路径已存在）
   if (!selfRow && !isRoot && !isMountRoot) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
   // §31 桶级矩阵：自项为文件时按文件实际落桶补判读权限（初检早于行解析，不含落桶）
-  if (selfRow?.type === 'file') await assertBucketPermission(c, mount.id, selfRow.providerId, 'read');
+  if (selfRow?.type === 'file') {
+    await assertBucketPermission(c, mount.id, selfRow.providerId, 'read');
+    // §28 挂载点级矩阵：与桶级同形，需再判一次，两层都过才放行
+    await assertMountMatrixPermission(c, mount.id, 'read');
+  }
   const selfIsFolder = isRoot || isMountRoot || selfRow!.type === 'folder';
 
   const items: DavItem[] = [];
@@ -184,7 +210,7 @@ webdavRoutes.on(['PROPFIND'], '*', async (c) => {
   return xmlResponse(207, {}, makeMultistatus(items));
 });
 
-// ============ MKCOL：创建文件夹（递归补齐缺失祖先，P1-3.5） ============
+// ============ MKCOL：创建文件夹（递归补齐缺失祖先） ============
 webdavRoutes.on(['MKCOL'], '*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
@@ -196,7 +222,7 @@ webdavRoutes.on(['MKCOL'], '*', async (c) => {
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
-  // H-3：写操作走统一路径级权限；M-3：目标位于密钥上传根内
+  // 写操作走统一路径级权限；目标须位于密钥上传根内
   assertWithinUploadRoot(apiKey, targetPath);
   await requirePermission(c, mount, targetPath, 'write');
 
@@ -227,7 +253,7 @@ webdavRoutes.put('*', async (c) => {
   const name = targetPath.split('/').filter(Boolean).pop() ?? 'file';
   if (!isValidFileName(name)) throw new ApiError(400, 'VALIDATION_ERROR', '文件名非法');
 
-  // 审计 H-03：WebDAV PUT 流式转发请求体（不整包读入内存）。
+  // WebDAV PUT 流式转发请求体（不整包读入内存）。
   // Content-Length 已知时流式 + 前置拒绝；缺失（chunked）时回退读取以确定大小。
   const rawLength = Number(c.req.header('content-length') ?? '');
   const hasLength = Number.isFinite(rawLength) && rawLength > 0;
@@ -279,13 +305,15 @@ async function resolveDavFile(c: Context<AppBindings>, targetPath: string): Prom
 
   const mount = await MountRepo.findMountForPath(db, targetPath);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '路径不存在');
-  // H-3：读操作走统一路径级权限
+  // 读操作走统一路径级权限
   await requirePermission(c, mount, targetPath, 'read');
   const file = await FileRepo.getFileAtPath(db, mount.id, parentPath, name, apiKey.userId);
   if (!file || file.type === 'folder') throw new ApiError(404, 'NOT_FOUND', '文件不存在');
 
   // §31 桶级矩阵：读路径初检早于文件行解析，此处按文件实际落桶补判（桶级明确禁止 → 403）
   await assertBucketPermission(c, mount.id, file.providerId, 'read');
+  // §28 挂载点级矩阵：与桶级同形，需再判一次，两层都过才放行
+  await assertMountMatrixPermission(c, mount.id, 'read');
 
   const provider = await getProviderForFile(db, file, mount, c.env as Env);
   return { file, provider };
@@ -317,6 +345,9 @@ webdavRoutes.get('*', async (c) => {
     rangeHeader: c.req.header('range'),
     totalSize: file.size,
     forceAttachment: true,
+    // §31/§28 读回退补判：WebDAV 下载按 download 动作、以密钥持有者角色逐候选重判
+    principalRole: (c.get('userRole') as string) ?? 'guest',
+    action: 'download',
   });
 });
 
@@ -332,6 +363,9 @@ webdavRoutes.on(['HEAD'], '*', async (c) => {
     mimeType: file.mimeType,
     rangeHeader: c.req.header('range'),
     totalSize: file.size,
+    // §31/§28 读回退补判：HEAD 与 GET 同一出口，按 download 动作逐候选重判
+    principalRole: (c.get('userRole') as string) ?? 'guest',
+    action: 'download',
   });
   return new Response(null, { status: res.status, headers: res.headers });
 });
@@ -356,14 +390,14 @@ webdavRoutes.delete('*', async (c) => {
   if (file.type === 'file' && file.ownerId !== apiKey.userId) {
     throw new ApiError(404, 'NOT_FOUND', '文件不存在');
   }
-  // H-3：删除操作走统一路径级权限
+  // 删除操作走统一路径级权限
   await requirePermission(c, mount, targetPath, 'delete', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
 
   await deleteFileInternal(c, mount, file, apiKey.userId);
   return xmlResponse(204);
 });
 
-// ============ MOVE：移动/重命名（复用移动 Saga，H-4；处理 Overwrite 头，P1-3.4） ============
+// ============ MOVE：移动/重命名（复用移动 Saga；处理 Overwrite 头） ============
 webdavRoutes.on(['MOVE'], '*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
@@ -404,10 +438,10 @@ webdavRoutes.on(['MOVE'], '*', async (c) => {
   const destName = destPath.split('/').filter(Boolean).pop() ?? name;
   const destParent = destPath.slice(0, -(destName.length + 1)) || '/';
   if (!isValidFileName(destName)) throw new ApiError(400, 'VALIDATION_ERROR', '目标名非法');
-  // M-3：目标位于密钥上传根内
+  // 目标位于密钥上传根内
   assertWithinUploadRoot(apiKey, destPath);
 
-  // P1-3.4：RFC 4918 默认 Overwrite: T；F 时目标已存在 → 412
+  // RFC 4918 默认 Overwrite: T；F 时目标已存在 → 412
   const overwrite = (c.req.header('overwrite') ?? 'T').trim().toUpperCase() !== 'F';
   const destMount = await MountRepo.findMountForPath(db, destPath);
   if (destMount) {
@@ -425,7 +459,7 @@ webdavRoutes.on(['MOVE'], '*', async (c) => {
     }
   }
 
-  // H-4：完整 Saga（源 delete + 目标 write 双重权限、冲突/循环、复制校验、原子切换、异步清理）
+  // 完整 Saga：源 delete + 目标 write 双重权限、冲突/循环、复制校验、原子切换、异步清理
   await moveWithSaga(c, { fileId: file.id, targetDir: destParent, targetName: destName });
   return xmlResponse(201, { Location: dest });
 });

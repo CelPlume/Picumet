@@ -1,4 +1,4 @@
-// 分享出口文件级密码（审计 SEC-04）：分享密码 ≠ 文件密码。
+// 分享出口文件级密码：分享密码 ≠ 文件密码。
 // preview/download 出口按目标文件 accessPassword 拦截；verify-file 逐文件验证后种短期授权 cookie。
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
@@ -89,7 +89,7 @@ function cookieValue(res: Response, name: string): string {
   return value as string;
 }
 
-describe('SEC-04 分享出口文件级密码', () => {
+describe('分享出口文件级密码', () => {
   it('无分享密码 + 文件有密码：preview 401 / 网关拒绝未验证令牌，verify-file 通过后放行', async () => {
     const { authCookie } = await registerAndLogin(ctx, 'sfp_owner');
     const uploaded = await uploadFile(authCookie, 'sfp-locked.txt', 'sfp-locked-content');

@@ -85,7 +85,7 @@ export function checkPermission(
     if (!allowed.includes(action)) {
       return 'deny';
     }
-    // 网关密钥数据层所有者隔离（用户决策 2026-09-20）：密钥只能触达属主自己的文件行，
+    // 网关密钥数据层所有者隔离：密钥只能触达属主自己的文件行，
     // 即使路径规则被误配为 /** 也无法越权到其他用户的数据。
     if (fileOwnerId !== undefined && fileOwnerId !== principal.id) {
       return 'deny';
@@ -104,8 +104,8 @@ export function checkPermission(
     if (!rule.permissions.includes(action)) {
       continue;
     }
-    // 条件检查（DESIGN-01 保留）：规则创建面已收紧（RuleSchema 不再接受 requirePassword/allowedIps），
-    // 但存量库行可能仍带这些字段——本判定保持现状：不传 conditions 一律 fail-closed（deny，不放宽），
+    // 条件检查：规则创建面已收紧（RuleSchema 不再接受 requirePassword/allowedIps），
+    // 但存量库行可能仍带这些字段——本判定不传 conditions 一律 fail-closed（deny，不放宽），
     // 显式条件传入方可放行。目前唯一生产传入方是文件密码验证流程（verify-password 传 { ip, passwordVerified: true }）。
     if (rule.requirePassword && !conditions?.passwordVerified) {
       return 'deny';
@@ -297,7 +297,7 @@ export function isPasswordExempt(principal: Principal, fileOwnerId?: string): bo
 
 /**
  * 加载某主体相关的全部候选规则。
- * mountId 可选：传入时只加载该挂载的规则 + 全局规则（审计 H-01 挂载隔离）。
+ * mountId 可选：传入时只加载该挂载的规则 + 全局规则（挂载隔离）。
  * 规则主体支持角色别名：path_rules.role 写 role_defaults.alias（角色显示别名）时，
  * 命中该别名即视为写给该角色的规则（别名唯一性不做强约束，取到的别名全部并入候选集）。
  */
@@ -314,23 +314,8 @@ export async function loadPrincipalRules(db: Db, principal: Principal, mountId?:
   );
 }
 
-/**
- * 移动操作的双重检查：源 delete + 目标 write
- */
-export function checkMovePermission(
-  principal: Principal,
-  sourceMount: Mount,
-  targetMount: Mount,
-  sourcePath: string,
-  targetPath: string,
-  allRules: PathRule[],
-  fileOwnerId?: string
-): boolean {
-  const canDeleteSource =
-    checkPermission(principal, sourceMount, sourcePath, 'delete', allRules, fileOwnerId) === 'allow';
-  const canWriteTarget =
-    checkPermission(principal, targetMount, targetPath, 'write', allRules, fileOwnerId) === 'allow';
-  return canDeleteSource && canWriteTarget;
-}
+// MOVE 的双重检查（源 delete + 目标 write）不走本引擎的简化包装——它不接收两级矩阵与落桶，
+// 会让挂载点级/桶级矩阵对移动入口整体失效。改由 move.ts 直接调用 principal.ts 的
+// requirePermission 两次（各自携带完整矩阵上下文，并按请求缓存），与其它入口同源。
 
 export type { RuleEffect };

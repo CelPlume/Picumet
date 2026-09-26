@@ -1,19 +1,31 @@
 // 用户与配额仓库
 import type { Role, User } from '@shared/types';
-import { Db } from '../db';
+import { Db, type Tx } from '../db';
 import { mapUser, mapQuota, num, type Row } from '../row';
+import { RoleDefaultsRepo } from './role-defaults';
 import { uuid } from '../../utils/crypto';
 
 export const UserRepo = {
   /** 新用户默认存储限额：1GiB（存量由迁移统一回填） */
   DEFAULT_MAX_STORAGE: 1073741824,
-  async createUser(db: Db, u: { username: string; email: string; passwordHash: string; role?: Role }): Promise<User> {
+  /**
+   * 新建用户。default_path 来源与优先级：
+   *   显式入参 > 该角色 role_defaults.default_path > '/'。
+   * 注册（auth）与自由模式等所有创建路径共用此来源，管理员在角色设置里改默认路径后对新用户生效；
+   * 「保存角色默认」对存量用户的批量覆盖（RoleDefaultsRepo.applyToRole）行为不变。
+   */
+  async createUser(
+    db: Db,
+    u: { username: string; email: string; passwordHash: string; role?: Role; defaultPath?: string }
+  ): Promise<User> {
     const now = Date.now();
     const id = uuid();
+    const role = u.role ?? 'user';
+    const defaultPath = u.defaultPath ?? (await RoleDefaultsRepo.defaultPathOf(db, role));
     await db.run(
       `INSERT INTO users (id, username, email, email_verified, password_hash, role, default_path, created_at, updated_at)
-       VALUES (?, ?, ?, 0, ?, ?, '/', ?, ?)`,
-      [id, u.username, u.email, u.passwordHash, u.role ?? 'user', now, now]
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+      [id, u.username, u.email, u.passwordHash, role, defaultPath, now, now]
     );
     await db.run(`INSERT INTO user_quotas (user_id, max_storage, updated_at) VALUES (?, ?, ?)`, [id, UserRepo.DEFAULT_MAX_STORAGE, now]);
     return (await this.getUserById(db, id)) as User;
@@ -26,7 +38,7 @@ export const UserRepo = {
     const row = await db.first('SELECT * FROM users WHERE username = ?', [username]);
     return row ? mapUser(row) : null;
   },
-  /** 批量按用户名取用户（审计 DESIGN-02：分享指定用户列表一次取回，缺失用户名由调用方逐个报错） */
+  /** 批量按用户名取用户：分享指定用户列表一次取回，缺失用户名由调用方逐个报错 */
   async getUsersByUsernames(db: Db, usernames: string[]): Promise<User[]> {
     if (usernames.length === 0) return [];
     const rows = await db.all(`SELECT * FROM users WHERE username IN (${usernames.map(() => '?').join(',')})`, usernames);
@@ -42,12 +54,19 @@ export const UserRepo = {
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
     await db.run(`UPDATE users SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
   },
-  /** 递增会话版本（审计 H-05）：使该用户所有已签发 JWT 立即失效 */
+  /** 递增会话版本：使该用户所有已签发 JWT 立即失效 */
   async bumpSessionVersion(db: Db, id: string): Promise<void> {
     await db.run(`UPDATE users SET session_version = session_version + 1, updated_at = ? WHERE id = ?`, [Date.now(), id]);
   },
+  /**
+   * 删除用户（事务内版本）：与「登记待清理对象」同批执行，避免登记成功而删除失败时
+   * 清理队列指向仍被引用的对象。级联删除 user_quotas / file_metadata / upload_sessions 等从属行。
+   */
+  async deleteUserTx(tx: Tx, id: string): Promise<void> {
+    await tx.query('DELETE FROM users WHERE id = ?', [id]);
+  },
   async deleteUser(db: Db, id: string): Promise<void> {
-    await db.run('DELETE FROM users WHERE id = ?', [id]);
+    await this.deleteUserTx(db, id);
   },
   async listUsers(db: Db, opts: { page: number; limit: number; role?: string; status?: string; search?: string }): Promise<{ rows: User[]; total: number }> {
     const where: string[] = [];

@@ -1,4 +1,4 @@
-// 网关密钥兼容面回归：P0-1 直链 / P0-2 覆盖 / P0-3 目录行 / P1-2 协议面 / P1-1 Lsky 壳 / 所有者隔离
+// 网关密钥兼容面：嵌套路径直链 / 同名覆盖 / 祖先目录行补齐 / 协议面限制 / Lsky 壳 / 所有者隔离
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule,
@@ -59,8 +59,8 @@ async function fetchDirect(pathAndQuery: string): Promise<Response> {
   return request(ctx, pathAndQuery);
 }
 
-describe('网关密钥兼容面（P0/P1 修复）', () => {
-  it('P0-3：嵌套路径自动补齐祖先目录行（含特殊字符文件名）', async () => {
+describe('网关密钥兼容面', () => {
+  it('嵌套路径自动补齐祖先目录行（含特殊字符文件名）', async () => {
     const k = await createKey('gwfolder');
     const res = await request(ctx, '/api/upload', {
       method: 'POST',
@@ -80,7 +80,7 @@ describe('网关密钥兼容面（P0/P1 修复）', () => {
     expect(direct.status).toBe(200);
   });
 
-  it('P0-2：同名重传覆盖成功，对象未丢、used_files 只加一次', async () => {
+  it('同名重传覆盖成功，对象未丢、used_files 只加一次', async () => {
     const k = await createKey('gwoverwrite');
     const headers = bearer(k.fullToken);
     const r1 = await request(ctx, '/api/upload', { method: 'POST', headers, body: multipart('same.png', 'first') });
@@ -100,7 +100,7 @@ describe('网关密钥兼容面（P0/P1 修复）', () => {
     expect(Number(q.used_files)).toBe(1);
   });
 
-  it('P0-1 + P1-3.6：X-File-Name 携带嵌套路径段可拆分；私有挂载直链可匿名访问', async () => {
+  it('X-File-Name 携带嵌套路径段可拆分；签名直链可匿名取回，无签名直取需登录', async () => {
     const k = await createKey('gwnested');
     const content = 'raw-nested-body';
     const res = await request(ctx, '/api/upload', {
@@ -122,7 +122,7 @@ describe('网关密钥兼容面（P0/P1 修复）', () => {
     expect((await json(noSign)).error.code).toBe('LOGIN_REQUIRED');
   });
 
-  it('P1-2：protocols 不含 api 的密钥被 403 拒绝上传', async () => {
+  it('protocols 不含 api 的密钥上传被 403 拒绝', async () => {
     const k = await createKey('gwproto', { protocols: ['webdav'] });
     const res = await request(ctx, '/api/upload', {
       method: 'POST',
@@ -132,7 +132,7 @@ describe('网关密钥兼容面（P0/P1 修复）', () => {
     expect(res.status).toBe(403);
   });
 
-  it('P1-1：Lsky V2 壳（Bearer 与裸 token 皆可；data.links.url + key）', async () => {
+  it('Lsky V2 壳：Bearer 与裸 token 皆可；返回 data.links.url 与 key', async () => {
     const k = await createKey('gwlsky');
     const res = await request(ctx, '/api/v1/upload', {
       method: 'POST',

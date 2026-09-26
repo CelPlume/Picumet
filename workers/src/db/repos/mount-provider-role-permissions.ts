@@ -8,7 +8,7 @@
 //   permissions 列是逗号分隔的动作词表（词表 = read|write|update|delete|download），
 //   非法值/share/空词表一律不入库、读回时按「无条目」处理。
 import type { Permission } from '@shared/types';
-import { Db } from '../db';
+import { Db, type Tx } from '../db';
 import { ApiError } from '../../shared/errors';
 import { str, type Row } from '../row';
 import { MOUNT_ROLE_WHITELIST, mapEntry, serializePermissions } from './mount-role-permissions';
@@ -89,9 +89,10 @@ export const MountProviderRolePermissionsRepo = {
    * - 词表去重、过滤 share；同一 role 重复出现时后者覆盖前者（避免主键冲突）；
    * - 非法 role 抛 ApiError(400)，此时事务尚未开始，落库零影响。
    * 并发语义：按 (挂载点, 桶) 整体替换，等价于管理端「桶级矩阵编辑器整体保存」。
+   * 接受 Db|Tx：传入 Tx 时并入外层事务（不再自开事务，禁止嵌套）。
    */
   async setForMount(
-    db: Db,
+    db: Db | Tx,
     mountId: string,
     providerId: string,
     entries: Array<{ role: string; permissions: readonly string[] }>
@@ -106,18 +107,20 @@ export const MountProviderRolePermissionsRepo = {
       targets.set(entry.role, serialized);
     }
     const now = Date.now();
-    await db.transaction(async (tx) => {
-      await tx.query('DELETE FROM mount_provider_role_permissions WHERE mount_id = ? AND provider_id = ?', [
+    const apply = async (writer: Db | Tx) => {
+      await writer.query('DELETE FROM mount_provider_role_permissions WHERE mount_id = ? AND provider_id = ?', [
         mountId,
         providerId,
       ]);
       for (const [role, permissions] of targets) {
-        await tx.query(
+        await writer.query(
           `INSERT INTO mount_provider_role_permissions (mount_id, provider_id, role, permissions, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?)`,
           [mountId, providerId, role, permissions, now, now]
         );
       }
-    });
+    };
+    if (db instanceof Db) await db.transaction(apply);
+    else await apply(db);
   },
 };
