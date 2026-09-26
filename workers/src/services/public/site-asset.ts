@@ -5,6 +5,7 @@
 // 浏览器直接命中本地缓存，刷新不再触网。
 // 防开放代理：只中转 system_settings 里「当前配置」的那两个地址，其余一律 404；
 // 再过 validateEndpoint 拒绝私网/保留地址（管理员误配内网地址时不放行）。
+// SEC-07：重定向不交给 fetch 自动跟随，逐跳重新过 validateEndpoint（见下方手动循环）。
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import { SettingsRepo } from '../../db';
@@ -47,7 +48,36 @@ siteAssetRoutes.get('/site-asset/:kind', async (c) => {
   const hit = await caches.default.match(cacheKey);
   if (hit) return hit;
 
-  const upstream = await fetch(target, { redirect: 'follow' });
+  // SEC-07：重定向目标可能是攻击者控制的 302 → 私网/云元数据地址，交给 fetch 自动跟随等于绕过校验；
+  // 必须手动逐跳：redirect: 'manual'，每一跳重新过 validateEndpoint（失败走上方 NOT_FOUND 分支），
+  // location 缺失或超过 3 跳视为异常上游（502）。
+  const REDIRECT_LIMIT = 3;
+  // 301/302/303/307/308 = 会改写请求目标的重定向；其余状态（含 300/304）按终态响应处理
+  const REDIRECT_STATUSES: readonly number[] = [301, 302, 303, 307, 308];
+  let current = target;
+  let upstream: Response | null = null;
+  for (let hop = 0; hop < REDIRECT_LIMIT; hop++) {
+    if (!validateEndpoint(current)) {
+      return c.json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } }, 404);
+    }
+    const res = await fetch(current, { redirect: 'manual' });
+    if (!REDIRECT_STATUSES.includes(res.status)) {
+      upstream = res;
+      break;
+    }
+    const location = res.headers.get('location');
+    if (!location) {
+      return c.json({ success: false, error: { code: 'UPSTREAM_ERROR', message: '资源获取失败' } }, 502);
+    }
+    try {
+      current = new URL(location, current).toString();
+    } catch {
+      return c.json({ success: false, error: { code: 'UPSTREAM_ERROR', message: '资源获取失败' } }, 502);
+    }
+  }
+  if (!upstream) {
+    return c.json({ success: false, error: { code: 'UPSTREAM_ERROR', message: '资源获取失败' } }, 502);
+  }
   const contentType = upstream.headers.get('content-type') ?? '';
   if (!upstream.ok || !contentType.startsWith('image/')) {
     return c.json({ success: false, error: { code: 'UPSTREAM_ERROR', message: '资源获取失败' } }, 502);
