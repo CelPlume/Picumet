@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Picumet 图床限速验证页</title>
+<style>body{font:14px/1.6 system-ui;margin:24px}img{width:96px;height:96px;object-fit:cover;border:1px solid #ddd;border-radius:6px}</style>
+</head><body>
+<h1>图床批量加载验证（一个页面引入一个文件夹的图片）</h1>
+<p>用途：验证 <code>GET /api/public/fs</code> 列表下发的签名直链被批量热链时的加载行为（是否按限速逐一失败）。</p>
+<pre id="tally">loading…</pre>
+<div id="stage" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+<script>
+// 由用例/手工填入「/api/public/fs」列表下发的签名直链（示例见 docs/LAB_TEST_GUIDE.md §7.2）
+const IMAGES = [];
+const t0 = performance.now();
+const results = [];
+let done = 0;
+const finish = () => document.title = 'DONE';
+(async () => {
+  // 模拟浏览器加载一个文件夹的全部图片；逐张记录完成时刻，便于判断是「并发批量」还是「按限制逐一」
+  await Promise.all(IMAGES.map((url, i) => new Promise((resolve) => {
+    const started = performance.now();
+    const img = new Image();
+    img.onload = () => { results.push({ i, status: 200, ms: Math.round(performance.now()-started) }); done++; resolve(); };
+    img.onerror = () => { results.push({ i, status: 'error', ms: Math.round(performance.now()-started) }); done++; resolve(); };
+    img.src = url;
+    document.getElementById('stage').appendChild(img);
+  })));
+  results.sort((a,b)=>a.i-b.i);
+  const tally = { total: IMAGES.length, ok: results.filter(r=>r.status===200).length,
+                  failed: results.filter(r=>r.status!==200).length, elapsedMs: Math.round(performance.now()-t0), results };
+  window.__tally = tally;
+  document.getElementById('tally').textContent = JSON.stringify(tally, null, 1);
+  finish();
+})();
+</script></body></html>

@@ -13,11 +13,13 @@ from __future__ import annotations
 import argparse
 import http.cookiejar
 import json
+import os
 import pathlib
 import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -67,6 +69,25 @@ class Session:
             return status, json.loads(raw or b'{}')
         except json.JSONDecodeError:
             return status, {'_raw': raw.decode('utf-8', 'replace')[:400]}
+
+    def presigned_put(self, url: str, data: bytes, content_type: str = 'application/octet-stream', timeout: float | None = None) -> tuple[int, dict[str, str]]:
+        """直传预签名 URL（对象存储端点）：不带会话 Cookie，也无 CSRF"""
+        req = urllib.request.Request(url, data=data, method='PUT', headers={'Content-Type': content_type})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+                return resp.status, dict(resp.headers)
+        except urllib.error.HTTPError as err:
+            return err.code, dict(err.headers)
+
+    def get_bytes(self, url: str, headers: dict[str, str] | None = None, timeout: float | None = None) -> tuple[int, bytes, dict[str, str]]:
+        """取原始字节（直链 / 下载网关 / 预签名下载），4xx-5xx 同样返回内容"""
+        target = url if url.startswith('http') else f'{self.base_url}{url}'
+        req = urllib.request.Request(target, method='GET', headers=headers or {})
+        try:
+            with self.opener.open(req, timeout=timeout or self.timeout) as resp:
+                return resp.status, resp.read(), dict(resp.headers)
+        except urllib.error.HTTPError as err:
+            return err.code, err.read(), dict(err.headers)
 
 
 def require_server(session: Session, attempts: int = 3) -> None:
@@ -172,10 +193,187 @@ class LocalDb:
         return sorted(keys) if found_db else None
 
 
+class LocalD1:
+    """本地 D1 只读直连（sqlite 只读打开）。
+
+    `wrangler d1 execute --local` 每次都要起一个 bun 进程（1–2 秒），E2E 断言密度下不可用；
+    miniflare 的 D1 就是标准 SQLite（WAL），只读连接读得到已提交数据。
+    找不到库或读失败时由调用方回退到 LocalDb（CLI）。
+    """
+
+    def __init__(self, workers_dir: pathlib.Path = DEFAULT_WORKERS_DIR) -> None:
+        self.workers_dir = pathlib.Path(workers_dir)
+        self.path = self._find()
+
+    def _find(self) -> pathlib.Path:
+        root = self.workers_dir / '.wrangler/state/v3/d1'
+        candidates = [p for p in root.glob('**/*.sqlite') if 'metadata' not in p.name]
+        if not candidates:
+            raise VerifyError(f'未找到本地 D1 数据库（{root}）；先执行 migrations（--local）')
+        return max(candidates, key=lambda p: p.stat().st_size)
+
+    def _connect(self) -> sqlite3.Connection:
+        con = sqlite3.connect(f'file:{self.path}?mode=ro', uri=True, timeout=10)
+        con.row_factory = sqlite3.Row
+        return con
+
+    def query(self, sql: str, params: tuple = ()) -> list[dict]:
+        con = self._connect()
+        try:
+            return [dict(row) for row in con.execute(sql, params)]
+        finally:
+            con.close()
+
+    def one(self, sql: str, params: tuple = ()) -> dict | None:
+        rows = self.query(sql, params)
+        return rows[0] if rows else None
+
+    def scalar(self, sql: str, params: tuple = (), default=None):
+        rows = self.query(sql, params)
+        if not rows:
+            return default
+        return next(iter(rows[0].values()))
+
+
+class S3:
+    """本地 S3 兼容存储的对象级检查（走 scripts/lab/s3tool.ts，复用 workers 已装的 AWS SDK）。
+
+    应用 API 观察不到「对象实际落在哪个桶」，容灾/拼好桶/回收链路必须直连桶核对。
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        access_key: str = 'minioadmin',
+        secret_key: str = 'minioadmin',
+        region: str = 'us-east-1',
+        repo_root: pathlib.Path = REPO_ROOT,
+    ) -> None:
+        self.endpoint = endpoint.rstrip('/')
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.region = region
+        self.repo_root = pathlib.Path(repo_root)
+
+    def _run(self, *args: str, timeout: float = 900) -> tuple[int, bytes, bytes]:
+        proc = subprocess.run(
+            ['bun', str(self.repo_root / 'scripts/lab/s3tool.ts'), *args],
+            cwd=self.repo_root / 'workers',  # 依赖解析需要 workers/node_modules
+            capture_output=True,
+            timeout=timeout,
+            env={**os.environ, 'S3_AK': self.access_key, 'S3_SK': self.secret_key, 'S3_REGION': self.region},
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+
+    def _json(self, *args: str, timeout: float = 900) -> dict:
+        code, stdout, stderr = self._run(*args, timeout=timeout)
+        if code != 0:
+            raise VerifyError(f's3tool {args[0]} 失败：{stderr.decode("utf-8", "replace")[:300]}')
+        lines = [ln for ln in stdout.decode('utf-8', 'replace').splitlines() if ln.strip()]
+        if not lines:
+            raise VerifyError(f's3tool {args[0]} 无输出')
+        return json.loads(lines[-1])
+
+    def ping(self) -> dict:
+        return self._json('ping', self.endpoint)
+
+    def mkbucket(self, bucket: str) -> dict:
+        return self._json('mkbucket', self.endpoint, bucket)
+
+    def ls(self, bucket: str, prefix: str = '') -> dict:
+        return self._json('ls', self.endpoint, bucket, prefix)
+
+    def keys(self, bucket: str, prefix: str = '') -> list[str]:
+        return [item['key'] for item in self.ls(bucket, prefix)['keys']]
+
+    def head(self, bucket: str, key: str) -> dict:
+        return self._json('head', self.endpoint, bucket, key)
+
+    def exists(self, bucket: str, key: str) -> bool:
+        return bool(self.head(bucket, key).get('exists'))
+
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / 'obj.bin'
+            self._json('get', self.endpoint, bucket, key, str(out))
+            return out.read_bytes()
+
+    def get_to_file(self, bucket: str, key: str, out_file: pathlib.Path) -> dict:
+        return self._json('get', self.endpoint, bucket, key, str(out_file), timeout=1800)
+
+    def put_file(self, bucket: str, key: str, file: pathlib.Path) -> dict:
+        return self._json('put', self.endpoint, bucket, key, str(file), timeout=1800)
+
+    def rm(self, bucket: str, key: str) -> dict:
+        return self._json('rm', self.endpoint, bucket, key)
+
+    def copy_from(self, src: 'S3', src_bucket: str, src_key: str, dst_bucket: str, dst_key: str) -> dict:
+        """把 src 端点上的对象复制到本端点（模拟外部镜像同步 / 制造副桶副本）"""
+        return self._json('copy', src.endpoint, src_bucket, src_key, self.endpoint, dst_bucket, dst_key)
+
+
+class Reporter:
+    """结果采集器：feature 检查记录而不中断（失败也继续跑完，得到完整矩阵），前置条件才用 expect 硬失败。
+
+    结果落到 `.tmp/lab-results/<name>.json`（.tmp/ 已被 .gitignore 忽略）。
+    """
+
+    def __init__(self, name: str, results_dir: pathlib.Path | None = None) -> None:
+        self.name = name
+        self.results: list[dict] = []
+        self.results_dir = results_dir or (REPO_ROOT / '.tmp/lab-results')
+        self.started = time.time()
+
+    def check(self, ok: bool, label: str, detail: str = '') -> bool:
+        ok = bool(ok)
+        self.results.append({'type': 'check', 'ok': ok, 'label': label, 'detail': detail})
+        print(f"  {'✓' if ok else '✗'} {label}" + (f' — {detail}' if detail and not ok else ''), flush=True)
+        return ok
+
+    def note(self, label: str, detail: str = '') -> None:
+        self.results.append({'type': 'note', 'ok': True, 'label': label, 'detail': detail})
+        print(f'  · {label}' + (f' — {detail}' if detail else ''), flush=True)
+
+    def fail_detail(self) -> str:
+        return '; '.join(r['label'] for r in self.results if r['type'] == 'check' and not r['ok'])
+
+    def finish(self) -> bool:
+        checks = [r for r in self.results if r['type'] == 'check']
+        failed = [r for r in checks if not r['ok']]
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        (self.results_dir / f'{self.name}.json').write_text(
+            json.dumps(
+                {
+                    'name': self.name,
+                    'passed': len(checks) - len(failed),
+                    'failed': len(failed),
+                    'checks': len(checks),
+                    'durationSec': round(time.time() - self.started, 1),
+                    'results': self.results,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        print(f'\n[{self.name}] 检查 {len(checks)} 项：通过 {len(checks) - len(failed)}，失败 {len(failed)}', flush=True)
+        for row in failed:
+            print(f"  FAIL {row['label']} — {row['detail']}")
+        return not failed
+
+
 def trigger_scheduled(session: Session) -> bool:
     """触发一次 scheduled 任务（需 dev server 以 --test-scheduled 启动）"""
     status, _, _ = session.request('GET', '/cdn-cgi/handler/scheduled?cron=*+*+*+*+*', timeout=60)
     return status == 200
+
+
+def hget(headers: dict[str, str], name: str) -> str:
+    """按名取响应头（大小写不敏感；urllib 保留服务端原始大小写）"""
+    target = name.lower()
+    for key, value in headers.items():
+        if key.lower() == target:
+            return value
+    return ''
 
 
 def expect(condition: bool, message: str) -> None:

@@ -1,0 +1,51 @@
+# Picumet 实验室：四个独立的 S3 兼容存储实例（A/B/C/D），一个实例一个桶一个端口。
+#
+#   A → http://127.0.0.1:9000  根路径 / 主桶
+#   B → http://127.0.0.1:9002  根路径副桶（standby，仅读回退）
+#   C → http://127.0.0.1:9004  /public 挂载点（普通用户上传区）
+#   D → http://127.0.0.1:9006  根路径拼好桶（与 A 按算法分摊）
+#
+# 数据目录使用绑定挂载（默认 /home/excnies/picumet-s3/data/{a,b,c,d}），
+# 便于直接观察对象落桶、也可以像真实运维那样用文件级通道做 A→B 镜像同步。
+# 覆盖位置：export PICUMET_S3_DATA=/path/to/data
+
+services:
+  s3-a:
+    image: picumet-s3-gateway:local
+    container_name: picumet-s3-a
+    command: ['-a', 'minioadmin', '-s', 'minioadmin', '-p', ':7070', '-q', 'posix', '/data']
+    ports:
+      - '9000:7070'
+    volumes:
+      - '${PICUMET_S3_DATA:-/home/excnies/picumet-s3/data}/a:/data'
+    restart: unless-stopped
+
+  s3-b:
+    image: picumet-s3-gateway:local
+    container_name: picumet-s3-b
+    command: ['-a', 'minioadmin', '-s', 'minioadmin', '-p', ':7070', '-q', 'posix', '/data']
+    ports:
+      - '9002:7070'
+    volumes:
+      - '${PICUMET_S3_DATA:-/home/excnies/picumet-s3/data}/b:/data'
+    restart: unless-stopped
+
+  s3-c:
+    image: picumet-s3-gateway:local
+    container_name: picumet-s3-c
+    command: ['-a', 'minioadmin', '-s', 'minioadmin', '-p', ':7070', '-q', 'posix', '/data']
+    ports:
+      - '9004:7070'
+    volumes:
+      - '${PICUMET_S3_DATA:-/home/excnies/picumet-s3/data}/c:/data'
+    restart: unless-stopped
+
+  s3-d:
+    image: picumet-s3-gateway:local
+    container_name: picumet-s3-d
+    command: ['-a', 'minioadmin', '-s', 'minioadmin', '-p', ':7070', '-q', 'posix', '/data']
+    ports:
+      - '9006:7070'
+    volumes:
+      - '${PICUMET_S3_DATA:-/home/excnies/picumet-s3/data}/d:/data'
+    restart: unless-stopped

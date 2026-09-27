@@ -1,0 +1,17 @@
+# Picumet 实验室：本地 SMTP 收件箱（单实例）
+#
+#   Picumet Workers → 127.0.0.1:1025 → 容器内 smtp_sink.py → 落盘到宿主机 JSONL
+#
+# 邮件落盘目录（默认 /home/excnies/picumet-smtp/mailbox）：
+#   mailbox.jsonl   一行一封（jq 断言用）
+#   mail-<seq>.json 单封完整记录（含 envelope、headers、body）
+services:
+  smtp-sink:
+    image: picumet-smtp-sink:local
+    container_name: picumet-smtp-sink
+    command: ['python', '/app/smtp_sink.py', '--host', '0.0.0.0', '--port', '1025', '--out', '/mailbox']
+    ports:
+      - '1025:1025'
+    volumes:
+      - '${PICUMET_SMTP_MAILBOX:-/home/excnies/picumet-smtp/mailbox}:/mailbox'
+    restart: unless-stopped
