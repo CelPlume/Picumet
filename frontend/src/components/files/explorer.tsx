@@ -204,28 +204,52 @@ function VideoThumb({ f, className = 'h-12 w-12' }: { f: FileListItem; className
 
 // ============ 文件夹内部预览格：按当前排序取前 4 项，图标/缩略图按类型渲染 ============
 function ThumbCell({ item }: { item: FileListItem }) {
-  if (item.type === 'folder') {
-    return <FileIcon name={item.name} type="folder" className="h-8 w-8" iconEmoji={item.iconEmoji} />;
-  }
+  // hook 提前到分支之前：cell 内容可能随目录变化在 folder/image 间切换，条件调用会破坏 hooks 规则
+  const url = useFilePreviewUrl(item);
+  // LAB：图片加载失败（直链不可达/dev fallback）→ 回退图片图标，绝不显示浏览器损坏图标
+  const [failed, setFailed] = useState(false);
+  const fallbackIcon = (
+    <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center overflow-hidden">
+      <FileIcon
+        name={item.name}
+        type={item.type === 'folder' ? 'folder' : 'file'}
+        className="h-full w-full max-h-full max-w-full"
+        iconEmoji={item.iconEmoji}
+      />
+    </div>
+  );
+  if (item.type === 'folder') return fallbackIcon;
   if (isImage(item.name)) {
-    const url = useFilePreviewUrl(item);
-    if (url) return <img src={url} alt={item.name} className="h-full w-full object-cover" loading="lazy" />;
-    return <FileIcon name={item.name} type="file" className="h-8 w-8" iconEmoji={item.iconEmoji} />;
+    if (url && !failed) {
+      return (
+        <img
+          src={url}
+          alt={item.name}
+          loading="lazy"
+          onError={() => setFailed(true)}
+          className="h-full w-full min-h-0 min-w-0 object-cover"
+        />
+      );
+    }
+    return fallbackIcon;
   }
   if (isVideo(item.name)) {
     return <VideoThumb f={item} className="h-full w-full rounded-none" />;
   }
-  return <FileIcon name={item.name} type="file" className="h-8 w-8" iconEmoji={item.iconEmoji} />;
+  return fallbackIcon;
 }
 
 function FolderPreviewGrid({ f, sort, order }: { f: FileListItem; sort?: string; order?: string }) {
-  const { data } = useFolderPreviewFiles(f.path, { sort, order });
-  const items = (data ?? []).slice(0, 4);
+  // LAB O4：列表响应已内联 previewItems 时直接消费（零请求）；旧响应/其它入口回退 per-folder 查询
+  const inline = f.previewItems;
+  const { data } = useFolderPreviewFiles(inline ? undefined : f.path, { sort, order });
+  const items = (inline ?? data ?? []).slice(0, 4);
   if (items.length === 0) {
     return <FileIcon name={f.name} type="folder" className="h-12 w-12" />;
   }
+  // 严格 1:1：固定方形容器 + 两行两列各 1fr，任何 DPI 下四格都是正方形；格子 min-h-0 防内容撑破
   return (
-    <div className="grid h-16 w-16 grid-cols-2 gap-0.5 overflow-hidden rounded-lg border bg-muted/40">
+    <div className="grid aspect-square h-16 w-16 grid-cols-2 grid-rows-2 gap-0.5 overflow-hidden rounded-lg border bg-muted/40">
       {items.map((it) => (
         <ThumbCell key={it.id} item={it} />
       ))}

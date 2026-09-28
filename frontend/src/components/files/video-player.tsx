@@ -11,7 +11,26 @@ function fmt(t: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export function VideoPreview({ src, poster, onError }: { src: string; poster?: string; onError?: () => void }) {
+export function VideoPreview({
+  src,
+  poster,
+  onError,
+  fit = true,
+  tokenPending = false,
+  onErrorRetry = false,
+  onRetryDownload,
+}: {
+  src: string;
+  poster?: string;
+  onError?: () => void;
+  /** LAB：fit=适应窗口（object-contain 一次成型）/ original=原始尺寸（舞台可滚动） */
+  fit?: boolean;
+  /** 令牌 → blob 转换中：渲染骨架 */
+  tokenPending?: boolean;
+  /** 令牌消费失败：渲染错误态（带下载） */
+  onErrorRetry?: boolean;
+  onRetryDownload?: () => void;
+}) {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -66,14 +85,15 @@ export function VideoPreview({ src, poster, onError }: { src: string; poster?: s
   };
 
   return (
-    <div className="group relative max-h-[56vh] max-w-full">
+    <div className={cn('group relative h-full min-h-0 w-full', !fit && 'overflow-auto')}>
+      {/* fit：object-contain 一次成型（不滚动）；original：原始尺寸（舞台 overflow-auto 滚动） */}
       <video
         ref={videoRef}
         src={src}
         poster={poster}
         autoPlay
         playsInline
-        className="max-h-[56vh] max-w-full rounded-md bg-black"
+        className={cn('rounded-md bg-black', fit ? 'h-full max-h-full w-full max-w-full object-contain' : 'max-w-none')}
         onClick={toggle}
       />
       {/* 控制条（DPlayer 风格：hover 显示，深色渐变底） */}

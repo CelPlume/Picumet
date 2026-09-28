@@ -534,3 +534,85 @@
     background-color: hsl(var(--popover));
   }
 }
+
+/* ============ Markdown 预览（LAB 需求：md 渲染格式） ============ */
+/* 排版只消费既有设计 token（muted/primary/border），明暗主题自动跟随；
+   react-markdown 默认转义原始 HTML，本容器内不存在文档级 innerHTML 注入面 */
+.md-preview {
+  padding: 1.25rem 1.5rem;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  color: hsl(var(--foreground));
+  word-break: break-word;
+}
+.md-preview > :first-child { margin-top: 0; }
+.md-preview > :last-child { margin-bottom: 0; }
+.md-preview h1, .md-preview h2, .md-preview h3, .md-preview h4, .md-preview h5, .md-preview h6 {
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 1.5em 0 0.6em;
+}
+.md-preview h1 { font-size: 1.5em; border-bottom: 1px solid hsl(var(--border)); padding-bottom: 0.3em; }
+.md-preview h2 { font-size: 1.3em; border-bottom: 1px solid hsl(var(--border)); padding-bottom: 0.25em; }
+.md-preview h3 { font-size: 1.15em; }
+.md-preview h4 { font-size: 1.05em; }
+.md-preview p { margin: 0.75em 0; }
+.md-preview ul, .md-preview ol { margin: 0.75em 0; padding-left: 1.6em; }
+.md-preview ul { list-style: disc; }
+.md-preview ol { list-style: decimal; }
+.md-preview li { margin: 0.3em 0; }
+.md-preview li > ul, .md-preview li > ol { margin: 0.3em 0; }
+.md-preview blockquote {
+  margin: 0.9em 0;
+  padding: 0.1em 1em;
+  border-left: 3px solid hsl(var(--primary) / 0.5);
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / 0.4);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.md-preview a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
+.md-preview hr { border: none; border-top: 1px solid hsl(var(--border)); margin: 1.5em 0; }
+.md-preview img { max-width: 100%; border-radius: var(--radius); }
+.md-inline-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.875em;
+  background: hsl(var(--muted) / 0.6);
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) * 0.5);
+  padding: 0.1em 0.35em;
+}
+.md-fence {
+  margin: 0.9em 0;
+  padding: 0.85rem 1rem;
+  background: hsl(var(--muted) / 0.55);
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+.md-fence code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: pre;
+}
+/* 表格（GFM）：外层滚动防溢出 */
+.md-preview table {
+  margin: 0.9em 0;
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 0.9em;
+}
+.md-preview th, .md-preview td {
+  border: 1px solid hsl(var(--border));
+  padding: 0.4em 0.8em;
+  text-align: left;
+}
+.md-preview th { background: hsl(var(--muted) / 0.5); font-weight: 600; }
+/* 任务列表（GFM）：复选框与文字对齐 */
+.md-preview li.task-list-item { list-style: none; margin-left: -1.4em; }
+.md-preview li.task-list-item input { margin-right: 0.5em; vertical-align: middle; }

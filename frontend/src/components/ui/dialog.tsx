@@ -70,7 +70,8 @@ export function Dialog({
   if (!mounted) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" aria-hidden={!open}>
+    // data-overlay-root：lasso 等页面级指针面据此跳过弹窗内部（拖动选择文本/图片不穿透）
+    <div data-overlay-root className="fixed inset-0 z-50 flex items-center justify-center p-4" aria-hidden={!open}>
       {/* 遮罩：压暗与模糊同步淡入淡出 */}
       <div
         className={cn(

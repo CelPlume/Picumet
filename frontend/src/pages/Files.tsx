@@ -27,7 +27,7 @@ import { ShareDialog } from '@/components/files/ShareDialog';
 import { PreviewModal } from '@/components/files/preview';
 import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
-import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, formatBytes, isVirtualRootItem, operableFileIds } from '@/lib/utils';
+import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, isText, formatBytes, isVirtualRootItem, operableFileIds } from '@/lib/utils';
 import { ApiError, apiFetch } from '@/lib/api';
 import { revealDelay } from '@/components/ui/reveal';
 import { useMinLoading } from '@/hooks/useMinLoading';
@@ -453,6 +453,11 @@ export default function Files() {
   const copyLinks = useCopyLinks();
 
   const items = data?.items ?? [];
+  // LAB：预览内「上一个/下一个」——当前显示顺序里可预览条目（图片/视频）的 id 序列
+  const previewableIds = useMemo(
+    () => items.filter((i) => i.type === 'file' && (isImage(i.name) || isVideo(i.name))).map((i) => i.id),
+    [items]
+  );
   const breadcrumb = useMemo(() => {
     const parts = path.split('/').filter(Boolean);
     const crumbs = [{ name: t('nav.home'), path: '/' }];
@@ -483,7 +488,7 @@ export default function Files() {
         clearSelection();
         setMultiSelect(false);
         navigate(`/files${f.path === '/' ? '' : f.path}`);
-      } else if (isImage(f.name) || isVideo(f.name) || isAudio(f.name) || isCode(f.name)) {
+      } else if (isImage(f.name) || isVideo(f.name) || isAudio(f.name) || isCode(f.name) || isText(f.name)) {
         setPreviewFile(f);
       } else {
         void downloadFile(f);
@@ -690,7 +695,8 @@ export default function Files() {
         ref={rowRef}
         // 拖拽监听绑定在 AppShell main 元素上（见上方 effect），覆盖整行与四周留白
         // 文件页禁止选中文本：拖拽多选时原生文本选择会污染侧栏/树（select-none 常驻）
-        className={cn('flex h-full min-h-0 select-none', lasso.rect && 'lasso-hint')}
+        // data-overlay-root（弹窗/预览）内恢复选择：拖动选择文本/图片不穿透（lasso 已跳过）
+        className={cn('flex h-full min-h-0 select-none [&_[data-overlay-root]]:select-text', lasso.rect && 'lasso-hint')}
       >
         {/* 左侧文件树（桌面）：玻璃面板，与内容间距归文件区 */}
         <div className="hidden w-56 shrink-0 pl-2 pr-1 lg:block">
@@ -1099,7 +1105,23 @@ export default function Files() {
 
       {/* ===== 弹窗（常驻挂载：进出动画由 Dialog 统一处理） ===== */}
       <UploadModal open={showUpload} onClose={() => setShowUpload(false)} targetPath={path} onDone={() => setShowUpload(false)} />
-      <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} onDownload={downloadFile} onCopyLink={doCopyLink} />
+      <PreviewModal
+        file={previewFile}
+        onClose={() => setPreviewFile(null)}
+        onDownload={downloadFile}
+        onCopyLink={doCopyLink}
+        onNavigate={(dir) => {
+          if (!previewFile) return;
+          const idx = previewableIds.indexOf(previewFile.id);
+          if (idx < 0) return;
+          const next = previewableIds[idx + dir];
+          if (next) {
+            const item = items.find((i) => i.id === next);
+            if (item) setPreviewFile(item);
+          }
+        }}
+        listSize={previewableIds.length}
+      />
 
       {/* 复制链接弹窗（含图片/视频时） */}
       <CopyLinksDialog open={!!copyDialog} files={copyDialog?.files ?? []} onClose={() => setCopyDialog(null)} copyLinks={copyLinks} />

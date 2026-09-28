@@ -1,39 +1,138 @@
 // 文件管理器数据层：查询与变更
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ApiError } from '@/lib/api';
 import { isImage, isVideo } from '@/lib/utils';
+import { useTheme } from '@/stores/theme';
 import type { FileListItem } from '@shared/types';
 
-// 图片预览 URL 缓存（download 端点返回 {url}，需先解析网关地址；按文件缓存避免重复请求）
-// 网关地址内的访问令牌 15 分钟过期，这里按 10 分钟 TTL 主动失效，过期后重新拉取并覆盖
-const IMAGE_URL_TTL_MS = 10 * 60 * 1000;
-const imageUrlCache = new Map<string, { url: string; expiresAt: number }>();
+// ============ 缩略图 objectURL 缓存（LRU，跨组件实例/跨路由共享） ============
+// 一次性令牌 → 单次 fetch → blob → objectURL 进缓存：同一文件（id+updatedAt）
+// 在文件夹卡片 2x2 格、网格/列表缩略、视频抽帧之间只下载一次；退出文件夹再进入
+// 直接命中缓存，不再重复下载（进入文件夹全部重新加载的流量浪费就此消失）。
+// 淘汰顺序 = Map 插入序（LRU 语义靠命中时前移维持）；淘汰/替换时 revoke objectURL。
+const THUMB_CACHE_MAX = 80;
+const thumbCache = new Map<string, string>();
 
+function thumbCacheGet(key: string): string | undefined {
+  const url = thumbCache.get(key);
+  if (url !== undefined) {
+    thumbCache.delete(key);
+    thumbCache.set(key, url);
+  }
+  return url;
+}
+
+function thumbCachePut(key: string, url: string) {
+  const prev = thumbCache.get(key);
+  if (prev === url) return;
+  if (prev) URL.revokeObjectURL(prev);
+  thumbCache.set(key, url);
+  while (thumbCache.size > THUMB_CACHE_MAX) {
+    const oldestKey = thumbCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = thumbCache.get(oldestKey);
+    thumbCache.delete(oldestKey);
+    if (oldest) URL.revokeObjectURL(oldest);
+  }
+}
+
+/**
+ * 卡片/列表/文件夹预览格的媒体缩略图地址。
+ *
+ * 流量门禁（个性化设置「文件夹图片/视频预览」，默认关闭，localStorage 持久化）：
+ * 关闭时一律不签发令牌、不下载任何图片/视频字节，所有卡片只显示类型图标；
+ * 开启后仅在渲染到的卡片处按需加载（列表分页天然限制了单页范围），且命中本地
+ * 缓存的缩略图零流量。预览弹窗（显式用户动作）不受此开关限制。
+ */
 export function useFilePreviewUrl(file: FileListItem | null | undefined): string | undefined {
-  const [url, setUrl] = useState<string | undefined>(file?.coverUrl);
+  const enabled = useTheme((s) => s.mediaPreviewsEnabled);
+  const [url, setUrl] = useState<string | undefined>(undefined);
+  const fileId = file?.id ?? null;
+  const updatedAt = file?.updatedAt ?? null;
+  const isMediaFile = !!file && file.type !== 'folder' && (isImage(file.name) || isVideo(file.name));
+  const cacheKey = isMediaFile && fileId && updatedAt ? `${fileId}:${updatedAt}` : null;
+
   useEffect(() => {
-    const id = file?.id;
-    if (!id || !file || file.type === 'folder') return;
-    if (!isImage(file.name) && !isVideo(file.name)) return;
-    const cached = imageUrlCache.get(id);
-    if (cached && cached.expiresAt > Date.now()) {
-      setUrl(cached.url);
+    if (!cacheKey || !fileId) return;
+    if (!enabled) {
+      // 设置运行中被关闭：立即回落图标（正常路径下关闭后组件重挂载，此分支兜底）
+      setUrl(undefined);
       return;
     }
+    const cached = thumbCacheGet(cacheKey);
+    if (cached) {
+      setUrl(cached);
+      return;
+    }
+    setUrl(undefined);
     let cancelled = false;
-    apiFetch<{ url: string }>(`/api/files/${id}/download`)
-      .then((res) => {
-        if (cancelled) return;
-        imageUrlCache.set(id, { url: res.data.url, expiresAt: Date.now() + IMAGE_URL_TTL_MS });
-        setUrl(res.data.url);
+    // LAB 回归：缩略一律走一次性网关令牌（同源 /api，dev 经 Vite 代理、prod 同源）。
+    // 不消费列表内联的 thumbUrl（直链）：S3 直链跨源、Worker 直链在 dev 被 Vite
+    // SPA fallback 截胡成 HTML —— <img> 只会渲染成损坏图标而非真实图片。
+    // 令牌唯一消费者 = 这里的单次 fetch；StrictMode 双跑各签发新令牌，第二跑命中缓存。
+    apiFetch<{ url: string }>(`/api/files/${fileId}/download`)
+      .then((res) => fetch(res.data.url, { credentials: 'include' }))
+      .then((r) => {
+        if (!r.ok) throw new Error(`thumb fetch failed: ${r.status}`);
+        return r.blob();
       })
-      .catch(() => {});
+      .then((b) => {
+        if (cancelled) return;
+        const objectUrl = URL.createObjectURL(b);
+        thumbCachePut(cacheKey, objectUrl);
+        setUrl(objectUrl);
+      })
+      .catch(() => {
+        /* 静默回退类型图标（与旧行为一致） */
+      });
     return () => {
       cancelled = true;
     };
-  }, [file?.id]);
+  }, [cacheKey, fileId, enabled]);
   return url;
+}
+
+export interface PreviewMediaUrl {
+  url: string | null;
+  /** true = 一次性令牌 URL，消费方需 fetch 一次转 blob 再交给媒体元素 */
+  needsToken: boolean;
+  /** 解析失败时的 HTTP 状态码（401/403/404/429 等），供错误提示区分文案 */
+  errorStatus: number | null;
+}
+
+/**
+ * 预览弹窗媒体/文本 URL：一律走一次性网关令牌（`/api/files/:id/download`）。
+ *
+ * LAB 回归（2026-09-28）：曾改为优先 `copy-links?signed=true` 的 formats.direct，但
+ * ① S3 provider 的 direct 是**容器预签名 URL**（跨源，浏览器侧被 CORS/拓扑拦截）；
+ * ② 同源 Worker 直链在 dev 下被 Vite SPA fallback 截胡（非 /api 路径返回 index.html）。
+ * 令牌 → 单次 fetch → blob 的链路同源、可重复 Range（blob 本地寻址）、拓扑无关，
+ * 是预览场景唯一在 dev/prod、本机/远程全部成立的表达。直链只保留给「复制链接」外贴。
+ * 令牌一次性：不进任何缓存，每次打开重新签发。
+ */
+export function usePreviewMediaUrl(file: FileListItem | null | undefined): PreviewMediaUrl {
+  const [state, setState] = useState<PreviewMediaUrl>({ url: null, needsToken: true, errorStatus: null });
+  useEffect(() => {
+    if (!file || file.hasPassword) {
+      // 密码文件由 verify-password 流程发令牌（verifiedUrl），这里不解析
+      setState({ url: null, needsToken: true, errorStatus: null });
+      return;
+    }
+    let cancelled = false;
+    apiFetch<{ url: string }>(`/api/files/${file.id}/download`)
+      .then((res) => {
+        if (!cancelled) setState({ url: res.data.url, needsToken: true, errorStatus: null });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setState({ url: null, needsToken: false, errorStatus: e instanceof ApiError ? e.status : null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [file?.id, file?.updatedAt, file?.hasPassword]);
+  return state;
 }
 
 // 文件夹内部预览：按当前排序取最多 4 个子项（文件夹/文件/图片/视频混合）

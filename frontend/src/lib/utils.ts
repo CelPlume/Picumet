@@ -61,6 +61,19 @@ export const CODE_EXT = [
   '.html', '.css', '.json', '.md', '.yaml', '.yml', '.sh', '.sql', '.toml', '.ini', '.xml',
 ];
 
+/** Markdown（预览走格式化渲染，不走代码高亮） */
+export const MARKDOWN_EXT = ['.md', '.markdown'];
+/** 纯文本预览（txt/日志）：原样展示，不做高亮 */
+export const TEXT_EXT = ['.txt', '.log'];
+
+export function isMarkdown(name: string) {
+  return MARKDOWN_EXT.includes(fileExt(name));
+}
+
+export function isText(name: string) {
+  return TEXT_EXT.includes(fileExt(name));
+}
+
 export function isImage(name: string) {
   return IMAGE_EXT.includes(fileExt(name));
 }
