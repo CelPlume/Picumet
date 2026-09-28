@@ -4,6 +4,12 @@ compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 account_id = "00000000000000000000000000000000"
 
+# F-01：@aws-sdk/xml-builder 按 browser 条件解析到 DOMParser 版解析器，workerd 无 DOMParser，
+# S3 的 XML 响应解析（分片上传/移动/ListObjects 等）全部失败。整包替换为 vendored 纯 JS 实现
+# （src/shims/aws-xml-builder.ts，与 vitest.config.ts 的 resolve.alias 保持一致）。
+[alias]
+"@aws-sdk/xml-builder" = "./src/shims/aws-xml-builder.ts"
+
 [vars]
 ENVIRONMENT = "development"
 APP_BASE_URL = "http://localhost:5173"
