@@ -1,11 +1,12 @@
 // 主题切换 + 语言切换 + 用户菜单（顶栏小组件）
 import { useTranslation } from 'react-i18next';
-import { Moon, Sun, Languages, LogOut, Settings, Shield, User, Monitor, Check } from 'lucide-react';
+import { Moon, Sun, Languages, LogOut, Settings, Shield, FolderOpen, Monitor, Check } from 'lucide-react';
 import { useAuth } from '@/stores/auth';
 import { useTheme } from '@/stores/theme';
 import { setLocale } from '@/lib/i18n';
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
-import { Button } from '@/components/ui/core';
+import { Button, Progress } from '@/components/ui/core';
+import { formatBytes } from '@/lib/utils';
 
 const THEME_OPTIONS = [
   { value: 'light', labelKey: 'settings.themeLight', icon: <Sun className="h-4 w-4" /> },
@@ -95,7 +96,7 @@ export function LanguageSwitcher() {
 }
 
 export function UserMenu() {
-  const { user, logout } = useAuth();
+  const { user, quota, logout } = useAuth();
   const { t } = useTranslation();
   if (!user) return null;
   const display = user.displayName || user.username;
@@ -103,6 +104,7 @@ export function UserMenu() {
     <Dropdown
       align="end"
       triggerClass="flex items-center"
+      contentClass="w-72"
       trigger={
         <div className="flex h-9 items-center gap-1.5 rounded-md p-1 pr-2 hover:bg-accent">
           <Avatar name={display} url={user.avatarUrl} size={28} />
@@ -112,21 +114,48 @@ export function UserMenu() {
     >
       {(close) => (
         <>
-          <DropdownLabel>
-            <span className="block max-w-[200px] truncate">{user.email}</span>
-          </DropdownLabel>
+          {/* 身份区：左=邮箱（上行）+ 昵称（下行），右=小头像；Avatar 高度恰为两行文本（text-sm × 2 = 40px） */}
+          <div className="flex items-center gap-3 px-2 py-1.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">{user.email}</p>
+              <p className="truncate text-sm text-muted-foreground">{display}</p>
+            </div>
+            <span className="shrink-0">
+              <Avatar name={display} url={user.avatarUrl} size={40} />
+            </span>
+          </div>
+          <DropdownSeparator />
+          {/* 用量区：文件数量 + 存储空间进度条（auth store 已随 /api/auth/me 返回 quota） */}
+          {quota && (
+            <div className="space-y-2 px-2 py-1.5">
+              <div>
+                <div className="mb-1 flex justify-between gap-4 text-xs text-muted-foreground">
+                  <span>{t('settings.filesUsed')}</span>
+                  <span className="font-medium text-foreground">{quota.usedFiles} / {quota.maxFiles}</span>
+                </div>
+                <Progress value={quota.filesPercent} className="h-1.5" />
+              </div>
+              <div>
+                <div className="mb-1 flex justify-between gap-4 text-xs text-muted-foreground">
+                  <span>{t('settings.profile.storageSpace')}</span>
+                  <span className="font-medium text-foreground">{formatBytes(quota.usedStorage)} / {formatBytes(quota.maxStorage)}</span>
+                </div>
+                <Progress value={quota.storagePercent} className="h-1.5" />
+              </div>
+            </div>
+          )}
           <DropdownSeparator />
           <DropdownItem onClick={() => { close(); window.location.href = '/files'; }}>
-            <User className="h-4 w-4" /> {t('nav.files')}
+            <FolderOpen className="h-4 w-4" /> {t('nav.files')}
+          </DropdownItem>
+          <DropdownItem onClick={() => { close(); window.location.href = '/settings/profile'; }}>
+            <Settings className="h-4 w-4" /> {t('nav.settings')}
           </DropdownItem>
           {user.role === 'admin' && (
             <DropdownItem onClick={() => { close(); window.location.href = '/admin'; }}>
               <Shield className="h-4 w-4" /> {t('nav.admin')}
             </DropdownItem>
           )}
-          <DropdownItem onClick={() => { close(); window.location.href = '/settings/profile'; }}>
-            <Settings className="h-4 w-4" /> {t('nav.settings')}
-          </DropdownItem>
           <DropdownSeparator />
           <DropdownItem danger onClick={() => { close(); void logout(); }}>
             <LogOut className="h-4 w-4" /> {t('common.logout')}

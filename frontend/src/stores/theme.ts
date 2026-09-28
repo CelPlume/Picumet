@@ -30,6 +30,10 @@ export interface AppearanceSettings {
   filesPerRowMobile: number;
   rightClickAction: 'properties' | 'menu';
   rightClickMultiSelect: boolean;
+  /** LAB：图片/视频预览尺寸模式——fit=适应窗口（默认）/ original=按原始像素显示（可滚动） */
+  previewSizeMode: 'fit' | 'original';
+  /** LAB：是否启用文件夹预览格的图片/视频缩略加载（默认关闭=只显示图标，节约流量） */
+  mediaPreviewsEnabled: boolean;
 }
 
 const DEFAULT: AppearanceSettings = {
@@ -44,6 +48,8 @@ const DEFAULT: AppearanceSettings = {
   filesPerRowMobile: 3,
   rightClickAction: 'properties',
   rightClickMultiSelect: false,
+  previewSizeMode: 'fit',
+  mediaPreviewsEnabled: false,
 };
 
 function load(): AppearanceSettings {

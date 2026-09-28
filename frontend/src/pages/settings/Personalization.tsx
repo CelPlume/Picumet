@@ -426,31 +426,55 @@ export default function PersonalizationPage() {
         </Card>
       </div>
 
-      {/* 右列：右键单击行为 · 主题（含自定义背景） */}
+      {/* 右列：预览行为（尺寸/右键）· 主题（含自定义背景） */}
       <div className="space-y-6">
+        {/* LAB：预览行为卡——尺寸模式（fit/original）+ 右键行为 + 多选开关，同卡收纳 */}
         <Card className="reveal" style={revealDelay(3)}>
           <CardHeader className="reveal-row" style={innerDelay(3, 0)}>
             <CardTitle className="flex items-center gap-2">
-              <MousePointerClick className="h-4 w-4 text-primary" /> {t('settings.appearance.rightClickAction')}
+              <MousePointerClick className="h-4 w-4 text-primary" /> {t('settings.appearance.previewBehavior')}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <RadioGroup
-              value={theme.rightClickAction}
-              onChange={(v) => theme.set({ rightClickAction: v as 'properties' | 'menu' })}
-              className="reveal-row grid-cols-2"
-              style={innerDelay(3, 1)}
-              options={[
-                { value: 'properties', label: t('settings.appearance.rightClickProperties'), description: t('settings.appearance.rightClickPropertiesDesc') },
-                { value: 'menu', label: t('settings.appearance.rightClickMenu'), description: t('settings.appearance.rightClickMenuDesc') },
-              ]}
-            />
-            <div className="reveal-row flex items-center justify-between rounded-lg border px-3 py-2.5" style={innerDelay(3, 2)}>
+            <div>
+              <Label>{t('settings.appearance.previewSizeMode')}</Label>
+              <RadioGroup
+                value={theme.previewSizeMode}
+                onChange={(v) => theme.set({ previewSizeMode: v as 'fit' | 'original' })}
+                className="reveal-row grid-cols-2"
+                style={innerDelay(3, 1)}
+                options={[
+                  { value: 'fit', label: t('settings.appearance.previewModeFitShort'), description: t('settings.appearance.previewModeFit') },
+                  { value: 'original', label: t('settings.appearance.previewModeOriginalShort'), description: t('settings.appearance.previewModeOriginal') },
+                ]}
+              />
+            </div>
+            <div>
+              <Label>{t('settings.appearance.rightClickAction')}</Label>
+              <RadioGroup
+                value={theme.rightClickAction}
+                onChange={(v) => theme.set({ rightClickAction: v as 'properties' | 'menu' })}
+                className="reveal-row grid-cols-2"
+                style={innerDelay(3, 2)}
+                options={[
+                  { value: 'properties', label: t('settings.appearance.rightClickProperties'), description: t('settings.appearance.rightClickPropertiesDesc') },
+                  { value: 'menu', label: t('settings.appearance.rightClickMenu'), description: t('settings.appearance.rightClickMenuDesc') },
+                ]}
+              />
+            </div>
+            <div className="reveal-row flex items-center justify-between rounded-lg border px-3 py-2.5" style={innerDelay(3, 3)}>
               <div>
                 <p className="text-sm font-medium">{t('settings.appearance.rightClickMultiSelect')}</p>
                 <p className="text-xs text-muted-foreground">{t('settings.appearance.rightClickMultiSelectDesc')}</p>
               </div>
               <Switch checked={theme.rightClickMultiSelect} onChange={(v) => theme.set({ rightClickMultiSelect: v })} />
+            </div>
+            <div className="reveal-row flex items-center justify-between rounded-lg border px-3 py-2.5" style={innerDelay(3, 4)}>
+              <div>
+                <p className="text-sm font-medium">{t('settings.appearance.mediaPreviews')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.appearance.mediaPreviewsDesc')}</p>
+              </div>
+              <Switch checked={theme.mediaPreviewsEnabled} onChange={(v) => theme.set({ mediaPreviewsEnabled: v })} />
             </div>
           </CardContent>
         </Card>
