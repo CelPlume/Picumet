@@ -53,7 +53,11 @@ lskyRoutes.post('/upload', async (c) => {
       },
     });
   } catch (err) {
-    const message = err instanceof ApiError || err instanceof Error ? err.message : '上传失败';
-    return lskyError(message);
+    // LAB F-12：ApiError 文案透传（稳定语义），其余原文只进服务端日志
+    if (err instanceof ApiError) {
+      return lskyError(err.message);
+    }
+    console.error('[lsky] upload failed', err);
+    return lskyError('上传失败');
   }
 });

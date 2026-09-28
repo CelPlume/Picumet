@@ -2,8 +2,9 @@
 """08 · 大文件与分片上传：ISO 语料 + 断点续传契约。
 
 两组对照：
-  A. S3 桶（预签名分片）—— 会话创建即调用 CreateMultipartUpload（XML 解析）→ 本轮实测在 Workers
-     运行时失败（`DOMParser is not defined`，见报告 P0/F-01）。用真实 ISO 复现，失败是发现项。
+  A. S3 桶（预签名分片）—— 会话创建即调用 CreateMultipartUpload（XML 解析）。2026-09-27 修复批次
+     起 @aws-sdk/xml-builder 经 wrangler alias 指向 vendored 纯 JS 解析器（F-01 已修复），
+     本组断言「会话创建成功」；修复前的失败表现（DOMParser is not defined）见报告 P0/F-01。
   B. R2 绑定（Worker 代理分片）—— 不走 XML，逐片 PUT + 服务端合并；用 WePE ISO（226 MiB / 29 片）
      验证确实能完成，并检验分片清单/续传/重复完成幂等。
 
@@ -79,9 +80,11 @@ def run(args: argparse.Namespace) -> None:
     st_over, over = alice.json_request('POST', '/api/files/upload-session',
                                        {'path': BIG_DIR, 'fileName': 'over-100m.bin', 'fileSize': boundary + 1,
                                         'mimeType': 'application/octet-stream'}, headers=lab.h(alice))
+    # 2026-09-27 修复批次后契约反转：CreateMultipartUpload 的 XML 解析在 workerd 正常
+    # （@aws-sdk/xml-builder alias 到 vendored 纯 JS 解析器），会话应创建成功并进入分片模式。
     r.check(
-        st_over != 200 and 'DOMParser' in str(over),
-        'L4 略超 100 MiB 触发分片 → 命中同一 XML 解析缺陷',
+        st_over == 200 and over['data'].get('uploadId'),
+        'L4 略超 100 MiB 触发分片 → 会话创建成功（F-01 已修复）',
         f'实际 {st_over} {str(over)[:160]}',
     )
 

@@ -1,11 +1,12 @@
 // 上传路由：单文件 + 分片 + Worker 代理上传 + 完成校验（防伪造）
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, MountProviderQuotaRepo, ReconciliationRepo } from '../../db';
+import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, MountProviderQuotaRepo, ReconciliationRepo, BlobRepo, isActionLoggable } from '../../db';
 import type { Db } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, getPrincipal } from '../permissions/principal';
 import { assertWritable } from '../files/upload-mode';
+import { ensureFolders, registerContentObject } from '../files/write';
 import { getProvider } from '../storage/providers';
 import { pickWriteProvider } from '../storage/pool';
 import { ProviderRepo } from '../../db';
@@ -66,6 +67,21 @@ uploadRoutes.post('/upload-session', async (c) => {
   // §28 写入口模式：上传会话在创建时就固定最终路径（raw/complete 沿用它），故在入口处校验
   // user_space 的用户空间约束（flat 不约束路径）。此处与 compat/AList/WebDAV/S3 各入口行为一致。
   await assertWritable(db, mount, userId, joinPath(targetPath, fileName));
+
+  // LAB F-03/F-05/F-06：会话路径与直写路径（upsertFileObject）同层的入口闸门——
+  // ① 目录语义：祖先目录行自愈（非 flat 建目录行；flat 需要新建祖先目录时 403，
+  //    与直写路径 ensureFolders 行为一致——「已存在的目录不受影响」）；
+  // ② 他人占用/目录占用在**签发任何上传 URL 之前** 409。预签名直传写的是路径派生键，
+  //    一旦对他人路径放行，直传会先于任何属主判定覆盖属主对象内容（LAB F-06）。
+  await ensureFolders(db, mount, targetPath, userId);
+  const occupant = await FileRepo.getFileAtPath(db, mount.id, targetPath, fileName);
+  if (occupant && occupant.ownerId !== userId) {
+    throw new ApiError(409, 'CONFLICT', '目标路径已被其他用户占用');
+  }
+  const folderAtTarget = await FileRepo.getFolderAtPath(db, mount.id, joinPath(targetPath, fileName), fileName);
+  if (folderAtTarget) {
+    throw new ApiError(409, 'CONFLICT', `路径 ${joinPath(targetPath, fileName)} 已是文件夹`);
+  }
 
   // 幂等检查
   if (idempotencyKey) {
@@ -197,7 +213,8 @@ uploadRoutes.put('/upload/raw/:sessionId', async (c) => {
       providerId: outcome.providerId,
     });
     await SessionRepo.updateStatus(db, sessionId, { status: 'verifying' });
-    return ok(c, { etag: outcome.etag, size: outcome.size });
+    // LAB F-02：deduped 透出（同内容第二次上传命中内容索引）；complete 侧据此记录审计
+    return ok(c, { etag: outcome.etag, size: outcome.size, deduped: outcome.deduped });
   } catch (err) {
     // 异常即终态——先释放三层预留（用户/挂载/池成员）再标 aborted，
     // 不让预留滞留到过期清扫；'failed' 仅留给存量行由清扫任务回收。
@@ -364,6 +381,24 @@ uploadRoutes.post('/upload-complete', async (c) => {
   const claimed = await SessionRepo.claimComplete(db, sessionId, COMPLETE_CLAIM_STALE_MS);
   if (!claimed) throw new ApiError(409, 'OPERATION_FAILED', '会话正在完成中，请稍后重试');
 
+  // LAB F-05/F-06：完成前的占用复核——会话创建后目标路径可能已被他人占用或变成目录。
+  // 冲突必须在**触碰对象**（分片合并/单对象覆盖）之前失败，绝不覆盖他人对象。
+  const occupantNow = await FileRepo.getFileAtPath(db, session.mountId, session.path, session.fileName);
+  if (occupantNow && occupantNow.ownerId !== userId) {
+    await failSession(db, session);
+    throw new ApiError(409, 'CONFLICT', '目标路径已被其他用户占用');
+  }
+  const folderAtTargetNow = await FileRepo.getFolderAtPath(
+    db,
+    session.mountId,
+    joinPath(session.path, session.fileName),
+    session.fileName
+  );
+  if (folderAtTargetNow) {
+    await failSession(db, session);
+    throw new ApiError(409, 'CONFLICT', `路径 ${joinPath(session.path, session.fileName)} 已是文件夹`);
+  }
+
   const provider = await providerForMount(db, session.mountId, c.env as Env, session.providerId);
   // §F：/upload/raw 已内容寻址时对象落在内容键；分片/直传会话仍为虚拟路径键
   const physicalKey = session.physicalKey ?? session.objectKey;
@@ -434,7 +469,9 @@ uploadRoutes.post('/upload-complete', async (c) => {
       finalEtag = merged.etag ?? finalEtag;
     } catch (err) {
       await failSession(db, session);
-      throw new ApiError(422, 'OPERATION_FAILED', `合并分片失败：${err instanceof Error ? err.message : '未知错误'}`);
+      // LAB F-12：上游错误文本（SDK 异常）不得直出——稳定码 + 通用文案，细节只进服务端日志
+      console.error(`[upload] multipart merge failed session=${sessionId}`, err);
+      throw new ApiError(502, 'UPSTREAM_ERROR', '合并分片失败，请稍后重试');
     }
     const finalHead = await provider.headObject(physicalKey);
     if (!finalHead || finalHead.size !== session.fileSize) {
@@ -459,46 +496,103 @@ uploadRoutes.post('/upload-complete', async (c) => {
   // 5. 事务提交元数据 + 配额（原子；DB 失败 → 记录孤儿 + 释放预留）
   const mount = await MountRepo.getMountById(db, session.mountId);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
-  const fileId = uuid();
+  // 占用/覆盖判定在事务外完成（D1 事务为只写批，禁止事务内读）；语义与 upsertFileObject 一致：
+  // 本人既有行 → 覆盖（保留 id、配额按差值、旧内容引用释放）；目录/他人占用已在上方 409。
+  const existing = await FileRepo.getFileAtPath(db, session.mountId, session.path, session.fileName);
+  const isOverwrite = !!(existing && existing.type === 'file');
+  const fileId = isOverwrite && existing ? existing.id : uuid();
+  const finalSize = session.fileSize; // 单对象路径已 HEAD 校验、分片路径已按分片清单复核
+  const now = Date.now();
+  // LAB：审计日志按设置过滤——事务前判定 upload 事件是否记录
+  const uploadLoggable = await isActionLoggable(db, 'upload');
+  // LAB F-02 ②：deduped = 完成时内容索引已有同 (hash, mount) 行（本会话的写入复用了既有内容对象）
+  const deduped = session.blobHash
+    ? (await BlobRepo.get(db, session.blobHash, session.mountId)) !== null
+    : false;
   try {
     await db.transaction(async (tx) => {
-      await FileRepo.createFileTx(tx, {
-        id: fileId,
-        mountId: session.mountId,
-        objectKey: session.objectKey,
-        path: session.path,
-        name: session.fileName,
-        type: 'file',
-        mimeType: session.mimeType,
-        size: session.fileSize,
-        etag: finalEtag,
-        ownerId: userId,
-        providerId: session.providerId ?? mount.providerId,
-        physicalKey,
-        blobHash: session.blobHash ?? null,
-      });
-      await tx.query(
-        `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?),
-         used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
-        [session.fileSize, session.quotaReserved, Date.now(), userId]
-      );
-      await tx.query(
-        `UPDATE mounts SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE id = ?`,
-        [session.fileSize, session.quotaReserved, Date.now(), session.mountId]
-      );
+      if (isOverwrite && existing) {
+        // 旧对象清理（与 upsertFileObject 覆盖分支同语义）：非内容寻址旧行独占物理键，
+        // 覆盖后成为孤儿 → 交清理队列；内容寻址旧行走引用释放。
+        const oldPhysicalKey = existing.physicalKey ?? existing.objectKey;
+        const legacyCleanup = !existing.blobHash && oldPhysicalKey !== physicalKey;
+        await FileRepo.updateFileTx(tx, existing.id, {
+          physical_key: physicalKey,
+          blob_hash: session.blobHash ?? null,
+          size: finalSize,
+          etag: finalEtag,
+          provider_id: session.providerId ?? mount.providerId,
+          ...(legacyCleanup ? { source_cleanup_pending: 1, old_object_key: oldPhysicalKey } : {}),
+        });
+        if (existing.blobHash && existing.blobHash !== (session.blobHash ?? null)) {
+          await BlobRepo.releaseTx(tx, existing.blobHash, now);
+        }
+        await tx.query(
+          `UPDATE user_quotas SET used_storage = MAX(0, used_storage - ? + ?), quota_reserved = MAX(0, quota_reserved - ?),
+           updated_at = ? WHERE user_id = ?`,
+          [existing.size, finalSize, session.quotaReserved, now, userId]
+        );
+        await tx.query(
+          `UPDATE mounts SET used_storage = MAX(0, used_storage - ? + ?), quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE id = ?`,
+          [existing.size, finalSize, session.quotaReserved, now, session.mountId]
+        );
+      } else {
+        await FileRepo.createFileTx(tx, {
+          id: fileId,
+          mountId: session.mountId,
+          objectKey: session.objectKey,
+          path: session.path,
+          name: session.fileName,
+          type: 'file',
+          mimeType: session.mimeType,
+          size: finalSize,
+          etag: finalEtag,
+          ownerId: userId,
+          providerId: session.providerId ?? mount.providerId,
+          physicalKey,
+          blobHash: session.blobHash ?? null,
+        });
+        await tx.query(
+          `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?),
+           used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
+          [finalSize, session.quotaReserved, now, userId]
+        );
+        await tx.query(
+          `UPDATE mounts SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), updated_at = ? WHERE id = ?`,
+          [finalSize, session.quotaReserved, now, session.mountId]
+        );
+      }
       // §30 成员级预留：文件行已落库（该成员已用聚合已含本文件）→ 与落账同批释放
       if (session.providerId) {
         await MountProviderQuotaRepo.releaseTx(tx, session.mountId, session.providerId, session.quotaReserved);
       }
+      // LAB F-02/H2：内容索引登记（唯一入口 registerContentObject，与直写路径共用）。
+      // /upload/raw 内容寻址后 session.blobHash 非空——漏登记会让去重失效、删净后对象永久遗留。
+      if (session.blobHash) {
+        await registerContentObject(
+          tx,
+          {
+            hash: session.blobHash,
+            mountId: session.mountId,
+            providerId: session.providerId ?? mount.providerId,
+            objectKey: physicalKey,
+            size: finalSize,
+            etag: finalEtag,
+          },
+          now
+        );
+      }
       await tx.query(
         `UPDATE upload_sessions SET status = 'completed', completed_at = ? WHERE id = ?`,
-        [Date.now(), sessionId]
+        [now, sessionId]
       );
-      await tx.query(
-        `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
-         VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
-        [uuid(), userId, session.path, JSON.stringify({ fileName: session.fileName }), requestIp(c.req.raw), c.req.header('user-agent'), session.fileSize, Date.now()]
-      );
+      if (uploadLoggable) {
+        await tx.query(
+          `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
+           VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
+          [uuid(), userId, session.path, JSON.stringify({ fileName: session.fileName, deduped }), requestIp(c.req.raw), c.req.header('user-agent'), finalSize, now]
+        );
+      }
     });
   } catch (err) {
     // 对象已写入/合并，但元数据提交失败 → 释放预留并记录孤儿供对账
