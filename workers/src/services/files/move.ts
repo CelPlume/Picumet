@@ -9,7 +9,7 @@ import { getProvider } from '../storage/providers';
 import { pickWriteProvider } from '../storage/pool';
 import { COPY_OBJECT_MAX_BYTES } from '../storage/s3';
 import { ApiError } from '../../shared/errors';
-import { normalizePath, isPathWithinBoundary, objectKeyFromPath, escapeLikePattern } from '../../utils/path';
+import { normalizePath, isPathWithinBoundary, objectKeyFromPath, prefixMatch } from '../../utils/path';
 import { assertWritable } from './upload-mode';
 import type { Env } from '../../shared/types';
 import type { StorageProvider } from '@shared/types';
@@ -364,8 +364,7 @@ async function executeMove(c: Ctx, jobId: string) {
         [targetName, mainPath, state.isFolder, state.targetObjectKey, state.targetMountId, keepProviderId, isBlobBacked ? 0 : 1, isBlobBacked ? 0 : state.sourceObjectKey, isBlobBacked ? null : state.sourceObjectKey, Date.now(), job.fileId]
       );
       // 子项：仅文件夹有子树（文件移动无子项；未加此门会让「path 前缀」误改父目录的兄弟子树）。
-      // 前缀匹配必须 `ESCAPE '\'` 且目录名先经 escapeLikePattern——文件夹名可含 `%`/`_`，
-      // 原样拼接会把它们当通配符误伤 `/a/100x/` 这类兄弟目录。限定源挂载点与主行迁移语义一致。
+      // 更深层子项用范围 + substr 谓词（LAB F-04：无 LIKE 长度上限，%/_ 不再是通配符）。
       if (state.isFolder) {
         // 直接子文件行的 path = 父目录 = sourcePath（文件夹主行已在上一条改成自身全路径 itemFull，不再等于 sourcePath）
         await tx.query(
@@ -373,9 +372,10 @@ async function executeMove(c: Ctx, jobId: string) {
           [itemFull, Date.now(), state.sourceMountId, sourcePath]
         );
         // 更深层子项：将 sourcePath/ 前缀替换为 itemFull/
+        const deeper = prefixMatch('path', sourcePath);
         await tx.query(
-          `UPDATE file_metadata SET path = ? || substr(path, ?), updated_at = ? WHERE mount_id = ? AND path LIKE ? ESCAPE '\\'`,
-          [itemFull, sourcePath.length + 1, Date.now(), state.sourceMountId, `${escapeLikePattern(sourcePath)}/%`]
+          `UPDATE file_metadata SET path = ? || substr(path, ?), updated_at = ? WHERE mount_id = ? AND ${deeper.sql}`,
+          [itemFull, sourcePath.length + 1, Date.now(), state.sourceMountId, ...deeper.params]
         );
       }
       // 跨挂载移动文件：挂载容量 transfer（目标侧预留转已用、源侧扣减；用户配额不变：

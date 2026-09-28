@@ -4,7 +4,7 @@ import type { Context } from 'hono';
 import type { FileMetadata, Mount } from '@shared/types';
 import { FileRepo, ShareRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
-import { escapeLikePattern } from '../../utils/path';
+import { subtreeMatch } from '../../utils/path';
 import { cleanupObjects } from './move';
 import { blobHashesOf, directObjectsOf, releaseBlobsTx } from './blob-gc';
 
@@ -46,12 +46,12 @@ export async function deleteFileInternal(c: Context, mount: Mount, file: FileMet
 
   await db.transaction(async (tx) => {
     if (file.type === 'folder') {
-      // 子树前缀先转义再拼 `/%`（folder 行 path=自身全路径，file 行 path=父目录）；
-      // 目录名可含 %/_，未转义的 LIKE 会误伤 `/a/100x/…` 这类兄弟子树。
-      const subtreeLike = `${escapeLikePattern(file.path)}/%`;
+      // 子树删除用范围 + substr 谓词（folder 行 path=自身全路径，file 行 path=父目录）；
+      // 免疫 %/_ 通配符且无 LIKE 模式长度上限（LAB F-04）。
+      const sub = subtreeMatch('path', file.path);
       await tx.query(
-        own(`DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`),
-        ownerId ? [mount.id, file.path, subtreeLike, ownerId] : [mount.id, file.path, subtreeLike]
+        own(`DELETE FROM file_metadata WHERE mount_id = ? AND ${sub.sql}`),
+        ownerId ? [mount.id, ...sub.params, ownerId] : [mount.id, ...sub.params]
       );
     } else {
       await tx.query(

@@ -3,7 +3,7 @@ import type { FileMetadata, Permission } from '@shared/types';
 import { Db, type Tx } from '../db';
 import { mapFile, mapUploadSession, toFileListItem, num, str, type Row } from '../row';
 import { uuid } from '../../utils/crypto';
-import { escapeLikePattern } from '../../utils/path';
+import { childFolderMatch, subtreeMatch } from '../../utils/path';
 
 export interface FileInsert {
   mountId: string;
@@ -105,25 +105,25 @@ export const FileRepo = {
       base.push("(type = 'folder' OR owner_id = ?)");
       params.push(ownerId);
     }
-    // 子文件夹前缀匹配：目录名可含 %/_，前缀先转义再拼 `/%`，否则通配符会误伤兄弟子树
-    const prefix = path === '/' ? '' : escapeLikePattern(path);
-    const childLike = `${prefix}/%`;
-    const grandchildLike = `${prefix}/%/%`;
+    // 子文件夹前缀匹配：目录名可含 %/_。改写为范围 + substr 谓词（LAB F-04：D1 LIKE
+    // 模式 50 字符上限会让深路径目录列表 500；范围/substr 无长度限制且天然免疫通配符）
     if (opts.type) {
       if (opts.type === 'file') {
         base.push("type = 'file' AND path = ?");
         params.push(path);
       } else if (opts.type === 'folder') {
-        base.push("type = 'folder' AND path LIKE ? ESCAPE '\\' AND path NOT LIKE ? ESCAPE '\\'");
-        params.push(childLike, grandchildLike);
+        const cfm = childFolderMatch('path', path);
+        base.push(`type = 'folder' AND ${cfm.sql}`);
+        params.push(...cfm.params);
       }
     } else {
-      base.push("(type = 'file' AND path = ?) OR (type = 'folder' AND path LIKE ? ESCAPE '\\' AND path NOT LIKE ? ESCAPE '\\')");
-      params.push(path, childLike, grandchildLike);
+      const cfm = childFolderMatch('path', path);
+      base.push(`(type = 'file' AND path = ?) OR (type = 'folder' AND ${cfm.sql})`);
+      params.push(path, ...cfm.params);
     }
     if (opts.search) {
-      base.push('name LIKE ?');
-      params.push(`%${opts.search}%`);
+      base.push('instr(name, ?) > 0');
+      params.push(opts.search);
     }
     if (opts.viewerId) {
       // §4.4a：非管理员看不到他人的 private 项（文件夹与文件同一条件，owner/admin 可见）
@@ -131,8 +131,6 @@ export const FileRepo = {
       params.push(opts.viewerId);
     }
     const whereSql = base.map((b) => `(${b})`).join(' AND ');
-    const countRow = await db.first(`SELECT COUNT(*) AS c FROM file_metadata WHERE mount_id = ? AND ${whereSql}`, params);
-    const total = num(countRow?.c);
     const sortMap: Record<string, string> = {
       name: 'name',
       time: 'updated_at',
@@ -143,20 +141,22 @@ export const FileRepo = {
     const order = opts.sortOrder === 'desc' ? 'DESC' : 'ASC';
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
-    const rows = await db.all(
-      `SELECT * FROM file_metadata WHERE mount_id = ? AND ${whereSql}
+    // LAB O6：总数用窗口函数随行返回，省掉一次单独的 COUNT(*) 查询（列表 p50 显著下降）
+    const rowsRaw = await db.all(
+      `SELECT *, COUNT(*) OVER () AS total_count FROM file_metadata WHERE mount_id = ? AND ${whereSql}
        ORDER BY type = 'folder' DESC, ${sortCol} ${order}, name ASC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
-    return { rows: rows.map(mapFile), total };
+    const total = rowsRaw.length > 0 ? num((rowsRaw[0] as Record<string, unknown>).total_count) : 0;
+    return { rows: rowsRaw.map(mapFile), total };
   },
   /** 列出某路径下所有子项（含子文件夹，递归），用于文件夹删除/移动；ownerId 传入时限定属主 */
   async listDescendants(db: Db, mountId: string, path: string, ownerId?: string): Promise<FileMetadata[]> {
-    // 目录名可含 %/_，前缀必须转义后拼 `/%`，否则 `/a/100%` 的级联会误伤 `/a/100x/…` 兄弟子树
-    const sql = `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')${ownerId ? ' AND owner_id = ?' : ''}`;
-    const like = `${escapeLikePattern(path)}/%`;
-    const rows = await db.all(sql, ownerId ? [mountId, path, like, ownerId] : [mountId, path, like]);
+    // 目录名可含 %/_；前缀子树用范围 + substr 谓词（LAB F-04，无 LIKE 长度上限）
+    const sub = subtreeMatch('path', path);
+    const sql = `SELECT * FROM file_metadata WHERE mount_id = ? AND ${sub.sql}${ownerId ? ' AND owner_id = ?' : ''}`;
+    const rows = await db.all(sql, ownerId ? [mountId, ...sub.params, ownerId] : [mountId, ...sub.params]);
     return rows.map(mapFile);
   },
 
@@ -179,9 +179,10 @@ export const FileRepo = {
     }
   ): Promise<{ rows: Array<FileMetadata & { ownerName?: string }>; truncated: boolean }> {
     const root = opts.rootPath && opts.rootPath !== '/' ? opts.rootPath : null;
-    // LIKE 通配符转义（目录名可含 % _ \）；root 为空 = 全命名空间（管理端树）
-    const where: string[] = root ? ["(f.path = ? OR f.path LIKE ? ESCAPE '\\')"] : ['1=1'];
-    const params: unknown[] = root ? [root, `${escapeLikePattern(root)}/%`] : [];
+    // 前缀子树用范围 + substr 谓词（LAB F-04：无 LIKE 模式长度上限）；root 为空 = 全命名空间（管理端树）
+    const rootSub = root ? subtreeMatch('f.path', root) : null;
+    const where: string[] = rootSub ? [rootSub.sql] : ['1=1'];
+    const params: unknown[] = rootSub ? [...rootSub.params] : [];
     const f = opts.filters;
     if (opts.mountId || f?.mountId) {
       where.push('f.mount_id = ?');
@@ -201,8 +202,8 @@ export const FileRepo = {
       params.push(f.visibility);
     }
     if (f?.blobHashLike) {
-      where.push("(f.type = 'folder' OR f.blob_hash LIKE ?)");
-      params.push(`%${f.blobHashLike}%`);
+      where.push("(f.type = 'folder' OR instr(f.blob_hash, ?) > 0)");
+      params.push(f.blobHashLike);
     }
     const limit = opts.limit ?? 5000;
     const sql = `SELECT f.*${opts.withOwner ? ', u.username AS owner_name' : ''}
@@ -232,16 +233,10 @@ export const FileRepo = {
     await db.query('DELETE FROM file_metadata WHERE id = ?', [id]);
   },
   async deleteByPath(db: Db | Tx, mountId: string, path: string): Promise<FileMetadata[]> {
-    // 子树前缀同样需要转义（与 listDescendants / operations 的子树谓词一致）
-    const like = `${escapeLikePattern(path)}/%`;
-    const rows = await db.all(
-      `SELECT * FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
-      [mountId, path, like]
-    );
-    await db.query(
-      `DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
-      [mountId, path, like]
-    );
+    // 子树谓词与 listDescendants / operations 一致（范围 + substr，无 LIKE 模式长度上限）
+    const sub = subtreeMatch('path', path);
+    const rows = await db.all(`SELECT * FROM file_metadata WHERE mount_id = ? AND ${sub.sql}`, [mountId, ...sub.params]);
+    await db.query(`DELETE FROM file_metadata WHERE mount_id = ? AND ${sub.sql}`, [mountId, ...sub.params]);
     return rows.map(mapFile);
   },
   async searchFiles(db: Db, opts: {
@@ -263,8 +258,8 @@ export const FileRepo = {
     /** §26 全部文件筛选：封禁态 */
     banned?: boolean;
   }): Promise<{ rows: FileMetadata[]; total: number }> {
-    const where: string[] = ['name LIKE ?'];
-    const params: unknown[] = [`%${opts.query}%`];
+    const where: string[] = ['instr(name, ?) > 0'];
+    const params: unknown[] = [opts.query];
     if (opts.mountIds && opts.mountIds.length) {
       where.push(`mount_id IN (${opts.mountIds.map(() => '?').join(',')})`);
       params.push(...opts.mountIds);
@@ -282,8 +277,8 @@ export const FileRepo = {
       params.push(opts.providerId);
     }
     if (opts.blobHashLike) {
-      where.push('blob_hash LIKE ?');
-      params.push(`%${opts.blobHashLike}%`);
+      where.push('instr(blob_hash, ?) > 0');
+      params.push(opts.blobHashLike);
     }
     if (opts.ownerId) {
       where.push('owner_id = ?');

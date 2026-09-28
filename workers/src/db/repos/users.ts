@@ -80,9 +80,9 @@ export const UserRepo = {
       params.push(opts.status);
     }
     if (opts.search) {
-      where.push('(username LIKE ? OR email LIKE ? OR display_name LIKE ?)');
-      const like = `%${opts.search}%`;
-      params.push(like, like, like);
+      // instr 替代 '%q%' LIKE：不受 D1 模式长度上限约束（LAB F-04 同族）
+      where.push('(instr(username, ?) > 0 OR instr(email, ?) > 0 OR instr(display_name, ?) > 0)');
+      params.push(opts.search, opts.search, opts.search);
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const countRow = await db.first(`SELECT COUNT(*) AS c FROM users ${whereSql}`, params);

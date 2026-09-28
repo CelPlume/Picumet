@@ -9,7 +9,7 @@ import { getProvider } from '../storage/providers';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { encryptSecret, uuid } from '../../utils/crypto';
-import { escapeLikePattern, normalizePath } from '../../utils/path';
+import { normalizePath, subtreeMatch } from '../../utils/path';
 import type { Env } from '../../shared/types';
 import { validateEndpoint } from '../../utils/ssrf';
 import { applyMountFolderPlan, ensureAllMountFolders, removeMountFolder, resolveMountFolderPlan } from '../storage/mount-folders';
@@ -360,11 +360,11 @@ async function assertMountPlacement(
     }
   }
   if (input.checkDataShadow === false) return;
-  const like = `${escapeLikePattern(path)}/%`;
+  const shadowSub = subtreeMatch('path', path);
   for (const ancestor of ancestors) {
     const row = await db.first(
-      `SELECT 1 AS x FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\') LIMIT 1`,
-      [ancestor.id, path, like]
+      `SELECT 1 AS x FROM file_metadata WHERE mount_id = ? AND ${shadowSub.sql} LIMIT 1`,
+      [ancestor.id, ...shadowSub.params]
     );
     if (row) {
       throw new ApiError(

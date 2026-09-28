@@ -422,6 +422,21 @@ describe('可见性级联 LIKE 转义', () => {
     const siblingDeep = await listItems(c, owner.authCookie, '/100x/sub');
     expect(siblingDeep.find((i) => i.name === 'b.txt')?.visibility).toBe('private');
   });
+
+  it('LAB F-04 回归：路径 ≥49 字符的目录列表不再触发 D1 LIKE 模式长度上限', async () => {
+    const owner = await registerAndLogin(c, 'deep_path_owner');
+    // 实测阈值：D1 LIKE 模式 = escape(path) + '/%'，路径 49 字符起 pattern 超 50 直接 500
+    const dirName = `${'segment-1234567890-'.repeat(3)}end-%dir`;
+    const longDir = `/deep/${dirName}`;
+    expect(longDir.length).toBeGreaterThanOrEqual(49);
+    const folderId = await createFolder(c, owner.authCookie, '/deep', dirName);
+    await uploadTo(c, owner.authCookie, 'deep.txt', 'd', longDir);
+
+    // 目录列表（childFolderMatch）与可见性级联（subtreeMatch）都不再受 LIKE 长度限制
+    expect((await listItems(c, owner.authCookie, longDir)).some((i) => i.name === 'deep.txt')).toBe(true);
+    expect((await patchVisibility(c, owner.authCookie, folderId, 'users')).status).toBe(200);
+    expect((await listItems(c, owner.authCookie, longDir)).every((i) => i.visibility === 'users')).toBe(true);
+  });
 });
 
 describe('合成根（无根拓扑）', () => {

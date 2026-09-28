@@ -1,7 +1,7 @@
 // 仪表盘聚合仓库：/admin/dashboard 与 /admin/stats 共用的只读统计（§26）
 import { Db } from '../db';
 import { num, str, b } from '../row';
-import { escapeLikePattern } from '../../utils/path';
+import { childFolderMatch } from '../../utils/path';
 
 /** 顶层统计：与前端 AdminDashboard 契约的 stats 字段一一对应 */
 export interface DashboardStats {
@@ -402,14 +402,14 @@ export const DashboardRepo = {
     truncated: boolean;
   }> {
     const root = mount.mountPath;
-    // 顶层文件夹 = 挂载点根下一级（文件夹行 path=自身全路径 → LIKE root/% 且不含更深一层）
-    const esc = escapeLikePattern(root);
+    // 顶层文件夹 = 挂载点根下一级（范围 + substr 谓词，深度恰为 1；LAB F-04 无 LIKE 长度上限）
+    const cfm = childFolderMatch('path', root);
     const [folderRows, fileRows] = await Promise.all([
       db.all(
         `SELECT id, name, path FROM file_metadata
-         WHERE mount_id = ? AND type = 'folder' AND path LIKE ? ESCAPE '\\' AND path NOT LIKE ? ESCAPE '\\'
+         WHERE mount_id = ? AND type = 'folder' AND ${cfm.sql}
          ORDER BY name COLLATE NOCASE ASC LIMIT 200`,
-        [mount.id, `${esc}/%`, `${esc}/%/%`]
+        [mount.id, ...cfm.params]
       ),
       db.all(
         `SELECT path, size FROM file_metadata

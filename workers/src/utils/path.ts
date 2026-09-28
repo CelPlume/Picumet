@@ -246,10 +246,34 @@ export function safeDecodePath(raw: string): string {
 }
 
 /**
- * LIKE 模式转义：`isValidFileName` 允许文件名含 `%` 与 `_`，
- * 直接拼进 LIKE 前缀会把它们当通配符（`/a/100%` 的级联会误伤 `/a/100x/`）。
- * 所有 `path LIKE ?` 前缀匹配必须写成 `LIKE ? ESCAPE '\'` 并先经过本函数。
+ * 「路径前缀」谓词：path 以 `p` 或 `p/` 开头（不含 p 自身）。
+ * 不拼 LIKE 模式——D1 的 SQLITE_MAX_LIKE_PATTERN_LENGTH = 50，路径 ≥49 字符时
+ * `escapeLikePattern(p) + '/%'` 直接 500（LAB F-04）。范围 + substr 改写无长度上限，
+ * `path > ?` 仍可走 (mount_id, path) 索引区间；`%`/`_` 也不再是通配符。
  */
-export function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+export function prefixMatch(column: string, p: string): { sql: string; params: unknown[] } {
+  const prefix = p === '/' ? '/' : `${p}/`;
+  return {
+    sql: `(${column} > ? AND substr(${column}, 1, ?) = ?)`,
+    params: [p, prefix.length, prefix],
+  };
+}
+
+/**
+ * 「路径本身或其子树」谓词：`path = p OR path LIKE 'p/%'` 的等价改写（无 LIKE 长度上限）。
+ */
+export function subtreeMatch(column: string, p: string): { sql: string; params: unknown[] } {
+  const sub = prefixMatch(column, p);
+  return { sql: `(${column} = ? OR ${sub.sql})`, params: [p, ...sub.params] };
+}
+
+/**
+ * 「直接子目录」谓词：`path LIKE 'p/%' AND path NOT LIKE 'p/%/%'` 的等价改写（深度恰为 1）。
+ */
+export function childFolderMatch(column: string, p: string): { sql: string; params: unknown[] } {
+  const prefix = p === '/' ? '/' : `${p}/`;
+  return {
+    sql: `(${column} > ? AND substr(${column}, 1, ?) = ? AND instr(substr(${column}, ?), '/') = 0)`,
+    params: [p, prefix.length, prefix, prefix.length + 1],
+  };
 }
