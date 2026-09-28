@@ -444,6 +444,8 @@ Lists the children of a directory with pagination, sorting, filtering, and searc
 | `items[].hasPassword` | `boolean` | Whether the file is password-protected. |
 | `pagination` | `object` | `total`, `page`, `limit`, and `pages`. |
 | `mount` | `object` | The mount that contains the directory. |
+| `items[].thumbUrl` | `string` | Optional. Signed direct-link thumbnail for media files (image/*, video/*, no password), signed for 1 hour; the grid consumes it directly instead of fetching per-item download tokens. |
+| `items[].previewItems` | `array` | Optional. The first 4 children of a folder row (same sort order and visibility filtering), each optionally carrying `thumbUrl`; powers the folder card 2×2 preview grid instead of per-folder list requests. |
 
 #### Errors
 
@@ -626,7 +628,7 @@ Renames a file or folder and updates its metadata, including the access password
 | `accessPassword` | `string` | No | A new access password, or `null` to remove it. The server stores only a hash. |
 | `visibility` | `string` | No | The visibility: `private`, `users`, or `public`. Requires the update permission. |
 | `manualPosition` | `integer` | No | The manual sort position. Reserved field: the external API contract is stable, but the frontend does not yet ship a sort flow that uses it. |
-| `guestVisibility` | `string` | No | Guest (anonymous visitor) visibility: `inherit` (clears the file-level setting and follows the role default), `none` (guests cannot see it), `download` (download only), `view` (view and download). Requires the update permission; supported on files and folders, and it is the storage field behind "Default user permissions". |
+| `guestVisibility` | `string` | No | Guest (anonymous visitor) visibility: `inherit` (clears the file-level setting and follows the role default), `none` (guests cannot see it — an explicit deny rule that can also retract public visibility), `download` (download only), `view` (view and download; a directory containing view-level children becomes listable for guests). Requires the update permission; supported on files and folders, and it is the storage field behind "Default user permissions". |
 
 #### Response
 
@@ -2130,12 +2132,14 @@ Creates an API key. The full token is shown only once, so store it before you cl
 
 Returns the key and ready-to-use client configuration with status `201`.
 
+> `key.id` is the database row id, consistent with `GET /api/keys` and `DELETE /api/keys/{id}`; `key.keyId` (`pk_…`) is the gateway identity (WebDAV username / S3 AccessKeyId). `DELETE /api/keys/{id}` also accepts a `pk_…` keyId (legacy clients used keyId as id).
+
 ```json
 {
   "success": true,
   "data": {
     "key": {
-      "id": "pk_abcdef123456",
+      "id": "3f1c2a9e-8b4d-4f6a-9c2e-7d5b1a0f3e4c",
       "keyId": "pk_abcdef123456",
       "secret": "sk_xyz789",
       "fullToken": "pk_abcdef123456.sk_xyz789",
@@ -2737,14 +2741,16 @@ curl -X PATCH https://{domain}/api/admin/files/{id}/review \
 
 Returns access logs in reverse chronological order with cursor pagination and filtering. The list returns only the hot-layer narrow columns (`id`/`userId`/`action`/`path`/`ipAddress`/`bytesTransferred`/`statusCode`/`createdAt`) and never the wide `metadata`/`userAgent` fields; full forensic records live in the audit archive (below).
 
-`GET /api/admin/logs?limit={limit}&cursor={cursor}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
+`GET /api/admin/logs?page={page}&limit={limit}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
+
+> LAB 2026-09-28: the contract changed from cursor pagination to **page / page-size / total**, consistent with every other admin page (the shared pagination component supports page jumps and page-size selection).
 
 #### List query parameters
 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
+| `page` | `integer` | No | Page number. Defaults to `1`. |
 | `limit` | `integer` | No | Items per page. Defaults to `50`, maximum `200`. |
-| `cursor` | `string` | No | Cursor: pass the `nextCursor` from the previous page; omitted = first (newest) page. |
 | `userId` | `string` | No | Filter by user. |
 | `action` | `string` | No | Filter by action, such as `upload` or `download`. |
 | `search` | `string` | No | A keyword to match log content. |
@@ -2758,14 +2764,13 @@ Returns access logs in reverse chronological order with cursor pagination and fi
   "success": true,
   "data": {
     "logs": [{ "id": "log-uuid", "userId": "user-uuid", "action": "upload", "path": "/drive/a.txt", "ipAddress": "203.0.113.1", "bytesTransferred": 1024, "statusCode": 200, "createdAt": 1710000000000 }],
-    "nextCursor": "1710000000000_log-uuid",
-    "hasMore": true
+    "pagination": { "total": 3553, "page": 1, "limit": 50, "pages": 72 }
   },
   "timestamp": 1710000000000
 }
 ```
 
-The cursor uses the stable sort key `(created_at, id)`, so deep pages carry no `OFFSET` cost; `nextCursor` is `null` when `hasMore` is `false`.
+The total is returned alongside the rows via a window function (`COUNT(*) OVER ()`); the sort key remains the stable `(created_at, id)` descending pair.
 
 #### Example
 
@@ -2824,11 +2829,15 @@ Reads and updates the global site settings, including registration, email, and r
 
 All fields are optional.
 
+> - The request body is **strict**: unknown keys or wrong-case keys return `400` (no more silent drops that fake a successful save).
+> - The success response echoes the settings keys actually written in `data.savedKeys` (snake_case, matching `system_settings`).
+> - `smtpSecure` drives the SMTP TLS mode: `true` = encrypted required (implicit TLS on 465; other ports must advertise STARTTLS or the send fails); `false` = plaintext (local/intranet sinks); unset = auto (implicit TLS on 465, opportunistic STARTTLS elsewhere).
+
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `siteTitle` | `string` | No | The tab title (browser tab, i.e. `document.title`). |
 | `siteHeaderTitle` | `string` | No | The header title (text next to the top-bar logo). Empty `''` = logo only; omitted (unset) = follow `siteTitle`. |
-| `siteLogo` | `string` | No | The header logo URL; rendered at a fixed height with width following the image's aspect ratio. |
+| `siteLogo` | `string` | No | The header logo URL; rendered at a fixed height with width following the image's aspect ratio. Must be a publicly reachable http(s) URL — the write layer runs the same `validateEndpoint` as the asset relay (private networks, internal hostnames, non-standard ports, embedded credentials are rejected); `''`/`null` clears it. |
 | `siteFavicon` | `string` | No | The favicon URL. |
 | `allowRegistration` | `boolean` | No | Allow new user registration. |
 | `allowGuestAccess` | `boolean` | No | Allow guest access. |
@@ -2847,6 +2856,8 @@ All fields are optional.
 | `smtpFromName` | `string` | No | The sender name. |
 | `smtpFromEmail` | `string` | No | The sender email; an empty string `''` clears it (an unconfigured read returns `''`, so posting the whole form back is not rejected as an invalid email). |
 | `emailEnabled` | `boolean` | No | Enable email service. |
+| `auditLogLevel` | `string` | No | Audit log level: `all` (everything), `essential` (skip successful downloads/reads; failures always logged), `security` (auth/admin/failures only). |
+| `auditLogItems` | `array` | No | Logged item groups (multi-select): `auth` / `upload` / `download` / `share` / `admin` / `failure`. Stored as a JSON array; level and items apply together and take effect immediately after saving. |
 
 #### Example
 

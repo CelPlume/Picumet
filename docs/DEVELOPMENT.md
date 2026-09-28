@@ -168,7 +168,7 @@ Cover the following modules whenever you change them.
 
 ### Permission decision algorithm
 
-The permission algorithm in `services/permissions/check.ts` decides access with a priority order: administrator privilege, mount boundary, user root path, API-key permission scope, path rules, owner fallback, and default deny. Tests must lock in path segment boundaries: `/users/alice` must never match `/users/alice2`. Add cases for rule priority, wildcard patterns, and default deny.
+The permission algorithm in `services/permissions/check.ts` decides access with a fixed priority order: administrator privilege → mount boundary → user root-path limit (`users`/`public` visibility exempts only `read`/`download`) → API-key permission scope → path rules → owner fallback → bucket matrix (§31) → mount matrix (§28) → default-path role permissions → default deny. Two precedence rules are part of the contract and need cases of their own: the owner fallback and `user`-origin rules both run **before** the matrices (a matrix cannot restrict an owner's `read`/`update`/`delete`/`share`/`download`, while `write` is not in the owner fallback), and anonymous principals get no default-path fallback — a `role='guest'` rule, a mount-matrix guest entry or an explicit public channel is required. Tests must lock in path segment boundaries: `/users/alice` must never match `/users/alice2`. Add cases for rule priority, wildcard patterns, and default deny.
 
 Password protection needs cases too. File-level passwords run through the verify-password endpoint, which first requires the `download` permission on the file (same gate as the download-link endpoint) and, on success, issues a gateway token carrying `passwordVerified`. Rule condition fields (`requirePassword`, `allowedIps`) are no longer accepted at rule creation; legacy rules that still carry conditions fail closed in the engine — deny unless explicit conditions are supplied (locked in by engine tests).
 
@@ -179,6 +179,12 @@ Upload sessions transition through `pending → uploading → verifying → comp
 ### Quota atomicity
 
 Quota updates must be atomic. Test that concurrent uploads never exceed the configured limit and that delete and abort paths release reservations exactly once. Use the atomic `UPDATE` form instead of a read-modify-write sequence.
+
+### Storage topology and the synthetic root
+
+Lock in the mount placement validator: a second mount on the same normalized path (`400 ALREADY_EXISTS`), a nested mount whose priority would be shrouded by an ancestor (`400`), creating or re-pathing a mount where the parent mount already holds rows at that path (`409`), and a same-path user folder or file (`409`). Mount-point directory rows must always carry `id = mountfolder:<mountId>` and must never be reused from — or deleted in place of — a user row; `mount-folders.test.ts` asserts the `path` = own-absolute-path convention that keeps the file tree from recursing on the mount folder. Saving a mount configuration must keep `mount_providers.quota_reserved` for surviving members (differentiated upsert, not delete-and-insert), and `reconcileQuotas` must converge the user, mount and per-member reservation layers from the in-flight sessions.
+
+For the synthetic root (`services/storage/root-view.ts`), assert that `vroot:<path>` items appear only when a readable mount exists below that level, that a level whose mounts are all unreadable stays `404` (no topology leak), and that row-addressed endpoints (upload, folder creation, detail, move, rename, delete, share) still answer `404` for a virtual path.
 
 ### Security regression
 
@@ -277,6 +283,14 @@ Do not read the quota, modify it, and write it back. Concurrency makes that sequ
 ### Normalize paths before authorization
 
 Call `normalizePath` on every incoming path before permission checks, so that `/users/../admin/secrets` resolves to `/admin/secrets` and cannot bypass rules.
+
+### Mount-point directory rows are system rows
+
+A mount's directory row uses the deterministic id `mountfolder:<mountId>` and an owner of the oldest administrator, purely as a foreign-key placeholder. Never resolve one by `(mount_id, path, name, type)` and never reuse a user row for it: admin create/update refuses a same-path user row with `409`, the background self-healing pass warns and skips instead of rewriting data, and removal deletes by that id only — the old by-name delete could remove a user directory when a mount was dropped.
+
+### Never synthesize a write at the synthetic root
+
+The synthetic root only fills in directory listings when no mount covers the requested path. A virtual item (`vroot:<path>`) has no `file_metadata` row, so it cannot be moved, renamed, deleted or shared, and uploads must keep answering `404` for a path with no mount — do not add write support for virtual paths.
 
 ### Restart `wrangler dev` after edits
 

@@ -282,6 +282,7 @@ Concurrent runs for the same branch cancel each other (`concurrency.cancel-in-pr
 | Variable | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `ENVIRONMENT` | var | Yes | `development` or `production`; gates fail-closed seeding and rate limiting. |
+| `RATE_LIMIT_FORCE` | var | No | Set to `true` to enable all rate-limit/concurrency middleware outside production (staging/local regression); unset keeps the "production only" default. |
 | `rate_limit_enabled` | `system_settings` | No | Turning it off removes request-rate limits (enabled by default in production). |
 | `rate_limit_requests_per_minute` | `system_settings` | No | Requests per IP per minute (default 50); signed-in users get ×2; the server pins auth endpoints such as sign-in and sign-up at 5 per minute; free mode allows 60 per session and 120 per user per minute. |
 | `max_concurrent_transfers` | `system_settings` | No | Maximum concurrent transfers (default 4, 0 = unlimited); caps in-flight requests per user (per IP when signed out) on uploads and the download gateway and returns 429 beyond it. |

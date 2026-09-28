@@ -168,7 +168,7 @@ python3 scripts/verify-storage-failover.py --base-url http://localhost:8787
 
 ### 权限判定算法
 
-`services/permissions/check.ts` 里的权限判定按优先级依次检查:管理员特权、挂载边界、用户根路径、API 密钥权限范围、路径规则、所有者回退、默认拒绝。测试要锁死路径段边界:`/users/alice` 绝不能匹配 `/users/alice2`。规则优先级、通配符模式和默认拒绝也要有用例。
+`services/permissions/check.ts` 里的权限判定按固定优先级依次检查:管理员特权 → 挂载边界 → 用户根路径限制(`users`/`public` 可见性只豁免 `read`/`download`) → API 密钥权限范围 → 路径规则 → 属主回退 → 桶级矩阵(§31) → 挂载点级矩阵(§28) → 默认路径角色权限 → 默认拒绝。两条优先级规则属于契约,要单独有用例:属主回退与 `user` 来源规则都**先于**矩阵(矩阵无法约束属主对自己文件的 `read`/`update`/`delete`/`share`/`download`,而 `write` 不在属主回退内);匿名主体没有默认路径兜底,必须有 `role='guest'` 规则、挂载点矩阵 guest 条目或显式公开通道。测试要锁死路径段边界:`/users/alice` 绝不能匹配 `/users/alice2`。规则优先级、通配符模式和默认拒绝也要有用例。
 
 密码保护同样要有用例。文件级密码走 verify-password 端点:先要求对文件具备 `download` 权限(与获取下载链接同一道闸门),校验通过后签发带 `passwordVerified` 的网关令牌。规则条件字段(`requirePassword`、`allowedIps`)已不再接受创建入参;存量仍带条件的规则在引擎里 fail-closed——不显式传入 conditions 一律拒绝(由引擎测试锁定)。
 
@@ -179,6 +179,12 @@ python3 scripts/verify-storage-failover.py --base-url http://localhost:8787
 ### 配额原子性
 
 配额更新必须原子。测试并发上传不会突破限额,删除和中止路径恰好释放一次预留。用原子的 `UPDATE`,不要用「读取-修改-写回」的序列。
+
+### 存储拓扑与合成根
+
+锁死挂载放置校验器:同一规范化路径上的第二个挂载(`400 ALREADY_EXISTS`)、嵌套挂载优先级会被祖先遮蔽(`400`)、在父挂载已有行的路径上新建或改路径挂载(`409`)、以及同路径已有用户目录/文件(`409`)。挂载点目录行必须始终使用 `id = mountfolder:<mountId>`,绝不复用用户行、也绝不以它代替用户行做删除;`mount-folders.test.ts` 锁死「`path` = 自身全路径」的约定(否则文件树会把挂载目录当根无限递归)。保存挂载配置后,仍存续成员的 `mount_providers.quota_reserved` 必须保留(差异化 UPSERT,不是删除后重建);`reconcileQuotas` 要按在途会话收敛用户、挂载点与池成员三层预留。
+
+合成根(`services/storage/root-view.ts`)要验证:`vroot:<路径>` 条目只在该层级下方存在可读挂载时出现;整层挂载都不可读时保持 `404`(不泄露拓扑);按行寻址的入口(上传、新建文件夹、详情、移动、重命名、删除、分享)对虚拟路径仍返回 `404`。
 
 ### 安全回归
 
@@ -277,6 +283,14 @@ git commit -m "fix(permission): 修复规则匹配的路径边界绕过" \
 ### 授权前先规范化路径
 
 权限检查前对每个入站路径调用 `normalizePath`,`/users/../admin/secrets` 会归一到 `/admin/secrets`,无法绕过规则。
+
+### 挂载点目录行是系统身份行
+
+挂载点的目录行使用确定性 id `mountfolder:<mountId>`,属主取最早的管理员,仅作外键占位。不要按 `(mount_id, path, name, type)` 去查它,也不要把它当成用户目录复用:管理端创建/更新遇到同路径用户行直接 `409`,后台自愈只 warn 跳过、不改写数据,删除只按该 id 执行——旧的按名删除会在删除挂载点时删掉用户目录。
+
+### 不要在合成根上合成写入
+
+合成根只在没有挂载点覆盖请求路径时补齐目录列表。虚拟项(`vroot:<路径>`)没有 `file_metadata` 行,因此不可移动、重命名、删除、分享;无挂载点的路径上传必须继续返回 `404`——不要为虚拟路径增加写入支持。
 
 ### 改完代码重启 `wrangler dev`
 

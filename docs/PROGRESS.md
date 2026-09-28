@@ -184,10 +184,97 @@
 | SEC-NEW-07 S3 `UNSIGNED-PAYLOAD` 无大小策略（低中） | 强制可信 `Content-Length` 且 ≤100 MiB（超限 400、缺失 411），不再无界 `arrayBuffer` | `security-harden.test.ts` |
 | SEC-NEW-08 注册 OTP 非 CSPRNG（低） | `crypto.getRandomValues` 拒绝采样生成 6 位码，TTL/一次性/限流不变 | `security-harden.test.ts` |
 
+### 2026-09-27 全盘实验室验证修复批次（`docs/LAB_TEST_REPORT_2026-09-26.md`）
+
+对实验室全链路验证（445 项检查 / 37 失败）的修复批次。B1/B3（302 直连 + 令牌 TTL 复用）按报告标注「待决策」未实施。
+
+| 组 | 修复 | 关键落点 |
+| :--- | :--- | :--- |
+| F-01 | workerd 缺 DOMParser → S3 XML 响应解析全挂 | `@aws-sdk/xml-builder` 整包替换为 vendored 纯 JS 解析器（`workers/src/shims/aws-xml-builder.ts`），`wrangler.toml [alias]` 与 vitest alias 同步；bundle 0 处 DOMParser |
+| F-15 | 主桶进程死亡（裸 TypeError）不回退副桶 | s3.ts `getObject/headObject/copyObjectMultipart`、content.ts 暂存复制失败统一 `throw toProviderError(err)`，failover 候选循环可分类回退 |
+| F-05/F-06 | upload-complete 无占用判定 500；预签名覆盖属主对象 | 会话创建即做祖先目录自愈 + 他人占用/目录占用 409（不签发 URL）；complete 前置占用复核（触碰对象前失败）、同属主覆盖走 updateFileTx + legacyCleanup + 配额差值 |
+| F-02/H1-H3 | 会话路径不登记内容索引 | complete 事务内经唯一入口 `registerContentObject` 登记 `(hash, mount_id)`；raw 响应透出 `deduped`；complete 审计带真实 deduped；`resolveFile` 读时惰性补登记（L0，零扫描） |
+| F-03 | flat 语义双路径相反 | `ensureFolders` 跳过挂载根本身（身份行在父挂载命名空间）：flat 挂载根上传 200、嵌套需新建祖先 403（两通道一致）；会话创建接入 ensureFolders |
+| F-04 | D1 LIKE 模式 50 上限 → 深路径列表 500 | `escapeLikePattern` 全仓退役；前缀/子树/深度 1 目录改写为范围 + substr 谓词（`prefixMatch/subtreeMatch/childFolderMatch`），模糊搜索改 `instr()`；12+ 调用点全迁移 |
+| F-07 | 匿名经矩阵读 private；public_cdn 不校验可见性 | 引擎 6.5 步：guest + `visibility !== 'public'` 在矩阵/属主回退前硬拒绝；path-serve 签名与可见性分拆（public_cdn 只豁免签名）；`/api/public/fs` 目录行可见性传入引擎并逐项过滤 |
+| F-09 | share 不在矩阵词表 → 非属主可分享他人文件 | 引擎第 9 步不再无条件放行 share：share 只属属主回退（第 7 步）或显式规则；`/api/shares` 非属主 403 |
+| F-10 | 按文件授权被 defaultPath 边界拦截 | 引擎第 3 步：显式指向本主体的 user-origin allow 规则豁免边界（带密码/IP 条件的规则不参与豁免） |
+| F-17/F-17b | guest_visibility none 无 deny；view 列表不可达 | `syntheticGuestRule` 对 none 生成 deny 合成规则（effect 决胜压过 public 合成 allow）；`/api/public/fs` 目录内存在 view 级子项时放行浏览面（逐项过滤不变） |
+| F-18 | gallery 签发点未预检封禁 | `GET /api/gallery/:id/download` 签发前 `assertNotBanned`（与 path-serve 同源） |
+| F-14 | SMTP `connect is not defined` | `utils/smtp.ts` 重写：真实 `cloudflare:sockets` 导入、隐式 TLS/STARTTLS（`smtp_secure` 设置端到端消费）、10s/30s 超时、点填充；workers typecheck/test 绿 |
+| F-12 | 上游错误文本经 ApiError/shim 直出 | admin 测试邮件、uploads 分片合并（改 `502 UPSTREAM_ERROR` + 服务端日志）、alist/lsky shim（非 ApiError 稳定文案）、s3gw DeleteObjects XML、readiness `detail` 枚举化 |
+| F-08 | settings PATCH 静默丢弃未知键 | `SettingsSchema.strict()`；响应回显 `savedKeys` |
+| F-11 | keys 创建响应 id/keyId 错配 | `id` = 数据库行 id（与列表/删除同源），保留 `keyId`；DELETE 兼容 `pk_…` |
+| F-13 | siteLogo/Favicon 写层不校验私网 | schema 层 `validateEndpoint` 校验（与取件层同口径），`''`/null = 清空 |
+| L-01 | 直链不受任何限速 | `app.use('/*')` 挂 `downloadRateLimitMiddleware`；`isDownloadPath` 覆盖直链路径形态 |
+| L-02 | 限速仅生产生效，staging 不可回归 | `rateLimitsEnforced(env)`：production 或 `RATE_LIMIT_FORCE=true`；五处早退统一收敛 |
+| O1 | settings/me 重复调用 | App.tsx 收敛为各一次、删除 raw 预热 |
+| O2 | 骨架屏 350ms 人为驻留 | `useMinLoading` 默认 120ms |
+| O3 | 入场阶梯长尾 | REVEAL_STEP 40→20、FINE 25→12、MAX_INDEX 9→5、INNER_BASE 60→30 |
+| O4 | 列表缩略图 N+1 | `GET /api/files` 内联 `items[].thumbUrl`（媒体、1h 签名）与 `items[].previewItems`（前 4 子项）；前端 `useFilePreviewUrl` 命中 thumbUrl 零请求、FolderPreviewGrid 优先内联数据 |
+| O6 | 列表 COUNT(*) 双查询 | `listChildren` 用 `COUNT(*) OVER ()` 随行返回总数 |
+| P-01..P-08 | 媒体预览 401 / 放大裁剪 / 旋转回旋 / 控件位置 / 关闭按钮 / 自适应 / 2×2 1:1 / 重复下载 | 媒体预览改签名直链（回退一次性令牌转 blob）、错误文案按状态码；缩放改布局尺寸（width%），舞台可滚动；旋转单调递增；控件移至底部居中、仅图标；去底部关闭按钮；媒体 object-contain 填满舞台；预览格 aspect-square 严格 1:1；预览 URL 按 id+updatedAt 缓存（TTL 内复用） |
+
+### 2026-09-28 追加二：预览管线重构修复 + txt/md + 日志分页统一 + 审计设置
+
+用户实测反馈（txt 可预览、md 空白、图片视频「网络错误」toast 开关各两次）定位出 P-01 改造的三处叠加缺陷，连带完成两项功能需求：
+
+| 项 | 修复 | 关键落点 |
+| :--- | :--- | :--- |
+| 预览「网络错误」 | 预览一律走一次性令牌 → **单次 fetch → blob**（同源、可重复 Range、拓扑无关）。此前的 formats.direct 在 S3 provider 上是跨源预签名 URL（CORS/拓扑不可达），同源 Worker 直链在 dev 又被 Vite SPA fallback 截胡（非 /api 路径返回 index.html）——任何直链消费都不可靠 | `data.ts#usePreviewMediaUrl` 重写为只签令牌；直链仅保留给「复制链接」外贴 |
+| 令牌竞态 | 令牌只能消费一次：<img> 直接吃令牌会与 blob fetch 赛跑（双消费，输家 401）。现在令牌只被**一个**消费者（单次 fetch）处理；媒体吃 objectURL、文本吃 blob.text()，转换期渲染骨架、失败渲染错误态（不再让媒体元素加载注定 401 的死令牌） | `preview.tsx` 单一消费 effect + `tokenPending`/`mediaFailed` 状态 |
+| 死令牌缓存 | imageUrlCache 缓存令牌 URL 10 分钟 → 重开预览命中死令牌必 401（「关闭再开各弹两次」）。令牌不再进缓存，每次打开重新签发 | `data.ts`（预览与网格缩略两处） |
+| md 空白 | `.md` 同时命中 CODE_EXT 与 MARKDOWN_EXT，文本 effect 的 isCode 分支优先把文本写进代码 content，md 分支读 plainContent 恒空 | 抓取 effect 先判 isMarkdown；集成测试锁定 |
+| toast ×N | 媒体 onError 依赖 status-ref；失败改为渲染错误态组件（带重新下载），错误文案按状态码 | `PreviewTooLarge`（retry 形态） |
+| TXT 预览 | `.txt`/`.log` 双击即开：`<pre>` 文本节点原样展示（自动折行），2 MiB 上限同代码 | `isText`/TEXT_EXT |
+| Markdown 渲染 | react-markdown 10 + remark-gfm 4（默认转义原始 HTML，无 rehype-raw，无文档级 innerHTML 面）；围栏代码块沿用 highlight.js；`.md-preview` 样式仅消费设计 token | `markdown-preview.tsx` + `lib/hljs.ts`（语言注册单例，修掉组件侧副作用注册） |
+| 代码预览双转义 | 既有代码路径 `escapeHtml` 预转义与 hljs 自身转义叠加（`<` 显示 `&lt;`） | 传原始文本给 `hljs.highlightAuto`（输出契约即转义） |
+| 日志分页统一（§8） | `GET /api/admin/logs` 从游标分页改为**页码/条数/总数**契约（`listPage`：窗口函数 `COUNT(*) OVER()` 随行返回总数 + 窄列），管理端日志页换用共享 `Pagination`（页码跳转 + 每页条数 20/50/100 + 总数），样式令牌与其它管理页同源 | `LogRepo.listPage`（listCursor/旧 list/游标编解码删除）、`admin/handlers.ts`、`admin/Logs.tsx` |
+| 审计设置 | 系统设置新增「日志审计」：记录等级（all/essential/security）+ 记录项目（auth/upload/download/share/admin/failure 多选）。中心门禁在 `LogRepo.create`（60s 进程内缓存 + 保存即失效），三处事务内直插点在事务前判定（D1 事务禁读）。语义：essential=不记成功下载/读取（失败恒记）；security=仅认证/管理/失败；项目关闭=该组不记（failure 横切独立） | `db/repos/system.ts`（policy + `isActionLoggable`/`invalidateAuditPolicyCache`）、`admin/schemas.ts`、`admin/handlers.ts`（strict 键 + savedKeys 回显）、`admin/Settings.tsx`、直插点 write/operations/uploads |
+
+E2E（运行栈实测）：security 级别下下载不入账、登录照记；恢复 all 后下载重新入账；日志分页契约由 `audit-tiering.test.ts` 页码版锁定；策略语义由 `audit-policy.test.ts`（5 例）锁定；预览管线由 `preview-integration.test.tsx`（StrictMode + mock fetch 链路 4 例）锁定。
+
+### 2026-09-28 追加三：预览体验批次（穿透/尺寸模式/适应/导航）+ S3 上传修复
+
+用户实测反馈四项 + 测试中发现两处 S3 上传阻塞缺陷：
+
+| 项 | 修复 | 关键落点 |
+| :--- | :--- | :--- |
+| 预览穿透（拖动选择文本/图片触发下层 lasso） | `Dialog` 根元素标 `data-overlay-root`；lasso `onPointerDown` 对 overlay 内指针直接忽略；文件页 `select-none` 对 overlay 内恢复 `select-text`（拖动选文本/拖图片不再穿透到文件选择） | `ui/dialog.tsx`、`files/lasso.ts`、`pages/Files.tsx` |
+| 尺寸模式设置 | 外观设置新增「图片/视频预览尺寸」：fit=适应窗口（默认，整图完整显示无滚动条）/ original=按原始像素（舞台可滚动）；localStorage 记忆，手机/桌面共用；预览弹窗底部一键切换，缩放/旋转控件仅在 original 档显示（fit 档显示原始尺寸信息） | `stores/theme.ts`（previewSizeMode）、`preview.tsx`、`settings/Personalization.tsx` |
+| 竖图溢出窗口 | fit 档改为 `object-contain` 一次成型：内层容器 `h-full w-full`（去掉 min-h-full —— 它让父被 img 撑开、`max-h-full` 百分比失去基准，9:16 竖图渲染 1800px 高需滚动）。宽图贴宽、长图贴高、方图贴高，全部无滚动条；手机视口实测 195×585 全入窗 | `preview.tsx`（isFit 分支） |
+| 上一个/下一个 | 预览弹窗底部导航按钮（图片/视频、序列>1 时显示），调用方在当前显示序列的媒体 id 中定位相邻项；aria 用 `files.prevItem/nextItem`（上一个/下一个，非分页语义） | `preview.tsx` props + `Files.tsx` onNavigate |
+| S3 PUT 自动 checksum 头 | SDK v3.700+ 默认 `WHEN_SUPPORTED`：PUT 附 `x-amz-checksum-crc32`，S3 兼容网关（VersityGW/MinIO）预签名校验拒未签名头 → 500。`S3Client` 显式 `requestChecksumCalculation: 'WHEN_REQUIRED'`（完整性由 ETag/Content-Length 保证） | `storage/s3.ts` |
+| S3 PUT MissingContentLength | S3 协议 chunked PUT（无 Content-Length）被拒；`writeContentAddressed` 的 FixedLengthStream 包裹从 R2 扩展到 S3（declaredSize 已知时发 Content-Length） | `storage/content.ts` |
+
+E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲染 184×553/195×585 全入窗无滚动；宽图 1233×411 贴宽；方图 553×553 贴高；original 档渲染 1800×600 原始像素；导航序列 square→tall→wide→prev 全部正确切换。
+
+### 2026-09-28 追加：txt 预览与 Markdown 格式化渲染
+
+| 项 | 修复 | 关键落点 |
+| :--- | :--- | :--- |
+| TXT 预览 | `.txt`/`.log` 双击即开预览：`<pre>` 文本节点原样展示（自动折行），不经任何 HTML 管线；2 MiB 上限同代码预览 | `lib/utils.ts` 新增 `TEXT_EXT`/`isText`；`Files.tsx` 双击门放行；`preview.tsx` 新增 isText 分支 |
+| Markdown 渲染 | `.md`/`.markdown` 用 react-markdown + remark-gfm 格式化渲染（标题/列表/表格/任务列表/删除线）；源内原始 HTML 一律按文本输出（默认无 rehype-raw，无文档级 innerHTML 面）；围栏代码块沿用 highlight.js 高亮 | 新增 `components/files/markdown-preview.tsx` + `.md-preview` 样式（`index.css`，仅设计 token）；新增依赖 react-markdown 10 / remark-gfm 4 |
+| 高亮管线收敛 | 语言注册抽到 `lib/hljs.ts` 单例（代码预览与 md 围栏共用）；修正既有代码预览的双重转义显示缺陷（`escapeHtml` 预转义与 hljs 自身转义叠加，HTML 内容显示 `&lt;`）——hljs 输出契约即转义实体，传原始文本 | `lib/hljs.ts`；`preview.tsx` 代码路径改为 `hljs.highlightAuto(text)` |
+| 回归 | `markdown-preview.test.tsx` 8 例：格式化渲染、GFM 表格、XSS 边界（script/img 按文本）、围栏转义与语言高亮、分类器 | frontend/src/components/files/markdown-preview.test.tsx |
+
+### 2026-09-28 追加四：预览设置收敛 + 缩略图流量门禁缓存 + 用户菜单重排
+
+| 项 | 修复 | 关键落点 |
+| :--- | :--- | :--- |
+| 预览行为卡收敛 | 个性化页把「图片/视频预览尺寸（适应/原图）+ 右键单击行为 + 右键多选 + 文件夹图片/视频预览」合并进同一张「预览行为」卡；i18n 键补齐（`settings.appearance.previewBehavior/previewSizeMode/mediaPreviews*` 等原引用不存在导致显示裸 key，死键 `admin.previewMode*` 删除迁入 `settings.appearance.*`），两档文案按用户口径精简（适应 = 适应窗口大小显示；原图 = 按原始尺寸显示） | `pages/settings/Personalization.tsx`；`lib/i18n/zh.ts` + `en.ts` |
+| 缩放两档可用 | 预览弹窗 zoom 改为弹窗本地状态：适应档 zoom>1 内层撑大为 `zoom*100%`（布局式放大、保持 contain、四向可滚动、缩放后舞台滚动居中），原图档 `width=natural×zoom`；缩放不再改写全局尺寸模式；上一个/下一个在图片/视频两档均可用 | `components/files/preview.tsx` |
+| 缩略图流量门禁 | 「文件夹图片/视频预览」默认关闭：关闭时不签发下载令牌、不产生任何媒体字节（文件夹卡片/网格/列表/视频抽帧全走类型图标）；预览弹窗（显式动作）不受限 | `components/files/data.ts` `useFilePreviewUrl` 消费 `mediaPreviewsEnabled`（`stores/theme.ts`，localStorage 持久化） |
+| 缩略图 LRU 缓存 | 令牌 → 单次 fetch → blob → objectURL 进模块级 LRU（80 条，键 `id:updatedAt`，淘汰/替换即 revoke）；文件夹卡片 2×2 格、网格/列表缩略、视频抽帧共用——退出文件夹再进入零请求瞬间出图（整页刷新后 objectURL 失效重新下载属预期） | `components/files/data.ts` |
+| 用户菜单重排 | 菜单头部左两行（邮箱 + 昵称）右 40px 小头像（高度恰为两行文本）；分隔线下文件数量 + 存储空间用量进度条（复用 `/api/auth/me` 的 quota 与 `settings.filesUsed`/`settings.profile.storageSpace` 文案）；再分隔线下依次文件、设置、管理，底部退出登录 | `components/layout/widgets.tsx` `UserMenu` |
+| 清理 | 删除中断会话遗留的 scratch 探针测试（前端 10 文件/56 例 → 9 文件/55 例） | 删除 `frontend/src/scratch-blob.test.ts` |
+
+实测（本地 lab，Chromium）：默认关闭下 samples 目录零媒体请求；开启后 images 文件夹 17/18 缩略出图（1 个 6 字节损坏 fixture 正确回退图标）；SPA 离开再进入新增下载请求 0；适应档放大后舞台双向可滚动且 `previewSizeMode` 保持 fit；original 档 1800×600 原始像素可滚动；上一张/下一张顺序切换；用户菜单各区按设计渲染。
+
 ## 当前基线
 
-- 后端：68 个测试文件 / 583 个 Vitest 用例通过；`tsc --noEmit` 干净。（2026-09-26 全量审计批次新增 5 个回归测试文件）
-- 前端：7 个测试文件 / 43 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.3% functions / 93.3% lines）；构建成功；`tsc --noEmit` 干净。
+- 后端：71 个测试文件 / 607 个 Vitest 用例通过；`tsc --noEmit` 干净；`wrangler deploy --dry-run` 成功（含 F-01 alias 后 bundle 无 DOMParser 引用）。
+- 前端：9 个测试文件 / 55 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.3% functions / 93.3% lines）；构建成功；`tsc --noEmit` 干净。
 - 语言：中文 + 英文。
 
 ## 即将规划

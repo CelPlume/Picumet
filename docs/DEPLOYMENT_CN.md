@@ -282,6 +282,7 @@ bunx wrangler pages deploy dist --project-name=picumet
 | 变量 | 类型 | 是否必需 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `ENVIRONMENT` | 变量 | 必需 | `development` 或 `production`,控制 fail-closed 的 seed 与限流。 |
+| `RATE_LIMIT_FORCE` | 变量 | 可选 | 设为 `true` 时在非生产环境也启用全部限速/并发中间件（staging/本地回归用）；缺省维持「仅 production 生效」。 |
 | `rate_limit_enabled` | `system_settings` | 可选 | 关闭后不限制请求速率（生产环境默认启用）。 |
 | `rate_limit_requests_per_minute` | `system_settings` | 可选 | 每 IP 每分钟请求数（默认 50）；已登录用户按 2 倍；服务端把登录/注册等认证接口固定为 5 次/分钟；自由模式按会话 60、按用户 120 次/分钟。 |
 | `max_concurrent_transfers` | `system_settings` | 可选 | 同时传输上限（默认 4，0 = 不限）；按用户（未登录按 IP）限制上传与下载网关的在途请求数，超限 429。 |

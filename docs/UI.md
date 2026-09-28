@@ -190,7 +190,7 @@ The sign-in (`/login`), sign-up (`/register`), and reset-password (`/reset-passw
 | `Logo` | Top-left | Brand mark; uses the site logo and header title from site settings (clear the title to show the logo only). The logo image keeps a fixed height with width following its own aspect ratio, so wide logos are never squeezed small and the title follows right after. |
 | `ThemeToggle` | Top-right | Switches between light, dark, and system theme. |
 | `LanguageSwitcher` | Top-right | Toggles Chinese and English. |
-| `UserMenu` | Top-right | Shows the display name; links to settings and sign out. |
+| `UserMenu` | Top-right | Trigger is a small avatar + display name; the menu header shows two lines on the left (email + nickname) with a 40px avatar on the right (exactly two text lines tall); below a separator, file count and storage usage progress bars (refreshed with the quota from `/api/auth/me`); below another separator, the Files, Settings and Admin (admin only) items, with log out at the bottom. |
 | `AnnouncementBanner` | Below top bar | Shows site announcements that admins publish, applies each announcement's display policy, and fires toast announcements; the strip carries no left color bar. |
 
 ## Responsive design
@@ -359,6 +359,8 @@ The top navigation bar (`AppShell`) uses the same measured-indicator technique f
 ### `components/files/preview.tsx` — preview
 
 - Dialog `w-[min(1400px,94vw)]`, media area `h-[min(72vh,780px)]`, responsive to the browser width.
+- LAB 2026-09-28 batch: two size modes — **Fit** (default, `object-contain` in one shot: wide images fill the width, tall images fill the height, squares fill the height, no scrollbars; the inner wrapper must be `h-full w-full` — `min-h-full` lets the parent be expanded by the img and breaks the `max-h-full` baseline, pushing tall images out of the window) and **Original** (native pixels, scrollable stage; the inline `max-width:none` overrides preflight's `max-width:100%`, and the flex `min-width:auto` semantics keep the explicit width from being flex-shrunk); the entry lives in the Personalization "Preview behavior" card (same card as the right-click behavior, shared between mobile and desktop). Media previews get "Previous/Next" buttons (cycling the current directory's media sequence, `files.prevItem/nextItem`), usable in both size modes. The dialog root carries `data-overlay-root`: the files-page lasso ignores pointers inside it and `select-none` is lifted back to `select-text` within, so dragging to select text or images never leaks into file selection.
+- LAB batch (2026-09-27): zoom/rotate controls moved into the bottom action row to the left of copy/download, centered at the bottom, icon-only; the footer no longer has a close button (dialog ×/Esc/backdrop close); image zoom is layout-based (`width: zoom*100%`, zoom>1 releases max constraints, stage `overflow-auto`) instead of `transform: scale` clipping; rotation angle is monotonically increasing. 2026-09-28 revision: **zoom is local modal state** — in Fit mode zoom>1 expands the inner wrapper to `zoom*100%` (layout-based enlargement, keeps contain, scrollable in all directions; the stage recenters its scroll position on each zoom change) and no longer rewrites the global size mode in Personalization; at zoom=1 the Fit wrapper stays `h-full w-full`. Media sources always go through the one-time token → fetch → blob path (direct links are reserved for "copy link"), and error toasts are keyed by status code.
 
 ### `pages/settings/Shares.tsx` — share management
 
@@ -482,7 +484,9 @@ The preview modal handles media types:
 
 - **Images**: zoom from `50%` to `300%`, rotate by `90°`, and download the original. Controls stay pinned to the bottom, so the zoomed image cannot cover them.
 - **Video and audio**: a native player with playback, seek, volume, and full-screen controls.
-- **Code**: syntax highlighting with highlight.js; the app HTML-escapes the source before highlighting, so it never renders raw HTML or Markdown.
+- **Code**: syntax highlighting with highlight.js (its output escapes entities by contract; HTML in the source never becomes elements).
+- **Markdown (`.md`)**: formatted rendering (react-markdown + GFM tables/task lists/strikethrough). Raw HTML in the source is **always emitted as plain text** (react-markdown does not render inline HTML without `rehype-raw`), and fenced code blocks reuse the highlight.js pipeline of the code preview; styles live under `.md-preview` in `index.css` (design tokens only, dark-mode aware). Same 2 MiB cap as code preview, over-limit falls back to download.
+- **Plain text (`.txt`/`.log`)**: shown as-is in a `<pre>` text node (auto wrap), never passing through an HTML pipeline; double-click opens the preview, same 2 MiB cap.
 - **Password-protected files**: the modal asks for a password before loading the content.
 
 ### Context menus and hover actions
@@ -511,7 +515,7 @@ The copy-link flow handles single files and multi-select batches:
 
 ### Folder previews
 
-With folder display set to `contents`, each folder card shows a 2x2 grid of its first four items, ordered by the current sort. Folders and files show icons, images show thumbnails, and videos show a canvas-captured frame. An empty folder falls back to the folder icon.
+With folder display set to `contents`, each folder card shows a 2x2 grid of its first four items, ordered by the current sort. Folders and files show icons, images show thumbnails, and videos show a canvas-captured frame. An empty folder falls back to the folder icon. The grid container is `aspect-square` with two rows and two columns of 1fr each, so all four cells are strictly square at any DPI (LAB P-07); preview data prefers the `previewItems`/`thumbUrl` inlined in the list response (LAB O4, request count ≈40 → 1), falling back to per-folder requests for old responses.
 
 ### Video thumbnails
 
@@ -529,7 +533,7 @@ The bulk actions bar appears as soon as you select at least one item. It offers 
 
 - **Route-level lazy loading**: every page loads with `React.lazy` and `Suspense`, so the browser fetches page code only when the route opens.
 - **Server state caching**: TanStack Query caches file listings and mutation state, which avoids redundant requests.
-- **Image URL cache**: preview URLs resolve once per file and reuse from an in-memory map.
+- **Thumbnail traffic gate & cache** (`useFilePreviewUrl`): the Personalization "Folder image/video previews" toggle is off by default — when off, cards always show type icons, no download tokens are issued and no media bytes are loaded; when on, token → single fetch → blob → objectURL enters a module-level LRU cache (80 entries, keyed by `id:updatedAt`, revoked on eviction) shared by the folder-card 2×2 grid, grid/list thumbnails and video frame capture — leaving a folder and re-entering costs zero requests and renders instantly (a full page reload invalidates objectURLs and re-downloads, which is expected). The preview dialog is an explicit user action and is not gated by this toggle.
 - **Client-side thumbnails**: video cards generate thumbnails locally with canvas, so they do not consume server bandwidth or storage.
 - **Lazy-loaded images**: folder-preview thumbnails load with `loading="lazy"`.
 

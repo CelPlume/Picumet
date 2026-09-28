@@ -444,6 +444,8 @@ curl -X POST https://{domain}/api/auth/forgot-password \
 | `items[].hasPassword` | `boolean` | 文件是否受密码保护。 |
 | `pagination` | `object` | `total`、`page`、`limit`、`pages`。 |
 | `mount` | `object` | 包含该目录的挂载点。 |
+| `items[].thumbUrl` | `string` | 可选。媒体文件（image/*、video/*，无密码）的签名直链缩略图，1 小时签名；前端网格直接消费，不再逐项取下载令牌。 |
+| `items[].previewItems` | `array` | 可选。文件夹行的前 4 个子项（同排序、同可见性过滤），子项可再带 `thumbUrl`；供文件夹卡片 2×2 预览格，替代逐文件夹的列表请求。 |
 
 #### 错误
 
@@ -626,7 +628,7 @@ curl https://{domain}/api/files/{id} -b cookies.txt
 | `accessPassword` | `string` | 否 | 新的访问密码，传 `null` 可移除。服务端只保存哈希。 |
 | `visibility` | `string` | 否 | 可见性：`private`、`users` 或 `public`，需要 `update` 权限。 |
 | `manualPosition` | `integer` | 否 | 手动排序位置。预留字段：外部 API 契约保持稳定，前端暂无使用它的排序闭环。 |
-| `guestVisibility` | `string` | 否 | 游客（匿名访客）可见性：`inherit`（清除文件级设置，跟随角色默认）、`none`（游客不可见）、`download`（仅可下载）、`view`（可查看并下载）。需要 `update` 权限；文件与文件夹均支持，是「用户权限默认设置」的存储字段。 |
+| `guestVisibility` | `string` | 否 | 游客（匿名访客）可见性：`inherit`（清除文件级设置，跟随角色默认）、`none`（游客不可见——显式 deny 规则，可收回 public 可见性）、`download`（仅可下载）、`view`（可查看并下载；目录含 view 级子项时匿名可列该目录）。需要 `update` 权限；文件与文件夹均支持，是「用户权限默认设置」的存储字段。 |
 
 #### 响应
 
@@ -2130,12 +2132,14 @@ curl -X POST https://{domain}/api/users/announcements/{id}/dismiss \
 
 返回密钥和开箱即用的客户端配置，状态码 `201`。
 
+> `key.id` 是数据库行 id，与 `GET /api/keys` 列表、`DELETE /api/keys/{id}` 同源；`key.keyId`（`pk_…`）是网关标识（WebDAV 用户名 / S3 AccessKeyId）。`DELETE /api/keys/{id}` 兼容传入 `pk_…` keyId（历史客户端把 keyId 当 id 返回）。
+
 ```json
 {
   "success": true,
   "data": {
     "key": {
-      "id": "pk_abcdef123456",
+      "id": "3f1c2a9e-8b4d-4f6a-9c2e-7d5b1a0f3e4c",
       "keyId": "pk_abcdef123456",
       "secret": "sk_xyz789",
       "fullToken": "pk_abcdef123456.sk_xyz789",
@@ -2739,14 +2743,16 @@ curl -X PATCH https://{domain}/api/admin/files/{id}/review \
 
 按时间倒序分页读取访问日志。列表只返回热层窄列（`id`/`userId`/`action`/`path`/`ipAddress`/`bytesTransferred`/`statusCode`/`createdAt`），不返回 `metadata` 与 `userAgent` 宽字段；完整取证记录在审计归档（见下）。
 
-`GET /api/admin/logs?limit={limit}&cursor={cursor}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
+`GET /api/admin/logs?page={page}&limit={limit}&userId={userId}&action={action}&search={search}&from={from}&to={to}`
+
+> LAB 2026-09-28：契约从游标分页改为**页码/条数/总数**，与全站管理页一致（共享分页组件支持页码跳转与每页条数）。
 
 #### 列表查询参数
 
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
+| `page` | `integer` | 否 | 页码，默认 `1`。 |
 | `limit` | `integer` | 否 | 每页条数，默认 `50`，最大 `200`。 |
-| `cursor` | `string` | 否 | 游标：取上一页响应里的 `nextCursor`；缺省 = 第一页（最新）。 |
 | `userId` | `string` | 否 | 按用户过滤。 |
 | `action` | `string` | 否 | 按动作过滤，如 `upload`、`download`。 |
 | `search` | `string` | 否 | 匹配日志内容的关键字。 |
@@ -2760,14 +2766,13 @@ curl -X PATCH https://{domain}/api/admin/files/{id}/review \
   "success": true,
   "data": {
     "logs": [{ "id": "log-uuid", "userId": "user-uuid", "action": "upload", "path": "/drive/a.txt", "ipAddress": "203.0.113.1", "bytesTransferred": 1024, "statusCode": 200, "createdAt": 1710000000000 }],
-    "nextCursor": "1710000000000_log-uuid",
-    "hasMore": true
+    "pagination": { "total": 3553, "page": 1, "limit": 50, "pages": 72 }
   },
   "timestamp": 1710000000000
 }
 ```
 
-游标基于稳定排序键 `(created_at, id)`，深页无 `OFFSET` 开销；`hasMore=false` 时 `nextCursor` 为 `null`。
+总数由窗口函数（`COUNT(*) OVER ()`）随行返回；排序键仍为 `(created_at, id)` 稳定倒序。
 
 #### 示例
 
@@ -2820,11 +2825,15 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 
 所有字段均可选。
 
+> - 请求体为 **strict** 模式：未知键或大小写错误的键直接 `400`（不再静默丢弃造成「保存成功」假象）。
+> - 成功响应回显实际写入的设置键：`data.savedKeys`（snake_case，与 `system_settings` 一致）。
+> - `smtpSecure` 驱动 SMTP TLS 模式：`true` = 强制加密（465 隐式 TLS，其余端口必须宣告 STARTTLS，否则失败）；`false` = 明文（本地/内网 sink）；未设置 = auto（465 隐式 TLS，其余端口服务器宣告 STARTTLS 时升级）。
+
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `siteTitle` | `string` | 否 | 标签页标题（浏览器标签页，即 `document.title`）。 |
 | `siteHeaderTitle` | `string` | 否 | 左上角标题（顶栏 Logo 旁文字）。留空 `''` = 只显示 Logo；不传（未设置）= 跟随 `siteTitle`。 |
-| `siteLogo` | `string` | 否 | 左上角 Logo 地址，高度固定、宽度随图片比例自适应。 |
+| `siteLogo` | `string` | 否 | 左上角 Logo 地址，高度固定、宽度随图片比例自适应。必须是可公网访问的 http(s) 地址（写层 `validateEndpoint` 拒绝私网/内网主机名/非标端口/内嵌凭据，与取件层同口径）；`''`/`null` = 清空。 |
 | `siteFavicon` | `string` | 否 | 站点图标地址。 |
 | `allowRegistration` | `boolean` | 否 | 是否允许注册。 |
 | `allowGuestAccess` | `boolean` | 否 | 是否允许游客访问。 |
@@ -2843,6 +2852,8 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 | `smtpFromName` | `string` | 否 | 发件人名称。 |
 | `smtpFromEmail` | `string` | 否 | 发件邮箱；空字符串 `''` = 清空发件地址（未配置时读取值即为 `''`，整表单回传不会被判为无效邮箱）。 |
 | `emailEnabled` | `boolean` | 否 | 是否启用邮件服务。 |
+| `auditLogLevel` | `string` | 否 | 审计日志记录等级：`all`（全部）、`essential`（不记成功下载/读取，失败恒记）、`security`（仅认证/管理/失败）。 |
+| `auditLogItems` | `array` | 否 | 记录的项目分组（多选）：`auth` / `upload` / `download` / `share` / `admin` / `failure`。数组落库为 JSON；等级与项目同时生效，设置保存后立即生效。 |
 
 #### 示例
 
