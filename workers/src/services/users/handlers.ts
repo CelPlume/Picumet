@@ -98,6 +98,7 @@ async function readMailSettings(db: Db, env: Env): Promise<MailSettings> {
 /** 按设置解析 SMTP 配置并发信 */
 async function sendSettingMail(mail: MailSettings, env: Env, to: string, subject: string, html: string): Promise<void> {
   const smtpConfig = await resolveSmtpConfig(mail.raw, env);
+  const secureRaw = String(mail.get('smtp_secure') ?? '');
   await sendMail(
     {
       host: smtpConfig?.host ?? mail.host,
@@ -105,6 +106,7 @@ async function sendSettingMail(mail: MailSettings, env: Env, to: string, subject
       user: smtpConfig?.user ?? (String(mail.get('smtp_user') ?? '') || env.SMTP_USER),
       pass: smtpConfig?.pass ?? (String(mail.get('smtp_password') ?? '') || env.SMTP_PASS),
       from: mail.fromEmail ? `${mail.fromName} <${mail.fromEmail}>` : mail.fromEmail,
+      secure: smtpConfig?.secure ?? (secureRaw === '' ? undefined : secureRaw !== 'false'),
     },
     to,
     subject,
