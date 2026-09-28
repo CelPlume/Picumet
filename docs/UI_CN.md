@@ -394,7 +394,8 @@ flowchart LR
 
 ### 数据表格规范（设置 / 管理）
 
-- **包裹容器**：一律 `Card`（玻璃面，三档门控）+ **`py-0`**——表格自身的 `px-4 py-2` 单元格节奏提供内边距，保留 Card 默认 `py-5` 会在表头上方留一条空白（历史 bug）。
+- **包裹容器**：一律 `Card`（玻璃面，三档门控）+ **`py-0`**——表格自身的 `px-4 py-2` 单元格节奏提供内边距，保留 Card 默认 `py-5` 会在表头上方留一条空白（历史 bug）。双表外壳还须显式 **`gap-0`**：Card 基类自带 `gap-4`，会在表头表与首行之间撕出 16px 空隙（2026-09-29 修复：全部文件、日志审计）。
+- **行内垂直居中**：行/表头共用的网格常量带 **`items-center`**（`ROW_GRID` / `LOG_ROW_GRID`）——`<tr>` 是 grid 容器，默认 stretch 把 td 拉满行高后块级内容顶对齐，「字节/时间」等列换行时其余列贴顶（2026-09-29 修复：全部文件、日志审计）。
 - **loading 分支在表体内**：`<tbody>` 内 `{loading ? <tr><td colSpan={N}><TableSkeleton/></td></tr> : …}`，保证 loading 时表头与卡片可见；不要用骨架替换整张表。
 - **表头排序**：所有数据表支持表头点击排序——`SortableHeader` + `sortByKey`（已覆盖：用户、全部文件、分享、日志、权限规则、存储提供商/挂载、访问规则、API 密钥）。
 - **表头形态统一**：数据表一律**双表结构**——表头 `<table>` 在滚动容器**外**（同卡片玻璃、透明无底色），数据行 `<tbody>` 在 `overflow-y-auto` 容器内滚动；行内容从表头下方穿过时由卡片玻璃呈现模糊（Chromium 对 `position: sticky` 元素的 `backdrop-filter` 不采样其下滚动内容，**sticky 磨砂表头方案已实证废弃，禁止回退**）。表头与行使用同一网格模板常量（如 `ROW_GRID`）+ 相同 `px-4 py-2` 单元格节奏，两侧 `[scrollbar-gutter:stable]` 保证列逐列对齐；历史常量 `TABLE_HEAD_CLASS` / `TABLE_HEAD_SOLID` 与 `.glass-header` 已删除，禁止复活。
