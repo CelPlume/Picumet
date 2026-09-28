@@ -35,6 +35,9 @@ interface Settings {
   smtpFromName: string;
   smtpFromEmail: string;
   emailEnabled: boolean;
+  /** LAB：审计日志策略——记录等级与项目（分组） */
+  auditLogLevel: 'all' | 'essential' | 'security';
+  auditLogItems: Array<'auth' | 'upload' | 'download' | 'share' | 'admin' | 'failure'>;
 }
 
 export default function AdminSettings() {
@@ -290,6 +293,53 @@ export default function AdminSettings() {
             </p>
             <p className="text-xs text-muted-foreground">{t('admin.maxConcurrentTransfersHint')}</p>
             <p className="text-xs text-muted-foreground">{t('admin.rateLimitDownloadsHint')}</p>
+          </div>
+          <div className="reveal-row space-y-2 border-t pt-3" style={innerDelay(1, 3)}>
+            <p className="text-sm font-medium">{t('admin.auditLog')}</p>
+            <div>
+              <Label>{t('admin.auditLogLevel')}</Label>
+              <Select
+                className="mt-1"
+                value={settings.auditLogLevel}
+                onValueChange={(v: string) => set('auditLogLevel', v)}
+                options={[
+                  { value: 'all', label: t('admin.auditLevel.all') },
+                  { value: 'essential', label: t('admin.auditLevel.essential') },
+                  { value: 'security', label: t('admin.auditLevel.security') },
+                ]}
+              />
+            </div>
+            <div>
+              <Label>{t('admin.auditLogItems')}</Label>
+              <div className="mt-1 grid grid-cols-2 gap-2">
+                {(
+                  [
+                    ['auth', 'admin.auditGroup.auth'],
+                    ['upload', 'admin.auditGroup.upload'],
+                    ['download', 'admin.auditGroup.download'],
+                    ['share', 'admin.auditGroup.share'],
+                    ['admin', 'admin.auditGroup.admin'],
+                    ['failure', 'admin.auditGroup.failure'],
+                  ] as const
+                ).map(([group, key]) => (
+                  <div key={group} className="flex items-center justify-between rounded-md border px-2 py-1.5">
+                    <span className="text-sm">{t(key)}</span>
+                    <Switch
+                      checked={settings.auditLogItems.includes(group)}
+                      onChange={(v) =>
+                        set(
+                          'auditLogItems',
+                          v
+                            ? [...settings.auditLogItems, group]
+                            : settings.auditLogItems.filter((g) => g !== group)
+                        )
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">{t('admin.auditLogHint')}</p>
           </div>
           <div className="reveal-row" style={innerDelay(1, 3)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>

@@ -50,43 +50,39 @@ async function gunzipText(stream: ReadableStream<Uint8Array> | null): Promise<st
   return new Response(body).text();
 }
 
-describe('管理端日志游标分页', () => {
-  it('按 (created_at, id) 稳定排序、hasMore/nextCursor、显式列且无总页数', async () => {
+describe('管理端日志分页（LAB §8：页码/条数/总数契约）', () => {
+  it('按 (created_at, id) 稳定排序、窗口函数返回总数、显式列且无 metadata/user_agent', async () => {
     const base = Date.now() - 10 * HOUR;
     insertLog('atl-1', 'upload', base);
     insertLog('atl-2', 'download', base + 1000);
     insertLog('atl-3', 'login', base + 2000);
     const windowQuery = `from=${base}&to=${base + 3000}`;
 
-    const firstRes = await request(ctx, `/api/admin/logs?limit=2&${windowQuery}`, { cookie: adminCookie });
+    const firstRes = await request(ctx, `/api/admin/logs?limit=2&page=1&${windowQuery}`, { cookie: adminCookie });
     expect(firstRes.status).toBe(200);
     const first = (await json(firstRes)).data as {
       logs: Array<Record<string, unknown>>;
-      nextCursor: string | null;
-      hasMore: boolean;
-      pagination?: unknown;
+      pagination: { total: number; page: number; limit: number; pages: number };
+      nextCursor?: unknown;
+      hasMore?: unknown;
     };
     expect(first.logs).toHaveLength(2);
     expect(first.logs.map((l) => l.id)).toEqual(['atl-3', 'atl-2']);
-    expect(first.hasMore).toBe(true);
-    expect(first.nextCursor).toBeTruthy();
-    expect(first.pagination).toBeUndefined();
+    // 总数随窗口函数返回，翻页组件据此渲染页码/跳页
+    expect(first.pagination).toEqual({ total: 3, page: 1, limit: 2, pages: 2 });
+    expect(first.nextCursor).toBeUndefined();
+    expect(first.hasMore).toBeUndefined();
     expect(first.logs[0]).not.toHaveProperty('metadata');
     expect(first.logs[0]).not.toHaveProperty('userAgent');
 
-    const secondRes = await request(
-      ctx,
-      `/api/admin/logs?limit=2&${windowQuery}&cursor=${encodeURIComponent(first.nextCursor ?? '')}`,
-      { cookie: adminCookie }
-    );
+    const secondRes = await request(ctx, `/api/admin/logs?limit=2&page=2&${windowQuery}`, { cookie: adminCookie });
     const second = (await json(secondRes)).data as {
       logs: Array<{ id: string }>;
-      nextCursor: string | null;
-      hasMore: boolean;
+      pagination: { total: number; pages: number };
     };
     expect(second.logs.map((l) => l.id)).toEqual(['atl-1']);
-    expect(second.hasMore).toBe(false);
-    expect(second.nextCursor).toBeNull();
+    expect(second.pagination.total).toBe(3);
+    expect(second.pagination.pages).toBe(2);
   });
 });
 

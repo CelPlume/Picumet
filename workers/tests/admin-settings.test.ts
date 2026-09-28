@@ -51,4 +51,24 @@ describe('SettingsSchema', () => {
     expect(SettingsSchema.parse({ siteHeaderTitle: '' }).siteHeaderTitle).toBe('');
     expect(SettingsSchema.parse({ siteHeaderTitle: 'HXCN' }).siteHeaderTitle).toBe('HXCN');
   });
+
+  it('LAB F-08：未知/大小写错误的键直接拒绝（不再静默丢弃）', () => {
+    expect(SettingsSchema.safeParse({ ...fullForm, allow_guest_access: true }).success).toBe(false);
+    expect(SettingsSchema.safeParse({ ...fullForm, unknownKey: 1 }).success).toBe(false);
+    expect(SettingsSchema.safeParse({ ...fullForm, Allowguestaccess: true }).success).toBe(false);
+  });
+
+  it('LAB F-13：siteLogo/siteFavicon 写入层拒绝私网与非标端口地址', () => {
+    // 公网 http(s) 地址放行
+    expect(SettingsSchema.safeParse({ ...fullForm, siteLogo: 'https://cdn.example.com/logo.png' }).success).toBe(true);
+    // 私网 / 回环 / 内网主机名拒绝
+    expect(SettingsSchema.safeParse({ ...fullForm, siteLogo: 'https://127.0.0.1:8443/logo.png' }).success).toBe(false);
+    expect(SettingsSchema.safeParse({ ...fullForm, siteFavicon: 'http://192.168.1.10/favicon.ico' }).success).toBe(false);
+    expect(SettingsSchema.safeParse({ ...fullForm, siteLogo: 'https://metadata.google.internal/x' }).success).toBe(false);
+    // 非标端口拒绝（与取件层 validateEndpoint 口径一致）
+    expect(SettingsSchema.safeParse({ ...fullForm, siteLogo: 'https://example.com:8443/logo.png' }).success).toBe(false);
+    // '' / null = 清空，放行
+    expect(SettingsSchema.safeParse({ ...fullForm, siteLogo: '' }).success).toBe(true);
+    expect(SettingsSchema.safeParse({ ...fullForm, siteFavicon: null }).success).toBe(true);
+  });
 });

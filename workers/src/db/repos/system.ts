@@ -349,18 +349,6 @@ export interface AuditRollupAggregate {
 }
 
 /** 游标编码：`<created_at>_<id>`（id 为 uuid，不含下划线） */
-function encodeLogCursor(createdAt: number, id: string): string {
-  return `${createdAt}_${id}`;
-}
-
-function parseLogCursor(cursor: string): { createdAt: number; id: string } | null {
-  const cut = cursor.indexOf('_');
-  if (cut <= 0) return null;
-  const createdAt = Number(cursor.slice(0, cut));
-  const id = cursor.slice(cut + 1);
-  if (!Number.isFinite(createdAt) || !id) return null;
-  return { createdAt, id };
-}
 
 function mapArchive(row: Row): AuditArchiveRecord {
   return {
@@ -377,8 +365,78 @@ function mapArchive(row: Row): AuditArchiveRecord {
   };
 }
 
+// ============ 审计日志策略（LAB 需求：设置可调记录等级与项目） ============
+
+export type AuditLogLevel = 'all' | 'essential' | 'security';
+export type AuditLogGroup = 'auth' | 'upload' | 'download' | 'share' | 'admin' | 'failure';
+
+export const AUDIT_LOG_LEVELS: AuditLogLevel[] = ['all', 'essential', 'security'];
+export const AUDIT_LOG_GROUPS: AuditLogGroup[] = ['auth', 'upload', 'download', 'share', 'admin', 'failure'];
+
+/** action → 项目分组。failure 为横切组：`*_failed` 恒入 failure；未知动作保守归 admin（多记不少记） */
+export function auditActionGroup(action: string): AuditLogGroup {
+  if (action.endsWith('_failed')) return 'failure';
+  if (action === 'login' || action === 'register' || action === 'logout' || action === 'free_mode_init' || action === 'password_verify' || action === 'gallery_password_verify') return 'auth';
+  if (action === 'upload') return 'upload';
+  if (action === 'download' || action === 'download_link' || action === 'gallery_download' || action === 'read') return 'download';
+  if (action === 'share' || action === 'grant' || action === 'revoke') return 'share';
+  return 'admin';
+}
+
+interface CachedAuditPolicy {
+  level: AuditLogLevel;
+  groups: AuditLogGroup[];
+  at: number;
+}
+const AUDIT_POLICY_TTL_MS = 60_000;
+let auditPolicyCache: CachedAuditPolicy | null = null;
+
+/** 设置读取失败 = 不过滤（日志是观测面不是权限闸门，fail-open） */
+async function loadAuditPolicy(db: Db): Promise<CachedAuditPolicy> {
+  if (auditPolicyCache && Date.now() - auditPolicyCache.at < AUDIT_POLICY_TTL_MS) return auditPolicyCache;
+  try {
+    const [levelRaw, groupsRaw] = await Promise.all([SettingsRepo.get(db, 'audit_log_level'), SettingsRepo.get(db, 'audit_log_groups')]);
+    const level = AUDIT_LOG_LEVELS.includes(levelRaw as AuditLogLevel) ? (levelRaw as AuditLogLevel) : 'all';
+    let groups = AUDIT_LOG_GROUPS;
+    if (groupsRaw) {
+      try {
+        const parsed: unknown = JSON.parse(groupsRaw);
+        if (Array.isArray(parsed)) groups = parsed.filter((g): g is AuditLogGroup => AUDIT_LOG_GROUPS.includes(g as AuditLogGroup));
+      } catch {
+        // 非法 JSON = 全部项目
+      }
+    }
+    auditPolicyCache = { level, groups, at: Date.now() };
+  } catch {
+    auditPolicyCache = { level: 'all', groups: AUDIT_LOG_GROUPS, at: Date.now() };
+  }
+  return auditPolicyCache;
+}
+
+/** 等级语义：all=全部；essential=不记成功读/下载（失败恒记）；security=仅认证/管理/失败 */
+export function shouldLogAction(policy: CachedAuditPolicy, action: string): boolean {
+  const group = auditActionGroup(action);
+  if (!policy.groups.includes(group)) return false;
+  const failed = action.endsWith('_failed');
+  if (policy.level === 'security') return group === 'auth' || group === 'admin' || failed;
+  if (policy.level === 'essential') return group !== 'download' || failed;
+  return true;
+}
+
+/** 供事务内直插 access_logs 的调用方在事务前判定（D1 事务内禁止读） */
+export async function isActionLoggable(db: Db, action: string): Promise<boolean> {
+  return shouldLogAction(await loadAuditPolicy(db), action);
+}
+
+/** 设置保存后调用：立即失效进程内策略缓存（否则 60s TTL 内仍是旧策略） */
+export function invalidateAuditPolicyCache(): void {
+  auditPolicyCache = null;
+}
+
 export const LogRepo = {
   async create(db: Db, e: Omit<LogEntry, 'id' | 'createdAt'>): Promise<void> {
+    // LAB：按系统设置的等级/项目过滤（60s 进程内缓存）；设置读取失败 fail-open
+    if (!shouldLogAction(await loadAuditPolicy(db), e.action)) return;
     await db.run(
       `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -397,9 +455,9 @@ export const LogRepo = {
       params.push(opts.action);
     }
     if (opts.search) {
-      where.push('(path LIKE ? OR metadata LIKE ?)');
-      const like = `%${opts.search}%`;
-      params.push(like, like);
+      // instr 替代 '%q%' LIKE：不受 D1 模式长度上限约束（LAB F-04 同族）
+      where.push('(instr(path, ?) > 0 OR instr(metadata, ?) > 0)');
+      params.push(opts.search, opts.search);
     }
     if (opts.from) {
       where.push('created_at >= ?');
@@ -455,18 +513,19 @@ export const LogRepo = {
    * `(created_at, id)` 深页无 OFFSET、无每页 COUNT(*)。多取 1 行探测 hasMore，nextCursor 供下一页
    * （取更旧的行）。搜索仍走 path/metadata 的 LIKE（前导 % 不可索引，属已知取舍，不追加宽索引）。
    */
-  async listCursor(
+  /** LAB：管理端日志分页（页码/条数/跳页）——窗口函数随行返回总数，免二次 COUNT；窄列（不含 metadata/user_agent） */
+  async listPage(
     db: Db,
     opts: {
+      page: number;
       limit: number;
-      cursor?: string | null;
       userId?: string;
       action?: string;
       search?: string;
       from?: number;
       to?: number;
     }
-  ): Promise<{ rows: LogHotRow[]; nextCursor: string | null; hasMore: boolean }> {
+  ): Promise<{ rows: LogHotRow[]; total: number }> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts.userId) {
@@ -478,9 +537,9 @@ export const LogRepo = {
       params.push(opts.action);
     }
     if (opts.search) {
-      where.push('(path LIKE ? OR metadata LIKE ?)');
-      const like = `%${opts.search}%`;
-      params.push(like, like);
+      // instr 替代 '%q%' LIKE：不受 D1 模式长度上限约束（LAB F-04 同族）
+      where.push('(instr(path, ?) > 0 OR instr(metadata, ?) > 0)');
+      params.push(opts.search, opts.search);
     }
     if (opts.from) {
       where.push('created_at >= ?');
@@ -490,21 +549,15 @@ export const LogRepo = {
       where.push('created_at <= ?');
       params.push(opts.to);
     }
-    const parsed = opts.cursor ? parseLogCursor(opts.cursor) : null;
-    if (parsed) {
-      where.push('(created_at < ? OR (created_at = ? AND id < ?))');
-      params.push(parsed.createdAt, parsed.createdAt, parsed.id);
-    }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const rows = await db.all(
-      `SELECT id, user_id, action, path, ip_address, status_code, bytes_transferred, created_at
+      `SELECT id, user_id, action, path, ip_address, status_code, bytes_transferred, created_at, COUNT(*) OVER () AS total_count
        FROM access_logs ${whereSql}
-       ORDER BY created_at DESC, id DESC LIMIT ?`,
-      [...params, opts.limit + 1]
+       ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      [...params, opts.limit, (opts.page - 1) * opts.limit]
     );
-    const hasMore = rows.length > opts.limit;
-    const page = hasMore ? rows.slice(0, opts.limit) : rows;
-    const mapped: LogHotRow[] = page.map((r) => ({
+    const total = rows.length > 0 ? num((rows[0] as Record<string, unknown>).total_count) : 0;
+    const mapped: LogHotRow[] = rows.map((r) => ({
       id: str(r.id)!,
       userId: str(r.user_id),
       action: str(r.action)!,
@@ -514,9 +567,9 @@ export const LogRepo = {
       statusCode: r.status_code === null || r.status_code === undefined ? undefined : num(r.status_code),
       createdAt: num(r.created_at),
     }));
-    const last = mapped[mapped.length - 1];
-    return { rows: mapped, nextCursor: hasMore && last ? encodeLogCursor(last.createdAt, last.id) : null, hasMore };
+    return { rows: mapped, total };
   },
+
 
   /** 归档清单（最新在前，管理端只读展示） */
   async listArchives(db: Db, limit = 100): Promise<AuditArchiveRecord[]> {

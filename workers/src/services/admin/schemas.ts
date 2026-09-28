@@ -1,8 +1,13 @@
 // 管理服务 Zod schemas（用户管理、系统设置、公告）
-import { z } from 'zod';
-import { PERMISSION_MATRIX } from '@shared/types';
-import { TREND_METRICS, TREND_GRANULARITIES } from '../../db';
-import { DIRECT_PREFIX_VALUES, ROOT_TARGET_VALUES, normalizeRoutePrefix } from '../storage/direct-links';
+import { z } from "zod";
+import { PERMISSION_MATRIX } from "@shared/types";
+import { TREND_METRICS, TREND_GRANULARITIES } from "../../db";
+import {
+  DIRECT_PREFIX_VALUES,
+  ROOT_TARGET_VALUES,
+  normalizeRoutePrefix,
+} from "../storage/direct-links";
+import { validateEndpoint } from "../../utils/ssrf";
 
 // 角色名：小写字母开头，仅小写字母、数字、-、_（最长 32）
 export const RoleNameSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);
@@ -21,20 +26,24 @@ export const RoleDefaultsSchema = z.object({
   maxStorage: z.number().int().positive(),
   maxFiles: z.number().int().positive(),
   alias: z.string().max(32).nullable().optional(),
-  defaultStatus: z.enum(['active', 'disabled']).optional(),
-  capabilities: z.array(z.enum(['can_share', 'can_publish', 'can_grant'])).optional(),
+  defaultStatus: z.enum(["active", "disabled"]).optional(),
+  capabilities: z
+    .array(z.enum(["can_share", "can_publish", "can_grant"]))
+    .optional(),
   permissions: RolePermissionsSchema.optional(),
 });
 
 // 更新用户
 export const UserUpdateSchema = z.object({
   role: RoleNameSchema.optional(),
-  status: z.enum(['active', 'disabled', 'banned']).optional(),
+  status: z.enum(["active", "disabled", "banned"]).optional(),
   defaultPath: z.string().min(1).optional(),
   maxStorage: z.number().int().min(0).optional(),
   maxFiles: z.number().int().min(0).optional(),
   // 能力位（§4.4 防线 5）：can_publish / can_share / can_grant
-  capabilities: z.array(z.enum(['can_publish', 'can_share', 'can_grant'])).optional(),
+  capabilities: z
+    .array(z.enum(["can_publish", "can_share", "can_grant"]))
+    .optional(),
   // 用户个别默认权限（矩阵 5 项）：null = 清除个别设置、跟随角色默认
   permissions: UserPermissionsSchema.optional(),
 });
@@ -42,59 +51,97 @@ export const UserUpdateSchema = z.object({
 // 路由前缀（§ ROUTING_CN）：写入先归一化（去尾斜杠、补前导斜杠）再校验枚举；
 // 跨字段约束（root_target='direct' 需空前缀）在 handler 中校验。
 // 归一化后再校验，所以 `/d/`、`download` 这类写法被接受并规范为 `/d`、`/download`。
-const prefixSchema = <T extends readonly [string, ...string[]]>(allowed: T, label: string) =>
+const prefixSchema = <T extends readonly [string, ...string[]]>(
+  allowed: T,
+  label: string,
+) =>
   z.preprocess(
-    (v) => (typeof v === 'string' ? normalizeRoutePrefix(v) : v),
+    (v) => (typeof v === "string" ? normalizeRoutePrefix(v) : v),
     z.enum(allowed, {
-      errorMap: () => ({ message: `${label}取值无效，只能是 ${allowed.map((x) => (x === '' ? '（空）' : x)).join(' / ')}` }),
-    })
+      errorMap: () => ({
+        message: `${label}取值无效，只能是 ${allowed.map((x) => (x === "" ? "（空）" : x)).join(" / ")}`,
+      }),
+    }),
   );
 
-export const DirectPrefixSchema = prefixSchema(DIRECT_PREFIX_VALUES, '直链前缀');
+export const DirectPrefixSchema = prefixSchema(
+  DIRECT_PREFIX_VALUES,
+  "直链前缀",
+);
 
 // 系统设置
-export const SettingsSchema = z.object({
-  siteTitle: z.string().max(100).optional(),
-  // 左上角标题：undefined（未设置）= 跟随 siteTitle；'' = 只显示 Logo 不出文字
-  siteHeaderTitle: z.string().max(100).nullable().optional(),
-  siteLogo: z.string().max(1000).nullable().optional(),
-  siteFavicon: z.string().max(1000).nullable().optional(),
-  allowRegistration: z.boolean().optional(),
-  allowGuestAccess: z.boolean().optional(),
-  requireEmailVerification: z.boolean().optional(),
-  rateLimitEnabled: z.boolean().optional(),
-  rateLimitRequestsPerMinute: z.number().int().min(1).max(10000).optional(),
-  maxConcurrentTransfers: z.number().int().min(0).max(1000).optional(),
-  rateLimitDownloadsPerMinute: z.number().int().min(0).max(100000).optional(),
-  smtpHost: z.string().max(300).optional(),
-  smtpPort: z.number().int().min(1).max(65535).optional(),
-  smtpSecure: z.boolean().optional(),
-  smtpUser: z.string().max(300).optional(),
-  smtpPassword: z.string().nullable().optional(),
-  smtpFromName: z.string().max(200).optional(),
-  // '' = 清空发件地址（前端整表单 PATCH，未配置的 GET 值就是 ''，不能被 .email() 拒成 400）
-  smtpFromEmail: z.string().email().or(z.literal('')).nullable().optional(),
-  emailEnabled: z.boolean().optional(),
-  // 路由前缀：公开直链前缀（'' = 站点根）/ 根路径语义
-  directPrefix: DirectPrefixSchema.optional(),
-  rootTarget: z
-    .enum(ROOT_TARGET_VALUES, { errorMap: () => ({ message: '根路径语义取值无效，只能是 landing / files / direct' }) })
-    .optional(),
-});
+export const SettingsSchema = z
+  .object({
+    siteTitle: z.string().max(100).optional(),
+    // 左上角标题：undefined（未设置）= 跟随 siteTitle；'' = 只显示 Logo 不出文字
+    siteHeaderTitle: z.string().max(100).nullable().optional(),
+    allowRegistration: z.boolean().optional(),
+    allowGuestAccess: z.boolean().optional(),
+    requireEmailVerification: z.boolean().optional(),
+    rateLimitEnabled: z.boolean().optional(),
+    rateLimitRequestsPerMinute: z.number().int().min(1).max(10000).optional(),
+    maxConcurrentTransfers: z.number().int().min(0).max(1000).optional(),
+    rateLimitDownloadsPerMinute: z.number().int().min(0).max(100000).optional(),
+    smtpHost: z.string().max(300).optional(),
+    smtpPort: z.number().int().min(1).max(65535).optional(),
+    smtpSecure: z.boolean().optional(),
+    smtpUser: z.string().max(300).optional(),
+    smtpPassword: z.string().nullable().optional(),
+    smtpFromName: z.string().max(200).optional(),
+    // '' = 清空发件地址（前端整表单 PATCH，未配置的 GET 值就是 ''，不能被 .email() 拒成 400）
+    smtpFromEmail: z.string().email().or(z.literal("")).nullable().optional(),
+    emailEnabled: z.boolean().optional(),
+    // 路由前缀：公开直链前缀（'' = 站点根）/ 根路径语义
+    directPrefix: DirectPrefixSchema.optional(),
+    rootTarget: z
+      .enum(ROOT_TARGET_VALUES, {
+        errorMap: () => ({
+          message: "根路径语义取值无效，只能是 landing / files / direct",
+        }),
+      })
+      .optional(),
+    // LAB F-13：站点标识资源在写入层即做 SSRF 校验（与取件层 site-asset 的 validateEndpoint 同源），
+    // 私网/非标端口/内嵌凭据的地址直接 400，不再等到取件时才发现配错。'' 与 null = 清空。
+    siteLogo: z
+      .string()
+      .max(1000)
+      .nullable()
+      .optional()
+      .refine((v) => v == null || v === "" || validateEndpoint(v), {
+        message:
+          "站点 Logo 必须是可公网访问的 http(s) 地址（拒绝私网与非标端口）",
+      }),
+    siteFavicon: z
+      .string()
+      .max(1000)
+      .nullable()
+      .optional()
+      .refine((v) => v == null || v === "" || validateEndpoint(v), {
+        message:
+          "站点 Favicon 必须是可公网访问的 http(s) 地址（拒绝私网与非标端口）",
+      }),
+    // LAB：审计日志策略——记录等级与项目（分组）
+    auditLogLevel: z.enum(['all', 'essential', 'security']).optional(),
+    auditLogItems: z.array(z.enum(['auth', 'upload', 'download', 'share', 'admin', 'failure'])).optional(),
+    // LAB F-08：未知/大小写错误的键直接 400（默认 strip 会静默丢弃，造成「看似保存成功」的假象）
+  })
+  .strict();
 
 // 公告
 export const AnnouncementSchema = z.object({
   title: z.string().min(1).max(200),
   content: z.string().min(1).max(5000),
-  level: z.enum(['info', 'warning', 'danger']).optional(),
+  level: z.enum(["info", "warning", "danger"]).optional(),
   /** 显示时长策略：always/daily/interval/until/duration + toast 专用 once（§27） */
-  displayMode: z.enum(['always', 'daily', 'interval', 'until', 'duration', 'once']).optional(),
+  displayMode: z
+    .enum(["always", "daily", "interval", "until", "duration", "once"])
+    .optional(),
   /** interval/duration 的间隔秒数 */
   intervalSeconds: z.number().int().min(60).max(31536000).optional(),
   /** until 模式的绝对截止时间（ms） */
   endsAt: z.number().int().positive().optional(),
   /** 呈现形态：banner 常驻横幅 / toast 临时弹窗 */
-  kind: z.enum(['banner', 'toast']).optional(),
+  kind: z.enum(["banner", "toast"]).optional(),
 });
 
 // 文件封禁（§26）：PUT /api/admin/files/:id/ban —— true = 封禁、false = 解封
@@ -103,8 +150,12 @@ export const FileBanSchema = z.object({ banned: z.boolean() });
 // 趋势查询（GET /api/admin/dashboard/trends）：metric/granularity 枚举 + 可选毫秒时间戳。
 // 空串（?from=）视同未给；跨字段约束（from < to）与桶数上限在 handler 判定。
 const msParam = z.preprocess(
-  (v) => (v === '' ? undefined : v),
-  z.coerce.number({ invalid_type_error: 'from/to 必须是毫秒时间戳' }).int().nonnegative().optional()
+  (v) => (v === "" ? undefined : v),
+  z.coerce
+    .number({ invalid_type_error: "from/to 必须是毫秒时间戳" })
+    .int()
+    .nonnegative()
+    .optional(),
 );
 export const TrendsQuerySchema = z.object({
   metric: z.enum(TREND_METRICS),

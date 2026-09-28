@@ -11,7 +11,8 @@ import { blobHashesOf, directObjectsOf, releaseBlobsTx } from './blob-gc';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import type { FileMetadata } from '@shared/types';
-import { normalizePath, escapeLikePattern } from '../../utils/path';
+import { normalizePath, subtreeMatch } from '../../utils/path';
+import { isActionLoggable } from '../../db';
 import { requestIp } from '../../utils/ip';
 import { MoveFileSchema, BatchOpSchema } from './schemas';
 
@@ -71,12 +72,10 @@ function quotaDeltas(targets: FileMetadata[]): Array<{ ownerId: string; size: nu
   return [...grouped].map(([ownerId, v]) => ({ ownerId, size: v.size, count: v.count }));
 }
 
-/** 子树删除谓词（folder 行 path=自身全路径，文件行 path=父目录）：转义 `%`/`_` 防误伤兄弟子树 */
+/** 子树删除谓词（folder 行 path=自身全路径，文件行 path=父目录）：范围 + substr，免疫 `%`/`_` 且无长度上限 */
 function subtreeDeleteSql(mountId: string, folderPath: string): [string, unknown[]] {
-  return [
-    `DELETE FROM file_metadata WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
-    [mountId, folderPath, `${escapeLikePattern(folderPath)}/%`],
-  ];
+  const sub = subtreeMatch('path', folderPath);
+  return [`DELETE FROM file_metadata WHERE mount_id = ? AND ${sub.sql}`, [mountId, ...sub.params]];
 }
 
 // 日志 IP 统一走 utils/ip（requestIp，无来源时 undefined，不落回退值）。
@@ -102,6 +101,8 @@ fileOpsRoutes.delete('/:id', async (c) => {
   const blobHashes = blobHashesOf(targets);
   const objectKeys = directObjectsOf(targets);
 
+  // LAB：审计日志按设置过滤——事务前判定 delete 事件是否记录
+  const deleteLoggable = await isActionLoggable(db, 'delete');
   await db.transaction(async (tx) => {
     if (file.type === 'folder') {
       const [sql, params] = subtreeDeleteSql(mount.id, file.path);
@@ -119,11 +120,13 @@ fileOpsRoutes.delete('/:id', async (c) => {
       `UPDATE mounts SET used_storage = MAX(0, used_storage - ?), updated_at = ? WHERE id = ?`,
       [totalSize, Date.now(), mount.id]
     );
-    await tx.query(
-      `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
-       VALUES (?, ?, 'delete', ?, ?, ?, ?, ?, 200, ?)`,
-      [crypto.randomUUID(), c.get('userId'), file.path, JSON.stringify({ fileCount }), requestIp(c.req.raw), c.req.header('user-agent'), totalSize, Date.now()]
-    );
+    if (deleteLoggable) {
+      await tx.query(
+        `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
+         VALUES (?, ?, 'delete', ?, ?, ?, ?, ?, 200, ?)`,
+        [crypto.randomUUID(), c.get('userId'), file.path, JSON.stringify({ fileCount }), requestIp(c.req.raw), c.req.header('user-agent'), totalSize, Date.now()]
+      );
+    }
     await tx.query(`DELETE FROM shares WHERE file_id = ?`, [file.id]);
     await ShareRepo.deleteEmptyShares(tx);
     await releaseBlobsTx(tx, blobHashes, Date.now());

@@ -16,7 +16,8 @@ import { UserUpdateSchema, SettingsSchema, AnnouncementSchema, RoleNameSchema, R
 import { sendMail, type SmtpConfig, resolveSmtpConfig } from '../../utils/smtp';
 import { requestIp } from '../../utils/ip';
 import { encryptSecret, hashPassword } from '../../utils/crypto';
-import { escapeLikePattern } from '../../utils/path';
+import { subtreeMatch } from '../../utils/path';
+import { invalidateAuditPolicyCache } from '../../db';
 import { loadRoutePrefixes } from '../storage/direct-links';
 import { AdminUpdateShareSchema } from '../shares/schemas';
 import { encipherSharePassword } from '../shares/handlers';
@@ -344,11 +345,12 @@ adminRoutes.patch('/files/:id/review', async (c) => {
   if (parsed.data.status !== undefined) fields.review_status = parsed.data.status;
   await FileRepo.updateFile(db, id, fields);
   if (file.type === 'folder' && parsed.data.visibility !== undefined) {
-    // folder 级联（与用户侧行为一致）：目录名可含 %/_，子树前缀先转义再拼「/%」，否则会误伤兄弟子树
+    // folder 级联（与用户侧行为一致）：子树匹配用范围 + substr 谓词（无 LIKE 长度上限，免疫通配符）
+    const sub = subtreeMatch('path', file.path);
     await db.run(
       `UPDATE file_metadata SET visibility = ?, review_status = ?, updated_at = ?
-       WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
-      [parsed.data.visibility, fields.review_status, Date.now(), file.mountId, file.path, `${escapeLikePattern(file.path)}/%`]
+       WHERE mount_id = ? AND ${sub.sql}`,
+      [parsed.data.visibility, fields.review_status, Date.now(), file.mountId, ...sub.params]
     );
   }
   await LogRepo.create(db, {
@@ -481,16 +483,18 @@ adminRoutes.get('/logs', async (c) => {
   const db = getDb(c);
   const q = c.req.query();
   const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50) || 50));
-  const { rows, nextCursor, hasMore } = await LogRepo.listCursor(db, {
+  const page = Math.max(1, Number(q.page ?? 1) || 1);
+  const { rows, total } = await LogRepo.listPage(db, {
+    page,
     limit,
-    cursor: q.cursor,
     userId: q.userId,
     action: q.action,
     search: q.search,
     from: q.from ? Number(q.from) : undefined,
     to: q.to ? Number(q.to) : undefined,
   });
-  return ok(c, { logs: rows, nextCursor, hasMore });
+  // LAB：与全站管理页同一分页契约（页码 + 条数 + 总数），供共享 Pagination 组件渲染跳页/改条数
+  return ok(c, { logs: rows, pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) } });
 });
 
 // 审计归档清单（冷层 manifest；仅管理员可见）
@@ -568,6 +572,16 @@ adminRoutes.get('/settings', async (c) => {
     emailEnabled: get('email_enabled') ?? false,
     directPrefix: prefixes.directPrefix,
     rootTarget: prefixes.rootTarget,
+    auditLogLevel: get('audit_log_level') ?? 'all',
+    auditLogItems: (() => {
+      const raw = get('audit_log_groups');
+      try {
+        const parsed: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return Array.isArray(parsed) ? parsed : ['auth', 'upload', 'download', 'share', 'admin', 'failure'];
+      } catch {
+        return ['auth', 'upload', 'download', 'share', 'admin', 'failure'];
+      }
+    })(),
   });
 });
 
@@ -605,7 +619,10 @@ adminRoutes.patch('/settings', async (c) => {
     emailEnabled: 'email_enabled',
     directPrefix: 'direct_prefix',
     rootTarget: 'root_target',
+    auditLogLevel: 'audit_log_level',
+    auditLogItems: 'audit_log_groups',
   };
+  const savedKeys: string[] = [];
   for (const [k, v] of Object.entries(parsed.data)) {
     if (v === undefined) continue;
     // 占位符/空值表示保持原密码配置，不覆盖
@@ -614,11 +631,21 @@ adminRoutes.patch('/settings', async (c) => {
     if (k === 'smtpPassword' && typeof v === 'string' && c.env.ENCRYPTION_KEY) {
       const encrypted = await encryptSecret(v, c.env.ENCRYPTION_KEY);
       await SettingsRepo.set(db, 'smtp_password', `enc:${encrypted}`);
+      savedKeys.push('smtp_password');
       continue;
     }
-    await SettingsRepo.set(db, map[k] ?? k, v);
+    const dbKey = map[k] ?? k;
+    // 数组设置落 JSON 文本（audit_log_groups）
+    await SettingsRepo.set(db, dbKey, Array.isArray(v) ? JSON.stringify(v) : v);
+    savedKeys.push(dbKey);
   }
-  return ok(c, { message: '已保存' });
+  // LAB：审计策略设置保存后立即失效进程内缓存（否则 60s TTL 内仍旧策略）
+  if (savedKeys.includes('audit_log_level') || savedKeys.includes('audit_log_groups')) {
+    invalidateAuditPolicyCache();
+  }
+  // LAB F-08：回显实际写入的设置键（ snake_case，与 system_settings 一致），
+  // 让「保存成功」可被客户端核对
+  return ok(c, { message: '已保存', savedKeys });
 });
 
 // ============ SMTP 测试邮件 ============
@@ -643,8 +670,9 @@ adminRoutes.post('/settings/test-email', async (c) => {
   try {
     await sendMail(config, parsed.data.to, 'Picumet 测试邮件', '<p>这是一封测试邮件</p>');
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new ApiError(500, 'MAIL_ERROR', `邮件发送失败：${message}`);
+    // LAB F-12：上游 SMTP 异常原文只进服务端日志，客户端拿稳定文案
+    console.error('[admin] test mail send failed', err);
+    throw new ApiError(502, 'MAIL_ERROR', '邮件发送失败，请检查 SMTP 配置或稍后再试');
   }
   return ok(c, { message: '测试邮件已发送' });
 });

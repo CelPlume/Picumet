@@ -37,6 +37,11 @@ export {
   type LogHotRow,
   type AuditArchiveRecord,
   type AuditRollupAggregate,
+  isActionLoggable,
+  invalidateAuditPolicyCache,
+  shouldLogAction,
+  type AuditLogLevel,
+  type AuditLogGroup,
 } from './repos/system';
 export { BlobRepo, type BlobObject, type BlobGcEntry } from './repos/blob';
 export {
