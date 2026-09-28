@@ -257,9 +257,10 @@ describe('权限引擎：桶级默认角色权限矩阵', () => {
     expect(judge(alice, '/zone/a.txt', 'write', [], undefined, mountReadOnly, 'p2', EMPTY)).toBe('deny');
     expect(judge(alice, '/zone/a.txt', 'write', [], undefined, mountAll, 'p2', EMPTY)).toBe('allow');
 
-    // share 不参与矩阵：桶级条目没写 share 也不影响 share（整层跳过，交既有语义）
-    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, mountAll, 'p1', bucketReadOnly)).toBe('allow');
-    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, undefined, 'p1', bucketReadOnly)).toBe('allow');
+    // LAB F-09：share 不参与矩阵、也不随默认路径放行——非属主（未传 ownerId）一律 deny，
+    // 属主分享由属主回退（上两行）放行
+    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, mountAll, 'p1', bucketReadOnly)).toBe('deny');
+    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, undefined, 'p1', bucketReadOnly)).toBe('deny');
 
     // 显式 path_rule 恒优先于桶级矩阵（任何 origin）
     const denyRead = rule({ pathPattern: '/zone/a.txt', effect: 'deny', permissions: ['read'] });

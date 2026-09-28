@@ -214,8 +214,9 @@ describe('角色默认权限落库', () => {
     for (const action of MATRIX) {
       expect(checkPermission(alice, mount, '/alice/a.txt', action, [])).toBe('allow');
     }
-    // share 不在矩阵内，但默认路径内沿用既有放行（分享开关是能力位 can_share）
-    expect(checkPermission(alice, mount, '/alice/a.txt', 'share', [])).toBe('allow');
+    // LAB F-09：share 不在矩阵内，默认路径内不再无条件放行——非属主分享他人文件被拒
+    //（属主分享走第 7 步属主回退，真实分享流程传 fileOwnerId）
+    expect(checkPermission(alice, mount, '/alice/a.txt', 'share', [])).toBe('deny');
     expect(checkPermission(alice, mount, '/bob/a.txt', 'share', [])).toBe('deny');
     for (const action of ['read', 'update', 'delete'] as const) {
       expect(checkPermission(alice, mount, '/bob/a.txt', action, [])).toBe('deny');
@@ -236,18 +237,27 @@ describe('角色默认权限落库', () => {
     expect(checkPermission(guestRoleUser, mount, '/g1/a.txt', 'download', [])).toBe('allow');
     expect(checkPermission(guestRoleUser, mount, '/g1/a.txt', 'read', [])).toBe('deny');
     expect(checkPermission(guestRoleUser, mount, '/g1/a.txt', 'write', [])).toBe('deny');
-    // share 不在矩阵内：默认路径内沿用既有放行（分享由 can_share 能力位把关）
-    expect(checkPermission(guestRoleUser, mount, '/g1/a.txt', 'share', [])).toBe('allow');
+    // LAB F-09：share 不在矩阵内、也不随默认路径放行——非属主（未传 ownerId）deny
+    expect(checkPermission(guestRoleUser, mount, '/g1/a.txt', 'share', [])).toBe('deny');
   });
 });
 
 // ============ 2. 匿名访客：文件级 guest_visibility ============
 
 describe('匿名访客合成规则（syntheticGuestRule）', () => {
-  it('仅匿名访客 + 显式 download/view 时生成；NULL/none 不额外开放', () => {
+  it('仅匿名访客 + 显式 download/view 时生成；none 生成 deny 规则；NULL 不额外开放', () => {
     expect(syntheticGuestRule('/a/b.txt', null, 'm-role', anonymous)).toBeNull();
     expect(syntheticGuestRule('/a/b.txt', undefined, 'm-role', anonymous)).toBeNull();
-    expect(syntheticGuestRule('/a/b.txt', 'none', 'm-role', anonymous)).toBeNull();
+    // LAB F-17：'none' 显式生成 deny 规则（与 public 可见性合成 allow 同特异度，effect 决胜 deny 优先）
+    expect(syntheticGuestRule('/a/b.txt', 'none', 'm-role', anonymous)).toMatchObject({
+      id: '__synthetic_guest_deny__',
+      mountId: 'm-role',
+      pathPattern: '/a/b.txt',
+      effect: 'deny',
+      origin: 'system',
+      status: 'active',
+      permissions: ['read', 'download'],
+    });
     expect(syntheticGuestRule('/a/b.txt', 'download', 'm-role', anonymous)).toMatchObject({
       id: '__synthetic_guest__',
       mountId: 'm-role',
@@ -366,11 +376,12 @@ describe('文件级 guestVisibility（PUT /api/files/:id）', () => {
     await UserRepo.updateUser(db, viewer.userId, { role: 'viewer' });
     const viewerCookie = await relogin('rp_viewer');
 
-    // 角色默认权限（read/download）在该用户的权限视图里如实体现
+    // 角色默认权限（read/download）在该用户的权限视图里如实体现；
+    // LAB F-09：share 不再随默认路径无条件放行（非属主不可分享他人文件）
     const detail = await json<{ data: { permissions: string[] } }>(
       await request(ctx, `/api/files/${fileId}`, { cookie: viewerCookie })
     );
-    expect(detail.data.permissions.sort()).toEqual(['download', 'read', 'share']);
+    expect(detail.data.permissions.sort()).toEqual(['download', 'read']);
     expect(dbGuestVisibility(fileId)).toBeNull();
 
     const csrf = await getCsrf(ctx, viewerCookie);
@@ -644,7 +655,8 @@ describe('用户级默认权限（users.permissions）', () => {
       defaultPath: '/share-user',
       defaultPermissions: ['read'],
     };
-    expect(checkPermission(principal, mount, '/share-user/a.txt', 'share', [])).toBe('allow');
+    // LAB F-09：share 只属属主（第 7 步回退）或显式规则；defaultPermissions 无 share → deny
+    expect(checkPermission(principal, mount, '/share-user/a.txt', 'share', [])).toBe('deny');
     expect(checkPermission(principal, mount, '/share-user/a.txt', 'download', [])).toBe('deny');
   });
 });

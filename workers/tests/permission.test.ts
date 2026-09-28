@@ -267,9 +267,11 @@ describe('挂载边界检查', () => {
 describe('默认路径内用户权限（默认权限矩阵）', () => {
   it('用户在默认路径内获得全部默认权限（含 write）', () => {
     const u = userPrincipal({ id: 'alice', defaultPath: '/users/alice' });
-    for (const action of ['read', 'write', 'update', 'delete', 'share', 'download'] as const) {
+    for (const action of ['read', 'write', 'update', 'delete', 'download'] as const) {
       expect(checkPermission(u, mount, '/users/alice/f.txt', action, [])).toBe('allow');
     }
+    // LAB F-09：share 不在默认权限矩阵内——非属主（未传 ownerId）不可分享
+    expect(checkPermission(u, mount, '/users/alice/f.txt', 'share', [])).toBe('deny');
   });
   it('文件所有者回退：defaultPath=/ 用户读取自有文件', () => {
     const u = userPrincipal({ id: 'owner1', defaultPath: '/' });

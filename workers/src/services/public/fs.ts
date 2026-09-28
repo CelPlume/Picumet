@@ -77,10 +77,11 @@ publicFsRoutes.get('/fs', async (c) => {
 
   // 目录本身可读（目录行的读权限）；根目录对 guest 亦需显式规则授权。
   // 文件级游客可见性（§C）：目录行 guest_visibility='view' 时匿名访客可列目录（'download' 只给下载，不给列表）。
+  // LAB F-07：目录行可见性一并传入引擎（匿名对 private/users 目录在 6.5 步硬拒绝）。
   const segs = virtualPath.split('/').filter(Boolean);
   const folderName = segs.pop();
   const folder = folderName ? await FileRepo.getFolderAtPath(db, mount.id, virtualPath, folderName) : null;
-  const folderRead = checkPermission(
+  let folderRead = checkPermission(
     principal,
     mount,
     virtualPath,
@@ -88,10 +89,24 @@ publicFsRoutes.get('/fs', async (c) => {
     rules,
     undefined,
     undefined,
-    undefined,
+    folder?.visibility,
     folder?.guestVisibility,
     mountMatrix
   );
+  if (folderRead !== 'allow' && principal.type === 'guest') {
+    // LAB F-17b：目录内存在 **view** 级子项时放行**浏览面**（逐项过滤仍由下方引擎判定），
+    // 使文件级 guest_visibility='view' 的「列表」能力在无 guest 矩阵的挂载上可达。
+    // 'download' 级不含列表能力，不开放浏览面。
+    const prefix = virtualPath === '/' ? '/' : `${virtualPath}/`;
+    const hasViewChild = await db.first(
+      `SELECT 1 AS x FROM file_metadata WHERE mount_id = ? AND guest_visibility = 'view' AND (
+         (type = 'file' AND path = ?) OR
+         (type = 'folder' AND path > ? AND substr(path, 1, ?) = ? AND instr(substr(path, ?), '/') = 0)
+       ) LIMIT 1`,
+      [mount.id, virtualPath, virtualPath, prefix.length, prefix, prefix.length + 1]
+    );
+    if (hasViewChild) folderRead = 'allow';
+  }
   if (folderRead !== 'allow') {
     throw new ApiError(403, 'FORBIDDEN', '无权访问该目录');
   }

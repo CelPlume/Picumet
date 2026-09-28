@@ -6,6 +6,7 @@ import type { AppBindings } from '../../shared/types';
 import { FileRepo, LogRepo, UserRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { createDownloadToken, buildGatewayUrl } from '../shares/tokens';
+import { assertNotBanned } from '../files/ban';
 import { physicalObjectKey } from '../storage/keys';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
@@ -65,6 +66,9 @@ galleryRoutes.get('/:id/download', async (c) => {
   if (file.accessPassword) {
     throw new ApiError(403, 'PASSWORD_REQUIRED', '该文件受密码保护，请先验证密码');
   }
+  // LAB F-18：签发点预检封禁（与 path-serve 同源）——「签发即代表可下载」，
+  // 避免签发成功、消费时才 429 的交互不一致
+  await assertNotBanned(db, [file.id]);
   const token = await createDownloadToken(db, {
     fileId: file.id,
     mountId: file.mountId,

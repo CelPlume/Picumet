@@ -69,13 +69,27 @@ export function checkPermission(
   // 3. 用户根路径限制
   // §4.4a：users/public 可见性对 read/download 豁免根边界（owner 主动授权的例外）；
   // 写入类操作永不豁免；deny 规则仍在本步之后的规则排序中正常压制（admin/user origin > system）。
+  // LAB F-10：显式指向本主体的 user/admin origin allow 规则同样豁免边界——「给某个用户单独授权」
+  // 必须可用（保守起见：带密码/IP 条件的规则不参与豁免，这类规则在步骤 5/6 里正常判定）。
   const visibilityAllowsRead =
     (visibility === 'users' || visibility === 'public') &&
     (action === 'read' || action === 'download');
   if (principal.type === 'user' && principal.defaultPath !== '/' && !visibilityAllowsRead) {
     const userRoot = normalizePath(principal.defaultPath);
     if (!isPathWithinBoundary(path, userRoot)) {
-      return 'deny';
+      const explicitAllow = allRules.some(
+        (r) =>
+          r.status === 'active' &&
+          r.effect === 'allow' &&
+          r.userId === principal.id &&
+          !r.requirePassword &&
+          !(r.allowedIps?.length) &&
+          pathMatches(path, r.pathPattern) &&
+          r.permissions.includes(action)
+      );
+      if (!explicitAllow) {
+        return 'deny';
+      }
     }
   }
 
@@ -117,6 +131,14 @@ export function checkPermission(
     return rule.effect;
   }
 
+  // 6.5 LAB F-07：匿名主体的可见性硬拒绝——private/users 在矩阵与属主回退**之前**拒绝。
+  // 旧实现里「无匹配规则 → 矩阵 guest 条目直接 allow」会让挂载级 guest 矩阵泄露全部对象
+  //（含 private）。guest_visibility 的 view/download 合成规则在第 5/6 步已生效，不受影响；
+  // visibility 未设置（undefined，多为目录行/无可见性行）不在此拒绝，保持既有矩阵语义。
+  if (principal.type === 'guest' && visibility !== undefined && visibility !== 'public') {
+    return 'deny';
+  }
+
   // 7. 文件所有者回退
   if (principal.type === 'user' && fileOwnerId && fileOwnerId === principal.id) {
     const ownerPerms: Permission[] = ['read', 'update', 'delete', 'share', 'download'];
@@ -145,11 +167,13 @@ export function checkPermission(
   }
 
   // 9. 用户默认路径权限（角色默认权限矩阵：user.permissions ?? role_defaults.permissions，缺省用兜底常量）
-  // share 不在矩阵内（分享开关是能力位 can_share，§4.4 防线 5），默认路径内保持既有放行语义。
+  // share 不在权限矩阵内（分享开关是能力位 can_share，§4.4 防线 5）。LAB F-09：默认路径内**不再无条件
+  // 放行 share**——非属主对他人文件的分享由 defaultPermissions 判定（矩阵无 share → deny），
+  // 属主仍由第 7 步属主回退放行。
   if (principal.type === 'user' && isPathWithinBoundary(path, principal.defaultPath)) {
     const defaultPerms =
       principal.defaultPermissions ?? DEFAULT_ROLE_PERMISSIONS[principal.role] ?? DEFAULT_ROLE_PERMISSIONS.user;
-    if (action === 'share' || defaultPerms.includes(action)) {
+    if (defaultPerms.includes(action)) {
       return 'allow';
     }
   }
@@ -254,10 +278,11 @@ export function syntheticVisibilityRule(
 }
 
 /**
- * 文件级游客可见性合成规则（§C）：**仅匿名访客**（principal.type === 'guest'）生效，注入 read/download allow。
+ * 文件级游客可见性合成规则（§C）：**仅匿名访客**（principal.type === 'guest'）生效。
  * 有效值直接取目标文件（或目录）的 guest_visibility —— NULL 不额外开放（保持既有语义：
  * 站点 allow_guest_access 总闸 + role='guest' 规则 / users·public 可见性合成规则）：
- *   'none'     → 不返回规则（落默认拒绝）；
+ *   'none'     → 返回 **deny** 规则（LAB F-17：'none' 必须能表达「不给游客看」——deny 与 public
+ *                可见性合成 allow 同 origin 同特异度，effect 决胜 deny 优先；仅对矩阵/回退层构成压制）；
  *   'download' → 允许 download；
  *   'view'     → 允许 read 与 download。
  * 站点级 allow_guest_access 开关由调用方（公开列表 / path-serve 匿名读）另行把关。
@@ -269,6 +294,22 @@ export function syntheticGuestRule(
   principal: Principal
 ): PathRule | null {
   if (principal.type !== 'guest') return null;
+  if (guestVisibility === 'none') {
+    return {
+      id: '__synthetic_guest_deny__',
+      mountId,
+      pathPattern: normalizePath(canonicalPath),
+      effect: 'deny',
+      role: principal.role,
+      permissions: ['read', 'download'],
+      requirePassword: false,
+      priority: 0,
+      origin: 'system',
+      status: 'active',
+      createdAt: 0,
+      updatedAt: 0,
+    };
+  }
   if (guestVisibility !== 'download' && guestVisibility !== 'view') return null;
   return {
     id: '__synthetic_guest__',

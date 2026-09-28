@@ -218,12 +218,14 @@ describe('权限引擎：挂载点级默认角色权限矩阵', () => {
     expect(judge(alice, '/zone/a.txt', 'delete', [], 'someone-else', readWrite)).toBe('deny');
   });
 
-  it('⑤ share 不参与矩阵（整层跳过，交回既有语义）', () => {
-    // 矩阵无 share：若参与矩阵即 deny，跳过则该用户默认路径内按既有语义放行
-    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, readWrite)).toBe('allow');
-    // 矩阵里即使出现 share 也不决定 share（引擎对该动作根本不看矩阵）
-    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, new Map([['user', ['share']]]))).toBe('allow');
-    // 跳过矩阵不等于放行一切：匿名访客没有第 9 步兜底，share 仍拒绝
+  it('⑤ share 不参与矩阵（矩阵不决定 share；LAB F-09 后 share 只属属主/显式规则）', () => {
+    // 矩阵里即使出现 share 也不决定 share（引擎对该动作根本不看矩阵）；
+    // defaultPermissions 无 share（矩阵词表 5 项）→ 非属主 share 一律 deny
+    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, readWrite)).toBe('deny');
+    expect(judge(alice, '/zone/a.txt', 'share', [], undefined, new Map([['user', ['share']]]))).toBe('deny');
+    // 属主回退先于矩阵：alice 是属主时 share 放行
+    expect(judge(alice, '/zone/a.txt', 'share', [], 'alice', readWrite)).toBe('allow');
+    // 匿名访客 share 仍拒绝
     const anonymous: Principal = {
       type: 'guest',
       id: 'anonymous',
@@ -427,7 +429,7 @@ describe('端到端：矩阵在权限管道中生效', () => {
     expect(fileExists(fileId)).toBe(false);
   });
 
-  it('⑤ share 不受矩阵影响（矩阵无 share 仍可分享；同矩阵下 delete 仍被拒）', async () => {
+  it('⑤ share 收敛到属主/显式授权（LAB F-09：矩阵无 share，非属主不可分享他人文件）', async () => {
     expect((await patchMountPermissions(rootMountId, [{ role: 'user', permissions: ['read', 'write'] }])).status).toBe(200);
     const owner = await registerAndLogin(ctx, 'mx_share_owner');
     const fileId = await uploadFile(owner.authCookie, '/', 'mx-share.txt', 'share-me');
@@ -435,13 +437,23 @@ describe('端到端：矩阵在权限管道中生效', () => {
 
     const other = await registerAndLogin(ctx, 'mx_sharer');
     const csrf = await getCsrf(ctx, other.authCookie);
+    // 非属主分享他人文件 → 403（旧实现经第 9 步无条件放行 = LAB F-09）
     const created = await request(ctx, '/api/shares', {
       method: 'POST',
       cookie: other.authCookie,
       headers: { 'X-CSRF-Token': csrf },
       body: { fileIds: [fileId] },
     });
-    expect(created.status).toBe(201);
+    expect(created.status).toBe(403);
+    // 属主分享自己的文件不受影响
+    const ownerCsrf = await getCsrf(ctx, owner.authCookie);
+    const ownShare = await request(ctx, '/api/shares', {
+      method: 'POST',
+      cookie: owner.authCookie,
+      headers: { 'X-CSRF-Token': ownerCsrf },
+      body: { fileIds: [fileId] },
+    });
+    expect(ownShare.status).toBe(201);
     // 对照：同一矩阵下矩阵确实在生效（delete 不在条目内 → 拒绝）
     expect((await deleteFile(other.authCookie, fileId)).status).toBe(403);
   });
@@ -490,7 +502,7 @@ describe('端到端：矩阵在权限管道中生效', () => {
 // ============ 5. 端到端：公开浏览入口同样受矩阵约束 ============
 
 describe('端到端：公开浏览入口（/api/public/fs）按 guest 条目判定', () => {
-  it('无矩阵=现状拒绝；矩阵给 guest read/download 即可匿名列目录；条目缺 read 收紧、缺 download 逐项过滤', async () => {
+  it('LAB F-07：矩阵/匿名不再泄露 private 行；public 行按可见性放行；private 逐项过滤', async () => {
     const settings = await request(ctx, '/api/admin/settings', {
       method: 'PATCH',
       cookie: adminCookie,
@@ -508,35 +520,48 @@ describe('端到端：公开浏览入口（/api/public/fs）按 guest 条目判�
       body: { path: '/', name: 'mxpub' },
     });
     expect(folder.status).toBe(201);
+    const folderId = (await json<{ data: { file: { id: string } } }>(folder)).data.file.id;
     await uploadFile(owner.authCookie, '/mxpub', 'pub.txt', 'public-bytes');
+    await uploadFile(owner.authCookie, '/mxpub', 'secret.txt', 'secret-bytes');
 
-    // 现状（无矩阵、无 guest 规则、目录未设 guest_visibility）：匿名列目录被拒
-    expect((await patchMountPermissions(rootMountId, [])).status).toBe(200);
-    expect((await request(ctx, '/api/public/fs?path=/mxpub')).status).toBe(403);
-
-    // 矩阵给 guest read+download → 匿名可列目录，且文件逐项放行（附可读直链）
+    // 矩阵给 guest read+download 也**不泄露 private 行**（LAB F-07 硬拒绝）：目录 private → 403
     expect(
       (await patchMountPermissions(rootMountId, [{ role: 'guest', permissions: ['read', 'download'] }])).status
     ).toBe(200);
+    expect((await request(ctx, '/api/public/fs?path=/mxpub')).status).toBe(403);
+
+    // 目录置 public（级联）→ 匿名可列；public 文件经合成规则放行并附直链
+    const visRes = await request(ctx, `/api/files/${folderId}`, {
+      method: 'PUT',
+      cookie: owner.authCookie,
+      headers: { 'X-CSRF-Token': await getCsrf(ctx, owner.authCookie) },
+      body: { visibility: 'public' },
+    });
+    expect(visRes.status).toBe(200);
+    // 级联把 secret.txt 也置 public 了：改回 private，构造「public 目录 + private 文件」
+    const secretRow = ctx.db
+      .prepare(`SELECT id FROM file_metadata WHERE mount_id = ? AND name = 'secret.txt'`)
+      .get(rootMountId) as { id: string } | undefined;
+    const revert = await request(ctx, `/api/files/${secretRow!.id}`, {
+      method: 'PUT',
+      cookie: owner.authCookie,
+      headers: { 'X-CSRF-Token': await getCsrf(ctx, owner.authCookie) },
+      body: { visibility: 'private' },
+    });
+    expect(revert.status).toBe(200);
     const listed = await request(ctx, '/api/public/fs?path=/mxpub');
     expect(listed.status).toBe(200);
     const items = (await json<{ data: { items: Array<{ name: string; url: string | null }> } }>(listed)).data.items;
+    // private 文件被逐项过滤（LAB F-07），public 文件放行
     expect(items.map((i) => i.name)).toEqual(['pub.txt']);
     expect(items[0].url).toBeTruthy();
 
-    // 条目缺 read：目录本身落在封闭集合外 → 拒绝（收紧）
-    expect((await patchMountPermissions(rootMountId, [{ role: 'guest', permissions: ['download'] }])).status).toBe(200);
-    expect((await request(ctx, '/api/public/fs?path=/mxpub')).status).toBe(403);
-
-    // 条目缺 download：目录可列，但文件被逐项过滤掉
-    expect((await patchMountPermissions(rootMountId, [{ role: 'guest', permissions: ['read'] }])).status).toBe(200);
-    const filtered = await request(ctx, '/api/public/fs?path=/mxpub');
-    expect(filtered.status).toBe(200);
-    expect((await json<{ data: { items: Array<{ name: string }> } }>(filtered)).data.items).toEqual([]);
-
-    // 清空矩阵 → 回到现状（匿名拒绝），登录用户路径不受影响
+    // 清空矩阵 → public 行匿名依旧可读（可见性语义独立于矩阵）
     expect((await patchMountPermissions(rootMountId, [])).status).toBe(200);
-    expect((await request(ctx, '/api/public/fs?path=/mxpub')).status).toBe(403);
+    const publicOnly = await request(ctx, '/api/public/fs?path=/mxpub');
+    expect(publicOnly.status).toBe(200);
+    expect((await json<{ data: { items: Array<{ name: string }> } }>(publicOnly)).data.items.map((i) => i.name)).toEqual(['pub.txt']);
+    // 登录属主不受影响
     expect((await request(ctx, '/api/files?path=/mxpub', { cookie: owner.authCookie })).status).toBe(200);
   });
 });

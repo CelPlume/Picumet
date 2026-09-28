@@ -82,21 +82,22 @@ pathPublicRoutes.get('*', async (c) => {
 
     // 公开挂载直接可读；私有挂载需登录且有读/下载权限，或持有该路径的有效签名（?sign=）
     const accessMode = urlProvider ? decideAccessMode(file, urlProvider, false) : 'private_gateway';
-    if (accessMode !== 'public_cdn') {
-      const sign = c.req.query('sign');
-      const signOk = sign ? await verifyPathSign(virtualPath, (c.env as Env).ENCRYPTION_KEY, sign) : false;
-      if (!signOk) {
-        // §C：匿名读受站点游客开关约束（签名链接是显式能力凭证，不受此限）
-        const userId = c.get('userId') as string | undefined;
-        if (!userId && !(await SettingsRepo.getBool(db, 'allow_guest_access', false))) {
-          throw new ApiError(401, 'LOGIN_REQUIRED', '站点未开放游客访问，请先登录');
-        }
-        // 此处 file.type 必为 'file'（上方已过滤）：permPath = 文件全路径
-        const permPath = file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`;
-        // §C：文件级 guest_visibility 随文件行传入（匿名访客按 none/download/view 合成规则放行）
-        const allowed = await can(c, mount, permPath, 'download', file.ownerId, undefined, file.visibility, file.guestVisibility, file.providerId ?? undefined);
-        if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权访问');
+    // LAB F-07：签名与可见性分拆——public_cdn 只豁免「签名」这一层，不豁免可见性：
+    // 非 public 文件即使落在公网域名 provider 上，匿名无签名访问也必须走同一道权限面。
+    const sign = c.req.query('sign');
+    const signOk = sign ? await verifyPathSign(virtualPath, (c.env as Env).ENCRYPTION_KEY, sign) : false;
+    const publicCdnReadable = accessMode === 'public_cdn' && file.visibility === 'public';
+    if (!signOk && !publicCdnReadable) {
+      // §C：匿名读受站点游客开关约束（签名链接是显式能力凭证，不受此限）
+      const userId = c.get('userId') as string | undefined;
+      if (!userId && !(await SettingsRepo.getBool(db, 'allow_guest_access', false))) {
+        throw new ApiError(401, 'LOGIN_REQUIRED', '站点未开放游客访问，请先登录');
       }
+      // 此处 file.type 必为 'file'（上方已过滤）：permPath = 文件全路径
+      const permPath = file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`;
+      // §C：文件级 guest_visibility 随文件行传入（匿名访客按 none/download/view 合成规则放行）
+      const allowed = await can(c, mount, permPath, 'download', file.ownerId, undefined, file.visibility, file.guestVisibility, file.providerId ?? undefined);
+      if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权访问');
     }
 
     return await serveFileObject({
