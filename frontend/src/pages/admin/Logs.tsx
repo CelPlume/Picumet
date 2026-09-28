@@ -36,7 +36,7 @@ const ACTION_COLOR: Record<string, string> = {
 /** 表头与数据行共用的网格模板（md 起多一列 IP），保证表头表与行表列对齐；
     路径列给最小宽度下限，窄容器时横向滚动而非塌缩 */
 const LOG_ROW_GRID =
-  'grid grid-cols-[104px_minmax(160px,1fr)_96px_88px_150px] md:grid-cols-[104px_minmax(160px,1fr)_96px_110px_88px_150px]';
+  'grid items-center grid-cols-[104px_minmax(160px,1fr)_96px_88px_150px] md:grid-cols-[104px_minmax(160px,1fr)_96px_110px_88px_150px]';
 
 export default function AdminLogs() {
   const { t } = useTranslation();
@@ -76,7 +76,8 @@ export default function AdminLogs() {
     <div className="flex h-full min-h-0 flex-col">
 
       {/* 表头与数据行同在卡片玻璃上（提交版双表结构）；表体横向滚动时表头同步平移保持列对齐 */}
-      <Card className="reveal mt-3 flex min-h-0 flex-1 flex-col py-0 overflow-hidden" style={revealDelay(0)}>
+      {/* gap-0 覆盖 Card 基类 gap-4：双表外壳仅表头包裹 + 滚动表体两个子元素，Card 自带行间距会在表头与首行之间撕出 16px 空隙 */}
+      <Card className="reveal mt-3 flex min-h-0 flex-1 flex-col gap-0 py-0 overflow-hidden" style={revealDelay(0)}>
         {/* 裁剪放外层包裹：表体横向滚动时表头表格整体平移，右侧被裁的列随之进入视野 */}
         <div className="w-full shrink-0 overflow-hidden [scrollbar-gutter:stable]">
           <table ref={headerTableRef} className="block w-full text-sm">

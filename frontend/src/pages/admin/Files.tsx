@@ -25,7 +25,7 @@ import type { FileListItem } from '@shared/types';
     名称/路径列给最小宽度下限：窄容器时网格整体溢出 → 横向滚动（表头单行、列不塌缩重叠），
     而不是 minmax(0,·) 把名称列压成 0px 让图标叠到相邻列上 */
 const ROW_GRID =
-  'grid grid-cols-[minmax(150px,1.4fr)_96px_140px_120px_84px] md:grid-cols-[minmax(150px,1.2fr)_minmax(140px,1.4fr)_96px_140px_120px_84px] lg:grid-cols-[minmax(150px,1.2fr)_112px_minmax(140px,1.4fr)_110px_96px_100px_96px_135px_104px_84px]';
+  'grid items-center grid-cols-[minmax(150px,1.4fr)_96px_140px_120px_84px] md:grid-cols-[minmax(150px,1.2fr)_minmax(140px,1.4fr)_96px_140px_120px_84px] lg:grid-cols-[minmax(150px,1.2fr)_112px_minmax(140px,1.4fr)_110px_96px_100px_96px_135px_104px_84px]';
 
 /** 管理端列表行：后端在 FileListItem 上附加属主用户名（ownerName）与封禁/存储定位（banned/buckets/mounts/hash） */
 type AdminFileRow = FileListItem & {
@@ -355,7 +355,8 @@ export default function AdminFiles() {
         <>
       {/* 表头与数据行同在卡片玻璃上（提交版双表结构）：表头表在滚动容器外、同为透明层；
           行只在下方容器内滚动，不会滑到表头下面。表体横向滚动时表头同步平移保持列对齐 */}
-      <Card className="reveal mt-3 flex min-h-0 flex-1 flex-col py-0 overflow-hidden" style={revealDelay(0)}>
+      {/* gap-0 覆盖 Card 基类 gap-4：双表外壳仅表头包裹 + 滚动表体两个子元素，Card 自带行间距会在表头与首行之间撕出 16px 空隙 */}
+      <Card className="reveal mt-3 flex min-h-0 flex-1 flex-col gap-0 py-0 overflow-hidden" style={revealDelay(0)}>
         {/* 裁剪放外层包裹：表体横向滚动时表头表格整体平移，右侧被裁的列随之进入视野 */}
         <div className="w-full shrink-0 overflow-hidden [scrollbar-gutter:stable]">
           <table ref={headerTableRef} className="block w-full text-sm">
