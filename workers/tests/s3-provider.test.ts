@@ -1,6 +1,7 @@
 // S3Provider 预签名分片 URL 单测（getSignedUrl 为本地签名，不联网）
 import { describe, it, expect } from 'vitest';
 import { S3Provider } from '../src/services/storage/s3';
+import { ProviderError } from '../src/services/storage/errors';
 
 describe('S3Provider 分片预签名', () => {
   it('getMultipartUploadUrl 本地签名，URL 含签名参数与分片号', async () => {
@@ -32,5 +33,41 @@ describe('S3Provider 分片预签名', () => {
     const url = await p.getUploadUrl('dir/new.txt', 'text/plain', 900);
     expect(url).toBeTruthy();
     expect(url).toContain('X-Amz-Signature');
+  });
+});
+
+describe('S3Provider 错误分类（读容灾契约）', () => {
+  // F-15 回归：裸抛原始异常（如 workerd 的 `Network connection lost.` TypeError）曾让
+  // failover 候选循环拿到未分类错误直接中止，副桶回退失效。getObject/headObject 必须
+  // 包成 ProviderError 上抛（not-found 除外）。
+  const p = new S3Provider({
+    name: 'test',
+    bucket: 'test-bucket',
+    endpoint: 'https://s3.example.com',
+    region: 'auto',
+    accessKeyId: 'AKID',
+    secretAccessKey: 'SKID',
+  });
+
+  function failWith(err: unknown) {
+    const send = async () => {
+      throw err;
+    };
+    Object.defineProperty(p, 'client', { value: { send }, configurable: true });
+  }
+
+  it('getObject：进程死亡类原始错误包成 ProviderError（kind=other）', async () => {
+    failWith(new TypeError('Network connection lost.'));
+    await expect(p.getObject('dir/file.bin')).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('headObject：进程死亡类原始错误包成 ProviderError（kind=other）', async () => {
+    failWith(new TypeError('Network connection lost.'));
+    await expect(p.headObject('dir/file.bin')).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('getObject：NoSuchKey 仍返回 null（not-found 不上抛）', async () => {
+    failWith(Object.assign(new Error('no such key'), { name: 'NoSuchKey' }));
+    await expect(p.getObject('dir/file.bin')).resolves.toBeNull();
   });
 });

@@ -12,6 +12,7 @@ import { ApiError } from '../../shared/errors';
 import { uuid } from '../../utils/crypto';
 import { hashPassThrough } from '../../utils/sha256';
 import { getProvider } from './providers';
+import { toProviderError } from './errors';
 import { blobObjectKey, stagingObjectKey } from './keys';
 import type { StorageProviderInterface } from './types';
 
@@ -57,7 +58,9 @@ export async function writeContentAddressed(db: Db, env: Env, opts: ContentWrite
   const knownHash = opts.contentHash;
   // R2 绑定要求流带已知长度（request/response body 或 FixedLengthStream 的可读端），
   // 而边写边哈希必须包装原始流 → 长度未知时无从包装，退化为路径键写入（不参与去重）。
-  const needsKnownLength = providerRow.type === 'r2' && !providerRow.endpoint;
+  // LAB：S3 协议 PUT 未带 Content-Length（chunked）会被「MissingContentLength」拒绝；
+  // declaredSize 已知时对 S3 同样包 FixedLengthStream，让 SDK 发出 Content-Length 头。
+  const needsKnownLength = (providerRow.type === 'r2' && !providerRow.endpoint) || providerRow.type === 's3';
 
   if (!knownHash && declaredSize <= 0 && needsKnownLength) {
     const provider = await getProvider(db, providerRow, env);
@@ -138,7 +141,8 @@ export async function writeContentAddressed(db: Db, env: Env, opts: ContentWrite
     return { providerId: providerRow.id, objectKey: key, size, etag: copied.etag, hash: hex, deduped: false };
   } catch (err) {
     await deleteObjectQuietly(db, provider, stagingKey, mountId, 'staging_copy_failed');
-    throw err;
+    // 存储层错误契约：上抛 ProviderError（调用方按 kind 分支；failover 侧据此回退）
+    throw toProviderError(err);
   }
 }
 

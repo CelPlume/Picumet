@@ -81,6 +81,10 @@ export class S3Provider implements StorageProviderInterface {
         accessKeyId: opts.accessKeyId,
         secretAccessKey: opts.secretAccessKey,
       },
+      // SDK v3.700+ 默认 WHEN_SUPPORTED：PUT 自动附 `x-amz-checksum-crc32`，S3 兼容网关
+      // （VersityGW/MinIO）的预签名校验未签该头 →「headers present which were not signed」500。
+      // S3 对象完整性由 ETag(MD5)/Content-Length 保证，显式降为 WHEN_REQUIRED。
+      requestChecksumCalculation: 'WHEN_REQUIRED',
     });
   }
 
@@ -113,9 +117,11 @@ export class S3Provider implements StorageProviderInterface {
         })
       );
     } catch (err) {
-      // 仅确认的 not-found 返回 null；auth/throttled/other 上抛
-      if (toProviderError(err).kind === 'not-found') return null;
-      throw err;
+      // 仅确认的 not-found 返回 null；其余包成 ProviderError 上抛
+      // （裸抛原始错误会让 failover 的候选循环拿到未分类异常直接中止，副桶回退失效）
+      const providerErr = toProviderError(err);
+      if (providerErr.kind === 'not-found') return null;
+      throw providerErr;
     }
     const range = opts?.range;
     return {
@@ -143,8 +149,9 @@ export class S3Provider implements StorageProviderInterface {
         metadata: res.Metadata,
       };
     } catch (err) {
-      if (toProviderError(err).kind === 'not-found') return null;
-      throw err;
+      const providerErr = toProviderError(err);
+      if (providerErr.kind === 'not-found') return null;
+      throw providerErr;
     }
   }
 
@@ -260,7 +267,7 @@ export class S3Provider implements StorageProviderInterface {
       } catch {
         // 补偿失败：未完成 multipart 由桶生命周期策略清理
       }
-      throw err;
+      throw toProviderError(err);
     }
   }
 
