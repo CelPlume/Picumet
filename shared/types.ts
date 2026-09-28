@@ -268,6 +268,16 @@ export interface FileListItem {
   buckets?: string[];
   /** 所在挂载点名（§26 管理端全部文件列表按页批量补齐；用户端列表不返回） */
   mounts?: string[];
+  /**
+   * LAB O4：媒体文件的签名直链缩略图（image/* 与 video/*、无密码时下发，1 小时签名）。
+   * 前端网格/预览格直接消费，不再逐项请求下载令牌。
+   */
+  thumbUrl?: string;
+  /**
+   * LAB O4：文件夹行的前 4 个子项（与列表同排序、同可见性过滤），文件夹卡片 2×2 预览格
+   * 的数据源；子项可再带 thumbUrl。缺省（旧响应）时前端回退 per-folder 列表请求。
+   */
+  previewItems?: FileListItem[];
   /** 内容 SHA-256（§F）；null = 未内容寻址 */
   hash?: string | null;
 }

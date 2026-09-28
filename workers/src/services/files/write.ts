@@ -9,7 +9,7 @@
 import type { Context } from 'hono';
 import type { Mount, StorageProvider } from '@shared/types';
 import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo, ReservationRepo } from '../../db';
-import type { Db } from '../../db';
+import type { Db, Tx } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requestIp } from '../../utils/ip';
 import { ApiError } from '../../shared/errors';
@@ -23,6 +23,7 @@ import { pickWriteProvider } from '../storage/pool';
 import { getPrincipal } from '../permissions/principal';
 import { writeContentAddressed, type ContentWriteResult } from '../storage/content';
 import { assertWritable } from './upload-mode';
+import { isActionLoggable } from '../../db';
 
 /**
  * 逐级确保祖先文件夹行存在（无目录行的文件在列表/PROPFIND 中不可见）。
@@ -30,10 +31,17 @@ import { assertWritable } from './upload-mode';
  * objectKey 复用 MKCOL 的 `folder:` 前缀约定（webdav/handlers.ts）。
  */
 export async function ensureFolders(db: Db, mount: Mount, targetPath: string, ownerId: string): Promise<void> {
+  // LAB F-03：挂载根本身**不需要**目录行——身份行 mountfolder:<id> 归属父挂载命名空间。
+  // 旧实现把挂载根当普通祖先处理：flat 挂载根上传被误 403（「不允许文件夹」），
+  // 非 flat 会在挂载根上隐式重复建用户目录行。这里只处理挂载根之下的段；
+  // targetPath = 挂载根时为 no-op（平铺上传到挂载根合法）。
+  const mountDepth = mount.mountPath === '/' ? 0 : mount.mountPath.split('/').filter(Boolean).length;
   const segments = normalizePath(targetPath).split('/').filter(Boolean);
   let current = '';
-  for (const seg of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     current = `${current}/${seg}`;
+    if (i < mountDepth) continue; // 挂载根及其祖先不属于本挂载命名空间
     const parent = current.slice(0, -(seg.length + 1)) || '/';
     // 目录行是共享命名空间（对象存储语义：前缀不归属个人）；文件占用才冲突。
     // 注意路径约定：文件夹行 path=自身全路径，文件行 path=父目录 → 两处都要查。
@@ -97,6 +105,20 @@ export interface UpsertFileResult {
   providerId: string;
   /** §F 内容 SHA-256（未内容寻址时为空） */
   blobHash?: string;
+}
+
+/**
+ * 内容对象索引登记的**唯一入口**（LAB H2）：直写路径（upsertFileObject）与上传会话完成路径
+ * （uploads/upload-complete）共用。登记幂等（(hash, mount_id) 复合键），并撤销同 hash 的待回收
+ * 条目。不变量：`file_metadata.blob_hash IS NOT NULL ⇒ 同挂载存在 blob_objects 行`——读侧由
+ * resolveFile 的惰性补登记兜底，写侧必须全部走本函数。
+ */
+export async function registerContentObject(
+  tx: Tx,
+  entry: { hash: string; mountId: string; providerId: string; objectKey: string; size: number; etag?: string },
+  now: number
+): Promise<void> {
+  await BlobRepo.registerTx(tx, entry, now);
 }
 
 /**
@@ -193,6 +215,8 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
   const objectKey = objectKeyFromPath(opts.mount.mountPath, intentRow.pathPrefix ?? '', targetPath);
 
   const fileId = isOverwrite && existing ? existing.id : uuid();
+  // LAB：审计日志按设置过滤——事务（D1 只写批）前判定 upload 事件是否记录
+  const uploadLoggable = await isActionLoggable(db, 'upload');
   // 已写入对象的结果（补偿用）：只在写入成功后赋值
   let written: ContentWriteResult | null = null;
   try {
@@ -258,9 +282,9 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
       // 避免「已记账 + 仍预留」的双重占额窗口。台账行同批删除。
       await MountProviderQuotaRepo.releaseTx(tx, opts.mount.id, intentRow.id, memberReserved);
       await ReservationRepo.remove(tx, reservationId);
-      // 内容索引登记（幂等，按 (hash, mount_id) 隔离）+ 撤销同 hash 的待回收条目；未内容寻址（hash 为空）跳过
+      // 内容索引登记（唯一入口，幂等，按 (hash, mount_id) 隔离）+ 撤销同 hash 的待回收条目；未内容寻址（hash 为空）跳过
       if (outcome.hash) {
-        await BlobRepo.registerTx(tx, {
+        await registerContentObject(tx, {
           hash: outcome.hash,
           mountId: opts.mount.id,
           providerId: outcome.providerId,
@@ -269,11 +293,13 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
           etag: outcome.etag,
         }, now);
       }
-      await tx.query(
-        `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
-         VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
-        [uuid(), userId, targetPath, JSON.stringify({ fileName, via: opts.via, deduped: outcome.deduped }), requestIp(c.req.raw) ?? null, c.req.header('user-agent'), finalSize, now]
-      );
+      if (uploadLoggable) {
+        await tx.query(
+          `INSERT INTO access_logs (id, user_id, action, path, metadata, ip_address, user_agent, bytes_transferred, status_code, created_at)
+           VALUES (?, ?, 'upload', ?, ?, ?, ?, ?, 200, ?)`,
+          [uuid(), userId, targetPath, JSON.stringify({ fileName, via: opts.via, deduped: outcome.deduped }), requestIp(c.req.raw) ?? null, c.req.header('user-agent'), finalSize, now]
+        );
+      }
     });
 
     return {

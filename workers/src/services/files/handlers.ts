@@ -2,11 +2,14 @@
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import type { FileMetadata, Mount } from '@shared/types';
-import { FileRepo, MountRepo, ProviderRepo, LogRepo } from '../../db';
+import type { FileListItem } from '@shared/types';
+import { FileRepo, MountRepo, ProviderRepo, LogRepo, BlobRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, can, getPrincipal } from '../permissions/principal';
 import { isPasswordExempt, checkPermission } from '../permissions/check';
 import { getProviderForFile } from '../storage/pool';
+import { getProvider } from '../storage/providers';
+import { buildFileAccessUrl } from './write';
 import { childMountsOf, containsMountPointFile, ensureMountFolder, isMountPointFile } from '../storage/mount-folders';
 import { loadMountPermissionDeps, resolveVirtualListing, resolveVirtualTree } from '../storage/root-view';
 import { physicalObjectKey } from '../storage/keys';
@@ -18,7 +21,7 @@ import {
   objectKeyFromPath,
   isValidFileName,
   validateFileType,
-  escapeLikePattern,
+  subtreeMatch,
 } from '../../utils/path';
 import { hashPassword, verifyPassword } from '../../utils/crypto';
 import { clientIp, requestIp } from '../../utils/ip';
@@ -39,6 +42,25 @@ async function resolveFile(c: Parameters<typeof ok>[0]) {
   if (!file) throw new ApiError(404, 'NOT_FOUND', '文件不存在');
   const mount = await MountRepo.getMountById(db, file.mountId);
   if (!mount) throw new ApiError(404, 'NOT_FOUND', '挂载点不存在');
+  // LAB H3/L0 读时惰性补登记（纯 DB 判定，不做扫描）：行有 blob_hash 但同挂载无索引行
+  // （历史漏登记）→ 就地补一次（幂等）。命中概率极低；修复后去重/回收恢复一致。
+  if (file.type === 'file' && file.blobHash) {
+    const indexed = await BlobRepo.get(db, file.blobHash, file.mountId);
+    if (!indexed) {
+      await BlobRepo.register(
+        db,
+        {
+          hash: file.blobHash,
+          mountId: file.mountId,
+          providerId: file.providerId ?? mount.providerId,
+          objectKey: file.physicalKey ?? file.objectKey,
+          size: file.size,
+          etag: file.etag,
+        },
+        Date.now()
+      );
+    }
+  }
   return { file, mount, db };
 }
 
@@ -92,6 +114,7 @@ filesRoutes.get('/', async (c) => {
   const sortOrder = q.order ?? 'asc';
   const typeFilter = q.type;
 
+  const viewerId = c.get('userRole') === 'admin' ? undefined : c.get('userId');
   const { rows, total } = await FileRepo.listChildren(db, mount.id, targetPath, {
     sortBy,
     sortOrder,
@@ -100,11 +123,67 @@ filesRoutes.get('/', async (c) => {
     limit,
     offset: (page - 1) * limit,
     // §4.4a：非管理员看不到他人的 private 项（文件夹与文件一致；owner/admin 可见）
-    viewerId: c.get('userRole') === 'admin' ? undefined : c.get('userId'),
+    viewerId,
   });
 
+  // LAB O4：列表内联缩略图数据——媒体文件行附 thumbUrl（同一批签名），文件夹行附
+  // previewItems（前 4 子项）。前端网格/预览格不再逐项发起 /download 令牌或 per-folder 列表请求
+  //（目录 5 文件夹 × 4 格的请求数 ≈40 → 1）。
+  const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);
+  const provider = providerRow ? await getProvider(db, providerRow, c.env as Env) : null;
+  const prefixes = await loadRoutePrefixes(db);
+  const thumbExpiresAt = Date.now() + 60 * 60 * 1000;
+
+  const thumbUrlOf = async (row: FileMetadata): Promise<string | null> => {
+    if (!provider) return null;
+    const mime = row.mimeType ?? '';
+    if (!mime.startsWith('image/') && !mime.startsWith('video/')) return null;
+    if (row.accessPassword) return null; // 受密码保护的文件不给缩略图直链
+    const itemPath = row.path === '/' ? `/${row.name}` : `${row.path}/${row.name}`;
+    try {
+      return await buildFileAccessUrl(c, provider, physicalObjectKey(row), itemPath, thumbExpiresAt, prefixes);
+    } catch {
+      return null;
+    }
+  };
+
+  // 文件夹子项同步批量取出（每文件夹一条小查询，limit 4；替代前端 N+1 的 per-folder HTTP 请求）
+  const folderRows = rows.filter((r) => r.type === 'folder');
+  const kidsByPath = new Map<string, FileMetadata[]>();
+  for (const fr of folderRows) {
+    const { rows: kids } = await FileRepo.listChildren(db, mount.id, fr.path, {
+      sortBy,
+      sortOrder,
+      limit: 4,
+      viewerId,
+    });
+    kidsByPath.set(fr.path, kids);
+  }
+
+  const items = await Promise.all(
+    rows.map(async (row) => {
+      const item = toFileListItem(row);
+      const thumbUrl = await thumbUrlOf(row);
+      if (thumbUrl) item.thumbUrl = thumbUrl;
+      if (row.type === 'folder') {
+        const kids = kidsByPath.get(row.path);
+        if (kids) {
+          item.previewItems = await Promise.all(
+            kids.map(async (k) => {
+              const ki = toFileListItem(k);
+              const kt = await thumbUrlOf(k);
+              if (kt) ki.thumbUrl = kt;
+              return ki;
+            })
+          );
+        }
+      }
+      return item;
+    })
+  );
+
   return ok(c, {
-    items: rows.map(toFileListItem),
+    items,
     pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
     mount: {
       id: mount.id,
@@ -286,12 +365,12 @@ filesRoutes.put('/:id', async (c) => {
       await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
       // cascade=false：只改本项，不牵连子树（用户抱怨"点一个公开连带一串公开"）
       if (file.type === 'folder' && cascade) {
-        // 级联子树：公开相册场景一次置可见
-        // folder 名允许含 % 与 _，前缀匹配必须转义后走 ESCAPE '\'
+        // 级联子树：公开相册场景一次置可见（范围 + substr 谓词，免疫 %/_ 且无长度上限）
+        const sub = subtreeMatch('path', file.path);
         await db.run(
           `UPDATE file_metadata SET visibility = ?, review_status = ?, updated_at = ?
-           WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
-          [visibility, reviewStatus, Date.now(), mount.id, file.path, `${escapeLikePattern(file.path)}/%`]
+           WHERE mount_id = ? AND ${sub.sql}`,
+          [visibility, reviewStatus, Date.now(), mount.id, ...sub.params]
         );
       }
       await LogRepo.create(db, {
@@ -345,11 +424,12 @@ filesRoutes.put('/:id', async (c) => {
           file.id,
         ]);
         // 子树前缀替换：直接子文件行 path=oldPath（substr 取空串 → newPath），深层行 path=oldPath/...（保留剩余段）。
-        // 目录名允许含 %/_，前缀匹配必须 ESCAPE '\' 且先经 escapeLikePattern，避免误伤 /a_1 这类兄弟目录。
+        // 范围 + substr 谓词：无 LIKE 模式长度上限，%/_ 也不再是通配符（LAB F-04）。
+        const sub = subtreeMatch('path', oldPath);
         await tx.query(
           `UPDATE file_metadata SET path = ? || substr(path, ?), updated_at = ?
-           WHERE mount_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')`,
-          [newPath, oldPath.length + 1, Date.now(), mount.id, oldPath, `${escapeLikePattern(oldPath)}/%`]
+           WHERE mount_id = ? AND ${sub.sql}`,
+          [newPath, oldPath.length + 1, Date.now(), mount.id, ...sub.params]
         );
       });
     } else {
