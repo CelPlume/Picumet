@@ -117,10 +117,14 @@ fsApi.put('/form', async (c) => {
     await uploadBytes(c, db, apiKey.userId, apiKey.uploadPath, fileName, file.type, file.size, file.stream(), dir);
     return c.json(AListOk(null));
   } catch (err) {
-    // ApiError 语义码透传（403/404/409/413…），其余按 500
+    // ApiError 语义码透传（403/404/409/413…），其余按 500。
+    // LAB F-12：非 ApiError 的 message（SDK/D1/网络原文）只进服务端日志，不透给协议面。
     const code = err instanceof ApiError && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
-    const message = err instanceof ApiError || err instanceof Error ? err.message : '上传失败';
-    return c.json(AListFail(code, message));
+    if (err instanceof ApiError) {
+      return c.json(AListFail(code, err.message));
+    }
+    console.error('[alist] fs/upload failed', err);
+    return c.json(AListFail(500, '上传失败'));
   }
 });
 

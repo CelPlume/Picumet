@@ -17,6 +17,11 @@ export interface Env {
   ENVIRONMENT: string;
   APP_BASE_URL: string;
   ALLOWED_ORIGINS: string;
+  /**
+   * LAB L-02：'true' 时在非生产环境也启用全部限速/并发中间件（staging/本地回归用）。
+   * 缺省/其他值 = 维持「仅 production 生效」的既有语义。
+   */
+  RATE_LIMIT_FORCE?: string;
 
   // Secrets
   JWT_SECRET: string;

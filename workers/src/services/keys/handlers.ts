@@ -40,7 +40,7 @@ keyRoutes.post('/', async (c) => {
   // S3 SigV4 网关需要可逆 secret：AES-GCM 加密落库（密钥派生自 ENCRYPTION_KEY），任何响应不回传
   const secretCipher = 'enc:' + (await encryptSecret(secret, c.env.ENCRYPTION_KEY));
 
-  await ApiKeyRepo.createKey(db, {
+  const rowId = await ApiKeyRepo.createKey(db, {
     userId,
     name: parsed.data.name,
     keyId,
@@ -57,7 +57,9 @@ keyRoutes.post('/', async (c) => {
   const rootSegment = uploadPath === '/' ? undefined : uploadPath.split('/').filter(Boolean)[0];
   return ok(c, {
     key: {
-      id: keyId,
+      // LAB F-11：id 与列表接口同源（数据库行 id），DELETE /api/keys/:id 直接可用；
+      // keyId（pk_…）保留原语义（网关用户名 / SigV4 AccessKeyId）
+      id: rowId,
       keyId,
       secret,
       fullToken,
@@ -124,7 +126,13 @@ keyRoutes.get('/', async (c) => {
 keyRoutes.delete('/:id', async (c) => {
   const db = getDb(c);
   const userId = c.get('userId');
-  const okRevoked = await ApiKeyRepo.revokeKey(db, c.req.param('id'), userId);
+  const param = c.req.param('id');
+  // LAB F-11：主契约是数据库行 id；兼容 pk_… keyId（创建响应曾把 keyId 当 id 返回）
+  let okRevoked = await ApiKeyRepo.revokeKey(db, param, userId);
+  if (!okRevoked && param.startsWith('pk_')) {
+    const row = await ApiKeyRepo.listKeysByUser(db, userId).then((keys) => keys.find((k) => k.keyId === param));
+    if (row) okRevoked = await ApiKeyRepo.revokeKey(db, row.id, userId);
+  }
   if (!okRevoked) throw new ApiError(404, 'NOT_FOUND', '密钥不存在');
   return ok(c, null);
 });

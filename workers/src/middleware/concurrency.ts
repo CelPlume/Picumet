@@ -14,6 +14,7 @@ import { fail } from '../shared/response';
 import { getDb } from './auth';
 import { clientIp } from '../utils/ip';
 import { uuid } from '../utils/crypto';
+import { rateLimitsEnforced } from './rate-limit';
 
 /** 默认允许的同时传输数（0 = 不限） */
 const DEFAULT_MAX_CONCURRENT = 4;
@@ -37,7 +38,7 @@ async function activeCount(db: Db, scope: string, scopeId: string): Promise<numb
  * 非生产环境跳过（本地调试/测试不受限），与限流中间件保持一致。
  */
 export const transferConcurrencyMiddleware = createMiddleware(async (c, next) => {
-  if ((c.env.ENVIRONMENT as string) !== 'production') {
+  if (!rateLimitsEnforced(c.env)) {
     await next();
     return;
   }

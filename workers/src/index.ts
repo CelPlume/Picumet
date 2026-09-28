@@ -127,7 +127,9 @@ app.get('/', (c) => c.json({ service: 'picumet-api', status: 'ok' }));
 app.get('/api', (c) => ok(c, { service: 'picumet-api', status: 'ok' }));
 
 // 公开路径文件服务（最后注册，避免遮蔽 /api、/webdav 等路由）
-app.use('/*', optionalAuthMiddleware);
+// LAB L-01：直链（path-serve，含签名直链/公开 CDN 语义）是出网流量最大的通道，
+// 必须与网关/分享同受下载限速约束（isDownloadPath 需覆盖直链路径形态；非下载路径零成本放行）。
+app.use('/*', optionalAuthMiddleware, downloadRateLimitMiddleware);
 app.route('/', pathPublicRoutes);
 
 // 全局错误处理

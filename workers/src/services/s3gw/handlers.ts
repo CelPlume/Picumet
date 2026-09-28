@@ -494,7 +494,9 @@ s3gwRoutes.post('*', async (c) => {
       await deleteFileInternal(c, mount, file, apiKey.userId);
       deleted.push(rawKey);
     } catch (err) {
-      errors.push({ key: rawKey, message: err instanceof Error ? err.message : '删除失败' });
+      // LAB F-12：错误明细只进服务端日志；XML 错误体回稳定文案（SDK/D1 原文不透出）
+      console.error(`[s3gw] delete failed key=${rawKey}`, err);
+      errors.push({ key: rawKey, message: '删除失败，请稍后再试' });
     }
   }
 

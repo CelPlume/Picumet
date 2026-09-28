@@ -36,13 +36,18 @@ export async function resetLimit(kv: KVNamespace, key: string, windowMs: number)
   await kv.delete(limitCacheKey(key, windowMs));
 }
 
+/** LAB L-02：限速/并发生效条件——production，或显式 RATE_LIMIT_FORCE=true（staging/本地回归） */
+export function rateLimitsEnforced(env: { ENVIRONMENT?: string; RATE_LIMIT_FORCE?: string }): boolean {
+  return env.ENVIRONMENT === 'production' || env.RATE_LIMIT_FORCE === 'true';
+}
+
 /**
  * 全局限流：读 system_settings 的 rate_limit_enabled / rate_limit_requests_per_minute。
- * 非生产环境（开发/测试）跳过，避免误伤本地调试。
+ * 非生产环境（开发/测试）跳过，避免误伤本地调试（RATE_LIMIT_FORCE=true 可强制开启）。
  * 存储异常时：认证/敏感写接口 fail-closed（503），其余 fail-open。
  */
 export const rateLimitMiddleware = createMiddleware(async (c, next) => {
-  if ((c.env.ENVIRONMENT as string) !== 'production') {
+  if (!rateLimitsEnforced(c.env)) {
     await next();
     return;
   }
@@ -81,10 +86,10 @@ export const rateLimitMiddleware = createMiddleware(async (c, next) => {
 });
 
 /**
- * 登录/注册限流：5 次/分钟/IP（仅生产环境生效）
+ * 登录/注册限流：5 次/分钟/IP（仅生产环境生效，RATE_LIMIT_FORCE=true 可强制）
  */
 export const authRateLimitMiddleware = createMiddleware(async (c, next) => {
-  if ((c.env.ENVIRONMENT as string) !== 'production') {
+  if (!rateLimitsEnforced(c.env)) {
     await next();
     return;
   }
@@ -97,12 +102,12 @@ export const authRateLimitMiddleware = createMiddleware(async (c, next) => {
 });
 
 /**
- * 分享密码验证限流：5 次/分钟/IP/分享（仅生产环境生效）。
+ * 分享密码验证限流：5 次/分钟/IP/分享（仅生产环境生效，RATE_LIMIT_FORCE=true 可强制）。
  * 全局限流不足以防在线爆破，故按分享维度单独收紧；
  * 存储异常 fail-closed（503），避免限流被绕过。
  */
 export const shareVerifyRateLimitMiddleware = createMiddleware(async (c, next) => {
-  if ((c.env.ENVIRONMENT as string) !== 'production') {
+  if (!rateLimitsEnforced(c.env)) {
     await next();
     return;
   }

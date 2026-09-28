@@ -54,9 +54,10 @@ publicRoutes.get('/health/ready', async (c) => {
   try {
     const marker = await env.KV.get('seed:done');
     ready = marker === '1';
+    // LAB F-12：detail 只回枚举值，不回传 KV 异常文本（生产信息泄露面）
     detail = ready ? 'seeded' : 'not-seeded';
-  } catch (err) {
-    detail = err instanceof Error ? err.message : 'kv-unavailable';
+  } catch {
+    detail = 'kv-unavailable';
   }
   return c.json({ service: 'picumet-api', status: ready ? 'ok' : 'degraded', ready, detail }, ready ? 200 : 503);
 });

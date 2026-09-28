@@ -9,6 +9,7 @@ import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
 import { getDb } from './auth';
 import { clientIp } from '../utils/ip';
+import { rateLimitsEnforced } from './rate-limit';
 
 /** 默认每分钟下载次数（0 = 不限） */
 export const DEFAULT_DOWNLOAD_LIMIT_PER_MINUTE = 120;
@@ -23,15 +24,20 @@ export function isDownloadPath(path: string): boolean {
   if (/^\/api\/shares\/[^/]+\/(download|preview)$/.test(path)) return true;
   if (/^\/api\/files\/[^/]+\/download$/.test(path)) return true;
   if (path.startsWith('/api/public/fs')) return true;
+  // LAB L-01：path-serve 直链（direct-prefix 命名空间，缺省站点根的文件路径）。
+  // pathPublicRoutes 是 catch-all：非文件请求（如站点根 HTML 健康页）会被中间件
+  // 的 SettingsRepo 查询成本放大——用「带扩展名的末段」窄化计数范围。
+  const last = path.split('/').pop() ?? '';
+  if (last.includes('.')) return true;
   return false;
 }
 
 /**
  * 下载限速中间件：读 rate_limit_downloads_per_minute（默认 120，0 = 不限）。
- * 非生产环境跳过；存储异常时 fail-open（限速是资源保护，不是权限闸门）。
+ * 非生产环境跳过（RATE_LIMIT_FORCE=true 可强制）；存储异常时 fail-open（限速是资源保护，不是权限闸门）。
  */
 export const downloadRateLimitMiddleware = createMiddleware(async (c, next) => {
-  if ((c.env.ENVIRONMENT as string) !== 'production') {
+  if (!rateLimitsEnforced(c.env)) {
     await next();
     return;
   }

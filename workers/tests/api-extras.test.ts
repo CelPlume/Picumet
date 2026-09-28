@@ -125,6 +125,10 @@ describe('API 密钥与兼容上传', () => {
     const fullToken = createData.data.key.fullToken;
     const keyIdForRule = createData.data.key.keyId as string;
     expect(fullToken).toMatch(/^pk_[A-Za-z0-9]+\.sk_[A-Za-z0-9]+$/);
+    // LAB F-11：id = 数据库行 id（与列表同源），keyId = pk_…；二者不同且都可撤销
+    const rowId = createData.data.key.id as string;
+    expect(rowId).toBeTruthy();
+    expect(rowId).not.toBe(keyIdForRule);
     // API Key 交集语义：给密钥授予上传根内的写权限规则
     await grantApiKeyRule(ctx, keyIdForRule, ['write', 'read'], '/uploads/**');
 
@@ -133,6 +137,8 @@ describe('API 密钥与兼容上传', () => {
     const listData = await json(listRes);
     expect(listData.data.keys.length).toBe(1);
     expect(listData.data.keys[0].secret).toBeUndefined();
+    // LAB F-11：列表行 id 与创建响应的 id 同源
+    expect(listData.data.keys[0].id).toBe(rowId);
 
     // 兼容上传（multipart）
     const form = new FormData();
@@ -159,6 +165,22 @@ describe('API 密钥与兼容上传', () => {
       headers: { 'X-CSRF-Token': csrf },
     });
     expect(revokeRes.status).toBe(200);
+
+    // LAB F-11 兼容：用 pk_… keyId 撤销同样可达（旧客户端把 keyId 当 id 传）
+    const second = await request(ctx, '/api/keys', {
+      method: 'POST',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { name: 'compat', permissions: ['read'], protocols: ['api'], uploadPath: '/uploads' },
+    });
+    expect(second.status).toBe(201);
+    const secondKeyId = (await json(second)).data.key.keyId as string;
+    const revokeByKeyId = await request(ctx, `/api/keys/${secondKeyId}`, {
+      method: 'DELETE',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+    });
+    expect(revokeByKeyId.status).toBe(200);
 
     // 撤销后失效
     const afterRes = await request(ctx, '/api/upload', {
