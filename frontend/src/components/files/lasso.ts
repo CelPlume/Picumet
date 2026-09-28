@@ -43,6 +43,8 @@ export function useLassoSelect(
     if (e.pointerType !== 'mouse' || e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest(skipSelector)) return;
+    // 弹窗/抽屉内（预览、分享、属性面板等）不起拖——否则拖动选择文本/图片会穿透到下层文件面
+    if (target.closest('[data-overlay-root]')) return;
     pending.current = true;
     moved.current = false;
     startPt.current = { x: e.clientX, y: e.clientY };

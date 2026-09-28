@@ -5,7 +5,6 @@ import { AppSkeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useAuth } from '@/stores/auth';
 import { useSite } from '@/stores/site';
-import { apiFetch } from '@/lib/api';
 
 const Landing = lazy(() => import('@/pages/Landing'));
 const Login = lazy(() => import('@/pages/Login'));
@@ -34,7 +33,8 @@ function RequireAuth() {
   const { user, loading } = useAuth();
   const location = useLocation();
   useEffect(() => {
-    void useAuth.getState().fetchMe();
+    // O1：App 挂载 effect 已统一调用 fetchMe；此处的重复调用使 /api/auth/me 每次导航翻倍
+    if (useAuth.getState().loading) void useAuth.getState().fetchMe();
   }, []);
   if (loading) return <AppSkeleton />;
   if (!user) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />;
@@ -57,7 +57,8 @@ function RequireAdmin() {
 export default function App() {
   const { user } = useAuth();
   useEffect(() => {
-    // 同步主题语言到账号（可选）
+    // LAB O1：应用级统一入口——/api/auth/me 与 /api/public/settings 各只请求一次。
+    // （此前 App 挂载 + RequireAuth 各调一次 me；raw 预热 settings 与 useSite.load 重复）
     void useAuth.getState().fetchMe();
     // 读取站点设置（标题/Logo/Favicon）
     void useSite.getState().load();
@@ -65,11 +66,6 @@ export default function App() {
     if (document.cookie.includes('fm_token=')) {
       useAuth.getState().setFreeMode(true);
     }
-  }, []);
-
-  // 未登录用户也拉取公开设置（用于 landing）
-  useEffect(() => {
-    apiFetch('/api/public/settings').catch(() => undefined);
   }, []);
 
   void user;

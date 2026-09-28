@@ -23,14 +23,14 @@
 import type { CSSProperties, ElementType, HTMLAttributes, ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
-/** 区块级（卡片/分区）逐项延迟步长（ms），对照参考站区块 0.06~0.18s 的级差 */
-export const REVEAL_STEP = 40;
-/** 行/元素级（表格行、列表项、表单字段组）步长（ms），参考站行间实测 0.02~0.035s */
-export const REVEAL_STEP_FINE = 25;
-/** 延迟封顶的项序号：第 10 项之后同延迟，长列表不会拖出长尾 */
-export const REVEAL_MAX_INDEX = 9;
-/** 卡内元素/行的基础偏移（ms）：等所在卡片先起跑，形成「卡片 → 卡内元素」两层节奏 */
-export const REVEAL_INNER_BASE = 60;
+/** 区块级（卡片/分区）逐项延迟步长（ms）。LAB O3：40→20，长列表的入场长尾是感知延迟的主要来源之一 */
+export const REVEAL_STEP = 20;
+/** 行/元素级（表格行、列表项、表单字段组）步长（ms）。LAB O3：25→12 */
+export const REVEAL_STEP_FINE = 12;
+/** 延迟封顶的项序号：LAB O3 9→5，第 6 项之后同延迟，长列表不再拖出长尾 */
+export const REVEAL_MAX_INDEX = 5;
+/** 卡内元素/行的基础偏移（ms）：等所在卡片先起跑，形成「卡片 → 卡内元素」两层节奏。LAB O3：60→30 */
+export const REVEAL_INNER_BASE = 30;
 
 /** 生成入场延迟（CSS 变量），用于已有元素的场景
  *  @param index  同级次序（超过 REVEAL_MAX_INDEX 后不再加长）
