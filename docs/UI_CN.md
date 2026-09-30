@@ -305,13 +305,16 @@ flowchart LR
 ### 入场动画体系（`stores/theme.ts` data-motion + `components/ui/reveal.tsx`）
 
 - **动画三档**（外观设置「动画档位」，落在 `<html data-motion>`，§33）：`off` 全站动画/过渡禁用（低性能设备/动效敏感）；`default` 只保留功能性动画（图表绘制、tab/弹窗/抽屉过渡、加载态），装饰性入场关停；`all` 外加入场动画（默认）。CSS 侧统一门停（`index.css`），组件零分支。
+- **动画速度两档**（§36，落在 `<html data-motion-speed>`，仅 `all` 档暴露开关）：`efficient` 默认 = 时长 token `--duration-fast/base/slow` 210/420/700ms + `--motion-delay-scale` 1.4；`comfortable` = 300ms/600ms/1s + 延迟倍率 2 + `--motion-entrance-scale` 1.25（卡片 `.reveal`、表格行 `.reveal-row`、下拉菜单与其逐项在时长之上再乘 —— 这三族跨度长、同时入场项多）。**舒适档只在「全部动画」档生效**（默认/关闭档没有装饰动画可放慢，功能性动画一律用高效档时长，`applyTheme` 里与档位一起判定）。弹窗/抽屉走独立 token `--duration-overlay`（高效 300ms / 舒适 420ms）：每次开关都要等的交互面不再乘 1.4。骨架微光周期（Tailwind `animate-pulse` 固定 2s）与 toast 堆叠时长刻意不参与。
+- **过渡时长的写法**：组件里的过渡时长一律用任意属性写法 `[transition-duration:var(--duration-overlay)]`；**Tailwind v3.4 会静默丢弃 `duration-[var(--x)]` / `duration-[420ms]`**（实测：规则不产出、退化成 `transition-*` 自带 150ms；`w-[var(--x)]` 正常）。卸载/收尾计时与 CSS 同源：`motionDurationMs('--duration-overlay')`（`lib/utils.ts`，读不到回退 300ms），禁止硬编码 300ms —— 舒适档 420/600ms 会被拦腰掐断。
+- **进出过渡的触发**（弹窗/抽屉，`components/ui/dialog.tsx` / `drawer.tsx`）：打开走 `useLayoutEffect` + 强制一次 `getBoundingClientRect()` 把「关闭态」钉进计算值，再切 `entered`；**不要退回双 rAF** —— 组件条件挂载时 `mounted` 与 `entered` 可能被 React 合并进同一次 commit，元素首帧即终态，过渡被吞（历史 bug：右键菜单还在逐项入场时点「属性」，属性抽屉直接弹出无动画）。关闭改为 `transitionend` 驱动卸载 + token 兜底定时（监听 `e.target === panel`，别让子元素过渡冒泡提前卸载）。
 - **进入模糊（主页同款，`all` 档）**：`reveal-in` / `reveal-row-in` 的 from 帧带 `filter: blur(var(--reveal-blur, 8px | 6px))`——只写 from，终点回落到元素自身 filter（普通元素 none、封禁行 grayscale），`.reveal` 8px、密集行 `.reveal-row` 6px。文件卡片视图、个性化设置、仪表盘、系统设置等全部 reveal 消费者随之生效。
 - **菜单同款模糊**：下拉 / 右键 / Select 菜单在 `all` 档给容器叠加 `dropdown-blur-in`（blur 6px，与 `dropdown-in` 双动画不同属性可叠加），逐项淡入继承 `reveal-row-in` 的 from-blur；右键菜单复用 `.animate-dropdown`，无需单独处理。
 - **reveal 原语**：`.reveal`（淡入 + 8px 上浮）与 `.reveal-row`（只淡入——表格行 translate 会撕开表头与首行空隙）；`animation-fill-mode: both` 首帧即占位隐藏，mount 后只播一次，换路由/重建容器才重播。逐项延迟走 CSS 变量 `--reveal-delay`（`revealDelay(index, layer, base)`），**不逐项挂 JS 定时器**。
 - **两层节奏**：卡片/分区步长 `REVEAL_STEP`（40ms），卡内行/表格行步长 `REVEAL_STEP_FINE`（25ms）；卡内元素用 `innerDelay(cardIndex, rowIndex)` 叠加「所在卡片延迟 + `REVEAL_INNER_BASE`(60ms)」，形成先卡片、卡头、再字段行的次序；第 10 项起延迟封顶（`REVEAL_MAX_INDEX`），长列表不拖尾。
 - **落位约定**：页面顶栏/工具栏 = 区块 index 0，主卡片从 1 起；卡片 = `.reveal` + `revealDelay(i)`；表头行 = `reveal-row` + `innerDelay(卡序, 0)`；数据行/表单字段行 = `reveal-row` + `innerDelay(卡序, i+1)`。设置类页面（个性化、系统设置）的卡内字段**逐行渐入**；仪表盘存储行、趋势面板卡内同理。
 - **扁平树视图**：`TreeView` 行带 `reveal-row` + 绝对序延迟，但只在挂载后 ~700ms 内生效（内部 settled 门）——之后滚动/展开新挂载的行不再重播，虚拟滚动不产生鬼影；切换视图（容器 `key={view}` 重建）重新入场。
-- **下拉/Select 弹层**：`all` 档下 `.animate-dropdown` 直接子项逐个淡入（基础 30ms、步长 20ms、第 13 项封顶）；`default` 档规则不存在即自动关停，`off`/`prefers-reduced-motion` 由全局 0.01ms + 延迟归零兜底。
+- **下拉/Select 弹层**：`all` 档下 `.animate-dropdown` 直接子项逐个淡入（基础 30ms、步长 20ms、第 13 项封顶，全部乘 `--motion-delay-scale`：高效 1.4 / 舒适 2）；`default` 档规则不存在即自动关停，`off`/`prefers-reduced-motion` 由全局 0.01ms + 延迟归零兜底。
 - **业务透明度与动画终点**：keyframes **只写 `from`，禁止显式 `to { opacity: 1 }`**——`fill-mode: both` 的动画值在级联中高于普通声明，显式终点会把封禁行的 `opacity-40`、文件卡的 `opacity-40 grayscale` 永久钉成 1（2026-09 实测回归，见 AGENTS.md 常见坑点）；隐式终点回落到元素自身计算值，业务透明度与灰度不受影响。同理适用于任何被 keyframes 覆写的属性（filter/mask 等）。
 - **页面纵向节奏**：卡片间距统一 **16px**（`space-y-4` / `gap-4`），双栏布局横向 **24px**（`lg:gap-6`）——仪表盘与 /admin/settings 同一节奏，新增页面照抄。
 - 图表入场（趋势曲线的擦除式 reveal）由 EvilCharts 自带，不属于本原语；两套动画并存时图表绘制归图表层管。
@@ -367,9 +370,11 @@ flowchart LR
 - 卡片紧凑排版；快速操作整合三点下拉；列表行 hover 与文件页同一压暗效果；卡片与列表共用一套「分享设置徽章组」。
 - 创建分享入口已移除（`?create=` 参数与创建弹窗一并删除）；入口在文件页的选择集上（见下一节）。
 
-### `components/settings/BlurSlider.tsx` — 离散档位滑块
+### `components/ui/slider.tsx` — 滑块（全部滑块单文件收敛）
 
-- 原生 range `appearance:none` 全透明（消除 accent-color 原生渲染），仅承担拖拽/键盘；填充条/刻度点/滑块/标签自绘且与圆心对齐；填充最右对齐滑块圆心；点击标签/轨道/拖拽吸附/方向键 + `aria-valuetext`；档位描述随选中变化。新增离散档位设置复用此模式。
+- 全部滑块（`BlurSlider` / `MotionSlider` / `FilesPerRowSlider` 与基础 `PillSlider`）收敛在这一个文件；不同位置引入传不同标签文案与档位区间，锚点数量随档位数自动生成。
+- 视觉（复刻 Breno Lasserre「You gotta love sliders」的 pill slider，按项目规范调整）：圆角矩形轨道 `rounded-md`（与输入框/按钮同半径）+ 左侧随值生长的同高浅强调色填充（`bg-primary/20`，比强调色浅一档）+ 填充边界的细竖条拇指（`h-3.5 w-1`）+ 档位锚点（只标可落值的档位，统一 `bg-foreground/15`，不做白色锚点）；标签与数值内嵌轨道两侧（左 `pl-5` 右 `pr-4`）。
+- 交互：原生 range `appearance:none` 全透明承担拖拽/键盘与无障碍（`.pill-slider-*` 见 `index.css`）；0 档贴左、最大档贴右；hover 轨道和填充轻微压暗、拇指加深；按住时只加深拇指并保持轨道尺寸稳定，松开立即回到 hover/rest 层次，不做整轨道外扩或文字漂移；填充与拇指用短促的 ease-out 位移过渡；`aria-valuetext` 随档位文案；档位描述随选中变化。新增滑块复用此文件。
 
 ### `components/ui/checkbox.tsx` — 复选框
 
@@ -408,7 +413,7 @@ flowchart LR
 - **卡片每行数量**：外观配置按设备分值存两份——`filesPerRow`（桌面，默认 6，可调 4–8）与 `filesPerRowMobile`（手机，默认 3，可调 2–4）；「个性化设置」的滑块（`FilesPerRowSlider`）改的就是当前设备的值，网格在所有断点读 `--files-cols`。
 - **OTP 六格输入**：`InputOTP` 单元格与项目其它控件同一玻璃配方（`glass-control bg-card/[var(--glass-alpha,0.72)]`，即搜索框那套：透明度随 `--glass-alpha`、模糊随 `--glass-blur`，off 档实底并关停模糊），数字居中对齐；**未输入时不激活任何单元格**（不再默认高亮首格）；**填满六位后继续输入被忽略**（此前末格再输入会被当成粘贴、整体被覆盖成最后两位，表现为数字“轮转”到首格——已修，`input-otp.test.tsx` 回归覆盖）；改密时验证码在左、`发送验证码` 按钮右对齐（不与格子相连）。
 - **表格高度**：后台/设置表格不再各自写 `max-h-[calc(100vh-{余量})]` 上限，统一走有界高度链（`flex-1 min-h-0`）——日志页在内，所有表格吃工具栏与分页之外剩下的全部高度。
-- **个性化设置版式**：主题三选一一行三列（选项不带描述文案，避免窄列折行）、右键单击行为两选一一一行两列、自定义背景（无/图片）一行两列；改密的邮箱验证码用 `InputOTP` 六位分格输入；「每行卡片数」滑块与「模糊效果」滑块共用同一套离散滑块外观（`.discrete-slider-*`：胶囊轨道 + 渐入强调色填充 + 刻度点 + 白色圆形滑块 + 顶部标签 + 底部描述）。
+- **个性化设置版式**：主题三选一一行三列（选项不带描述文案，避免窄列折行）、右键单击行为两选一一一行两列、自定义背景（无/图片）一行两列；改密的邮箱验证码用 `InputOTP` 六位分格输入；三个滑块顺序为**每行卡片数（置顶）→ 模糊强度 → 动画效果**，共用 `components/ui/slider.tsx` 的同一套滑块外观（圆角矩形轨道 + 浅强调色填充 + 细条拇指 + 档位锚点，标签/数值内嵌，见「`components/ui/slider.tsx` — 滑块」一节）；动画效果下方挂**动画速度二选一**（高效/舒适，与主题选择同款行内两列，选项带一句短描述），**仅 `全部动画` 档可见**，切到默认/关闭档即隐藏（设定仍保留）。
 - **设置与管理页不再显示左上角大标题**（「设置」/「管理控制台」已移除，仅保留左侧导航与页面内容）。
 - **玻璃内绝对定位图标必须 `z-10` + `pointer-events-none`**：搜索框的放大镜画在玻璃填充 input 之前会被其 backdrop-filter 采样消失（历史 bug：搜索图标不可见）。
 - **Select 触发器同普通文本框**（`bg-transparent` + `dark:bg-input/30`，无自绘填充）：玻璃感来自所在容器（卡片/弹窗/面板本体），自身叠白底会在白色表面上变成死白块（历史 bug：语言/预设下拉在浅色卡片上像实底）。独立贴在页面上的字段（文件页搜索框）才用 `SEARCH_INPUT_GLASS` 显式玻璃。
@@ -426,6 +431,9 @@ flowchart LR
 ### `components/ui/skeleton.tsx` — 骨架屏
 
 - 容器一律 `glass-surface glass-blur` + 圆角边框（三档门控）。
+- **最短驻留 50ms**（`hooks/useMinLoading.ts` 默认参数，全部调用点吃默认值）：数据到达更快时骨架多留到 50ms 防闪，慢于 50ms 立即切换、不额外等待；它只影响「骨架→内容」的切换时机，不延迟请求，也不参与动画速度两档（它不是动画时长）。`Files` 树视图 / 公开浏览 / 设置类表单骨架不走该钩子（`isLoading` 直接切）。
+- **`AppSkeleton`（认证加载 / 路由懒加载）根元素不铺 `bg-background`**：实底会把壁纸与玻璃观感一起盖掉（历史 bug：等出来的是无背景图无模糊的实底）。外观设置在 `main.tsx` 里以副作用 import `./stores/theme` 提前 applyTheme，保证这段等待也长在用户自己的壁纸/明暗/模糊上（此前 `stores/theme` 只被懒加载页面引入，骨架期 `data-motion` 等属性都还没落地）。
+- 微光周期固定 `animate-pulse` 2s，不随动画档位/速度变化。
 - **例外——`TableSkeleton` 行条完全透明 + `border-b` 分隔**，模仿真实表格行；玻璃由所在卡片承担。禁止给表体内嵌的骨架行再叠 `glass-surface`：同色玻璃嵌套会复合成近不透明白板（三层 card/α 叠加 ≈0.97，历史 bug：表格骨架整卡发白）。
 - 条纹基元 `Skeleton` 用中性 `bg-foreground/10`（亮暗主题自适应），不用实心 `bg-accent`。
 

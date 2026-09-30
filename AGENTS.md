@@ -484,6 +484,9 @@ wrangler deploy
 
 - **玻璃拟态**：表面样式只消费 `--glass-alpha` / `--glass-blur` 三档门控（off/default/frosted），禁止硬编码模糊或透明度。
 - **动画三档**：外观档位落 `<html data-motion>`（off/default/all），CSS 统一门停（`index.css`），组件零分支；入场动画用 `components/ui/reveal.tsx` 原语（`.reveal`/`.reveal-row` + `revealDelay`/`innerDelay` 两层节奏），卡片纵向间距 16px、双栏横向 24px；禁止逐项挂 JS 定时器。
+- **动画速度两档**：`<html data-motion-speed>`（高效/舒适），**仅「全部动画」档可见且生效**（默认/关闭档回落高效）；CSS 只改时长 token 与错峰倍率，入场族（卡片/表格行/下拉）额外乘 `--motion-entrance-scale`；弹窗/抽屉走独立 `--duration-overlay`（每次开关都要等，不吃放慢）。组件里的过渡时长必须写 `[transition-duration:var(--duration-overlay)]`——**Tailwind v3.4 会静默丢弃 `duration-[...]`，退化成 150ms**；卸载计时用 `motionDurationMs()`，禁止硬编码 300ms。
+- **过渡触发**：弹窗/抽屉打开走 `useLayoutEffect` + 强制 `getBoundingClientRect()` 再切 `entered`（双 rAF 会被 React 合并 commit 吞掉动画）；关闭靠 `transitionend` 卸载 + token 兜底。
+- **骨架屏**：最短驻留 50ms（`useMinLoading` 默认值，只防闪、不延迟请求、不参与动画速度）；容器一律 `glass-surface glass-blur`，`AppSkeleton` 不得铺实底 `bg-background`（会盖掉壁纸/玻璃），外观设置在 `main.tsx` 副作用 import `stores/theme` 启动即落地。
 - **卡中卡原则**：卡片内部尽量不再用卡片——卡内分区一律分隔线（`border-t pt-3` / 容器 `divide-y`），禁止在 `Card` 内嵌边框盒/子卡；详细规则见 docs/UI_CN.md「卡中卡原则」。
 - **弹出菜单**：Dropdown / Select / 右键菜单必须 Portal 到 body 并复用 `DROPDOWN_MENU_CLASS` / `DROPDOWN_ITEM_CLASS`；禁止原生 `<select>`。
 - **破坏性操作**：必须走 `ConfirmDialog` + success/error toast；禁止原生 `confirm()`。
@@ -626,6 +629,40 @@ const canonicalPath = normalizePath(req.query.path);
 ```
 给带业务透明度的元素接入入场动画前，先确认动画终点不会钉死它；同类陷阱适用于 grayscale/filter 等任何被 keyframes 覆写的属性。
 
+### Tailwind `duration-[...]` 静默失效
+
+❌ **错误**：用任意值语法消费时长 token
+```html
+<!-- Tailwind v3.4 会把整条候选丢弃：规则不产出，过渡退化成 transition-* 自带的 150ms。
+     表现是「弹窗/抽屉没有动画」或一闪而过（w-[var(--x)] 这类任意宽度是正常的） -->
+<div class="transition-[opacity,transform] duration-[var(--duration-base)] ease-out" />
+```
+
+✅ **正确**：用任意属性写法（项目内已有 toast 的 `[transition-timing-function:…]` 同款）
+```html
+<div class="transition-[opacity,transform] [transition-duration:var(--duration-overlay)] ease-out" />
+```
+组件里的卸载/收尾计时必须与 CSS 同源（`motionDurationMs('--duration-overlay')`，`lib/utils.ts`），禁止硬编码 300ms —— 动画速度舒适档 420/600ms 会被拦腰掐断。
+
+### 过渡被吞（React 合并 commit）
+
+❌ **错误**：打开用双 `requestAnimationFrame` 切 `entered`
+```tsx
+// 条件挂载时 setMounted(true) 与 setEntered(true) 可能被 React 合并进同一次 commit，
+// 元素首帧即终态 → 过渡不触发（右键菜单还在逐项入场时点「属性」，抽屉直接弹出无动画）
+requestAnimationFrame(() => requestAnimationFrame(() => setEntered(true)));
+```
+
+✅ **正确**：`useLayoutEffect` + 强制一次布局，把「关闭态」钉进计算值再切
+```tsx
+useLayoutEffect(() => {
+  if (!open || !panelRef.current) return;
+  void panelRef.current.getBoundingClientRect();
+  setEntered(true);
+}, [open, mounted]);
+```
+关闭侧用 `transitionend` 驱动卸载（过滤 `e.target === panel`，否则子元素过渡会冒泡提前卸载）+ token 兜底定时。
+
 ---
 
 ## Emergency Procedures（应急预案）
@@ -704,3 +741,6 @@ const canonicalPath = normalizePath(req.query.path);
 - 2026-09-26：存储拓扑与访问控制专项审计修复批次（`docs/STORAGE_TOPOLOGY_AUDIT.md` / `docs/ACCESS_CONTROL_AUDIT.md`）：存储侧——挂载放置统一校验（同路径 400、嵌套 priority 不变量、父挂载数据遮蔽 409、平局稳定决胜）、挂载点目录行固定身份 `mountfolder:<mountId>`（不复用/不误删用户行）、Provider 删除事务内全引用检查 + 迁移 0006 外键 RESTRICT、池成员移除前检查与差异化 UPSERT（保留 quota_reserved）、挂载配置单事务、对账新增成员级预留重算；**合成根**（无 `/` 挂载时文件页/树、公开浏览、AList fs/list、WebDAV PROPFIND 聚合顶层挂载为虚拟目录，虚拟项 `vroot:` 全入口不可操作+前端门禁）；failover 候选桶逐桶复核两级矩阵（未传角色维持原行为）、`MAX_CANDIDATES`→20、对象 sha256 元数据与回退比对；去重收敛到同挂载（`blob_objects` 复合主键 (hash, mount_id)，迁移 0007）；MOVE 走完整权限上下文、S3 LIST 逐文件桶级过滤；目录删除按属主分组扣配额；删用户登记孤儿对象队列；`publicDomain` 池一致性校验 + 配置警示。访问控制侧——新用户 defaultPath 继承角色默认（PERM-01 方案 A）、列表/树统一 §4.4a、树逐目录复核、全仓前缀 LIKE 转义（`escapeLikePattern`）、分享创建权限基准改全路径、AList 直链补封禁门禁、晚绑定出口补挂载级矩阵、公开列表过滤封禁项、语义入文档。新增测试 10 文件（workers 61 文件/548 用例、前端 6 文件/38 用例全绿）；docs/ARCHITECTURE/DEPLOYMENT/DEVELOPMENT 与 PROGRESS 同步。
 - 2026-09-26：全量代码与架构审计修复批次（`docs/FULL_AUDIT_REPORT_2026-09-26.md`）：P0/P1/P2 代码类修复全部落地。上传侧——前端消费 multipart `parts`（预签名逐片 PUT 收 ETag / Worker 分片端点带 CSRF，跨源预签名不再带 credentials），服务端完成按「服务端记录 → 客户端上报 → 桶 `ListParts`」取信，`upload-complete` 改条件 UPDATE 原子领取（`complete_claimed_at`，失败释放、崩溃 5 分钟可接管）。存储与移动——Provider 物理定位字段（bucket/endpoint/region/pathPrefix）有物理引用时 409；跨挂载移动同时预留目标挂载 `max_storage` 与成员容量并在提交事务内转已用（不足 413）；目标冲突文件行 + 目录行双检；blob 跨挂载移动与跨挂载文件夹移动同样 422；Move 统一「属主不变」（目标 user_space 按 `file.ownerId` 判定）；目录重命名在同一事务迁移整棵子树（前缀转义 + 嵌套挂载点拒绝），顺带修复文件改名 `path` 写成自身全路径的既有缺陷；`MountQuotaRepo.transferUsage` 死代码删除。生命周期——`blob_gc` 迁移 0008 升级为 `(hash, mount_id)` 复合键；过期分片会话清扫终止 Provider multipart upload（失败入 `multipart_abort` 队列，`cleanupMultipartAborts` 重试）；池成员移除检查补 `blob_objects`/`blob_gc`；挂载删除改为「无文件且无在途会话」条件 DELETE；直写/移动的成员预留登记 `quota_reservations` 台账，对账合并「会话 + 台账」两来源；flat 模式上传需要建祖先目录的路径 403。安全——分享验证按 IP+分享 5 次/分钟与 9 次失败冷却（`security-harden`）；AList `fs/get` 签名 24 小时 TTL；S3 `UNSIGNED-PAYLOAD` 强制 `Content-Length` ≤100 MiB（缺失 411）；注册 OTP 改 CSPRNG。审计日志分层（DESIGN-NEW-07）——迁移 0009 补 `(created_at,id)`/`(action,created_at,id)` 索引并删左前缀重复单列索引；管理列表显式列 + 游标分页（去 `COUNT`/`OFFSET`，响应 `nextCursor/hasMore`）；超保留期（`audit_retention_days`，默认 90 天）的整小时窗口导出 NDJSON.gz 到 R2 `AUDIT_BUCKET`（manifest + rollup 同批落库、校验后分批清理，未配置冷层只读不删），新增归档清单/下载端点（读取记 `audit_archive_read`），趋势合并热表 + rollup。前端——Tooltip Portal 化 + 视口翻转/夹紧 + 折行；日志页游标分页翻页。记录项：SEC-NEW-04（自由模式临时主体回收）、DESIGN-NEW-03（multipart 内容寻址边界，已入文档）、R-2（round-robin 计数器 KV 非原子）、DESIGN-NEW-05（不引入 Web Locks）。测试：workers 68 文件 / 583 用例、前端 7 文件 / 43 用例全绿；覆盖率门禁与构建通过；docs/API(_CN)、ARCHITECTURE(_CN)、DEPLOYMENT(_CN)、PROGRESS 同步。
 - 2026-09-29：管理端表格修复批次：全部文件/日志审计双表外壳 Card 补 `gap-0`（基类 `gap-4` 在表头表与首行之间撕出 16px 空隙，即「首行与表头之间的空隙」bug）；行/表头网格常量（`ROW_GRID`/`LOG_ROW_GRID`）加 `items-center`（grid 行默认 stretch，字节/时间列换行时其余列内容贴顶，现垂直居中）；docs/UI(_CN).md 数据表格规范补「双表外壳 gap-0」「行内垂直居中」两条并同步 AGENTS.md 前端 UI 规则摘要与双表正确示例
+- 2026-09-29：滑块复刻重构（单文件 pill slider）：三个外观设置滑块（模糊强度/动画效果/每行卡片数）收敛到 `components/ui/slider.tsx`（`BlurSlider`/`MotionSlider`/`FilesPerRowSlider` + 基础 `PillSlider`），视觉复刻 Breno Lasserre「You gotta love sliders」并按项目规范调整——圆角矩形轨道（`rounded-md`，与输入框同半径）+ 左侧同高浅强调色填充（`primary/20`）+ 细竖条拇指 + 档位锚点（只标可落值档位、非白色），标签/数值内嵌轨道两侧，0 档贴左、最大档贴右；hover 轨道压暗、按住拇指 `scale(1.3)`、位移 240ms 回弹缓动到顶/到底 Q 弹回弹；模糊滑块粒子迸发移除，`.discrete-slider-*` CSS 更名 `.pill-slider-*`；docs/UI(_CN).md「滑块」小节与 docs/PROGRESS.md 同步
+- 2026-09-29：大文件上传实测与修复批次：动态分片大小（`uploads/handlers.ts` 新增 `resolveMultipartPartSize`——分片模式按 `max(8 MiB, ceil(fileSize / MAX_MULTIPART_PARTS=650) 向上取整 MiB)` 计算分片，把大文件分片数压在 S3 兼容引擎安全上界内，VersityGW 1.8.0 实测 650 片合并 OK / 800 片 InternalError）；S3 provider `CompleteMultipartUpload` / `ListParts` 超时从 15s 元数据档改为 5 分钟 `MERGE_TIMEOUT_MS`（合并时长随总字节数线性增长，593 片 6.4 GiB 合并 58s，15s 必然 AbortError→502）；新增 `scripts/lab/16_big_iso.py`（任意本地大文件全链路实测：会话→逐片→合并→元数据→网关下载 SHA-256 对比→清理，支持 S3 预签名/R2 绑定两种路径与续传）与 `scripts/lab/mpu_probe.ts`（直连引擎探测 multipart-complete 分片数上限）；新增 `workers/tests/upload-part-size.test.ts` 5 例；实测 Win11 6.36 GiB / 593 片（11 MiB）经 S3 预签名全链路通过（上传 49 MiB/s、合并 58s、下载 59 MiB/s、SHA-256 一致），R2 绑定 815 片 6.4 GiB 同样通过；docs/ARCHITECTURE(_CN)/API(_CN)/LAB_TEST_GUIDE/LAB_TEST_REPORT(§19.2)/PROGRESS 同步
+- 2026-09-30：动画速度两档 + 等待体验批次（§36）：个性化设置新增**动画速度**二选一（高效/舒适，与主题选择同款行内两列，**仅「全部动画」档可见且生效**——默认/关闭档回落高效时长），落在 `<html data-motion-speed>`；CSS 只在舒适档覆写 token（时长 300ms/600ms/1s、错峰倍率 2、入场族 `.reveal`/`.reveal-row`/下拉菜单与其逐项额外乘 `--motion-entrance-scale` 1.25），高效档 210/420/700 + 1.4；弹窗/抽屉改走独立 `--duration-overlay`（高效 300ms / 舒适 420ms），每次开关都要等的交互面不吃放慢；三个滑块顺序改为**每行卡片数 → 模糊强度 → 动画效果**；修两处真 bug——**Tailwind v3.4 静默丢弃 `duration-[...]`**（弹窗/抽屉/指示器 7 处退化成 150ms，「抽屉直接弹出没有动画」的根因，改用 `[transition-duration:var(--duration-overlay)]`；toast 的 `duration-[350ms]` 同类失效一并修正）与**过渡被 React 合并 commit 吞掉**（条件挂载时 `mounted`/`entered` 同一次 commit → 元素首帧即终态；打开改 `useLayoutEffect` + 强制 `getBoundingClientRect()` 钉住关闭态，关闭改 `transitionend` 驱动卸载 + `motionDurationMs()` 兜底，实测菜单入场中延迟 0/30/60/150ms 点「属性」4/4 完整播放）；骨架屏最短驻留 120ms→**50ms**，`AppSkeleton` 去掉实底 `bg-background`，`main.tsx` 副作用 import `stores/theme` 让外观设置启动即落地（认证/懒加载等待期间也长在用户壁纸上）；骨架微光保持 `animate-pulse` 2s 不变。docs/UI(_CN).md 新增「动画速度两档」「过渡时长的写法」「进出过渡的触发」「骨架屏驻留与 AppSkeleton」条目并更新个性化版式与下拉延迟倍率，AGENTS.md 前端 UI 规则摘要补三条、常见坑点补「Tailwind duration-[...] 静默失效」「过渡被吞（React 合并 commit）」，docs/PROGRESS.md 记 §36 并刷新基线（前端 10 文件 / 59 用例）。
