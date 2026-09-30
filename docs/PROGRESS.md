@@ -271,10 +271,42 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 
 实测（本地 lab，Chromium）：默认关闭下 samples 目录零媒体请求；开启后 images 文件夹 17/18 缩略出图（1 个 6 字节损坏 fixture 正确回退图标）；SPA 离开再进入新增下载请求 0；适应档放大后舞台双向可滚动且 `previewSizeMode` 保持 fit；original 档 1800×600 原始像素可滚动；上一张/下一张顺序切换；用户菜单各区按设计渲染。
 
+### 2026-09-29 追加五：滑块复刻重构（单文件 pill slider）
+
+| 项 | 修复 | 关键落点 |
+| :--- | :--- | :--- |
+| 视觉复刻 | 复刻 Breno Lasserre「You gotta love sliders」的 pill slider 并按项目规范调整：圆角矩形轨道 `rounded-md`（与输入框/按钮同半径）+ 左侧同高浅强调色填充（`bg-primary/20`，比强调色浅一档）+ 细竖条拇指（`h-3.5 w-1`）+ 档位锚点（只标可落值档位，`bg-foreground/15`，不做白色锚点）；标签/数值内嵌轨道两侧（`pl-5`/`pr-4`）；0 档贴左、最大档贴右（两端仅留半拇指宽全见内缩） | `components/ui/slider.tsx`；`index.css` `.pill-slider-*` |
+| 单文件收敛 | 全部滑块收敛 `ui/slider.tsx`（`BlurSlider`/`MotionSlider`/`FilesPerRowSlider` + 基础 `PillSlider`），不同位置引入传不同标签文案与档位区间、锚点数量随档位生成；删除 `components/settings/` 三个滑块文件，Personalization 移除外层 Label（标签内嵌胶囊）并按端别传标签文案；孤儿 i18n 键 `settings.blurLevel`/`settings.motionLevel` 删除 | `components/ui/slider.tsx`；`pages/settings/Personalization.tsx`；`lib/i18n/zh.ts` + `en.ts` |
+| 交互状态 | hover 轨道/填充轻微压暗并加深拇指；按住只加深拇指，轨道尺寸、标签和数值保持稳定；松开回到 hover/rest 层次；填充与拇指使用短促 ease-out 位移，不做橡皮筋外扩或越界回弹 | `index.css`；`components/ui/slider.tsx` |
+
+实测（WSL）：前端 `tsc --noEmit` 与 `vite build` 通过；新增 slider 回归测试覆盖 range 无障碍值、离散档位、按下/松开状态和边界夹取。当前 WSL Node 18 的 jsdom 依赖触发 `ERR_REQUIRE_ESM`，Vitest 无法启动 worker，测试执行受环境依赖阻断。
+
+### 2026-09-29 追加六：大文件上传实测与修复（动态分片 + 合并超时）
+
+| 项 | 修复 | 关键落点 |
+| :--- | :--- | :--- |
+| 动态分片大小 | 进入分片模式后按 `max(8 MiB, ceil(fileSize / MAX_MULTIPART_PARTS=650) 向上取整 MiB)` 计算分片大小——把大文件分片数压在 S3 兼容引擎的安全分片数上界内（VersityGW 1.8.0 实测 650 片合并 OK / 800 片 `InternalError`，815 片经应用层合并 502）；小文件（≤650×8 MiB）保持 8 MiB 不变，前端按 `ceil(size/totalParts)` 推导切片无需改动 | `uploads/handlers.ts` 新增 `resolveMultipartPartSize` + `MAX_MULTIPART_PARTS`；`workers/tests/upload-part-size.test.ts` 5 例 |
+| 合并超时 | S3 provider `CompleteMultipartUpload` / `ListParts` 从 15s `METADATA_TIMEOUT_MS` 改为 5 分钟 `MERGE_TIMEOUT_MS`——合并时长随总字节数线性增长（593 片 6.4 GiB 合并实测 58s），15s 档必然 `AbortError: Request aborted` → 502 | `storage/s3.ts` |
+| 实测脚本 | 新增 `scripts/lab/16_big_iso.py`（任意本地大文件全链路：会话→逐片→合并→元数据→网关下载 SHA-256 对比→清理；S3 预签名 / R2 绑定双路径、分片重试、`--keep`）与 `scripts/lab/mpu_probe.ts`（直连引擎探测 multipart-complete 分片数上限）；docs/LAB_TEST_GUIDE 增 §12 用法 | `scripts/lab/` |
+| 实测结论 | Win11 6.36 GiB / 593 片（11 MiB）S3 预签名全链路通过：上传 49 MiB/s、合并 58s、网关下载 59 MiB/s、SHA-256 一致；R2 绑定 815 片 6.4 GiB 同样全链路通过（SHA-256 一致）；修复前 815 片合并 502（15s AbortError） | docs/LAB_TEST_REPORT §19（2026-09-29 追加） |
+
+### 2026-09-30 追加：动画速度两档 + 等待体验（§36）
+
+| 项 | 变更 | 关键落点 |
+| :--- | :--- | :--- |
+| 动画速度两档 | 个性化设置「动画效果」下方新增**高效/舒适**二选一（与主题选择同款行内两列，**仅「全部动画」档可见**）；落在 `<html data-motion-speed>`，CSS 只在舒适档覆写 token：时长 `--duration-fast/base/slow` 300ms/600ms/1s（高效 210/420/700）、错峰倍率 2（高效 1.4）、入场族（卡片 `.reveal`、表格行 `.reveal-row`、下拉菜单与其逐项）在时长之上再乘 `--motion-entrance-scale` 1.25；**默认/关闭档一律高效时长**（`applyTheme` 与档位一起判定） | `stores/theme.ts`、`index.css`、`pages/settings/Personalization.tsx`、`components/ui/slider.tsx` 未改、i18n 两份 |
+| 每行卡片数置顶 | 外观卡内三个滑块顺序改为 **每行卡片数 → 模糊强度 → 动画效果**（速度开关挂在动画效果之下），`innerDelay` 序号随之平移 | `pages/settings/Personalization.tsx` |
+| 弹窗/抽屉独立时长 | 新增 `--duration-overlay`（高效 300ms / 舒适 420ms）：每次开关都要等的交互面不再吃 1.4 倍放慢；遮罩与面板均改用它，卸载计时改 `motionDurationMs('--duration-overlay')`（原硬编码 `EXIT_MS = 300` 会掐断舒适档）；tabs/侧栏指示器仍走 `--duration-base` | `index.css`、`components/ui/dialog.tsx`、`drawer.tsx`、`lib/utils.ts`（新增 `motionDurationMs`） |
+| 弹窗/抽屉过渡被吞修复 | 打开改为 `useLayoutEffect` + 强制一次 `getBoundingClientRect()` 把「关闭态」钉进计算值再切 `entered`——双 rAF 挡不住 React 调度：条件挂载时 `mounted` 与 `entered` 可能合并进同一次 commit，元素首帧即终态（右键菜单还在逐项入场时点「属性」必现）；关闭改 `transitionend` 驱动卸载 + token 兜底（过滤 `e.target === panel`） | `components/ui/dialog.tsx`、`drawer.tsx` |
+| Tailwind 任意时长类失效 | 实测 Tailwind v3.4 **静默丢弃** `duration-[var(--x)]` / `duration-[420ms]`（规则不产出 → 退化成 `transition-*` 自带 150ms，"弹窗没有动画"的根因）；7 处改用任意属性写法 `[transition-duration:var(--duration-overlay)]`；toast 的 `duration-[350ms]` 同类失效一并修正为 `[transition-duration:350ms]` | `components/ui/{dialog,drawer,tabs,toast}.tsx`、`components/ui/indicator.ts`、`components/layout/AppShell.tsx` |
+| 骨架屏驻留 | `useMinLoading` 默认最短驻留 120ms → **50ms**（只做防闪底噪；数据更晚到达仍立即切换，不延迟请求） | `hooks/useMinLoading.ts` |
+| 骨架屏表观 | `AppSkeleton` 根元素去掉实底 `bg-background`（实底会盖掉壁纸与玻璃观感）；`main.tsx` 以副作用 import `./stores/theme` 让外观设置**在启动即 applyTheme**——认证检查/路由懒加载期间的等待也长在用户自己的壁纸、明暗与模糊上（此前主题只在懒加载页面里落地）；骨架微光保持 `animate-pulse` 固定 2s，不随档位变化 | `components/ui/skeleton.tsx`、`main.tsx` |
+| 实测 | 高效遮罩/面板 0.3s、舒适 0.42s（`transitionend.elapsedTime` = 420ms）、卸载均晚于过渡结束；菜单入场中（延迟 0/30/60/150ms）点「属性」4/4 次完整播放；骨架驻留实测 48ms（即时回包）、慢请求（166ms）无附加等待；舒适档在 `default`/`off` 档回落为 `data-motion-speed="efficient"` | 浏览器实测 + 识图核对外观卡顺序 |
+
 ## 当前基线
 
-- 后端：71 个测试文件 / 607 个 Vitest 用例通过；`tsc --noEmit` 干净；`wrangler deploy --dry-run` 成功（含 F-01 alias 后 bundle 无 DOMParser 引用）。
-- 前端：9 个测试文件 / 55 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.3% functions / 93.3% lines）；构建成功；`tsc --noEmit` 干净。
+- 后端：73 个测试文件 / 617 个 Vitest 用例通过；`tsc --noEmit` 干净；`wrangler deploy --dry-run` 成功（含 F-01 alias 后 bundle 无 DOMParser 引用）。
+- 前端：10 个测试文件 / 59 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.33% functions / 93.33% lines）；构建成功；`tsc --noEmit` 干净。
 - 语言：中文 + 英文。
 
 ## 即将规划
