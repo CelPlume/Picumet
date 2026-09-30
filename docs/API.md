@@ -1039,6 +1039,8 @@ Creates an upload session and atomically reserves quota. Files larger than 100 M
 
 When the provider supports multipart pre-signed URLs, the response also returns `parts`, an array of `{ partNumber, url }` entries for direct concurrent upload. Otherwise `uploadMode` is `worker` and you stream parts through the Worker.
 
+**Dynamic part size**: once in multipart mode, the part size is `max(8 MiB, ceil(fileSize / 650) rounded up to whole MiB)` (650 is the measured safe part-count ceiling for S3-compatible engines — some gateways such as VersityGW fail merges beyond roughly 800 parts), and `totalParts = ceil(fileSize / partSize)`. Slicing the file with `ceil(fileSize / totalParts)` matches the server exactly; small files (≤650 × 8 MiB) keep the 8 MiB parts unchanged. The R2 binding allows 10000 parts and also benefits from fewer, larger parts.
+
 #### Errors
 
 | Error Code | HTTP Status | Cause | Recommended Action |

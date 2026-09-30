@@ -26,6 +26,22 @@ import type { UploadSessionRow } from '../../db/row';
 const SESSION_TTL = 60 * 60; // 1 小时
 const PART_SIZE = 8 * 1024 * 1024; // 分片大小 8MB
 const MULTIPART_THRESHOLD = 100 * 1024 * 1024; // 100MB 自动分片
+/**
+ * 分片数上限（引擎安全档）。S3 规范允许 10000 片，但部分 S3 兼容网关的
+ * CompleteMultipartUpload 在远低于规范上限的分片数就会失败（实测 VersityGW 1.8.0：
+ * 650 片 OK、800 片 InternalError，见 docs/LAB_TEST_REPORT_2026-09-26.md §19.2）。
+ * 大文件按 ceil(fileSize / MAX_MULTIPART_PARTS) 放大分片（向上取整 MiB），把分片数
+ * 压在该档内；小文件保持 8 MiB 默认值不变。R2 原生绑定上限 10000 片，同样受益于
+ * 更少的分片数（合并更快）。
+ */
+const MAX_MULTIPART_PARTS = 650;
+
+/** 会话分片参数：返回分片大小与总片数（非分片返回 undefined）。MiB 向上取整保证与前端 `ceil(size/totalParts)` 推导一致 */
+export function resolveMultipartPartSize(fileSize: number): number | undefined {
+  if (fileSize <= MULTIPART_THRESHOLD) return undefined;
+  const scaled = Math.ceil(fileSize / MAX_MULTIPART_PARTS / (1024 * 1024)) * (1024 * 1024);
+  return Math.max(PART_SIZE, scaled);
+}
 /** 完成领取的残留窗口——崩溃请求的领取超过此时长后可被重试请求接管 */
 const COMPLETE_CLAIM_STALE_MS = 5 * 60_000;
 
@@ -127,7 +143,8 @@ uploadRoutes.post('/upload-session', async (c) => {
 
     // 判断是否分片
     const useMultipart = fileSize > MULTIPART_THRESHOLD || (parsed.data.partCount ?? 0) > 1;
-    const totalParts = useMultipart ? Math.ceil(fileSize / PART_SIZE) : undefined;
+    const partSize = useMultipart ? (resolveMultipartPartSize(fileSize) ?? PART_SIZE) : PART_SIZE;
+    const totalParts = useMultipart ? Math.ceil(fileSize / partSize) : undefined;
 
     if (useMultipart) {
       const res = await provider.createMultipartUpload(objectKey, mimeType);
@@ -469,9 +486,11 @@ uploadRoutes.post('/upload-complete', async (c) => {
       finalEtag = merged.etag ?? finalEtag;
     } catch (err) {
       await failSession(db, session);
-      // LAB F-12：上游错误文本（SDK 异常）不得直出——稳定码 + 通用文案，细节只进服务端日志
+      // LAB F-12：上游错误文本（SDK 异常）不得直出——稳定码 + 通用文案，细节只进服务端日志；
+      // 开发环境追加 detail（与 shared/response 的 dev 回显约定一致），便于定位引擎侧合并失败
       console.error(`[upload] multipart merge failed session=${sessionId}`, err);
-      throw new ApiError(502, 'UPSTREAM_ERROR', '合并分片失败，请稍后重试');
+      const detail = (c.env as Env).ENVIRONMENT !== 'production' && err instanceof Error ? `：${err.name}: ${err.message}` : '';
+      throw new ApiError(502, 'UPSTREAM_ERROR', `合并分片失败，请稍后重试${detail}`.slice(0, 300));
     }
     const finalHead = await provider.headObject(physicalKey);
     if (!finalHead || finalHead.size !== session.fileSize) {
@@ -641,4 +660,4 @@ function joinPath(base: string, name: string): string {
   return base === '/' ? `/${name}` : `${base}/${name}`;
 }
 
-export { MULTIPART_THRESHOLD, PART_SIZE };
+export { MULTIPART_THRESHOLD, PART_SIZE, MAX_MULTIPART_PARTS };

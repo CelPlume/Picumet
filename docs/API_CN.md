@@ -1039,6 +1039,8 @@ curl -X POST https://{domain}/api/files/batch \
 
 提供商支持分片预签名时，响应还会返回 `parts`（`{ partNumber, url }` 数组），供客户端并发直传。否则 `uploadMode` 为 `worker`，需要走 Worker 代理上传分片。
 
+**动态分片大小**：进入分片模式后，分片大小按 `max(8 MiB, ceil(fileSize / 650) 向上取整 MiB)` 动态计算（650 为 S3 兼容引擎实测安全分片数上界——部分网关如 VersityGW 在约 800 片以上合并失败），`totalParts = ceil(fileSize / 分片大小)`。客户端按 `ceil(fileSize / totalParts)` 切片即可与之一致；小文件（≤650×8 MiB）保持 8 MiB 分片不变。R2 绑定路径分片数上限 10000，同样受益于更少的分片数。
+
 #### 错误
 
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |

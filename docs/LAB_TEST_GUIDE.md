@@ -147,6 +147,8 @@ python3 scripts/lab/run_all.py
 | `13_guest.py` | — | — | 游客开关、受保护 API/协议面、直链与签名、文件级 `guest_visibility`、匿名分享、gallery、`role='guest'` 规则与 deny 压制 |
 | `14_samples.py` | 四桶 | `--skip-isos` | 样本播种（图片/视频/缩略图/文档/ISO）、落桶核对、保留策略 |
 | `15_limits.py` | 四桶（限速用 API Key） | `--prepare` / `--phase dev\|prod` / `--restore` | 全局限流、下载限速、传输并发、认证限流、**直链是否受限**（两阶段，见 §7） |
+| `16_big_iso.py` | — | `--file <路径>`（可重复）/ `--mount root\|dedup` / `--keep` / `--username --password` | 大文件全链路实测：会话 → 逐片上传（预签名直传或 Worker 代理，动态分片大小）→ 合并 → 元数据 → 网关下载 SHA-256 对比 → 清理（见 §12） |
+| `mpu_probe.ts`（bun） | 目标桶 | `<endpoint> --parts 500,650,800 --part-size-mib 5` | 绕开应用直连引擎：探测 multipart-complete 分片数上限（VersityGW 实测 650 OK / 800 FAIL，见 §12） |
 
 约定：**模块内 feature 断言失败不中断**（逐项记录，跑完给完整矩阵）；只有前置条件失败才硬退出。
 
@@ -264,3 +266,27 @@ if __name__ == '__main__':
 3. 用 `Reporter.check()` 记录**可失败的断言**（不中断），用 `VerifyError` 表达**前置条件失败**；
 4. 需要直连桶时用 `fixtures.s3('A'|'B'|'C'|'D')`（`scripts/lab/s3tool.ts` 封装），需要读 D1 时用 `lab.db`（只读直连 sqlite）；
 5. 用例必须**自清理**（`lab.purge_dir` / 删除自己建的挂载与密钥），并**不要**动 `/samples` 与 `/bulk`（见 §5）。
+
+## 12. 大文件实测（`16_big_iso.py` / `mpu_probe.ts`）
+
+`08_large_multipart.py` 是**契约回归**（三例 ISO 的会话创建、阈值边界、续传契约，R2 绑定路径全链路）；要对**任意本地大文件**做端到端实测（全部分片上传 → 合并 → 网关下载 SHA-256 对比）用 `16_big_iso.py`：
+
+```bash
+# S3 预签名分片（根挂载池，动态分片大小——大文件自动放大分片、片数 ≤650）
+python3 scripts/lab/16_big_iso.py --file /mnt/d/res/ISO/Win11_23H2_Chinese_Simplified_x64v2.iso --username admin --password admin123456
+
+# R2 绑定路径（Worker 代理分片）
+python3 scripts/lab/16_big_iso.py --file /mnt/d/res/ISO/Win11_23H2_Chinese_Simplified_x64v2.iso --mount dedup
+
+# 保留上传结果（默认校验后删除）；--file 可重复以连续测多个文件
+```
+
+注意：上传主体的配额必须容纳目标文件（labalice 默认 8 GiB；更大文件用 `--username admin --password admin123456`，admin 配额 20 GiB）。分片数由服务端按 `MAX_MULTIPART_PARTS = 650` 动态计算（S3 兼容引擎的合并分片数上限——VersityGW 1.8.0 实测 650 OK / 800 FAIL `InternalError`），脚本按会话返回的 `totalParts` 切片。
+
+排查引擎侧合并能力用 `mpu_probe.ts`（绕开应用直连桶，逐点探测 multipart-complete 分片数上限）：
+
+```bash
+cd workers && bun ../scripts/lab/mpu_probe.ts http://127.0.0.1:9000 --parts 500,650,800 --part-size-mib 5
+```
+
+> 探测片大小必须 ≥5 MiB（S3 除末片外最小 5 MiB，否则 `EntityTooSmall`）；首个失败点后自动停止。

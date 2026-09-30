@@ -55,6 +55,12 @@ const COPY_PART_SIZE = 256 * 1024 * 1024;
  * 数据面（putObject/getObject/uploadPart 的 body 流）不设总时限——整包时限会误杀大文件传输。
  */
 const METADATA_TIMEOUT_MS = 15_000;
+/**
+ * 分片合并/清单超时（ms）：CompleteMultipartUpload 的服务端合并时长随总字节数线性增长
+ * （实测 593 片 / 6.4 GiB 超过 15s 元数据档 → AbortError），listParts 同族（大清单分页）。
+ * 与数据面同理不能沿用元数据档；5 分钟覆盖数百 GiB 的本地/内网合并场景。
+ */
+const MERGE_TIMEOUT_MS = 5 * 60_000;
 
 function toS3Body(body: ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>) {
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
@@ -311,7 +317,7 @@ export class S3Provider implements StorageProviderInterface {
           Parts: parts.map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
         },
       }),
-      { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
+      { abortSignal: AbortSignal.timeout(MERGE_TIMEOUT_MS) }
     );
     return { etag: res.ETag };
   }
@@ -339,7 +345,7 @@ export class S3Provider implements StorageProviderInterface {
             UploadId: uploadId,
             ...(marker ? { PartNumberMarker: marker } : {}),
           }),
-          { abortSignal: AbortSignal.timeout(METADATA_TIMEOUT_MS) }
+          { abortSignal: AbortSignal.timeout(MERGE_TIMEOUT_MS) }
         );
         for (const part of res.Parts ?? []) {
           if (part.PartNumber != null && part.ETag) parts.push({ partNumber: part.PartNumber, etag: part.ETag });
