@@ -98,9 +98,11 @@ export function StatCardSkeleton({ count = 4 }: { count?: number }) {
 }
 
 // ============ 应用级骨架（认证加载 / 路由懒加载） ============
+// 根元素不再铺 bg-background：body 已有底色 + 壁纸，实底会把壁纸和玻璃观感一起盖掉
+// （「等不出来时是无背景图片无模糊效果」即此）——顶栏玻璃面与文件卡玻璃网格照旧
 export function AppSkeleton() {
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex min-h-screen flex-col">
       <div className="glass-surface glass-blur flex h-14 items-center justify-between border-b px-4">
         <Skeleton className="h-6 w-28" />
         <Skeleton className="h-8 w-8 rounded-full" />
