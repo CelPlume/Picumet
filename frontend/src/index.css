@@ -27,10 +27,19 @@
     --selection: 33 100% 50%;
     --radius: 0.5rem;
 
-    /* 动画时长 */
-    --duration-fast: 150ms;
-    --duration-base: 300ms;
-    --duration-slow: 500ms;
+    /* 动画时长（默认 = 动画速度「高效」档；「舒适」档在下方「动画速度两档」整体放慢） */
+    --duration-fast: 210ms;
+    --duration-base: 420ms;
+    --duration-slow: 700ms;
+    /* 弹窗/抽屉（遮罩 + 面板）的进出时长：高频交互面，比基准再快一档；
+       「舒适」档 = 高效档的基准 420ms（见下方「动画速度两档」） */
+    --duration-overlay: 300ms;
+
+    /* 入场错峰延迟倍率（高效 1.4；舒适 2 —— 见下方「动画速度两档」） */
+    --motion-delay-scale: 1.4;
+    /* 入场动画（下拉逐项 / 页面卡片 .reveal / 表格行 .reveal-row）在时长 token 之上的
+       额外倍数（高效 1；舒适 1.25）：这三族是「舒适」档要求重点放慢的对象 */
+    --motion-entrance-scale: 1;
 
     /* 缓动函数 */
     --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -240,7 +249,7 @@
 }
 
 .animate-dropdown {
-  animation: dropdown-in var(--duration-fast) var(--ease-out);
+  animation: dropdown-in calc(var(--duration-fast) * var(--motion-entrance-scale, 1)) var(--ease-out);
 }
 
 .animate-fade-in {
@@ -284,8 +293,8 @@
 }
 
 .reveal {
-  animation: reveal-in var(--reveal-duration, var(--duration-base)) var(--ease-out) both;
-  animation-delay: var(--reveal-delay, 0ms);
+  animation: reveal-in calc(var(--reveal-duration, var(--duration-base)) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation-delay: calc(var(--reveal-delay, 0ms) * var(--motion-delay-scale, 1));
 }
 
 /* 表格行变体（.reveal-row）：只淡入、不位移——表格行 translate 会在表头与首行之间
@@ -296,8 +305,8 @@
 }
 
 .reveal-row {
-  animation: reveal-row-in var(--reveal-duration, var(--duration-base)) var(--ease-out) both;
-  animation-delay: var(--reveal-delay, 0ms);
+  animation: reveal-row-in calc(var(--reveal-duration, var(--duration-base)) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation-delay: calc(var(--reveal-delay, 0ms) * var(--motion-delay-scale, 1));
 }
 
 /* ============ 动画三档（theme store data-motion，§33；与模糊三档并排的外观开关） ============
@@ -315,20 +324,20 @@
    先起势，步长 20ms、第 13 项起同延迟封顶（长列表不拖出长尾）；只淡入不位移。
    default 档规则不存在 → 自动关停；off/reduced-motion 由全局 0.01ms + 下方延迟归零兜底。 */
 [data-motion='all'] .animate-dropdown > * {
-  animation: reveal-row-in var(--duration-fast) var(--ease-out) both;
+  animation: reveal-row-in calc(var(--duration-fast) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
 }
-[data-motion='all'] .animate-dropdown > *:nth-child(1) { animation-delay: 30ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(2) { animation-delay: 50ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(3) { animation-delay: 70ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(4) { animation-delay: 90ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(5) { animation-delay: 110ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(6) { animation-delay: 130ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(7) { animation-delay: 150ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(8) { animation-delay: 170ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(9) { animation-delay: 190ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(10) { animation-delay: 210ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(11) { animation-delay: 230ms; }
-[data-motion='all'] .animate-dropdown > *:nth-child(n+12) { animation-delay: 250ms; }
+[data-motion='all'] .animate-dropdown > *:nth-child(1) { animation-delay: calc(30ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(2) { animation-delay: calc(50ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(3) { animation-delay: calc(70ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(4) { animation-delay: calc(90ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(5) { animation-delay: calc(110ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(6) { animation-delay: calc(130ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(7) { animation-delay: calc(150ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(8) { animation-delay: calc(170ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(9) { animation-delay: calc(190ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(10) { animation-delay: calc(210ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(11) { animation-delay: calc(230ms * var(--motion-delay-scale, 1)); }
+[data-motion='all'] .animate-dropdown > *:nth-child(n+12) { animation-delay: calc(250ms * var(--motion-delay-scale, 1)); }
 
 /* default 档：装饰性入场（reveal 家族）关停 —— 终态直达，无延迟无位移 */
 [data-motion='default'] .reveal,
@@ -355,6 +364,26 @@
 /* off 档：装饰层关停（动画 0.01ms + fill both 已让元素瞬时落到终态 opacity:1）。
    不再强制 opacity/transform：列表行可能自带业务透明度语义（如封禁文件 opacity-40），
    无差别 !important 会把业务样式抹掉。 */
+
+/* ============ 动画速度两档（theme store data-motion-speed，§36） ============
+   高效 = `:root` 里的默认值（1.4× 历史 150/300/500 节奏），本文件不写任何覆盖。
+   舒适 = 时长 token 再放大约 1.4 倍（= 历史节奏的 2 倍），并额外做两件事：
+   1) 错峰延迟倍率 1.4 → 2：入场逐项间隔同步拉长，节奏比例不变；
+   2) 入场动画族（页面卡片 .reveal / 表格行 .reveal-row / 下拉菜单与其逐项）在时长之上
+      再乘 1.25 —— 这三族跨度长、同时入场项多，是「舒适」档要求重点放慢的对象。
+   弹窗/抽屉例外：舒适档取高效档的基准 420ms（`--duration-overlay`），不再乘 1.4 ——
+   它们每次开关都要等，放慢到 600ms 会拖手感。
+   刻意不参与：骨架微光周期（Tailwind animate-pulse 固定 2s，是「加载中」信号）、
+   toast 堆叠时长（与 JS 排程计时耦合，单独放慢会进出不同步）、
+   按钮按压与滑块拇指等交互微反馈（属反馈而非动画），以及落地页自身的动画系统。 */
+[data-motion-speed='comfortable'] {
+  --duration-fast: 300ms;
+  --duration-base: 600ms;
+  --duration-slow: 1s;
+  --duration-overlay: 420ms;
+  --motion-delay-scale: 2;
+  --motion-entrance-scale: 1.25;
+}
 
 /* 卡片悬停 */
 .card-hover {
@@ -445,62 +474,113 @@
   background: hsl(var(--primary)) !important;
 }
 
-/* ============ 离散档位滑块（外观-模糊强度，参考 dsh-effort-slider / dsh-reasoning-slider） ============ */
-/* 原生 range 完全透明化（appearance:none 同时去掉原生填充与轨道），交互全由自绘层呈现 */
-.discrete-slider {
+/* ============ 滑块（pill slider） ============ */
+/* 原生 range 只承载输入、键盘和无障碍语义；轨道、填充、刻度和拇指由下面的稳定图层绘制。 */
+.pill-slider {
   -webkit-appearance: none;
   appearance: none;
+  opacity: 0;
+  touch-action: none;
 }
-.discrete-slider::-webkit-slider-thumb {
+.pill-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 24px;
   height: 24px;
+  border: 0;
   background: transparent;
-  border: none;
 }
-.discrete-slider::-moz-range-thumb {
+.pill-slider::-moz-range-thumb {
   width: 24px;
   height: 24px;
+  border: 0;
   background: transparent;
-  border: none;
 }
-.discrete-slider::-webkit-slider-runnable-track {
+.pill-slider::-webkit-slider-runnable-track,
+.pill-slider::-moz-range-track {
+  border: 0;
   background: transparent;
-  border: none;
 }
-.discrete-slider::-moz-range-track {
-  background: transparent;
-  border: none;
-}
-.discrete-slider:focus-visible {
+.pill-slider:focus-visible {
   outline: none;
 }
-/* 填充段：从半透明渐入强调色（横向渐变，宽端被滑块遮住） */
-.discrete-slider-fill {
-  background-image: linear-gradient(90deg, hsl(var(--primary) / 0.12), hsl(var(--primary) / 0.9));
+.pill-slider-track {
+  isolation: isolate;
 }
-/* 滑块：白色圆形（明暗主题通用），柔和中性投影；hover 放大、按下缩小 */
-.discrete-slider-thumb {
-  transform: translate(-50%, -50%);
-  box-shadow:
-    0 1px 3px rgb(0 0 0 / 0.15),
-    0 4px 14px rgb(0 0 0 / 0.12);
+/* 背景条单独一层：它是「滑动条」本体，被拉出端点时整条向外拉长（含边框与填充）。 */
+.pill-slider-bar {
+  border-color: hsl(var(--border) / 0.7);
+  background-color: hsl(var(--muted) / 0.48);
+  transition: background-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+.pill-slider-track[data-pressed] .pill-slider-bar {
+  background-color: hsl(var(--muted) / 0.82);
+  box-shadow: inset 0 1px 2px hsl(var(--foreground) / 0.08);
+}
+.pill-slider-fill {
+  z-index: 1;
+  background-color: hsl(var(--primary) / 0.16);
+  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color var(--duration-fast) var(--ease-out);
+}
+/* 拖动期间 1:1 跟随指针：180ms 追帧会让拇指/填充拖在指针后面发滞，也与橡皮筋回弹打架。
+   只关掉位移缓动，保留按压的变色缓动。 */
+.pill-slider-track[data-pressed] .pill-slider-fill {
+  background-color: hsl(var(--primary) / 0.24);
+  transition: background-color 80ms var(--ease-out);
+}
+.pill-slider-tick {
+  z-index: 2;
+  background-color: hsl(var(--foreground) / 0.12);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+/* 拇指复刻 ReactBits Customize scrubber：静止 scale(0.7) + 32% 透明，
+   拖动/键盘聚焦弹至全尺寸 90% 透明；hover 同态在下方指针媒体查询里。 */
+.pill-slider-thumb {
+  z-index: 3;
+  opacity: 0.32;
+  transform: translate(-50%, -50%) scale(0.7);
+  background-color: hsl(var(--foreground) / 0.5);
   transition:
-    left var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out);
+    left 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 200ms var(--ease-out),
+    opacity 200ms var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
 }
-.discrete-slider-track:hover .discrete-slider-thumb {
-  transform: translate(-50%, -50%) scale(1.08);
+.pill-slider-track[data-pressed] .pill-slider-thumb,
+.pill-slider-track:has(.pill-slider:focus-visible) .pill-slider-thumb {
+  opacity: 0.9;
+  transform: translate(-50%, -50%) scale(1);
 }
-.discrete-slider-track:has(.discrete-slider:active) .discrete-slider-thumb {
-  transform: translate(-50%, -50%) scale(0.95);
+/* 同理：拖动与弹簧回弹期间去掉位移缓动（只保留按压/悬停的形变缓动），
+   否则每帧弹簧值都被 180ms 追帧拖慢，拇指会比背景条晚一拍归位。 */
+.pill-slider-track[data-pressed] .pill-slider-thumb,
+.pill-slider-track[data-elastic] .pill-slider-thumb {
+  transition:
+    transform 200ms var(--ease-out),
+    opacity 200ms var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
 }
-/* 键盘焦点环落在轨道容器上 */
-.discrete-slider-track:has(.discrete-slider:focus-visible) {
+/* 键盘焦点环落在轨道容器上，避免透明 range 自己留下浏览器默认外框。 */
+.pill-slider-track:has(.pill-slider:focus-visible) {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
+}
+/* hover 反馈整体门控到精确指针（ReactBits scrubber 用 matchMedia 做同一件事）：
+   触屏没有悬停语义，不设 hover 态避免粘滞；拖动反馈由 data-pressed 承担。 */
+@media (hover: hover) and (pointer: fine) {
+  .pill-slider-track:hover .pill-slider-bar {
+    background-color: hsl(var(--muted) / 0.68);
+  }
+  .pill-slider-track:hover .pill-slider-fill {
+    background-color: hsl(var(--primary) / 0.2);
+  }
+  .pill-slider-track:hover .pill-slider-tick {
+    background-color: hsl(var(--foreground) / 0.17);
+  }
+  .pill-slider-track:hover .pill-slider-thumb {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 
 /* ============ 降级方案 ============ */

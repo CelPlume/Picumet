@@ -28,13 +28,12 @@ import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { RadioGroup } from '@/components/ui/radio-group';
 import { InputOTP } from '@/components/ui/input-otp';
 import { Select } from '@/components/ui/select';
-import { BlurSlider } from '@/components/settings/BlurSlider';
-import { MotionSlider } from '@/components/settings/MotionSlider';
+import { BlurSlider, FilesPerRowSlider, MotionSlider } from '@/components/ui/slider';
 import { revealDelay, innerDelay } from '@/components/ui/reveal';
-import { FilesPerRowSlider } from '@/components/settings/FilesPerRowSlider';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { ACCENT_PRESETS } from '@/stores/theme';
+import type { MotionSpeed } from '@/stores/theme';
 import { useAuth } from '@/stores/auth';
 import { useTheme } from '@/stores/theme';
 import { setLocale } from '@/lib/i18n';
@@ -566,28 +565,59 @@ export default function PersonalizationPage() {
               </div>
             </div>
 
+            {/* 每行卡片数置顶：三个滑块里唯一直接反映文件页观感的一项（桌面 4–8 / 手机 2–4 各记一份） */}
             <div className="reveal-row" style={innerDelay(4, 4)}>
-              <Label>{t('settings.blurLevel')}</Label>
-              <BlurSlider value={theme.blurLevel} onChange={(level) => theme.set({ blurLevel: level })} className="mt-3" />
-            </div>
-
-            {/* 动画三档（§33）：紧跟模糊效果，同一块外观卡内的第二个全局观感开关 */}
-            <div className="reveal-row" style={innerDelay(4, 5)}>
-              <Label>{t('settings.motionLevel')}</Label>
-              <MotionSlider value={theme.motionLevel} onChange={(level) => theme.set({ motionLevel: level })} className="mt-3" />
-            </div>
-
-            <div className="reveal-row" style={innerDelay(4, 6)}>
-              <Label>{isMobile ? t('settings.filesPerRowMobile') : t('settings.filesPerRowDesktop')}</Label>
               {isMobile ? (
-                <FilesPerRowSlider min={2} max={4} value={theme.filesPerRowMobile} onChange={(n) => theme.set({ filesPerRowMobile: n })} className="mt-3" />
+                <FilesPerRowSlider
+                  min={2}
+                  max={4}
+                  value={theme.filesPerRowMobile}
+                  onChange={(n) => theme.set({ filesPerRowMobile: n })}
+                  label={t('settings.filesPerRowMobile')}
+                />
               ) : (
-                <FilesPerRowSlider value={theme.filesPerRow} onChange={(n) => theme.set({ filesPerRow: n })} className="mt-3" />
+                <FilesPerRowSlider
+                  value={theme.filesPerRow}
+                  onChange={(n) => theme.set({ filesPerRow: n })}
+                  label={t('settings.filesPerRowDesktop')}
+                />
               )}
             </div>
 
-            {/* 自定义背景（置于模糊效果之后） */}
-            <div className="reveal-row space-y-2" style={innerDelay(4, 7)}>
+            <div className="reveal-row" style={innerDelay(4, 5)}>
+              <BlurSlider value={theme.blurLevel} onChange={(level) => theme.set({ blurLevel: level })} />
+            </div>
+
+            {/* 动画三档（§33）；「全部动画」档下再挂速度两档（§36），与主题选择同款行内二选一 */}
+            <div className="reveal-row" style={innerDelay(4, 6)}>
+              <MotionSlider value={theme.motionLevel} onChange={(level) => theme.set({ motionLevel: level })} />
+            </div>
+
+            {theme.motionLevel === 'all' && (
+              <div className="reveal-row" style={innerDelay(4, 7)}>
+                <Label>{t('settings.appearance.motionSpeed')}</Label>
+                <RadioGroup
+                  value={theme.motionSpeed}
+                  onChange={(v) => theme.set({ motionSpeed: v as MotionSpeed })}
+                  className="mt-1.5 grid-cols-2"
+                  options={[
+                    {
+                      value: 'efficient',
+                      label: t('settings.appearance.motionSpeedEfficient'),
+                      description: t('settings.appearance.motionSpeedEfficientDesc'),
+                    },
+                    {
+                      value: 'comfortable',
+                      label: t('settings.appearance.motionSpeedComfortable'),
+                      description: t('settings.appearance.motionSpeedComfortableDesc'),
+                    },
+                  ]}
+                />
+              </div>
+            )}
+
+            {/* 自定义背景（置于三个滑块之后） */}
+            <div className="reveal-row space-y-2" style={innerDelay(4, 8)}>
               <Label>{t('settings.background')}</Label>
               <RadioGroup
                 className="grid-cols-2"

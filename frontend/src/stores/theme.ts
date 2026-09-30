@@ -12,6 +12,14 @@ export type BlurLevel = 'off' | 'default' | 'frosted';
  */
 export type MotionLevel = 'off' | 'default' | 'all';
 
+/**
+ * 动画速度两档（仅「全部动画」档位暴露开关）：
+ * - efficient：默认基线（1.4× 历史 150/300/500 节奏）
+ * - comfortable：再放慢一档（时长 ≈2× 历史节奏，错峰延迟 ×2，入场动画族额外 ×1.25）
+ * 详见 index.css「动画速度两档」。
+ */
+export type MotionSpeed = 'efficient' | 'comfortable';
+
 export interface AppearanceSettings {
   theme: 'light' | 'dark' | 'system';
   accentColor: string;
@@ -19,6 +27,8 @@ export interface AppearanceSettings {
   blurLevel: BlurLevel;
   /** 动画三档（§33）：off 全关 / default 仅功能性动画 / all 加入场装饰动画 */
   motionLevel: MotionLevel;
+  /** 动画速度两档：efficient 现行时长（默认）/ comfortable 整体放慢一档 */
+  motionSpeed: MotionSpeed;
   backgroundType: 'none' | 'image' | 'color';
   backgroundUrl?: string;
   backgroundColor?: string;
@@ -41,6 +51,7 @@ const DEFAULT: AppearanceSettings = {
   accentColor: '#D8632B',
   blurLevel: 'default',
   motionLevel: 'all',
+  motionSpeed: 'efficient',
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
@@ -152,6 +163,15 @@ function applyTheme(s: AppearanceSettings) {
   // - default：装饰性入场动画（.reveal 等）禁用；功能性动画（图表/tab/弹窗/加载）保留
   // - all：全开（默认）
   root.setAttribute('data-motion', s.motionLevel === 'all' ? 'all' : s.motionLevel);
+
+  // 动画速度两档：落在 <html data-motion-speed>，CSS 侧只在 comfortable 下覆写时长 token
+  // 与错峰延迟倍率（efficient 不写覆盖 = 与历史时长逐毫秒一致）。
+  // 舒适档只在「全部动画」档生效：默认/关闭档没有装饰动画可放慢，剩下的功能性动画一律用
+  // 高效档时长（关掉动画档却把弹窗拖慢没有意义）
+  root.setAttribute(
+    'data-motion-speed',
+    s.motionLevel === 'all' && s.motionSpeed === 'comfortable' ? 'comfortable' : 'efficient'
+  );
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
