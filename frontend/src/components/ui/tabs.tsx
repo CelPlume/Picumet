@@ -44,7 +44,7 @@ export function TabsList({ children, className }: { children: ReactNode; classNa
       {ind.ready && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-y-1 rounded-lg bg-muted shadow-sm ring-1 ring-border transition-all duration-300 ease-out"
+          className="pointer-events-none absolute inset-y-1 rounded-lg bg-muted shadow-sm ring-1 ring-border transition-all [transition-duration:var(--duration-base)] ease-out"
           style={{ left: ind.pos, width: ind.size }}
         />
       )}

@@ -78,7 +78,7 @@ export function AppShell({ children, activeNav }: { children: ReactNode; activeN
               {navInd.ready && (
                 <span
                   aria-hidden
-                  className="pointer-events-none absolute inset-y-1 rounded-md bg-primary/10 transition-all duration-300 ease-out"
+                  className="pointer-events-none absolute inset-y-1 rounded-md bg-primary/10 transition-all [transition-duration:var(--duration-base)] ease-out"
                   style={{ left: navInd.pos, width: navInd.size }}
                 />
               )}

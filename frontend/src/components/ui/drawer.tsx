@@ -1,11 +1,9 @@
 // 抽屉组件（shadcn 风格）
 // 进出动画统一收敛在本组件：进入=滑入关键帧+淡入，退出=整体淡出后延迟卸载
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
-import { cn } from '@/lib/utils';
-
-const EXIT_MS = 300;
+import { cn, motionDurationMs } from '@/lib/utils';
 
 export function Drawer({
   open,
@@ -27,22 +25,39 @@ export function Drawer({
   const { t } = useTranslation();
   const [mounted, setMounted] = useState(open);
   const [entered, setEntered] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
 
+  // 打开：面板一进 DOM 就先把「关闭态」钉进计算值（强制一次布局），再切 entered。
+  // 过渡的触发条件是与「上一次计算值」不同——只要关闭态被样式系统算过一次就不会被吞。
+  // 原先的双 rAF 挡不住 React 调度：组件条件挂载时 mounted 与 entered 可能合并进同一次
+  // commit，元素首帧即终态（右键菜单还在逐项入场时点「属性」最容易撞上）。
+  useLayoutEffect(() => {
+    if (!open) return;
+    const el = panelRef.current;
+    if (!el) return;
+    void el.getBoundingClientRect();
+    setEntered(true);
+  }, [open, mounted]);
+
+  // 关闭：entered 落下 + 等面板过渡播完（transitionend）再卸载，读不到事件时按 token 兜底。
+  // 时长与 CSS 同源（--duration-overlay，动画速度两档会改它），硬编码 300ms 会掐断舒适档。
   useEffect(() => {
     if (open) {
       setMounted(true);
-      let raf2 = 0;
-      const raf1 = requestAnimationFrame(() => {
-        raf2 = requestAnimationFrame(() => setEntered(true));
-      });
-      return () => {
-        cancelAnimationFrame(raf1);
-        cancelAnimationFrame(raf2);
-      };
+      return;
     }
     setEntered(false);
-    const timer = setTimeout(() => setMounted(false), EXIT_MS);
-    return () => clearTimeout(timer);
+    const panel = panelRef.current;
+    const finish = () => setMounted(false);
+    const onEnd = (e: TransitionEvent) => {
+      if (e.target === panel) finish();
+    };
+    const fallback = setTimeout(finish, motionDurationMs('--duration-overlay') + 120);
+    panel?.addEventListener('transitionend', onEnd);
+    return () => {
+      clearTimeout(fallback);
+      panel?.removeEventListener('transitionend', onEnd);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -94,7 +109,7 @@ export function Drawer({
       {/* Backdrop：压暗与模糊随 entered 同步过渡（与 Dialog 同款 transition 写法） */}
       <div
         className={cn(
-          'glass-overlay absolute inset-0 transition-opacity duration-300 ease-out',
+          'glass-overlay absolute inset-0 transition-opacity [transition-duration:var(--duration-overlay)] ease-out',
           entered ? 'opacity-100' : 'opacity-0'
         )}
         onClick={onClose}
@@ -103,8 +118,9 @@ export function Drawer({
       {/* Panel：与 Dialog 同款 entered 过渡——首帧以关闭样式绘制（双 rAF），再切入终态；
           opacity/transform 过渡全程保留 backdrop-filter，无 keyframes 合成器掉模糊问题 */}
       <div
+        ref={panelRef}
         className={cn(
-          'glass-dialog fixed z-10 flex flex-col text-card-foreground shadow-xl transition-[opacity,transform] duration-300 ease-out',
+          'glass-dialog fixed z-10 flex flex-col text-card-foreground shadow-xl transition-[opacity,transform] [transition-duration:var(--duration-overlay)] ease-out',
           sideStyles[side],
           widthCls,
           entered ? sideShown[side] : sideHidden[side],

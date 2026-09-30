@@ -5,6 +5,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** 动画时长 token（默认 --duration-base）的毫秒值：弹窗/抽屉的卸载延迟必须与 CSS 过渡同源，
+ *  否则「舒适」档会慢过 300ms、元素在过渡播完前就被摘掉。读取失败（SSR/jsdom）回退 fallback。 */
+export function motionDurationMs(varName = '--duration-base', fallback = 300): number {
+  if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') return fallback;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  const value = parseFloat(raw);
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  if (raw.endsWith('ms')) return value;
+  if (raw.endsWith('s')) return value * 1000;
+  return fallback;
+}
+
 export function formatBytes(bytes: number, decimals = 1): string {
   if (!bytes || bytes <= 0) return '0 B';
   const k = 1024;

@@ -138,7 +138,7 @@ function ToastCard({
         // 折叠态非最前层不带投影：投影会被包装层 overflow hidden 的直角裁出方形阴影
         frontmost || expanded ? 'shadow-lg' : 'shadow-none',
         'transition-[transform,opacity] [transition-timing-function:cubic-bezier(0.16,1,0.3,1)]',
-        t.leaving && !frontmost ? 'duration-200' : 'duration-[350ms]',
+        t.leaving && !frontmost ? 'duration-200' : '[transition-duration:350ms]',
         // 退出：最前层滑回上方；展开态非最前层原地缩退（HeroUI 行为）
         entered && !t.leaving
           ? 'translate-y-0 scale-100 opacity-100'
@@ -274,7 +274,7 @@ export function Toaster() {
       }}
     >
       <div
-        className="relative w-full transition-[height] duration-[350ms] [transition-timing-function:cubic-bezier(0.16,1,0.3,1)]"
+        className="relative w-full transition-[height] [transition-duration:350ms] [transition-timing-function:cubic-bezier(0.16,1,0.3,1)]"
         style={{ height: stageH }}
       >
         {list.map((t, i) => (

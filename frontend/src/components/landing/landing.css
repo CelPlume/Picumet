@@ -495,8 +495,8 @@
 }
 [data-motion='all'] .animate-dropdown {
   animation:
-    dropdown-in var(--duration-fast) var(--ease-out),
-    dropdown-blur-in var(--duration-fast) var(--ease-out);
+    dropdown-in calc(var(--duration-fast) * var(--motion-entrance-scale, 1)) var(--ease-out),
+    dropdown-blur-in calc(var(--duration-fast) * var(--motion-entrance-scale, 1)) var(--ease-out);
 }
 
 /* FAQ：原生 details 的展开箭头 */
