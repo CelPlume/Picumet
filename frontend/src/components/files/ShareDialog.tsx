@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import { Copy, QrCode, ExternalLink } from 'lucide-react';
 import { Button, Dialog, Input, Label, Switch } from '@/components/ui/core';
 import { Select } from '@/components/ui/select';
+import { DatePicker } from '@/components/ui/date-picker';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { formatBytes } from '@/lib/utils';
@@ -48,7 +49,7 @@ export function ShareDialog({
   const [qrcode, setQrcode] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // 每次打开回到空白表单（上一次的成功结果/输入不残留）
+  // 每次打开回到空白表单
   useEffect(() => {
     if (!open) return;
     setTitle('');
@@ -259,13 +260,14 @@ export function ShareDialog({
               </div>
             )}
             {expiryMode === 'absolute' && (
-              <Input
-                type="datetime-local"
-                className="mt-2"
-                value={absoluteAt}
-                onChange={(e) => setAbsoluteAt(e.target.value)}
-                aria-label={t('myShares.expiryAbsolute')}
-              />
+              <div className="mt-2">
+                <DatePicker
+                  value={absoluteAt}
+                  onChange={setAbsoluteAt}
+                  includeTime
+                  className="w-full"
+                />
+              </div>
             )}
           </div>
 

@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { CalendarRange, Download, LogIn, RotateCcw, Share2, TrendingUp } from 'lucide-react';
 import { Button, Card, CardContent, Dialog, EmptyState, Input, Label } from '@/components/ui/core';
+import { DateRangePicker } from '@/components/ui/date-picker';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { innerDelay } from '@/components/ui/reveal';
@@ -164,7 +165,7 @@ export function TrendCard() {
       </CardContent>
 
       {/* 自定义区间弹窗 Portal 到 body：外层玻璃卡的 backdrop-filter 会成为 fixed 后代的包含块，
-          内联渲染时遮罩只盖住趋势卡（实测 458×797 而非整屏 1440×1000），Portal 后遮罩覆盖整个仪表盘 */}
+          内联渲染时遮罩只覆盖趋势卡，Portal 后遮罩覆盖整个仪表盘。 */}
       {createPortal(
         <Dialog
           open={dialogOpen}
@@ -184,26 +185,14 @@ export function TrendCard() {
           }
         >
           <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="trends-custom-from">{t('admin.dashboard.trends.custom.from')}</Label>
-              <Input
-                id="trends-custom-from"
-                type="date"
-                value={customInput.from}
-                max={customInput.to || undefined}
-                onChange={(e) => setCustomInput((prev) => ({ ...prev, from: e.target.value }))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="trends-custom-to">{t('admin.dashboard.trends.custom.to')}</Label>
-              <Input
-                id="trends-custom-to"
-                type="date"
-                value={customInput.to}
-                min={customInput.from || undefined}
-                onChange={(e) => setCustomInput((prev) => ({ ...prev, to: e.target.value }))}
-              />
-            </div>
+            <DateRangePicker
+              from={customInput.from}
+              to={customInput.to}
+              onChange={({ from, to }) => setCustomInput({ from, to })}
+              fromLabel={t('admin.dashboard.trends.custom.from')}
+              toLabel={t('admin.dashboard.trends.custom.to')}
+              includeTime={false}
+            />
             {customErrorMessage && <p className="text-xs text-destructive">{customErrorMessage}</p>}
           </div>
         </Dialog>,

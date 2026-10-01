@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Download, Eye, Globe, KeyRound, Lock, LogIn, UserCheck } from 'lucide-react';
 import { Badge, Button, Dialog, Input, Label, Switch } from '@/components/ui/core';
 import { Select } from '@/components/ui/select';
+import { DatePicker } from '@/components/ui/date-picker';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ApiError, apiFetch } from '@/lib/api';
@@ -287,13 +288,14 @@ export function AdminShareSettingsDialog({
                 <Switch checked={neverExpires} onChange={setNeverExpires} size="sm" />
               </div>
               {!neverExpires && (
-                <Input
-                  type="datetime-local"
-                  className="mt-2"
-                  value={expiresInput}
-                  onChange={(e) => setExpiresInput(e.target.value)}
-                  aria-label={t('admin.shares.extend')}
-                />
+                <div className="mt-2">
+                  <DatePicker
+                    value={expiresInput}
+                    onChange={setExpiresInput}
+                    includeTime
+                    className="w-full"
+                  />
+                </div>
               )}
             </div>
           </div>
