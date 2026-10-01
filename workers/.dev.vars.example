@@ -8,7 +8,9 @@ SMTP_USER=
 SMTP_PASS=
 SMTP_FROM=Picumet <noreply@example.com>
 ENVIRONMENT=development
-# 初始管理员（审计 H-02）：生产必填强密码；开发默认 admin/admin123456，可在此覆盖
+# SSO/OIDC 本地联调：允许回环 issuer（本地 IdP 容器）。生产不要设置该变量。
+SSO_ALLOW_LOOPBACK=true
+# 初始管理员：生产必填强密码；开发默认 admin/admin123456，可在此覆盖
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=
 DEMO_PASSWORD=

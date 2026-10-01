@@ -4,15 +4,19 @@ compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 account_id = "00000000000000000000000000000000"
 
-# F-01：@aws-sdk/xml-builder 按 browser 条件解析到 DOMParser 版解析器，workerd 无 DOMParser，
-# S3 的 XML 响应解析（分片上传/移动/ListObjects 等）全部失败。整包替换为 vendored 纯 JS 实现
-# （src/shims/aws-xml-builder.ts，与 vitest.config.ts 的 resolve.alias 保持一致）。
+# @aws-sdk/xml-builder 按 browser 条件解析到 DOMParser 版解析器，workerd 无 DOMParser，
+# S3 的 XML 响应解析（分片上传/移动/ListObjects 等）会全部失败；
+# 因此整包替换为 vendored 纯 JS 实现（src/shims/aws-xml-builder.ts，
+# 与 vitest.config.ts 的 resolve.alias 保持一致）。
 [alias]
 "@aws-sdk/xml-builder" = "./src/shims/aws-xml-builder.ts"
 
 [vars]
 ENVIRONMENT = "development"
 APP_BASE_URL = "http://localhost:5173"
+# SSO/OIDC 本地联调：允许回环 issuer（如 http://localhost:9443 的本地 IdP）。
+# 生产环境请在部署配置里去掉该变量（生产无论其值如何都不放行回环地址）。
+SSO_ALLOW_LOOPBACK = "true"
 # 允许的 CORS 来源（逗号分隔）
 ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
@@ -41,7 +45,7 @@ preview_bucket_name = "picumet-storage"
 # binding = "AUDIT_BUCKET"
 # bucket_name = "picumet-audit"
 
-# 定时任务：过期上传预留释放（含 multipart abort）、内容对象回收（§F 保护期后删除）、孤立对象与内容索引对账、
+# 定时任务：过期上传预留释放（含 multipart abort）、内容对象回收（保护期后删除）、孤立对象与内容索引对账、
 # 分享过期标记、审计日志冷归档
 [triggers]
 crons = ["*/10 * * * *"]

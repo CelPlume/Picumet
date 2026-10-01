@@ -18,10 +18,15 @@ export interface Env {
   APP_BASE_URL: string;
   ALLOWED_ORIGINS: string;
   /**
-   * LAB L-02：'true' 时在非生产环境也启用全部限速/并发中间件（staging/本地回归用）。
-   * 缺省/其他值 = 维持「仅 production 生效」的既有语义。
+   * 'true' 时在非生产环境也启用全部限速/并发中间件（staging/本地回归用）。
+   * 缺省/其他值 = 仅 production 生效。
    */
   RATE_LIMIT_FORCE?: string;
+  /**
+   * SSO/OIDC 本地联调开关：'true' 且非生产环境时才允许回环 issuer（`http://localhost:<port>`）。
+   * 缺省 = 不放行（即使 ENVIRONMENT 拼写错误也不会在生产静默放行回环地址）。
+   */
+  SSO_ALLOW_LOOPBACK?: string;
 
   // Secrets
   JWT_SECRET: string;

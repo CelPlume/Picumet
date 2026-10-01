@@ -239,6 +239,8 @@ export function createTestContext(): TestContext {
     JWT_SECRET: 'test-jwt-secret-0123456789abcdef',
     JWT_SECRET_OLD: '',
     ENCRYPTION_KEY: 'test-encryption-key-0123456789abcdef',
+    // SSO 本地 IdP 联调开关：测试用假 IdP 跑在回环地址上（生产环境该开关不生效）
+    SSO_ALLOW_LOOPBACK: 'true',
   } as unknown as Env;
   return { env, kv, r2, db, app: buildApp };
 }

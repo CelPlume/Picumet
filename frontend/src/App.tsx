@@ -10,6 +10,7 @@ const Landing = lazy(() => import('@/pages/Landing'));
 const Login = lazy(() => import('@/pages/Login'));
 const Register = lazy(() => import('@/pages/Register'));
 const ResetPassword = lazy(() => import('@/pages/ResetPassword'));
+const SsoComplete = lazy(() => import('@/pages/SsoComplete'));
 const FreeMode = lazy(() => import('@/pages/FreeMode'));
 const Files = lazy(() => import('@/pages/Files'));
 const SharePage = lazy(() => import('@/pages/SharePage'));
@@ -57,8 +58,8 @@ function RequireAdmin() {
 export default function App() {
   const { user } = useAuth();
   useEffect(() => {
-    // LAB O1：应用级统一入口——/api/auth/me 与 /api/public/settings 各只请求一次。
-    // （此前 App 挂载 + RequireAuth 各调一次 me；raw 预热 settings 与 useSite.load 重复）
+    // 应用级统一入口：/api/auth/me 与 /api/public/settings 各只请求一次。
+    // 后续 RequireAuth 与 useSite 复用这里的缓存，避免重复拉取。
     void useAuth.getState().fetchMe();
     // 读取站点设置（标题/Logo/Favicon）
     void useSite.getState().load();
@@ -76,6 +77,8 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        {/* 第三方登录补充注册（OIDC/GitHub 回调后自填邮箱·用户名·密码）；公开路由，完成即登录 */}
+        <Route path="/sso/complete" element={<SsoComplete />} />
         <Route path="/free-mode" element={<FreeMode />} />
         <Route path="/share/:id" element={<SharePage />} />
         <Route path="/i/:id" element={<SharePage imageMode />} />
