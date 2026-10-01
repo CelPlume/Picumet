@@ -11,6 +11,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
 import { toast } from '@/components/ui/toast';
 import { ThemeToggle, LanguageSwitcher } from '@/components/layout/widgets';
+import { SsoButtons, ssoErrorKey } from '@/components/sso-buttons';
 import type { User, Quota } from '@shared/types';
 
 export default function Login() {
@@ -18,7 +19,8 @@ export default function Login() {
   const site = useSite();
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const [username, setUsername] = useState('');
+  // 登录标识：用户名或邮箱同一输入框（后端 findByLoginIdentifier 收敛）
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -41,6 +43,9 @@ export default function Login() {
     if (params.get('resetDone') === '1') {
       toast('success', t('login.resetDone'));
     }
+    // 第三方登录回跳的错误码（回调失败时后端 302 到本页并带 sso_error）
+    const ssoError = params.get('sso_error');
+    if (ssoError) setError(t(ssoErrorKey(ssoError)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -48,7 +53,7 @@ export default function Login() {
     setError('');
     setLoading(true);
     try {
-      await apiFetch<unknown>('/api/auth/login', { method: 'POST', body: { username, password } });
+      await apiFetch<unknown>('/api/auth/login', { method: 'POST', body: { username: identifier.trim(), password } });
       const me = await apiFetch<{ user: User; quota: Quota }>('/api/auth/me');
       useAuth.getState().setAuth(me.data.user, me.data.quota);
       navigate(redirect, { replace: true });
@@ -107,8 +112,15 @@ export default function Login() {
             }}
           >
             <div>
-              <Label className="text-sm font-medium text-foreground">{t('login.username')}</Label>
-              <Input className="mt-2" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" autoFocus />
+              <Label className="text-sm font-medium text-foreground">{t('login.identifier')}</Label>
+              <Input
+                className="mt-2"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder={t('login.identifierPlaceholder')}
+                autoComplete="username"
+                autoFocus
+              />
             </div>
             <div>
               <Label className="text-sm font-medium text-foreground">{t('login.password')}</Label>
@@ -131,16 +143,19 @@ export default function Login() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <Link to="/register" className="block">
-              <Button variant="outline" className="w-full py-2 font-medium">{t('login.registerNow')}</Button>
-            </Link>
-            <Link to="/free-mode" className="block">
-              <Button variant="outline" className="w-full py-2 font-medium">{t('login.freeMode')}</Button>
-            </Link>
-            <Button variant="ghost" className="col-span-2 w-full py-2 text-sm text-muted-foreground" onClick={() => setShowReset(true)}>
-              {t('login.resetPassword')}
-            </Button>
+          <div className="space-y-3">
+            <SsoButtons />
+            <div className="grid grid-cols-2 gap-2">
+              <Link to="/register" className="block">
+                <Button variant="outline" className="w-full py-2 font-medium">{t('login.registerNow')}</Button>
+              </Link>
+              <Link to="/free-mode" className="block">
+                <Button variant="outline" className="w-full py-2 font-medium">{t('login.freeMode')}</Button>
+              </Link>
+              <Button variant="ghost" className="col-span-2 w-full py-2 text-sm text-muted-foreground" onClick={() => setShowReset(true)}>
+                {t('login.resetPassword')}
+              </Button>
+            </div>
           </div>
         </div>
       </div>

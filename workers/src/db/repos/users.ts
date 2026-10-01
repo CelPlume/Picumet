@@ -1,9 +1,17 @@
 // 用户与配额仓库
 import type { Role, User } from '@shared/types';
 import { Db, type Tx } from '../db';
-import { mapUser, mapQuota, num, type Row } from '../row';
+import { mapUser, mapQuota, num, str, type Row } from '../row';
 import { RoleDefaultsRepo } from './role-defaults';
 import { uuid } from '../../utils/crypto';
+
+/** 用户列表行：User + 受邀信息（管理端「邀请人 / 邀请码」两列；未受邀为 null） */
+export type UserListRow = User & {
+  /** 核销的邀请码码值 */
+  inviteCode: string | null;
+  /** 邀请人用户名（邀请码创建人） */
+  invitedBy: string | null;
+};
 
 export const UserRepo = {
   /** 新用户默认存储限额：1GiB（存量由迁移统一回填） */
@@ -11,23 +19,28 @@ export const UserRepo = {
   /**
    * 新建用户。default_path 来源与优先级：
    *   显式入参 > 该角色 role_defaults.default_path > '/'。
-   * 注册（auth）与自由模式等所有创建路径共用此来源，管理员在角色设置里改默认路径后对新用户生效；
-   * 「保存角色默认」对存量用户的批量覆盖（RoleDefaultsRepo.applyToRole）行为不变。
+   * 注册（auth）与自由模式等所有创建路径共用此来源；管理员改角色默认路径后对新用户生效，
+   * 不影响存量用户（角色默认批量覆盖走 RoleDefaultsRepo.applyToRole）。
    */
   async createUser(
     db: Db,
-    u: { username: string; email: string; passwordHash: string; role?: Role; defaultPath?: string }
+    u: { username: string; email: string; passwordHash: string; role?: Role; defaultPath?: string; invitedByCodeId?: string | null }
   ): Promise<User> {
     const now = Date.now();
     const id = uuid();
     const role = u.role ?? 'user';
     const defaultPath = u.defaultPath ?? (await RoleDefaultsRepo.defaultPathOf(db, role));
-    await db.run(
-      `INSERT INTO users (id, username, email, email_verified, password_hash, role, default_path, created_at, updated_at)
-       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)`,
-      [id, u.username, u.email, u.passwordHash, role, defaultPath, now, now]
-    );
-    await db.run(`INSERT INTO user_quotas (user_id, max_storage, updated_at) VALUES (?, ?, ?)`, [id, UserRepo.DEFAULT_MAX_STORAGE, now]);
+    // 邀请码核销与建号同一事务原子完成：用户行（含 invited_by_code_id）+ 配额行同成败；
+    // 码行并发消失时外键约束使事务整体回滚（防「建号成功、核销悬空」）。
+    // default_path 的角色默认值是读操作，放事务外（D1 事务内禁读）。
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO users (id, username, email, email_verified, password_hash, role, default_path, invited_by_code_id, created_at, updated_at)
+         VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+        [id, u.username, u.email, u.passwordHash, role, defaultPath, u.invitedByCodeId ?? null, now, now]
+      );
+      await tx.query(`INSERT INTO user_quotas (user_id, max_storage, updated_at) VALUES (?, ?, ?)`, [id, UserRepo.DEFAULT_MAX_STORAGE, now]);
+    });
     return (await this.getUserById(db, id)) as User;
   },
   async getUserById(db: Db, id: string): Promise<User | null> {
@@ -48,6 +61,35 @@ export const UserRepo = {
     const row = await db.first('SELECT * FROM users WHERE email = ?', [email]);
     return row ? mapUser(row) : null;
   },
+  /**
+   * 邮箱存在性/归属判定（**大小写无关**）：`users.email` 是 BINARY 排序且按用户输入原样存储，
+   * 精确匹配会漏掉 `Victim@example.com` 与 `victim@example.com` 这类同一邮箱的大小写变体，
+   * 从而允许同一邮箱建出两个账号（登录侧按 `lower(email)` 解析，行序歧义）。
+   * 注册、改绑邮箱与第三方登录的查重/自动关联都走这里，保证「一个邮箱一个账号」。
+   * 注意：`lower(email)` 用不上 `idx_users_email`，用户表规模下全表扫描成本可忽略。
+   */
+  async findByEmailInsensitive(db: Db, email: string): Promise<User | null> {
+    const row = await db.first('SELECT * FROM users WHERE lower(email) = lower(?) LIMIT 1', [email.trim()]);
+    return row ? mapUser(row) : null;
+  },
+  /**
+   * 登录标识取用户：用户名或邮箱皆可（登录页同一输入框）。
+   * 顺序为 用户名（精确）→ 邮箱（大小写无关）：
+   * - 用户名优先且保持精确匹配，用户名注册规则为 `[a-zA-Z0-9_]`、大小写敏感；
+   * - 邮箱列是 BINARY 排序（大小写敏感）且注册时按用户输入原样存储，故用 `lower(email)` 侧做
+   *   大小写无关匹配，让 `Li.Mixed@Test.local` 也能用 `li.mixed@test.local` 登录
+   *   （对存量大小写混合的邮箱同样生效，无需数据迁移；users 表规模小且登录受认证限流约束）。
+   * 查不到一律返回 null，由调用方回同一「用户名或密码错误」，不泄露账号是否存在。
+   */
+  async findByLoginIdentifier(db: Db, identifier: string): Promise<User | null> {
+    const key = identifier.trim();
+    if (!key) return null;
+    const byName = await this.getUserByUsername(db, key);
+    if (byName) return byName;
+    if (!key.includes('@')) return null;
+    const row = await db.first('SELECT * FROM users WHERE lower(email) = lower(?) LIMIT 1', [key]);
+    return row ? mapUser(row) : null;
+  },
   async updateUser(db: Db, id: string, fields: Record<string, unknown>): Promise<void> {
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
     if (entries.length === 0) return;
@@ -59,7 +101,7 @@ export const UserRepo = {
     await db.run(`UPDATE users SET session_version = session_version + 1, updated_at = ? WHERE id = ?`, [Date.now(), id]);
   },
   /**
-   * 删除用户（事务内版本）：与「登记待清理对象」同批执行，避免登记成功而删除失败时
+   * 删除用户（事务内版本）：与「登记待清理对象」同事务执行，避免登记成功而删除失败时
    * 清理队列指向仍被引用的对象。级联删除 user_quotas / file_metadata / upload_sessions 等从属行。
    */
   async deleteUserTx(tx: Tx, id: string): Promise<void> {
@@ -68,30 +110,39 @@ export const UserRepo = {
   async deleteUser(db: Db, id: string): Promise<void> {
     await this.deleteUserTx(db, id);
   },
-  async listUsers(db: Db, opts: { page: number; limit: number; role?: string; status?: string; search?: string }): Promise<{ rows: User[]; total: number }> {
+  async listUsers(db: Db, opts: { page: number; limit: number; role?: string; status?: string; search?: string }): Promise<{ rows: UserListRow[]; total: number }> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts.role) {
-      where.push('role = ?');
+      where.push('u.role = ?');
       params.push(opts.role);
     }
     if (opts.status) {
-      where.push('status = ?');
+      where.push('u.status = ?');
       params.push(opts.status);
     }
     if (opts.search) {
-      // instr 替代 '%q%' LIKE：不受 D1 模式长度上限约束（LAB F-04 同族）
-      where.push('(instr(username, ?) > 0 OR instr(email, ?) > 0 OR instr(display_name, ?) > 0)');
+      // instr 替代 '%q%' LIKE：不受 D1 模式长度上限约束
+      where.push('(instr(u.username, ?) > 0 OR instr(u.email, ?) > 0 OR instr(u.display_name, ?) > 0)');
       params.push(opts.search, opts.search, opts.search);
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const countRow = await db.first(`SELECT COUNT(*) AS c FROM users ${whereSql}`, params);
+    const countRow = await db.first(`SELECT COUNT(*) AS c FROM users u ${whereSql}`, params);
     const total = num(countRow?.c);
+    // 受邀信息随列表一次 LEFT JOIN 取回（管理端「邀请人 / 邀请码」两列），避免逐行查询（N+1）；
+    // 核销列被置空或码行随创建人删除时两列为 null
     const rows = await db.all(
-      `SELECT * FROM users ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT u.*, ic.code AS invite_code, creator.username AS invited_by
+       FROM users u
+       LEFT JOIN invite_codes ic ON ic.id = u.invited_by_code_id
+       LEFT JOIN users creator ON creator.id = ic.created_by
+       ${whereSql} ORDER BY u.created_at DESC LIMIT ? OFFSET ?`,
       [...params, opts.limit, (opts.page - 1) * opts.limit]
     );
-    return { rows: rows.map(mapUser), total };
+    return {
+      rows: rows.map((r) => ({ ...mapUser(r), inviteCode: str(r.invite_code) ?? null, invitedBy: str(r.invited_by) ?? null })),
+      total,
+    };
   },
   async countUsers(db: Db): Promise<{ total: number; active: number }> {
     const row = await db.first(`SELECT COUNT(*) AS c FROM users`);

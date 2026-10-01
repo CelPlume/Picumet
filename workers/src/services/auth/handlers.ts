@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
 import { UserRepo, QuotaRepo, SettingsRepo, LogRepo } from '../../db';
 import { z } from 'zod';
-import { hashPassword, verifyPassword, signJwt, verifyJwt, randomString } from '../../utils/crypto';
+import { hashPassword, verifyPassword, verifyJwt, randomString, randomDigits } from '../../utils/crypto';
 import { ApiError } from '../../shared/errors';
 import { ok, fail } from '../../shared/response';
 import { getDb } from '../../middleware/auth';
@@ -12,39 +12,9 @@ import { authRateLimitMiddleware } from '../../middleware/rate-limit';
 import { issueCsrfToken } from '../../middleware/csrf';
 import { hasSmtp, sendMail, resolveSmtpConfig } from '../../utils/smtp';
 import { RegisterSchema, LoginSchema, ForgotPasswordSchema, ResetPasswordSchema } from './schemas';
-
-const AUTH_COOKIE = 'auth_token';
-const JWT_TTL = 7 * 24 * 3600; // 7 天
-
-function publicUser(user: NonNullable<Awaited<ReturnType<typeof UserRepo.getUserById>>>) {
-  return {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    emailVerified: user.emailVerified,
-    role: user.role,
-    displayName: user.displayName,
-    avatarUrl: user.avatarUrl,
-    defaultPath: user.defaultPath,
-    locale: user.locale,
-    theme: user.theme,
-    createdAt: user.createdAt,
-    lastLoginAt: user.lastLoginAt,
-  };
-}
-
-async function setAuthCookie(c: Parameters<typeof ok>[0], user: { id: string; username: string; role: string; sessionVersion: number }): Promise<void> {
-  const token = await signJwt(
-    { sub: user.id, username: user.username, role: user.role, sv: user.sessionVersion },
-    c.env.JWT_SECRET as string,
-    JWT_TTL
-  );
-  const isSecure = (c.env.ENVIRONMENT as string) === 'production';
-  c.header(
-    'Set-Cookie',
-    `${AUTH_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${JWT_TTL}${isSecure ? '; Secure' : ''}`
-  );
-}
+import { loadInviteSettings, resolveInviteCode } from '../invites/invites';
+import { AUTH_COOKIE, setAuthCookie } from './session';
+import { toPublicUser } from './public-user';
 
 export const authRoutes = new Hono<AppBindings>();
 
@@ -55,20 +25,15 @@ authRoutes.post('/register/send-otp', authRateLimitMiddleware, async (c) => {
   const parsed = z.object({ email: z.string().email() }).safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('邮箱格式无效');
   const email = parsed.data.email.toLowerCase();
-  const existing = await UserRepo.getUserByEmail(db, email);
+  // 大小写无关：同一邮箱的大小写变体不得重复注册（否则登录按 lower(email) 解析会出现歧义）
+  const existing = await UserRepo.findByEmailInsensitive(db, email);
   if (existing) throw new ApiError(409, 'ALREADY_EXISTS', '邮箱已被注册');
   const raw = await SettingsRepo.getAll(db);
   const smtp = await resolveSmtpConfig(raw, c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
   if (!smtp) throw ApiError.badRequest('邮件服务未配置，请联系管理员');
-  // 注册验证码必须来自 CSPRNG（Math.random 可预测，可被枚举爆破）。
-  // 拒绝采样剔除 >= 4_000_000_000 的取值，使 0..999999 均匀分布。
-  const otpBuf = new Uint32Array(1);
-  let otpValue: number;
-  do {
-    crypto.getRandomValues(otpBuf);
-    otpValue = otpBuf[0];
-  } while (otpValue >= 4_000_000_000);
-  const code = String(otpValue % 1_000_000).padStart(6, '0');
+  // 注册验证码必须来自 CSPRNG（Math.random 可预测，可被枚举爆破）；
+  // randomDigits 内部逐字节拒绝采样，6 位数字均匀分布。
+  const code = randomDigits(6);
   await c.env.KV.put(`email:otp:register:${email}`, code, { expirationTtl: 300 });
   await sendMail(
     { ...smtp, from: smtp.from || 'Picumet <noreply@example.com>' },
@@ -104,9 +69,13 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
     throw new ApiError(403, 'FORBIDDEN', '站点当前关闭注册');
   }
 
+  // 邀请码门控：语义与错误码见 services/invites/invites.ts。
+  // 校验先于建号，核销（invited_by_code_id）随 createUser 事务原子落库。
+  const invitedByCodeId = await resolveInviteCode(db, await loadInviteSettings(db), parsed.data.inviteCode);
+
   const existingUser = await UserRepo.getUserByUsername(db, username);
   if (existingUser) throw new ApiError(409, 'ALREADY_EXISTS', '用户名已被占用');
-  const existingEmail = await UserRepo.getUserByEmail(db, email);
+  const existingEmail = await UserRepo.findByEmailInsensitive(db, email);
   if (existingEmail) throw new ApiError(409, 'ALREADY_EXISTS', '邮箱已被注册');
 
   const requireVerify = (await SettingsRepo.get(db, 'require_email_verification')) ?? 'false';
@@ -115,6 +84,7 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
     email,
     passwordHash: hashPassword(password),
     role: 'user',
+    invitedByCodeId,
   });
 
   let emailVerified = false;
@@ -151,7 +121,7 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
   return ok(
     c,
     {
-      user: { ...publicUser(user), emailVerified: emailVerified || user.emailVerified },
+      user: { ...toPublicUser(user), emailVerified: emailVerified || user.emailVerified },
       message: '注册成功',
     },
     emailVerified ? '注册成功' : `验证邮件已发送到 ${user.email}`,
@@ -189,9 +159,10 @@ authRoutes.post('/login', authRateLimitMiddleware, async (c) => {
   if (!body) throw ApiError.badRequest('请求体格式错误');
   const parsed = LoginSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest('请输入用户名和密码');
+  // username 字段承载「登录标识」：用户名或邮箱（UserRepo.findByLoginIdentifier 收敛）
   const { username, password } = parsed.data;
 
-  const user = await UserRepo.getUserByUsername(db, username);
+  const user = await UserRepo.findByLoginIdentifier(db, username);
   if (!user || !verifyPassword(password, user.passwordHash ?? '')) {
     await LogRepo.create(db, {
       userId: user?.id,
@@ -220,10 +191,9 @@ authRoutes.post('/login', authRateLimitMiddleware, async (c) => {
     userAgent: c.req.header('user-agent'),
   });
   const quota = await QuotaRepo.getQuota(db, user.id);
-  return ok(c, {
-    user: publicUser(await (UserRepo.getUserById(db, user.id) as Promise<typeof user>)),
-    quota,
-  });
+  // 回读一次以带出 last_login_at（更新后取最新行；理论上必存在，缺失时回退当前行）
+  const fresh = await UserRepo.getUserById(db, user.id);
+  return ok(c, { user: toPublicUser(fresh ?? user), quota });
 });
 
 authRoutes.post('/logout', async (c) => {
@@ -249,7 +219,7 @@ authRoutes.get('/me', async (c) => {
   const user = await UserRepo.getUserById(db, userId);
   if (!user) throw new ApiError(401, 'UNAUTHORIZED', '未登录');
   const quota = await QuotaRepo.getQuota(db, user.id);
-  return ok(c, { user: publicUser(user), quota });
+  return ok(c, { user: toPublicUser(user), quota });
 });
 
 authRoutes.get('/csrf-token', async (c) => {
