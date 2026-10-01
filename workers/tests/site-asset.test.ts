@@ -134,3 +134,72 @@ describe('重定向逐跳校验', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('头像中转（kind=avatar）', () => {
+  // 头像外链常 302 到带临时 token 的图床/网盘地址，且普遍无 CORS 头：
+  // 浏览器直连会被跨域拦截，故经本端点同源中转（仍走 validateEndpoint + 逐跳校验 + 边缘缓存）
+  const AVATAR_URL = 'https://img.example.com/avatar.jpg';
+  const png = new Uint8Array([137, 80, 78, 71]);
+
+  /** 预置校验用全局 fetch 与边缘缓存（避免真实出网） */
+  const stubNetwork = (): ReturnType<typeof vi.fn> => {
+    const entries = new Map<string, Response>();
+    vi.stubGlobal('caches', {
+      default: {
+        match: async (key: Request) => entries.get(key.url),
+        put: async (key: Request, value: Response) => {
+          entries.set(key.url, value);
+        },
+      },
+    });
+    const fetchMock = vi.fn(async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  const setAvatar = (url: string): void => {
+    ctx.db.prepare('UPDATE users SET avatar_url = ? WHERE username = ?').run(url, 'admin');
+  };
+
+  beforeEach(() => {
+    const user = ctx.db.prepare('SELECT id FROM users WHERE username = ?').get('admin') as { id: string } | undefined;
+    if (user) setAvatar(AVATAR_URL);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setAvatar('');
+  });
+
+  it('u 与已登记头像一致时正常返回图片（跨域外链的同源中转通道）', async () => {
+    const fetchMock = stubNetwork();
+    const res = await request(ctx, `/api/public/site-asset/avatar?u=${encodeURIComponent(AVATAR_URL)}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(res.headers.get('cache-control')).toContain('max-age=604800');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(png);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('u 未登记在任何用户 → 404 且不出网（防开放代理）', async () => {
+    const fetchMock = stubNetwork();
+    const res = await request(ctx, `/api/public/site-asset/avatar?u=${encodeURIComponent('https://evil.example/steal.jpg')}`);
+    expect(res.status).toBe(404);
+    expect((await json<{ error: { code: string } }>(res)).error.code).toBe('NOT_FOUND');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('已登记的头像指向私网地址时 404（SSRF 拦截，即使与 u 一致）', async () => {
+    setAvatar('http://127.0.0.1:9000/private.png');
+    const fetchMock = stubNetwork();
+    const res = await request(ctx, `/api/public/site-asset/avatar?u=${encodeURIComponent('http://127.0.0.1:9000/private.png')}`);
+    expect(res.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('缺少 u 参数 → 404', async () => {
+    stubNetwork();
+    const res = await request(ctx, '/api/public/site-asset/avatar');
+    expect(res.status).toBe(404);
+  });
+});
