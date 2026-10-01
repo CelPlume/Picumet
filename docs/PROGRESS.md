@@ -18,7 +18,7 @@
 | Phase 1 | 核心平台：认证、文件、配额、角色、存储源、系统设置 | Done |
 | Phase 2 | 上传（分片/断点续传）、预览、分享、管理面板、API 密钥、WebDAV、自由模式 | Done |
 | Phase 3 | AWS S3、外观主题、管理员登录、公告关闭 | 基本完成；Oracle provider 待实现 |
-| Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录、邀请码注册机制、Cloudflare Turnstile 人机验证 | Planned |
+| Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录、Cloudflare Turnstile 人机验证 | Umami 访问统计 Done；邀请码注册机制已提前完成（见「功能区域」与 2026-09-30 追加二）；SSO/OIDC 登录 Done（见 2026-09-30 追加五）；其余 Planned |
 | 未来 | monorepo 双后端：Workers 版 + Go 高性能版（跨桶复制/DR、无配额长任务） | Planned |
 
 ## 功能区域
@@ -50,12 +50,15 @@
 | i18n（中 / 英） | Done | |
 | 响应式布局 | Done | 桌面/平板/手机；浮动操作栏在 350-1080 px 验证过。 |
 | 用户 | Done | 注册、登录、邮箱验证、游客角色、自由模式。 |
+| 邀请码注册 | Done | 迁移 0010：注册门控 + 事务内原子核销、用户端生成/受邀记录、管理端「注册设置」分组；详见 2026-09-30 追加二。 |
+| 第三方登录（SSO / OIDC） | Done | 迁移 0012：Google / GitHub（单例）与自定义 OIDC 来源、`/sso/complete` 补充注册、身份与令牌落库；详见 2026-09-30 追加五。 |
 | 权限与配额 | Done | 3 角色、路径 ACL、文件/路径密码、存储与文件数配额。下载限速与月度流量配额已拒绝。 |
 | 存储配置 | Done | 挂载点、CDN 域名、路径前缀、排序、签名；内容哈希寻址（§F）去重同内容；存储池（§E）跨 provider 摊铺。复制/DR 与路径 DSL 待做。 |
 | 存储核心加固 | Done | Range 读取（经统一 `serveObject` 的 206/416）、`ProviderError` 分类、批量删除（每批 ≤1000 + 逐对象回退）、Delimiter 列目录、>5 GB 移动用 `UploadPartCopy`。 |
 | Provider 统一 | Done | 类型由 `endpoint` 推导（`r2` / `s3`；`oracle` 并入 `s3`）；迁移 `0005`；`upload_domain` 移除。 |
-| 管理端 | Done | 仪表盘、用户、存储、挂载点、规则、分享、文件、日志。访问统计见「即将规划」。 |
-| 系统设置 | Done | 站点信息、注册/游客开关。Turnstile 配置已随审计 YAGNI-03 清理移除（从未接线）；完整重实现方案见「即将规划」。 |
+| 管理端 | Done | 仪表盘、用户、存储、挂载点、规则、分享、文件、日志。访问统计来源可切 Umami（见下）。 |
+| 访问统计（Umami） | Done | 站点级来源二选一（D1 `access_logs` / Umami 前端统计）；脚本面配置 + tracker 注入 + 下载/复制链接事件上报，详见「2026-09-30 追加：Umami 访问统计」。 |
+| 系统设置 | Done | 站点信息；「注册设置」分组：开放注册/访客开关（自安全设置挪入）+ 邀请码四项（开关/必填/生成权限/每用户上限）。Turnstile 配置已随审计 YAGNI-03 清理移除（从未接线）；完整重实现方案见「即将规划」。 |
 | API 密钥 + 兼容协议 | Done | `pk_x.sk_y` 不透明令牌、WebDAV、PicGo/PicList、Lsky Pro V2、AList/OpenList shim、S3 兼容网关（对外中转面）。 |
 | 安全 | Done | CSP、CSRF、限流、路径遍历、SSRF、SQL 参数化、原子下载令牌。热文件检测与强制签名 URL planned。 |
 | 图片编辑器链接（Squoosh） | Done | |
@@ -303,50 +306,177 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 | 骨架屏表观 | `AppSkeleton` 根元素去掉实底 `bg-background`（实底会盖掉壁纸与玻璃观感）；`main.tsx` 以副作用 import `./stores/theme` 让外观设置**在启动即 applyTheme**——认证检查/路由懒加载期间的等待也长在用户自己的壁纸、明暗与模糊上（此前主题只在懒加载页面里落地）；骨架微光保持 `animate-pulse` 固定 2s，不随档位变化 | `components/ui/skeleton.tsx`、`main.tsx` |
 | 实测 | 高效遮罩/面板 0.3s、舒适 0.42s（`transitionend.elapsedTime` = 420ms）、卸载均晚于过渡结束；菜单入场中（延迟 0/30/60/150ms）点「属性」4/4 次完整播放；骨架驻留实测 48ms（即时回包）、慢请求（166ms）无附加等待；舒适档在 `default`/`off` 档回落为 `data-motion-speed="efficient"` | 浏览器实测 + 识图核对外观卡顺序 |
 
+### 2026-09-30 追加二：邀请码注册机制（Phase 4 提前落地）
+
+按「即将规划 — 邀请码注册机制」原方案全量落地（规划文本已移除；契约见 API/ARCHITECTURE/UI 文档，服务文档 `workers/src/services/invites/README.md`）：
+
+| 项 | 实现 | 关键落点 |
+| :--- | :--- | :--- |
+| 迁移 0010 | `invite_codes` 表（码值 UNIQUE、创建人删除级联）+ `users.invited_by_code_id` 核销列（FK ON DELETE SET NULL）+ 4 个「注册设置」种子键（`invite_enabled` / `invite_required` / `invite_generation` / `invite_max_per_user`），含回滚注释与索引 EXPLAIN 说明 | `workers/migrations/0010_invite_codes.sql` |
+| 管理端「注册设置」分组 | 「开放注册」「允许访客」开关自安全设置卡挪入；新增 开启邀请码 / 邀请码必填（未开启置灰）/ 生成权限（全部用户 / 仅管理员）/ 每用户最大生成数量（1-100，默认 5）；`SettingsSchema` strict + GET/PATCH 往返；卡片顺序 站点/注册/安全 + SMTP/公告 | `admin/schemas.ts`、`admin/handlers.ts`、`admin/Settings.tsx` |
+| 邀请码服务 | `POST /api/invites`（批量 count 1-10 + name 备注，UNIQUE 碰撞重试，累计上限 `403 INVITE_LIMIT`）与 `GET /api/invites`（自己的码倒序 + 按码聚合受邀用户 + `max`）；两端点同受生成权限门禁（admin_only 非管理员 403）；码值 `[0-9A-Z]{6}` crypto 随机（`randomString` 通道）；设置读取 fail-safe（开关缺行 = 关闭） | `services/invites/`、`db/repos/invites.ts` |
+| 注册链路 | `RegisterSchema` 增 `inviteCode`（校验在 handler，按场景返回具体错误码）：未开启+带码 `INVITE_NOT_ENABLED` → 必填缺码 `INVITE_CODE_REQUIRED` → 格式 `INVITE_CODE_FORMAT` → 存在性 `INVITE_CODE_INVALID`；`UserRepo.createUser` 改**事务内**插入（users 含 `invited_by_code_id` + user_quotas 同成败），码行并发消失时 FK 使整体回滚 = 核销原子性 | `auth/schemas.ts`、`auth/handlers.ts`、`db/repos/users.ts` |
+| 公开设置与门控 | `GET /api/public/settings` 透出 `inviteEnabled` / `inviteRequired` / `inviteGeneration`；注册页据此渲染邀请码输入（必填/选填标签，输入即过滤 `[0-9A-Z]{6}` 并转大写）；个性化页据 generation + 本人角色判定区块可见（site store `loaded` 后判定，后端 403 整块隐藏） | `public/handlers.ts`、`stores/site.ts`、`pages/Register.tsx` |
+| 用户端邀请码卡 | 个性化设置「修改密码」下方「邀请码」卡（仅对有生成权限的用户显示；显示时右列两卡 reveal 序号顺延 3/4 → 4/5）接入 **`Tabs` 组件**二选一（「邀请码」/「邀请的人」）：Tab 1 为生成表单 + 邀请码表格（名称 / 邀请码 / 创建时间）；Tab 2 为受邀用户汇总表（用户名 / 使用的邀请码 / 注册时间，支持按用户名或注册时间排序，默认按注册时间降序）；**视觉一致性**：两表共享 `INVITE_GRID`，中间列（码值）与右侧列（时间）X 轴像素级绝对对齐；两表行内边距统一为 `py-2.5`（间距完全一致）；可复制码与使用码尺寸统一调为等小药丸（`text-xs px-1.5 py-0.5`，59×20px）；创建时间与注册时间字号统一为 `text-sm`（14px），注册时间双语格式化（中文 `YYYY/MM/DD`，英文 `MM/DD/YYYY`） | `pages/settings/Personalization.tsx` |
+| 管理端用户列表 | 表格在「注册时间」后新增「邀请人」与「邀请码」两列（受邀时显示邀请码创建人与码值，未受邀显示 `-`），全表单元格内边距收紧至 `px-2.5` / `10px`，两列均支持点击表头升降序排序；`UserRepo.listUsers` 一次 LEFT JOIN 取回，无 N+1 查询 | `workers/src/db/repos/users.ts`、`frontend/src/pages/admin/Users.tsx` |
+| i18n | `admin.settingsRegistration/inviteCodes/invite*`、`admin.users.{invitedBy,inviteCode}`、`auth.inviteCode(Optional)`、`settings.invites.*`（含汇总表 `colUsername`、`colCode`、`colRegisteredAt`、`invitedCount`）中英两份同步 | `lib/i18n/zh.ts` + `en.ts` |
+| 测试 | workers `invite-codes.test.ts` 19 例：注册门控矩阵（关闭/关闭带码/必填缺码/格式/错码/有效码/选填无码/同码多人）、核销原子性（FK 失败回滚、无孤儿配额行）、生成权限矩阵（POST/GET 同门禁）、批量格式与唯一性、累计上限、按码聚合、管理端用户列表带出邀请人与邀请码及搜索过滤回归、设置往返与公开透出；前端 `Register.test.tsx` 覆盖率门禁通过 | `workers/tests/`、`frontend/src/pages/` |
+| E2E（运行栈实测） | 本地 dev（wrangler + vite + Chromium）：必填开启无码提交显示「注册需要邀请码」、非必填时标注「邀请码（选填）」、错码显示「邀请码无效」；admin 生成命名码 `T2UHJ9/e2e-verify`（已生成 3/5、名称输入清空、新码置顶），该码注册 `e2e_invitee` 成功（跳 `/login?registered=1`）；管理端用户管理表格 8 列核对（内边距 10px，`e2e_invitee` 行带出邀请人 `admin` 与邀请码 `T2UHJ9`，未受邀显示 `-`）；个性化设置卡片双 Tab（邀请码 / 邀请的人）切换正常，两表共享 `INVITE_GRID` 像素级对齐、行距与时间字号一致 | 浏览器实测 + vision 识图核对 |
+| **越权加固（按管理员 / 普通用户 / guest 分档复查后修复）** | ① **生成门禁补开关**：`canGenerateInvites` 原先只判 `invite_generation`，机制关闭时普通用户仍能调 API 铸码（UI 隐藏、API 放行）。改为三档：管理员恒可（可在开启前预生成）、**guest 角色一律不可**（仅下载的受限角色签发邀请码等同授予注册能力）、其余用户须 `invite_enabled && all_users`；前端 `canGenerateInvites` 同步分档，API 与 UI 同口径。② **数量上限收敛为单事务**：`countByUser` + `create` 原为事务外先查后写，并发请求各自读到同一计数可越过 `invite_max_per_user`（TOCTOU）；现包进 `db.transaction`，`InviteRepo` 写入面放宽为 `Db \| Tx`。③ 已核实无洞：注册 `role: 'user'` 硬编码且 schema 非 passthrough（`role: 'admin'` 注入无效）、`invited_by_code_id` 仅来自按码查库结果、`userRole` 取自 DB 行并与 JWT 交叉校验、`listByUser`/`listInvitedUsers` 均按自身码收敛、用户自助接口不可改角色与核销关系、自由模式不签 `auth_token` 故无法触达 `/api/invites` | `services/invites/invites.ts`、`services/invites/handlers.ts`、`db/repos/invites.ts`、`pages/settings/Personalization.tsx` |
+| 越权回归测试 | `invite-codes.test.ts` 增至 25 例，新增 6 例：关闭机制时普通用户 POST/GET 均 403 而管理员 201、guest 角色在「开启 + all_users」下仍 403、admin_only 双条件（开关 + 权限）下 403/201、注册 body 注入 `role: 'admin'` 仍建普通用户、**并发生成不越过上限**（两个并发请求仅一个 201 且库中仅 1 条）、用户自助接口无法改角色/核销关系；同步把 3 个编码旧宽松契约的既有用例改为「普通用户生成须先开启机制」，并让管理端用户列表用例不再依赖管理员累计码数（上限放开至 100） | `workers/tests/invite-codes.test.ts` |
+
+### 2026-09-30 追加五：管理端编辑用户支持重置密码
+
+| 项 | 实现 | 关键落点 |
+| :--- | :--- | :--- |
+| 契约 | `PUT /api/admin/users/:id` 新增可选 `password`（8–128 位；空串 = 不修改），与既有 `role/status/defaultPath/maxStorage/maxFiles/capabilities/permissions` 同一入口；响应回显 `passwordChanged` | `admin/schemas.ts`、`admin/handlers.ts`、docs/API(_CN).md |
+| 安全语义 | 走 bcrypt `hashPassword`（与用户端改密同源）；**改密递增 `session_version`**，该用户已签发 JWT 立即失效需重新登录；每次改密写 `admin_password_reset` 审计（`auditActionGroup` 未知动作保守归 `admin` 分组，日志只记操作者/对象用户/路径，不含密码）；非管理员调用仍被 `adminMiddleware` 403 | `admin/handlers.ts`、`utils/crypto.ts` |
+| 前端 | 用户管理编辑弹窗在存储上限/文件上限之后以分隔线划出「重置密码」分区（placeholder「留空则不修改」+ 会话失效提示），打开弹窗时清空；提交前前端先拦长度不足 8 位（后端 schema 同步强校验）；`admin.users.newPassword(Placeholder/Hint)`、`passwordTooShort` 中英两份 | `pages/admin/Users.tsx`、`lib/i18n/{zh,en}.ts`、docs/UI(_CN).md |
+| 测试 | 新增 `admin-user-password.test.ts` 6 例：改密后新密码可登录且旧密码 401、会话版本递增且旧 JWT 401、空串不改密（哈希与在途会话均保留）、不足 8 位 400 且不落库、审计留痕且日志不含密码、非管理员 403 | `workers/tests/admin-user-password.test.ts` |
+| E2E（运行栈实测） | 管理端打开 `tester01` 编辑弹窗 → 「重置密码」分区可见（`type=password`、placeholder「留空则不修改」、`autocomplete=new-password`）；填 `short7c` 保存被前端拦下（弹窗不关、toast「密码长度至少 8 位」）；填 `e2e-reset-pass-2026` 保存成功、弹窗关闭、列表不变；随后 `tester01` 旧密码登录 **401**、新密码登录 **200**；D1 查到审计行 `admin_password_reset` | 浏览器实测 + DB 核对 |
+
+### 2026-09-30 追加四：验证码分段输入 + 用量展示样式 + 动效复刻批次（§37）
+
+| 项 | 变更 | 关键落点 |
+| :--- | :--- | :--- |
+| 验证码 6 位统一 | 三处邮箱验证码（注册 / 改密 / 换绑）统一走新增的 `randomDigits(6)`：CSPRNG **逐字节拒绝采样**（剔除 ≥250 的取值）消除 `% 10` 偏置；改密与换绑两处从 `Math.random` 换到 CSPRNG（与注册 OTP 同源），schema 正则同步 `^\d{6}$` | `workers/src/utils/crypto.ts` 新增 `randomDigits`；`services/auth/handlers.ts`、`services/users/handlers.ts`、`services/{auth,users}/schemas.ts`；`workers/tests/password-code.test.ts`、`security-harden.test.ts` |
+| OTP 分段输入 | `InputOTP` 重写：默认 6 位；新增 `mode="alphanumeric"`（邀请码 `[0-9A-Z]` 自动大写）、`error` 抖动态、`ariaLabelKey`；格子 `flex-1` 拉伸（原固定 w-9），native input 文本透明 + 覆盖层绘制字符；动效复刻 interior.dev / moumenlab（字符浮入 220ms、激活格 1.06s 闪烁光标、错误整行抖动 320ms），**功能性微反馈 → 默认档位即生效** | `frontend/src/components/ui/input-otp.tsx` 全量重写、`index.css`「OTP 分段输入」小节、`input-otp.test.tsx` |
+| 注册页 OTP 行 | 邮箱框独占一行，其下**常驻**「OTP ＋ 右侧发送验证码按钮」行（总宽与邮箱框一致，实测 384 = 384）；发送按钮从邮箱行移到此行；邀请码改用 `InputOTP`（alphanumeric）+ 格式说明；`INVALID_OTP` 触发抖动恢复。**改邮箱/改密两处同样接上 OTP**（此前改邮箱的 OTP 仅在发码后出现） | `pages/Register.tsx`、`pages/settings/Personalization.tsx`、`pages/Register.test.tsx` |
+| 用量展示样式 | 个性化「主题」卡新增**用量展示样式**（进度条 / 运动圆环）二选一，与文件图标风格、文件夹显示同卡；独占整行、两个选项左右并列（`sm:col-span-2` + `grid-cols-2`）；个人资料卡与右上角头像菜单共用 `UsageDisplay` | `stores/theme.ts` 新增 `usageStyle`；新文件 `components/ui/usage.tsx`；`widgets.tsx`、`Personalization.tsx`、i18n 两份 |
+| 运动圆环卡片 | 复刻 kokonutui apple-activity-card：外环=存储（红）/ 内环=文件（青），渐变描边 + 圆头 + 灰轨，**环间 4px 空隙**（Apple 紧凑嵌套）；布局为**文字紧贴环左侧、文字右对齐、整块右对齐卡片**，两行（实际四行）文本与环盒同高；绘制动效（`stroke-dashoffset` 逐环 160ms 错峰 + 整环 scale 0.8 淡入 + 信息列滑入）**按图表归类 → 默认档位即生效** | `components/ui/usage.tsx`、`index.css`「用量展示」小节 |
+| 圆环不渲染的坑 | React `useId()` 返回带冒号的 id（`:r0:`），拼进 `url(#…)` 片段引用解析失败 → 圆环只剩灰轨。清洗为 `[a-zA-Z0-9_-]` 后正常 | `components/ui/usage.tsx` |
+| Toast 堆叠 | 从 HeroUI v3 顶部堆叠改为 **Sonner 式右下堆叠**（transitions.dev banner-stacking 复刻）：356px 右下固定，最新在底 depth 0，后方层上移 12px 露沿 + 0.06/层缩小 + 微模糊，最多 3 条、第 4 条触发最旧退场；入场 `is-enter` + `useLayoutEffect` 强制 reflow 同任务释放；悬停**几何判定**展开（间隙无元素，`:hover` 覆盖不到）并暂停计时。**深度层不改卡片透明度**（只位移/缩放/模糊）。**关闭档不堆叠**（竖直静态列表 + 立即移除） | `components/ui/toast.tsx` 全量重写、`index.css`「Toast 堆叠」小节 |
+| 开关双回弹 | 复刻 transitions.dev toggle：拇指走 CSS `translate` + `--switch-travel`（sm 8 / default 12 / lg 20px），默认档普通位移过渡，**「全部动画」档**叠加 overshoot 双回弹 keyframes（350ms + `cubic-bezier(0.34,1.35,0.64,1)`），`is-init` 门控（首次交互后才播，避免挂载即播 off 动画） | `components/ui/core.tsx` `Switch`、`index.css`「开关」小节 |
+| 按钮加载态 | 复刻 interior.dev loading-button：内容面与加载面（spinner + 同文案）作为 **grid 同格叠放**的两个面，容器宽度 = 最宽面 → **进入加载不改变按钮宽度**（实测恒定 84px）；交叉淡化 220ms（opacity + 3px 位移 + 3px 模糊），走全局时长门控（关闭档瞬时切换）；加载中置 `aria-busy` | `components/ui/core.tsx` `Button`、`index.css`「按钮加载态」小节 |
+| 验证 | 浏览器实测：注册页 OTP 行宽度 384 = 邮箱框 384；头像菜单正常展开（含双环，4 个 circle）；toast 堆叠 depth 0/1/2 顶部 842/829/820（后方各上移 ~11px 露沿）；关闭档 0 个堆叠 banner + 3 条平铺竖列 + 圆环动画 0.01ms；开关回弹 `switch-bounce-on` 0.35s；按钮加载前后宽度均 84px、aria-busy 切换。测试：workers 75 文件 / 652 例、前端 11 文件 / 70 例、覆盖率门禁与构建全绿 | 本地 dev 栈（wrangler 8787 + vite 5173）、`bun run test` / `test:coverage` / `build` |
+
+### 2026-09-30 追加五：Toast 玻璃层级修复 + 品牌资源缓存 + 管理端排序（§38）
+
+| 项 | 变更 | 关键落点 |
+| :--- | :--- | :--- |
+| Toast 玻璃面归位（三档统一） | 用户实测「**还是透明的，按理说不该透而是模糊**」。根因三重，逐条修复：① `.toast-banner` 是带 `transform` 的定位容器，其内再套一层带 `backdrop-filter` 的卡片 → Chromium 把子元素的 backdrop-filter 提升为**自身**背景采样，页面内容采样不到，磨砂静默失效。改为 **banner 自身就是玻璃面**（`glass-surface glass-blur`），删除内层卡片容器。② 移除 `will-change: transform, opacity`（升格合成层同样截断采样）。③ **弃用 `glass-surface-popover`**——该类专供「悬在白卡之上」的弹层，会把不透明度再让 0.12（下限 0.5），比卡片更透；toast 属独立浮层，改走与卡片/侧栏/顶栏同一大表面配方。实测三档：off = `rgb(255,255,255)` + `backdrop: none`；default = `rgba(255,255,255,0.72)` + `blur(20px) saturate(1.5)`；frosted（有壁纸）= `rgba(255,255,255,0.6)` + `blur(16px)`；另补 `.no-blur .glass-surface` 实底规则 | `frontend/src/components/ui/toast.tsx`、`frontend/src/index.css`「Toast 堆叠」小节 |
+| 后方层不再透字 | 半透明玻璃叠半透明玻璃时，后方层照常渲染文字会形成「重影脏字」。折叠态 `reveal = isFront \|\| spread` 为假时内容层 `opacity-0 pointer-events-none`，只露干净磨砂上沿；悬停展开后内容淡入。浏览器实测折叠态「无重叠文字透出」、展开态 5 条内容全清晰 | 同上 |
+| 多条堆叠不限条数 | 移除「第 4 条到达即把最旧一条打 `leaving` 移除」的硬上限（用户：可以多个堆叠，只是**堆叠层最多为 3**，多了不显示堆叠但展开显示）。改为队列不限条，折叠态仅 depth 0/1/2 可见（`opacity: 1`），depth ≥ 3 隐藏（`opacity: 0` + `pointer-events: none`）；悬停展开时**全部**可见，位移按各自 `ResizeObserver` 实测高度累加 | `frontend/src/components/ui/toast.tsx` |
+| 品牌资源持久化缓存 | 新增 `frontend/src/lib/image-cache.ts`：Logo / Favicon / 用户头像加载成功后以 **Data URL（base64）写入 `localStorage`**（键 `picumet:asset:<kind>`，含原 URL + 时间戳）；刷新时首帧**同步**读缓存渲染，**零网络请求**；仅当配置 URL 变化才重拉并替换（2MB 上限 + 存储失败静默） | `frontend/src/lib/image-cache.ts`、`Logo.tsx`、`widgets.tsx`（`Avatar`）、`stores/site.ts` |
+| 头像加载修复（CORS） | 用户反馈「头像加载不出来，如果不是网络问题」。定位：头像外链 `https://gastigado.cnies.org/d/elements/bdrabbit.jpg` **302 → my.microsoftpersonalcontent.com 带 tempauth 的临时地址且无 CORS 头** → 浏览器 `fetch` 抛 `TypeError: Failed to fetch`；Canvas 兜底设了 `crossOrigin='anonymous'` 反而把 `<img>` 一并打成不可用（实测 `IMAGE ONERROR FAILED (CORS BLOCKED)`）。修复三步：① **`site-asset` 中转新增 `kind=avatar`**，只中转 `users.avatar_url` 中**已登记**的地址（`SELECT id FROM users WHERE avatar_url = ?`），仍走 `validateEndpoint` + 逐跳重定向校验 + 8MB 上限（防开放代理不开口子）；② 前端一律经 `assetProxyUrl()` **同源**拉取，绕开 CORS 与防盗链并复用边缘缓存（`max-age=604800`）；③ 四级回落 `Data URL 缓存 → 中转地址 → 原始外链 → 首字母头像`，加载失败不卡死错误态。实测 `src` 落 `data:image/jpeg;base64,…`、`naturalWidth 1080` | `workers/src/services/public/site-asset.ts`、`frontend/src/lib/image-cache.ts`、`Logo.tsx`、`widgets.tsx` |
+| Favicon 默认图标 | 未配置 favicon 时使用 **Picumet 默认图标**（左上角 Logo 去掉文字的矢量图），并落地静态文件 `frontend/public/favicon.svg`（此前 `index.html` 引用 `/favicon.svg` 但文件缺失）；配置的自定义 favicon 加载失败亦回落该默认图标；`stores/site.ts` 抽出 `applyFavicon()`，先查缓存 → `Image` 探测成功后 `cacheAsset` → 失败回落默认 | `frontend/public/favicon.svg`、`frontend/src/stores/site.ts`、`frontend/src/lib/image-cache.ts` |
+| 左上角 Logo 尺寸 32 | `AppShell` / `Landing` / `FreeMode` 三处顶栏 Logo 由 `size={40}` 改为 `size={32}`（登录/注册等居中页保持 48，浏览/分享页 24） | `AppShell.tsx`、`Landing.tsx`、`FreeMode.tsx` |
+| 管理端「安全设置」上移 | 系统设置页左列改为 **站点 → 安全 → 日志审计 → 访问统计**，右列 公告 / 注册 / SMTP；「安全设置」卡从右列末尾（`revealDelay(6)`）移到左列第 2 位并整体重排 reveal 序号（站点 0 / 安全 1 / 日志 2 / 统计 3 / 公告 4 / 注册 5 / SMTP 6），卡内 `innerDelay` 序号同步。浏览器实测卡片顺序为 `["站点设置","安全设置","日志审计","访问统计","公告","注册设置","SMTP 邮件"]` | `frontend/src/pages/admin/Settings.tsx` |
+| 验证 | 浏览器实测：头像正常加载（`data:image/jpeg;base64,…` naturalWidth 1080）；toast 三档玻璃参数与卡片一致且**毛玻璃真正生效**（视口截图经视觉核对：卡片叠在设置项上、背后内容被虚化）；折叠态无透字、展开态 5 条全清晰；顶栏 Logo `styleH: 32px`；管理端卡片顺序如上。测试：workers **75 文件 / 656 例**（新增 `site-asset.test.ts` 头像中转 4 例）、前端 11 文件 / 70 例，两端 `tsc --noEmit` 与 `bun run build` 全绿 | 本地 dev 栈（wrangler 8787 + vite 5173）、`bun run test` / `typecheck` / `build` |
+
+### 2026-09-30 追加六：复选框 shadcn 基准 + spring-check 勾选动效（§39）
+
+| 项 | 变更 | 关键落点 |
+| :--- | :--- | :--- |
+| 基准样式对齐 shadcn | 按 shadcn `radix-nova` 复选框重做：`size-4` + `rounded-[4px]` + `border border-input` + `focus-visible:ring-[3px] ring-ring/50` + `after:absolute after:-inset-x-3 after:-inset-y-2`。命中区实测由 16×16 扩到 **40×32**（Tailwind `after:*` 工具类自带 `content: var(--tw-content)`，基类默认 `--tw-content: ""`，无需另写 `content-*`）；未选态仍走项目小型控件玻璃配方（`glass-control` + `--glass-alpha`） | `frontend/src/components/ui/checkbox.tsx` |
+| 默认档复刻 shadcn 原生动画 | shadcn 默认动效 = 元素自身 `transition-colors` + **指示器 `transition-none`（无图标动画）**。实测默认档 `transition-property` 仅 `color, background-color, border-color`，勾选 60ms 内瞬时到位 | `index.css`「复选框」小节 |
+| 「全部动画」档复刻 spring-check | 引入项目首个 **`@property`**：把进度量 `--cb-t` 注册为 `<number>`（未注册的自定义属性不可插值），由它推导四路读数（同 reactbits `readings()`）：`fill = scale(max(0,var(--cb-t)))`（自中心涨出、**过冲涨过满格**）、`box = scale(1 + 0.35·max(0,var(--cb-t)-1))`（盒体随过冲微涨，SWELL 系数同源）、`tick` 用 `pathLength=1` 归一化后 `stroke-dashoffset: calc(1 - clamp(0,var(--cb-t),1))` 描边画出/收回、`word` 明暗。缓动 `cubic-bezier(0.34,1.9,0.64,1)` 460ms。**实测过冲峰值 1.213 = spring-check `bounce=0.2` 的 20% 过冲**（box 峰值 1.075 ≈ 1+0.35×0.2；`t=0.5` 冻结时对勾正好画一半）。组件侧零档位分支，四路读数全在 CSS | `index.css`、`components/ui/checkbox.tsx` |
+| 文字明暗按项目语义反转 | spring-check 是「待办」隐喻（勾选 = 完成 → 文字变淡 + 删除线）；本项目是「开关」隐喻，故**反转为未勾选变淡（0.45）、勾选恢复正常（1）**，且**两个方向都不画删除线**（`text-decoration: none`，`strike` 线不移植）。`CheckboxWithLabel` 把 `data-checked` 放包裹层，`--cb-t` 经 `@property{inherits:true}` 继承给复选框与文字。实测：未选 0.45 / 已选 1 / 两态 `text-decoration-line: none` | `index.css`、`components/ui/checkbox.tsx` |
+| 两个过渡声明坑 | ① 不写 Tailwind `transition-colors` 类——utilities 层与 `.cb`（components 层）同优先级且后出现会覆盖掉 `--cb-t` 过渡，颜色过渡改在 `index.css` 声明；② `[data-motion='all'] .cb`（0,2,0）盖过同元素 `.transition-opacity`，**必须把 `opacity` 列入该过渡**，否则文件页选择框悬停淡入退化瞬变（`explorer.tsx`）。按下反馈另用 `--cb-press`(0.92) + `:active` 免 JS 分离 | `index.css` |
+| 验证 | 浏览器实测：三档 transition-property 分别为 `…, --cb-t` / 仅三色 / 仅三色；弹簧轨迹 `--cb-t` 0→1.213→1 与 fill/box 同步；放大 10× 目视对勾完整、`t=0.5` 半画；命中区 40×32；文字明暗 `0.45 → 1` 且无删除线。测试：前端 **12 文件 / 76 例**、`tsc --noEmit` 与 `bun run build` 全绿 | 本地 dev 栈（wrangler 8787 + vite 5173） |
+
+### 2026-09-30 追加三：Umami 访问统计（Phase 4）
+
+按「即将规划 — Umami 访问统计」原方案全量落地（规划文本已移除；契约见 API/ARCHITECTURE/UI 文档）。官方语义经 Context7 MCP 核实（`/websites/umami_is`，docs.umami.is）：tracker 以 `data-website-id` / `data-host-url` / `data-domains` / `data-performance` / `data-exclude-search` / `data-do-not-track` 配置，`umami.track(event, data)` 上报自定义事件、**事件名上限 50 字符且有事件名才带数据**，SPA 页面浏览由 tracker 自动记录。
+
+| 项 | 实现 | 关键落点 |
+| :--- | :--- | :--- |
+| 迁移 0011 | 9 个设置种子键（`stats_source` / `umami_enabled` / `umami_script_url` / `umami_website_id` / `umami_host_url` / `umami_domains` / `umami_performance` / `umami_exclude_search` / `umami_do_not_track`），仅种子行无表结构变更，含回滚注释 | `workers/migrations/0011_umami.sql` |
+| 校验与装配（单一事实源） | `validateUmamiUrl`（仅 `http(s):`、无内嵌凭据、无 fragment、≤500 字符；`http` 仅回环主机本地联调——**不套用 `validateEndpoint` 的私网/端口白名单**：脚本由浏览器加载、无 SSRF 面，本地实例常跑非标端口）、`isUmamiWebsiteId`（UUID）、`validateUmamiDomains`（逗号分隔裸 hostname，借 URL 解析器拒 scheme/路径/端口/凭据）、`resolveUmamiPublicConfig`（来源+开关+复核三道门才下发，否则 null；可选 hostUrl/domains 脏值只丢该项）、`UMAMI_SETTINGS_MAP`（兼审计筛选用键集合） | `workers/src/utils/umami.ts` |
+| 管理端写入口 | `SettingsSchema` 增 9 字段（URL/UUID/域名 refine，''/null = 清空）；`statsSource='umami'` 时按**落库后生效值**校验脚本地址与 Website ID，缺失/无效 → 400（否则公开面静默不注入，管理员以为开了）；命中任一访问统计面键的保存写 `settings_update` 审计日志（记键不记值）；`save()` 改为透传后端错误文案 | `admin/schemas.ts`、`admin/handlers.ts`、`admin/Settings.tsx` |
+| 公开配置 | `GET /api/public/settings` 增 `umami` 字段（`null` = 不注入）；下发前经 `resolveUmamiPublicConfig` 复核，DB 落脏值也不注入 | `public/handlers.ts`、`shared/types.ts` |
+| 前端注入器 | `document.createElement` + `setAttribute` 注入 `defer` 脚本，六个白名单 `data-*` 逐个挑选（`data-before-send` 这类指向全局函数名的事件面不支持）；幂等（页面生命周期只注入一次）；`trackUmami` 事件名截断到 50 字符、tracker 未就绪静默 no-op、异常不影响业务；**只按本次服务端响应注入**（不吃 localStorage 缓存——管理员关掉后不得凭旧值注入） | `frontend/src/lib/umami.ts`、`stores/site.ts` |
+| 事件接线 | 文件下载（`file_download`，带文件名/大小）、分享页下载（`share_download`，同款数据）、复制链接三处（弹窗/单文件/批量，均 `copy_link`） | `pages/Files.tsx`、`pages/SharePage.tsx` |
+| 管理端「访问统计」卡 | 来源二选一（`D1 审计日志` / `Umami 前端统计`），选 Umami 时才展开脚本面：启用开关、脚本地址、Website ID、上报地址、域名白名单 + 三个采集行为开关（性能指标/排除搜索参数/遵循 DNT）；保存失败透传后端文案。卡片布局：左栏 站点/日志审计/访问统计，右栏 公告/注册设置/SMTP/安全（日志审计自安全卡独立成卡，限流留在安全卡） | `pages/admin/Settings.tsx`、`lib/i18n/{zh,en}.ts` |
+| 测试 | workers `umami-settings.test.ts` 16 例：URL 校验矩阵（https 任意主机/http 仅回环/非 http(s)/凭据/fragment/超长/空）、UUID、域名白名单矩阵、公开装配四道门 + 可选项脏值丢弃、`SettingsSchema` 整表单接受与 4 类拒绝、来源切 umami 未配置 → 400、配置完整 PATCH/GET 往返 + 公开下发、写入口审计行、来源切回 d1 后公开为 null；前端 `lib/umami.test.ts` 8 例：未启用不注入、属性白名单（含未知键不落到脚本）、幂等、事件转发/截断/空名、tracker 未就绪 no-op | `workers/tests/umami-settings.test.ts`、`frontend/src/lib/umami.test.ts` |
+| E2E（运行栈实测） | 本地 dev（wrangler + vite + Chromium + 假 umami 实例 `http://localhost:9999/script.js`）：管理端 API 配置后公开下发完整 `umami` 配置；文件页真实加载注入 `script[data-website-id]`（属性实测恰为 src/defer/data-website-id/data-domains/data-exclude-search/data-performance，无 data-before-send）且假脚本执行成功；行菜单点「下载」产生 `file_download`（`{ name: "README_CN.md", size: 6884 }`），网关随之 200；来源切回 `d1` 后公开 `umami` 为 null、0 注入、脚本不加载 | 浏览器实测 + API 日志核对 |
+| 已知边界 | `public_cdn` 外链直读不经页面，JS 无法统计（仍依赖网关审计或未来的热文件检测）；SPA 页面当前无 CSP（Pages 承载、仓库无 `_headers`/meta CSP），tracker 无需放行即可工作，将来给 Pages 加 CSP 需定方案（已记为待决项，见架构文档安全设计） | docs/ARCHITECTURE(_CN).md |
+### 2026-09-30 追加八：复选框无白边 + 日志列宽 + DatePicker 弹出式交互与首帧直出（§40）
+
+| 项 | 变更 | 关键落点 |
+| :--- | :--- | :--- |
+| 复选框去掉白边轮廓 | `Checkbox` 勾选态改走 `border border-primary bg-primary text-primary-foreground` 一体化纯色，删除多余的内衬 `.cb-fill` 图层，消除按钮内边框与填充层之间的缝隙与双重轮廓。全站 4 处裸 `<input type="checkbox">` 与 2 处手动 label 全部迁移至 `<CheckboxWithLabel>`（`admin/Users.tsx` 4 处、`admin/storage/Mounts.tsx` 2 处、`admin/Permissions.tsx`、`settings/ApiKeys.tsx`） | `components/ui/checkbox.tsx`、`index.css`、`Users.tsx`、`Mounts.tsx`、`Permissions.tsx`、`ApiKeys.tsx` |
+| 日志审计第一列列宽 | `LOG_ROW_GRID` 第一列（操作）由 `104px` 拓宽至 **`168px`**，长操作名（如 `sso_provider_create` 19 字符）不再溢出侵入第二列「路径」，表头与表体双表对齐保持一致 | `pages/admin/Logs.tsx` |
+| 3D 滚轮日期选择器重构 | 新增 `components/ui/date-picker.tsx`（导出 `DatePicker`、`DateRangePicker`、`WheelPicker`）：① **弹出式交互**：点击类似下拉菜单的触发输入框在 body Portal 弹出 3D 滚轮浮层（取代直接内嵌巨型滚轮导致挤占卡片高度的缺陷）；② **首帧直出**：解决滚轮数字空白问题——彻底移除 `mask-image`（Chromium 遇到 mask-image 会把 3D 上下文压平成 2D 并隐形数字），移除全局 `backface-visibility: hidden`；容器声明 `w-full shrink-0` 结合内联高度 160px（**禁止使用 `flex-1 min-w-0`**，它在 `flex-col` 父级内会触发垂直轴 `flex-basis: 0%` 导致高度被压垮为 0px 并被 `overflow-hidden` 全切）；首帧在 JSX 样式直算并在 `useLayoutEffect` 中同步刷入 `paint()`；③ **渐变透明度自中间向两端增大**（中间 100% 不透明、向上下边缘平滑淡化至 0% 完全透明）：彻底移除上下实底白块覆盖条，由 `Math.max(0, 1 - (dist / cutoff) ** 1.35)` 纯净驱动，杜绝遮盖数字的刺眼白块；④ **单套字体体系**：删除原版两套重叠的 `<ul>`，所有项使用单套 `text-base`（16px）基线，激活项居中动态赋予 primary 色与 700 字重，彻底消除双重列表导致的重影重字；⑤ **激活条去上下线**：中心指示条改为纯色软高亮衬底（`bg-primary/15 rounded-lg`），无上下边框线；⑥ **触发输入框材质对齐**：使用标准 Input 同款 `border border-input bg-transparent dark:bg-input/30 shadow-sm`，无多余二次 `glass-control`，弹窗 `.glass-dialog` 多级模糊自然透出；⑦ **浮层复用规范**：采用 `DROPDOWN_MENU_CLASS`（`shadow-md`、`border border-border/60`、`rounded-xl`），内部无嵌套双重卡片；⑧ **语言自适应排序**：中文 `YYYY/MM/DD`，英文 `MM/DD/YYYY`，时分秒放日期右侧 | `components/ui/date-picker.tsx`、`components/files/ShareDialog.tsx`、`components/share/AdminShareSettingsDialog.tsx`、`pages/admin/Settings.tsx`、`components/charts/TrendCard.tsx`、`lib/i18n/{zh,en}.ts` |
+| 全站现有时间组件替换 | ① `ShareDialog.tsx`（创建分享链接）：绝对过期时间从原生 `datetime-local` 替换为 `<DatePicker value={absoluteAt} onChange={setAbsoluteAt} includeTime />`；② `AdminShareSettingsDialog.tsx`（管理端分享设置）：延长时间从 `datetime-local` 替换为 `<DatePicker value={expiresInput} onChange={setExpiresInput} includeTime />`；③ `admin/Settings.tsx`（公告设置）：`until` 截止时间替换为 `<DatePicker value={newUntil} onChange={setNewUntil} includeTime />`；④ `TrendCard.tsx`（仪表盘趋势图自定义区间）：起止日期输入框替换为 `<DateRangePicker from={customInput.from} to={customInput.to} onChange={...} includeTime={false} />`，起止放两个组件，自适应语言日期顺序 | 同上 |
+| 验证 | 浏览器实测：① 复选框勾选态纯色一体、无白边轮廓；② 日志审计第一列 168px 实测 `hasCollision: false`；③ DatePicker 触发框与常规 Input 样式 100% 对齐（`bg-transparent dark:bg-input/30 shadow-sm`）；④ 浮层单层一体化无双重卡片盒、中间激活行无上下线条；⑤ 滚轮全部 6 列（年/月/日/时/分/秒）数字清晰可见且单字体无重影；⑥ 语言切换实测中英文日期列顺序与格式回显正确。测试：前端 **12 文件 / 78 例**、workers 75 文件 / 656 例、构建全绿 | 本地 dev 栈（wrangler 8787 + vite 5173） |
+### 2026-09-30 追加七：SSO / OIDC 登录（Phase 4，迁移 0012）
+
+按「即将规划 — SSO / OIDC 登录」全量落地。协议面**未引入 Auth.js**（经 Context7 核实官方文档后决策，理由见架构文档「SSO / OIDC 登录服务」）：其 provider 列表是构建期静态配置、自带 session/adapter 表、登录态由它自己签发 Cookie，与本项目「D1 运行时配置 + 自签 JWT Cookie + 自定义补充注册页」三处冲突；改用已有依赖 `jose` + `fetch` 直连实现。服务文档：`workers/src/services/sso/README.md`。
+
+| 项 | 实现 | 关键落点 |
+| :--- | :--- | :--- |
+| 迁移 0012 | `sso_providers`（`kind` ∈ google/github/oidc、名称、issuer、`client_id`、`client_secret` 密文、单源开关）+ **部分唯一索引** `WHERE kind IN ('google','github')` 保证两者各只有一条 + `sso_identities`（`(provider_id, subject)` 唯一 + `user_id` + 档案快照 + `access_token`/`refresh_token`/`token_type`/`scope`/`expires_at`，外键级联）+ `sso_enabled` 总开关种子键；含回滚注释与索引 EXPLAIN 说明 | `workers/migrations/0012_sso.sql` |
+| 协议层 | discovery（KV 缓存 1h，文档里的 authorization/token/jwks/userinfo 端点**逐个复核地址白名单**）、授权跳转（state + PKCE S256 + OIDC nonce）、code 换 token（`token_endpoint_auth_methods_supported` 决定 post/basic）、`id_token` 经 issuer JWKS **本地**验签（`iss`/`aud`/`nonce`，失败不区分原因只写服务端日志）、档案归一化（OIDC claims → sub/email/email_verified/username/display_name/avatar_url，缺 email 回退 userinfo） | `services/sso/oidc.ts` |
+| GitHub 特例 | 不签发 `id_token` → OAuth2 web application flow，回调后取 `/user` 与 `/user/emails`，只认 primary 且 `verified` 的邮箱（公开资料邮箱不采信） | `services/sso/oidc.ts` |
+| 归属判定 | ① `(provider_id, subject)` 已关联 → 直接登录（刷新凭据与档案快照）② 提供方**已验证**邮箱命中既有账号 → 自动关联并登录（顺带补 `email_verified=1`）③ 其余 → 暂存档案 + 一次性令牌（KV 15 分钟）→ `302` 到前端 `/sso/complete` | `services/sso/handlers.ts` |
+| 补充注册 | `GET /api/auth/sso/pending`（只回展示字段，不含令牌）+ `POST /api/auth/sso/complete`：用户**自填**邮箱 / 用户名 / 密码，与 `/register` 同源的注册总闸、邮箱验证码（共用 `email:otp:register:*`，一次消费）、邀请码门控；建号 + 身份关联（令牌加密落库）+ 发放与密码登录**完全相同**的 JWT Cookie | `services/sso/handlers.ts`、`services/auth/session.ts`（抽出 `setAuthCookie` 单一出口） |
+| 邮箱验证判定 | 提供方已验证所用邮箱 → 免验证码（等价于邮箱控制权证明）；否则「站点开启邮箱验证 **或** 站点配置了 `smtp_host`」→ 必须通过验证码。`mailAvailable` 直接解析 `smtp_host`（迁移种子把空值写成 JSON 串 `""`，走 `resolveSmtpConfig` 会误判为已配置） | `services/sso/handlers.ts` |
+| 管理端 | 「注册设置」卡新增总开关 + 「OIDC 设置」弹窗（形态对齐「默认用户设置」弹窗）：来源列表（名称 / 类型徽章 / **可复制回调地址** / 单源开关 / 编辑 / 删除）+ 内联编辑区（类型 / 名称 / Issuer / Client ID / Secret / Scope / 启用）；`client_secret` 写入不回读（`''`/`******` = 保持原值），列表只回掩码；CRUD 写 `sso_provider_*` 审计（记键不记值），总开关写 `settings_update`；改 issuer/clientId 清 discovery 缓存 | `services/admin/sso.ts`、`pages/admin/SsoProvidersDialog.tsx`、`pages/admin/Settings.tsx` |
+| 地址白名单 | issuer 生产口径同 `validateEndpoint`（公网 http(s)、端口 80/443、拒私网/回环/内嵌凭据、issuer 不带 query/fragment），非生产额外放行回环主机与任意端口（本地 IdP 联调）；端点每次请求前复核（DB 脏值也不放行） | `services/sso/config.ts` |
+| 公开面与前端 | `GET /api/public/settings` 增 `sso = { enabled, providers:[{id,kind,name}] }`；登录/注册页「使用 {{name}} 继续」按钮（`components/sso-buttons.tsx`，整页跳转 `/api/auth/sso/{id}/start`，关闭或无来源时不渲染）；回调错误只回 `?sso_error=<码>`，文案在前端按码映射；新增页面 `/sso/complete`（用户名/邮箱/验证码行/密码/邀请码 + 「使用 … 提供的信息」一键预填，提交后写 auth store 再跳 `/files`） | `services/public/handlers.ts`、`stores/site.ts`、`components/sso-buttons.tsx`、`pages/SsoComplete.tsx`、`App.tsx`、i18n 两份 |
+| 测试 | `workers/tests/sso.test.ts` 22 例（真 RS256 假 IdP + 本地验签）：来源 CRUD 与单例约束、issuer 校验矩阵（回环/私网/非标端口/查询串/生产口径 400）、密钥掩码与保持原值、discovery 缓存失效、级联删除、公开面开关、`/start` 的 state/PKCE/nonce 与 token 请求带 `code_verifier`+`client_secret`、无身份 → 补充注册、验证码建号（令牌 `enc:` 落库可解密）、提供方已验证邮箱自动关联 / 未验证不关联、既有身份直接登录不新建账号、state 一次性与来源不匹配、nonce/aud 不符回码、注册关闭、邀请码必填缺码、提供方已验证免验证码、GitHub 全链路；前端 `pages/SsoComplete.test.tsx` 6 例（预填、验证码门控、邀请码过滤与提交、待办失效错误态、提交失败不跳转） | `workers/tests/sso.test.ts`、`frontend/src/pages/SsoComplete.test.tsx` |
+| E2E（运行栈实测） | 本地 dev 栈（wrangler 8787 + vite 5173 + 假 OIDC 提供方 `localhost:9443` + lab SMTP sink 1025 + Chromium）：管理端「注册设置」开总开关 → 「OIDC 设置」新增来源（自定义 OIDC / 公司 SSO / issuer / client id+secret）→ 列表回显掩码与回调地址、PATCH 设置 200、公开设置透出 `sso.enabled=true` 与来源；**未登录上下文**登录页出现「使用 公司 SSO 继续」→ 点击后经 IdP（日志核对：authorize 带 state/nonce/code_challenge、token 带 code_verifier+client_secret、回调前取 JWKS）→ 落到 `/sso/complete`（标题/预填按钮/验证码行/邀请码 6 格全部渲染）→ 一键预填出 `smokeuser` + `smoke.user@idp.test` → 发送验证码（sink 收到邮件，取码）→ 提交 `201` 并跳 `/files`（刷新后仍登录、`/api/auth/me` 200）；D1 核对：`sso_identities` 行 subject=`smoke-subject-1`、`access_token`/`refresh_token` 为 `enc:` 密文、`expires_at` 未来；用户行 `email_verified=1` + 邀请码核销；再次发起同一来源**直接登录**（无补充注册页）。冒烟后已回滚 dev 库的临时来源/用户与总开关 | 浏览器实测 + `docker exec` 读 sink + `wrangler d1 execute --local` 核对 |
+
+### 2026-09-30 追加六：登录支持「用户名或邮箱」
+
+| 项 | 实现 | 关键落点 |
+| :--- | :--- | :--- |
+| 取用户收敛 | 新增 `UserRepo.findByLoginIdentifier`：裁剪两端空白后**先按用户名精确匹配**（保持既有登录语义与热路径完全不变，用户名大小写敏感），未命中且含 `@` 时按 `lower(email) = lower(?)` 匹配——邮箱列是 BINARY 排序且注册按原样存储，用 SQL 侧小写比对让存量大小写混合邮箱同样能登录（**无需数据迁移**）；查不到返回 null | `db/repos/users.ts` |
+| 登录接口 | `/api/auth/login` 改用该方法；**错误形状不变**：标识不存在与密码错误回同一 `401 INVALID_CREDENTIALS`「用户名或密码错误」，`login_failed` 审计照常落库（标识已解析到用户时带 `user_id`，便于按用户排查）。请求体字段名仍为 `username`（兼容约 20 个测试文件与既有客户端），语义在 schema 注释与文档中明确为「登录标识」 | `services/auth/handlers.ts`、`services/auth/schemas.ts` |
+| 登录页 | 首个输入框改为「用户名或邮箱」（`login.identifier` + `login.identifierPlaceholder`，`autoComplete="username"`，提交前裁剪空白）；新增 key 而非改 `login.username`——后者被注册页、SSO 完成页、SMTP 用户名、WebDAV 凭据文案共用，改值会误伤 | `pages/Login.tsx`、`lib/i18n/{zh,en}.ts` |
+| 测试 | 新增 `login-identifier.test.ts` 8 例：用户名登录回归、邮箱登录回填同一账号、邮箱大小写无关（`Li.Mixed@Test.local` 用小写登录）、两端空白裁剪、邮箱+错密码 401、不存在标识/错密码/不存在邮箱三者错误码与文案完全一致（无账号枚举）、`login_failed` 审计落库且带 `user_id`、空串 400 与纯空白统一 401 | `workers/tests/login-identifier.test.ts` |
+| E2E（运行栈实测） | 登录页标签「用户名或邮箱」、placeholder `username / name@example.com`、`autocomplete=username`；邮箱 `tester01@test.local` 登录跳 `/files`；`  tester01  `（两侧空白）用户名登录同样成功；`TESTER01@TEST.LOCAL` 大写邮箱登录 **200**；不存在的邮箱与错误密码均为 **401 + INVALID_CREDENTIALS +「用户名或密码错误」**（三者一致） | 浏览器实测 + API 核对 |
+| 过程中修正的一处实现缺陷 | 最初把邮箱回退写成「输入转小写后精确查」，方向反了（注册按原样存储，转小写反而查不到大小写混合邮箱）——首轮测试即以「大小写无关登录 401」暴露，改为 SQL 侧 `lower(email)` 比对后通过 | 同 `db/repos/users.ts` |
+
+### 2026-09-30 追加八：SSO / OIDC 安全审计修复（迁移 0013）
+
+按 `code-audit` skill（standard 模式：10 维覆盖矩阵 + JS/TS 语义提示）对本批 SSO 面做了一次审计：自审（sink 驱动：SQL 参数化、`fetch` 目标、React DOM sink、`??`/`||` 空值口径、`jwtVerify` 算法面）+ 独立 `security-reviewer` 子代理对抗式复查（枚举端点与分支 → 逐一验证可达性，产出 9 项发现，其中「无发现」的维度也给出证据）。全部发现已落地修复，每项都有回归测试。
+
+| 发现（严重度） | 修复 | 证据 / 关键落点 |
+| :--- | :--- | :--- |
+| **H1 授权事务未与发起浏览器绑定**：`state` 与 pending 令牌只存在 KV 与 URL 里，任何浏览器拿到回调/补注册链接都能完成登录 → 攻击者用自己的账号跑完授权、把链接丢给受害者，受害者即获得**攻击者账号**的会话（登录 CSRF / 会话固定，CWE-352/384）；pending 令牌同理会把身份关联到攻击者的 subject | `/start` 追加 `sso_tx` 绑定 Cookie（值 = state，HttpOnly + `SameSite=Lax`（回调是跨站顶层 GET，Strict 会丢）+ Path 限 `/api/auth/sso`），回调必须携带同值 Cookie（常量时间比较）且**任何回调尝试即作废 state**；回调分支 3 追加 `sso_pending`（值 = 待办令牌），`/pending` 与 `/complete` 都必须携带 | `services/sso/handlers.ts`（`appendBindCookie`/`assertBindCookie`）；`sso.test.ts` 绑定 Cookie 分组 4 例 |
+| **M2 验证码判定用提供方档案而非提交值**：提供方验证过 A 邮箱即整场免验证码 → 可用 B 邮箱（他人地址）无验证注册，抢占该地址并套取该用户后续的 SSO 自动关联（账号植入 / 邮箱占地） | `emailVerificationRequired()` 改为以**本次提交的邮箱**为准（`/pending` 用待填档案里的邮箱代表表单值，`/complete` 传真实提交值）；前端同步（用户把邮箱改成非提供方已验证地址时立即显示验证码行） | `services/sso/handlers.ts`、`pages/SsoComplete.tsx`（`otpRowVisible`）；`sso.test.ts` 邮箱验证码分组 + 前端 2 例 |
+| **M3 自动关联无条件信任提供方 `email_verified`**：自定义 OIDC 的 issuer 只过地址白名单，若该 IdP 允许自填邮箱并回 `true`，即可接管任意既有账号 | 新增逐来源开关 `sso_providers.trust_email_verified`（迁移 `0013`）：内置 google/github 默认开（端点固定、邮箱验证由提供方保证），自定义 oidc 默认关（需管理员显式开启）；关闭时命中既有账号不关联、落到补充注册页并按 `409 ALREADY_EXISTS` 提示改用密码登录；自动关联另写 `sso_link` 审计 | `migrations/0013_sso_trust.sql`、`db/repos/sso.ts`、`services/admin/sso.ts`、`SsoProvidersDialog.tsx`（开关 + 常驻风险说明）；`sso.test.ts` 信任开关分组 2 例 |
+| **M4 邮箱大小写：唯一性精确匹配 / 登录 `lower(email)` 解析**：同一邮箱的大小写变体可建出两个账号，登录按 `lower(email) LIMIT 1` 解析 → 其中一个账号永远登不进去（且自动关联命中错行） | 新增 `UserRepo.findByEmailInsensitive`（`lower(email) = lower(?)`），注册、注册发码、改绑邮箱与 SSO 自动关联/补充注册查重**统一**改走它；`/complete` 对大小写变体返回 `409` | `db/repos/users.ts`、`services/{auth,users,sso}/handlers.ts`；`sso.test.ts` 大小写分组 2 例 |
+| **M5 上游请求跟随重定向（SSRF）**：白名单只校验初始地址，恶意/被入侵的提供方可用 302 把带 `client_secret` 的 token 请求或带 Bearer token 的 userinfo 读取引向内网/云元数据；另：userinfo 端点使用时未复检、缓存中的 discovery 未复检 | `fetchJson` 一律 `redirect: 'manual'`，3xx 直接失败（`SSO_UPSTREAM_REDIRECT`）；discovery 缓存读取与 userinfo 使用前均复核地址白名单；文档必须声明 `issuer` 且与配置一致 | `services/sso/oidc.ts`；`sso.test.ts` 上游分组 2 例 |
+| **L6 `/pending` 与 `/complete` 不复检 `provider.enabled`**：停用来源的在途令牌仍可建号（最长 15 分钟） | 两处均复检 `enabled`（与 `/start`、`/callback` 同口径） | `services/sso/handlers.ts`；`sso.test.ts` 停用来源 1 例 |
+| **L7 pending 上下文把提供方令牌明文写 KV**：与「凭据一律 `enc:` 密文」的既定不变量不一致 | 回调时即加密后再暂存（`tokens: sealed`），`/complete` 直接落库不重复加密 | `services/sso/handlers.ts`；`sso.test.ts` 1 例断言 KV 值不含明文令牌 |
+| **L8 非生产 fail-open 默认**：回环 issuer 原先只按 `ENVIRONMENT !== 'production'` 放行——`ENVIRONMENT` 拼错（`prod`/未设置）就会在生产静默开放回环 SSRF 面 | 改为必须显式 `SSO_ALLOW_LOOPBACK=true` **且**非生产；`wrangler.toml [vars]` / `.dev.vars.example` 加该变量（生产不设） | `services/sso/config.ts`、`shared/types.ts`、`wrangler.toml`；`sso.test.ts` 1 例（生产带开关仍拒；`prod` 未开开关拒；非生产+开关放行） |
+| **I9 空值口径不一致**：`scopes: ''` 创建时落库、更新时归一为 `null`（`/start` 把 `''` 当已设置并发出空 scope）；`clientSecret: ''`「保持原值」契约因 schema `.min(1)` 不可达（死分支）；discovery 文档缺 `issuer` 时跳过一致性校验 | 创建/更新统一 `scopes?.trim() \|\| null`；`/start` 再兜一层 `\|\| DEFAULT_SCOPES[kind]`；更新 schema 显式放宽 `clientSecret` 允许空串（契约可达）；文档必须声明 `issuer` | `services/sso/schemas.ts`、`services/admin/sso.ts`、`services/sso/handlers.ts`；`sso.test.ts` 更新来源 1 例 + 空 scope 1 例 |
+
+**审计中经实测抓到的一处实现缺陷（对「安全修复」自身的回归）**：绑定校验最初无条件清 Cookie，导致 `GET /pending` 一读就把 `sso_pending` 清掉，后续真实建号的那次 `POST /complete` 必然 `SSO_PENDING_INVALID`——单元测试没抓到是因为测试侧的「浏览器」始终拿着自己记的 Cookie 值替实现兜底。修复为「只在失败时清、`sso_tx` 通过校验后清、`sso_pending` 成功建号后清」，并把测试 harness 升级为**极简 Cookie jar**（响应里删掉的 Cookie，测试侧也一并忘掉），补 1 例覆盖「`/pending` 与失败的 `/complete` 之后 Cookie 仍可用、成功后失效」。运行栈实测全链路重新通过（见下）。
+
+**覆盖矩阵**（standard）：D1 注入 ✅（仓内 SQL 全参数化，`sso` 仓库 SET 子句来自静态列映射，值走占位符）、D2 认证 ✅、D3 授权 ✅（含逐端点的 admin 路由 + 绑定 Cookie + 停用复检）、D4 原型污染 ✅（zod 非 strict 剥离未知键；无 `Object.assign(req.body)`）、D5 文件操作 ➖（该面无文件路径入参）、D6 SSRF ✅、D7 加密 ✅（`enc:` AES-GCM、jose 验签挡算法混淆、CSPRNG 令牌）、D8 配置 ✅（新错误码不回内部细节；fail-open 默认已收紧）、D9 业务逻辑 ✅（登录 CSRF、验证码基准、流程跳过、Mass Assignment、XSS sink）、D10 供应链 ➖（未新增依赖）。
+
+**E2E（运行栈实测，审计修复后重跑）**：本地 dev 栈（wrangler 8787 + vite 5173 + 假 OIDC 提供方 9443 + lab SMTP sink 1025 + Chromium）——登录页 SSO 按钮 → IdP（state/nonce/PKCE/code_verifier/client_secret/JWKS 全链路）→ `/sso/complete` 表单渲染（证明 `sso_pending` 经 Vite 代理正确回传）→ **负向实测**：清掉绑定 Cookie 后用同一令牌请求 `/pending` 与 `/complete` 均 `400 SSO_PENDING_INVALID`（链接转发不再可用，且未建任何账号）→ 重新走完整流程（预填 → 邀请码 `WQ0BB0` → 从 sink 取 OTP）`POST /api/auth/sso/complete` **201** 并落地 `/files`，D1 核对 `sso_identities` 令牌为 `enc:` 密文、用户 `email_verified=1` + 邀请码核销。冒烟后已回滚 dev 库的临时来源/用户与总开关。
+
+
+
+### 2026-09-30 追加九：变更范围测试覆盖审计（只读盘点 + 两处真实缺口回归）
+
+对「相对上一提交的全部未提交变更」做了一次变更范围测试覆盖审计：先按 `git status` / `git diff` 划定变更面（**审计快照**为 59 改 + 33 新增目录项 / 42 个未跟踪文件，前端 / workers / docs 三分；本条批次内该面仍在变动，数字以快照为准），再逐个变更源文件核对**行为**是否被现有用例触达，而非只看文件是否存在。
+
+| 项 | 结论 | 证据 |
+| :--- | :--- | :--- |
+| 覆盖良好（无需补测） | 邀请码（注册门控矩阵 / 核销原子性 / 三档越权 / 数量上限 / 聚合列表）、SSO / OIDC（来源 CRUD 与单例约束、issuer 校验矩阵含生产口径、绑定 Cookie 登录 CSRF、验证码以提交邮箱为准、信任开关、大小写无关邮箱、上游重定向拒绝、停用复检、KV 不落明文令牌）、Umami（`utils/umami` 单元 + schema + PATCH/GET 往返 + 审计 + 公开装配 + 前端注入器白名单/幂等/截断）、管理端改密（会话版本递增 / 空串不改 / 审计留痕 / 403）、登录标识收敛（用户名/邮箱、空白裁剪、无账号枚举、审计）、站点资源中转（防开放代理 / 逐跳重定向 / 3 跳上限 / 头像 kind） | `workers/tests/{invite-codes,sso,umami-settings,admin-user-password,login-identifier,site-asset}.test.ts`、`frontend/src/{lib/umami,pages/SsoComplete}.test.tsx` |
+| 缺口 1（已补测） | **`utils/crypto.ts` 的 `randomDigits` 零覆盖**：它是注册 / 改密 / 换绑三处一次性验证码的同源生成器（本次从可预测的 `Math.random` 迁到 CSPRNG 逐字节拒绝采样），属安全敏感面却只有调用点、无任何直接断言 | 新增 `workers/tests/ssrf-crypto.test.ts` 的 `randomDigits` 分组 5 例：长度精确且全数字（含 0/1/40）、**>= 250 的字节被丢弃**、**剔除 250..255 后十个数字严格等频（各 25/250）**、前导零保留、真实 CSPRNG 批量样本覆盖 0..9。后两条用脚本化 CSPRNG（`__setCryptoOverrideForTests`）把字节序列固定，逐条钉住「拒绝采样」这一不变量 |
+| 缺口 2（已补测） | **`lib/image-cache.ts` 零覆盖**：本批次新增模块，承载 Logo / Favicon / 头像的首帧同步直出（localStorage Data URL）、URL 变更失效与经自家 Worker 中转拉取，是「刷新不再触网」这一用户体验承诺的唯一实现 | 新增 `frontend/src/lib/image-cache.test.ts` 14 例：中转地址构造（kind 参与路径 + URL 编码；站内相对地址与 `data:` 不套中转）、缓存命中 / **管理员改地址即失效**（不得拿旧图当新图直出）、脏 localStorage 不抛错、拉取成功落盘键为**原配置地址**而非中转地址（否则换 kind 串图）、非 2xx 与超 2MB 上限拒收且不落盘、网络异常静默 null、写入被拒（隐私模式 / 配额满）仍返回可用 Data URL |
+| 变异验证（非空跑） | 两组新测试都做过**变异验证**：删掉 `image-cache` 的 `entry.url === url` 判定与 2MB 上限 → 2 例失败；删掉 `randomDigits` 的 `buf[i] < 250` 拒绝采样 → 2 例失败。确认断言真的在钉行为，不是恒真 | 变异后 `Tests 2 failed | 12 passed` / `Tests 2 failed | 11 passed` |
+| i18n 一致性 | `zh.ts` / `en.ts` 叶子键 **1237 : 1237 完全对齐**（无单侧键）；11 个含字面点号的键（`admin.auditLevel.*` / `admin.auditGroup.*` / 新增 `admin.statsSource.d1|umami`）实测经 i18next 正常解析出中文文案（i18next 对未命中路径有扁平键回退），非缺陷 | 扁平化比对脚本 + i18next 探针 |
+| 文档同步 | 本批新增的邀请码 / SSO / 登录标识 / Umami / 改密 / 品牌资源缓存 / 验证码分段输入等条目在 `docs/PROGRESS.md`、`docs/API(_CN).md`、`docs/ARCHITECTURE(_CN).md`、`docs/UI(_CN).md` 与 AGENTS.md 变更记录中均已存在，无缺项；仅需补本条审计记录与基线用例数 | 本文件 + `AGENTS.md` |
+
+**已知遗留（非本批引入，报告备查）**：`docs/PROGRESS.md` 的「2026-09-30 追加」编号在多次追加中被重复占用——**追加五 2 处、追加六 2 处、追加八 2 处**（追加二/三/四/七各 1 处），且条目物理顺序与编号不一致（追加八出现在追加七之前，追加三/五散落其间），检索时易误定位；本条取当时未占用的「追加九」，未去动既有编号以免打乱他处交叉引用（`AGENTS.md` 变更记录中已有多处按编号引用这些条目）。
+
 ## 当前基线
 
-- 后端：73 个测试文件 / 617 个 Vitest 用例通过；`tsc --noEmit` 干净；`wrangler deploy --dry-run` 成功（含 F-01 alias 后 bundle 无 DOMParser 引用）。
-- 前端：10 个测试文件 / 59 个 Vitest 用例通过；覆盖率门禁通过（92% statements / 75% branches / 83.33% functions / 93.33% lines）；构建成功；`tsc --noEmit` 干净。
+- 后端：78 个测试文件 / 717 个 Vitest 用例通过（本条新增 `randomDigits` 5 例）；`tsc --noEmit` 干净。
+- 前端：13 个测试文件 / 92 个 Vitest 用例通过（本条新增 `lib/image-cache.test.ts` 14 例）；`tsc -b && vite build` 通过，`tsc --noEmit` 干净。
 - 语言：中文 + 英文。
 
 ## 即将规划
 
-近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面四项新规划。
-
-### Umami 访问统计（审计来源二选一）
-
-接入 Umami（自托管或 Umami Cloud）统计站点访问与下载行为；访问统计来源在 D1 审计与 Umami 之间二选一。
-
-- 管理端系统设置新增 Umami 配置：脚本地址、`data-website-id`、启用开关；前端按配置注入 tracker（`<script defer src=… data-website-id=…>`），脚本可配 `data-host-url` 上报地址与 `data-domains` 域名白名单。**拼装与信任边界（专项）**：脚本地址按官方语义即「站点自己的实例」（自托管 `https://<instance>/script.js`，采集端点 `<instance>/api/send`；Umami Cloud 为 `https://cloud.umami.is/script.js`）——它是本项目**唯一的可配置脚本执行面**，写入口按安全敏感设置对待：仅管理员可改 + 审计日志 + URL 校验（仅 `http(s):`、无内嵌凭据、无 fragment、长度上限；loopback http 仅本地联调）、`data-website-id` 按 UUID 校验、`data-domains` 逐项 hostname 校验；只支持白名单 data-* 属性（website-id / host-url / domains / performance / exclude-search / do-not-track；`data-before-send` 指向全局函数名，不支持）；注入一律 `document.createElement('script')` + `setAttribute`，禁止 HTML 字符串拼接（`dangerouslySetInnerHTML` 项目本就禁用）。
-- SPA 开箱即用：tracker 自动监听 History API（`pushState`/`replaceState`/`popstate`）记录路由切换 pageview，无需手动打点页面浏览，也避免双重计数。
-- 事件上报：文件下载、复制链接等交互用 `umami.track(event, data)` 或 `data-umami-event` 属性上报；事件名上限 50 字符。下载按钮携带文件名/大小等事件数据，使文件下载链接的访问进入统计。
-- 审计来源二选一：站点级设置选择 D1 `access_logs`（网关侧逐次日志，仅覆盖 `private_gateway` 流量）或 Umami（前端行为统计）；两者互斥，避免双写双计。
-- 边界：`public_cdn` 直链的外部热链访问（如外链图片）不经过页面，JS 无法统计——这类流量仍依赖网关审计或未来的热文件检测。
-- CSP 联动（事实核对）：SPA 由 Pages 承载、仓库无 `_headers`/meta CSP——**页面当前没有 CSP**，Worker 的 CSP 只管 Worker 响应，故 tracker 无需放行即可工作；将来若给 Pages 加 CSP，动态实例域需方案（首方代理 `script.js` + `data-host-url` 指回真实实例——官方文档「bypass ad blockers」即此法，或 `script-src https:` 粗放放行），记为待决项而非默认放行。
-
-### SSO / OIDC 登录
-
-支持第三方身份登录：GitHub、Google 与自托管 OIDC 提供商（authentik、logto、casdoor）。
-
-- 通用 OIDC 提供商走 authorization code + `state`（支持 PKCE），经 `/.well-known/openid-configuration` discovery 与 JWKS 验签 `id_token`，覆盖 Google 与自托管三家；管理端按提供商配置 issuer、client id/secret 与启用开关。
-- GitHub 特例：GitHub 的 OAuth 流程不签发 `id_token`（官方 discovery 文档仅面向 MCP 客户端），因此 GitHub 走 OAuth2 web application flow，回调后用 access token 请求 `/user` 与 `/user/emails`，取 primary 且 verified 的邮箱。
-- 账号关联：邮箱一致自动关联既有账号；不一致时按注册开关决定自动注册或拒绝。
-- 登录态与本地账号一致：发放同一 JWT（HttpOnly Cookie），沿用 `session_version` 撤销。
-- 前端：登录/注册页新增「使用 … 继续」按钮与回调路由，处理错误态并补齐 i18n 文案。
-
-### 邀请码注册机制
-
-在开放注册之上叠加受邀注册：管理员在系统设置控制开关与生成权限，用户在个性化设置生成并管理自己的邀请码、查看受邀记录。
-
-- 管理端系统设置新建「注册设置」分组：把现有「开放注册」「允许访客」两个开关从安全设置挪入，并新增四个设置项——是否开启邀请码、开启后邀请码是否必填（必填 = 无码不可注册）、生成权限（全部用户 / 仅管理员）、用户最大邀请码生成数量（默认 5）。
-- 码值格式：6 位数字 + 大小写字母（`[0-9A-Za-z]{6}`，约 5.7×10^10 组合），crypto 随机生成，唯一约束 + 碰撞重试，匹配区分大小写。
-- 数据模型：新迁移建 `invite_codes` 表（码值、名称、创建人、创建时间）与核销关联（`users.invited_by_code_id` 或独立核销表）；一个邀请码可被多人使用，按码聚合展示受邀用户；本次不做使用上限与过期。
-- 用户端：个性化设置「修改密码」下方新增邀请码区块，仅对有生成权限的用户显示——点击开启后批量生成多个邀请码，累计数量不超过「用户最大邀请码生成数量」（默认 5），每个邀请码可设置名称、可见创建时间，并可查看受邀用户的用户名、所用邀请码与注册时间（YYYYMMDD）。
-- 注册链路：开启且必填时注册表单展示邀请码输入（复用既有 i18n key），非必填时选填；校验在注册 handler 内完成，格式不符、码无效或未开启返回明确错误码；核销与建号在同一事务内原子完成，防并发重复核销。
-- 契约闭环：注册 schema 曾长期接受 `inviteCode` 但从未消费，该预留字段已按审计 YAGNI-03 于 2026-09-26 从 `RegisterSchema`/`shared/types.ts` 删除（连同 Turnstile 残留）；本机制落地时随实现重新引入字段与校验，不再「先收下、后接线」。
-- API：用户端 `POST /api/invites`（批量生成）与 `GET /api/invites`（自己的码与受邀记录）；管理端四个设置项走既有 `PATCH /api/admin/settings`；注册校验复用既有注册限流。
-- 测试：注册门控（关闭 / 开启必填无码 / 格式不符 / 错码 / 有效码）、生成权限矩阵（全部用户 / 仅管理员 × 管理员 / 普通用户）、生成数量上限（达到上限后拒绝）、核销原子性。
-- 文档联动：API 参考补端点与错误码；UI 指南补注册页输入与个性化设置区块（落地前，UI 指南「注册收集可选邀请码」的说法仍与代码不符）。
+近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面一项详细规划与七项新方向（液态玻璃动效、组件色彩体系、Workers 稳定性调查、存储驱动与上传修复、出口机制与协议挂载、SMTP 完整测试、第一版上线）。
 
 ### Cloudflare Turnstile 人机验证（登录 / 注册 / 分享下载 / 直链访问 / 文件下载）
 
@@ -369,6 +499,48 @@ Cloudflare Turnstile 接入方案，管理端可按面开关。背景：初版�
 - **测试**：后端 `workers/tests/turnstile.test.ts`（stub fetch siteverify）——开关矩阵（总关/面关跳过）、缺 token 403、验证失败 403、action 不符 403、siteverify 异常 503 fail-closed、dummy secret 恒过/恒败矩阵；path-serve 过渡页——浏览器 UA 无 cookie 得 HTML、有效 cookie 直出、cookie 签名篡改拒绝、非浏览器 403；前端——组件按公开设置门控渲染（未启用不加载脚本）、过期回调清 token、提交失败 reset；覆盖率聚焦新组件与 Login/Register 改动（`Register.test.tsx` 有 CI 门禁先例）。
 - **文档联动**：API 参考补 `X-Turnstile-Token` 请求头、`TURNSTILE_REQUIRED`/`TURNSTILE_FAILED` 错误码与公开设置 `turnstile` 字段；架构文档安全设计补「人机验证」小节；部署指南补 Turnstile 密钥申请（Cloudflare Dashboard → Turnstile）与官方测试键说明；UI 指南补五面交互。
 - **明确不做（本期）**：pre-clearance（绑定 CF zone WAF，不适用多面 SPA）；过渡页 cookie 跨面复用（短 TTL 足够）；WebDAV/S3 网关/AList API 面（已有 API Key 认证 + 限流）；gallery 下载与找回密码（与分享下载/登录同模式，需要时一键纳入）。
+
+### 液态玻璃引入与动效 / 组件优化
+
+引入液态玻璃（liquid glass）质感与更流畅的动画效果，按下列参考组件库逐个评估可借鉴的交互与动效模式（loading button、floating label、OTP 输入、expanding search、skeleton swap、popover/dropdown、hide-on-scroll、new items pill、sortable table、filter grid、poll results、reorder list、particles、sonner toasts、footer、breadcrumb、carousel、combobox、无限嵌套菜单、分段 OTP、motion select、wheel picker 等）：
+
+- <https://www.interior.dev/> 及其组件文档（`/docs/loading-button`、`/docs/floating-label`、`/docs/otp-input`、`/docs/expanding-search`、`/docs/skeleton-swap`、`/docs/popover`、`/docs/dropdown`、`/docs/hide-on-scroll`、`/docs/new-items-pill`、`/docs/sortable-table`、`/docs/filter-grid`、`/docs/poll-results`、`/docs/reorder-list`）
+- <https://liquid-glass-oss.vercel.app/>、<https://liquefy-ui.com/>（液态玻璃实现参考）
+- <https://coss.com/ui/particles?tags=switch>、<https://shoogle.dev/search?q=dropdown&tab=search&preview=https%3A%2F%2Fcoss.com%2Fui%2Fparticles%3Ftags%3Dmenu>
+- <https://reui.io/components/sonner>、<https://ui.watermelon.sh/blocks/footer>
+- <https://shadcnstudio.com/docs/components/{breadcrumb,carousel,combobox,sonner}?base=base>
+- <https://kokonutui.com/docs/cards/apple-activity-card>、<https://lab.moumen.dev/components/{unlimited-nested-menu,otp-segmented-input}>、<https://beui.dev/components/motion/{select,wheel-picker}>
+
+落地约束沿用既有规范：动画三档门控（`data-motion`）、玻璃三档（`--glass-alpha/--glass-blur`）、Portal 化与卡中卡原则。
+
+### 组件色彩体系：强调色一致性 + shadcn 原色
+
+- 部分组件的 hover / 激活态目前不是当前强调色（primary），逐组件排查并统一到强调色体系。
+- 优化 shadcn 组件色彩体系，引入 shadcn 原色（primary/secondary/muted/accent/destructive 的标准语义用法），让自定义强调色与 shadcn 默认 token 语义对齐。
+
+### Workers 运行稳定性调查
+
+- dev 环境下 Workers 经常中断（退出/重启），调查 `/home/excnies/.config/.wrangler/logs/` 中的 wrangler 日志，定位中断原因（崩溃 / OOM / 热重载误触发 / 端口占用等），给出修复或规避方案。
+
+### 存储驱动完善与上传链路修复
+
+- 完善 S3 / R2 / Oracle 等存储驱动，修复文件上传链路遗留问题（已知问题清单见会话记录：`/home/excnies/.omp/agent/sessions/-Picumet/2026-09-28T06-54-28-456Z_01a0e6cb-2668-7450-90d7-699c1d12e680.jsonl`，同批测试暴露的分片/预签名/配额边界问题以此为准）。
+- **agent 安全上传与鉴权链路**：agent 调用指定接口不依赖密码鉴权——调用前生成鉴权码，经邮箱发送或浏览器访问交付；鉴权码鉴权 + 用户确认 agent 请求的操作后才放行，agent 执行请求范围外的操作将被拦截。
+
+### 出口机制与协议兼容完善
+
+- 完善出口（对外提供文件）机制；完善 WebDAV / S3 / MinIO / OpenList（AList）协议兼容面。
+- 探索实现类似 SSH 文件浏览（远端目录树逐级浏览 + 就地操作）的交互机制，以及 **WebDAV 挂载**——把外部 WebDAV 端点作为存储后端挂载进来（与 S3 provider 同级的新驱动形态）。
+- **agent 安全上传与鉴权链路**：agent 鉴权不走密码——调用指定接口前生成鉴权码（邮箱发送 / 浏览器访问交付），鉴权码鉴权并确认 agent 请求的操作后才放行，越界操作拦截。
+- **访问密钥账号密码鉴权**：访问密钥创建时可选鉴权方式——默认 APP ID（pk_*）+ key（sk_*），或开启「账号密码」模式（以 Picumet 用户名 + 密码代替 APP ID/key 鉴权，适合 agent 直接使用）；**创建时选择、只能选择一次**（创建后不可变更）。账号密码模式不适用于 S3 网关（SigV4 必须密钥对），仅 WebDAV Basic / Bearer / OpenList(AList) 等账号密码可承载的协议面。规划待落地：`api_keys.auth_mode` 列（app_secret / password）、每用户仅一条 password 模式密钥（保证账号密码唯一映射到密钥范围）、鉴权中间件账号密码分支 + 认证限流、前端创建表单单选。
+
+### SMTP 完整测试
+
+- SMTP 链路完整测试：管理端测试邮件、注册验证码、找回密码、邮箱变更 OTP 全部走通（实验室 SMTP sink 已可断言真实投递），覆盖 TLS/STARTTLS 与鉴权配置组合。
+
+### 第一版上线准备
+
+- 完成手动测试清单（对照 `run_all.py` 各模块 + 浏览器手测），准备上线第一版。
 
 ## 将来规划（monorepo：Workers 版 + Go 高性能版）
 
