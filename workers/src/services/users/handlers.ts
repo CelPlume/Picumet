@@ -6,7 +6,7 @@ import { UserRepo, QuotaRepo, SettingsRepo, AnnouncementRepo, num, str, parseJso
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
-import { verifyPassword, hashPassword, uuid } from '../../utils/crypto';
+import { verifyPassword, hashPassword, uuid, randomDigits } from '../../utils/crypto';
 import { sendMail, resolveSmtpConfig } from '../../utils/smtp';
 import { ProfileSchema, PasswordSchema as ChangePasswordSchema, SendOtpSchema, VerifyOtpSchema, DismissAnnouncementSchema } from './schemas';
 
@@ -116,7 +116,7 @@ async function sendSettingMail(mail: MailSettings, env: Env, to: string, subject
 
 /** 生成 6 位改密验证码并落库（作废同用户+邮箱+用途的旧行），返回明文码 */
 async function issuePasswordCode(db: Db, userId: string, email: string): Promise<string> {
-  const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+  const code = randomDigits(6);
   const now = Date.now();
   await db.run(`DELETE FROM email_tokens WHERE user_id = ? AND email = ? AND purpose = ?`, [userId, email, PASSWORD_CODE_PURPOSE]);
   await db.run(
@@ -158,7 +158,7 @@ userRoutes.put('/me/password', async (c) => {
     throw new ApiError(401, 'INVALID_PASSWORD', '当前密码错误');
   }
   // 邮箱验证码闸门：仅当账号已绑定邮箱且站点启用邮件服务时强制；
-  // 否则保持旧行为（只校验旧密码），避免邮件服务未配置时锁死用户。
+  // 否则只校验旧密码，避免邮件服务未配置时用户被锁死。
   const mail = await readMailSettings(db, c.env);
   if (mail.enabled && user.email) {
     if (!parsed.data.emailCode) throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
@@ -207,14 +207,15 @@ userRoutes.post('/me/email/send-otp', async (c) => {
   if (!parsed.success) throw ApiError.badRequest('邮箱格式无效');
   const email = parsed.data.email;
 
-  const existing = await UserRepo.getUserByEmail(db, email);
+  // 大小写无关：改绑邮箱同样不允许与既有账号的大小写变体冲突
+  const existing = await UserRepo.findByEmailInsensitive(db, email);
   if (existing && existing.id !== userId) throw ApiError.badRequest('该邮箱已被使用');
 
   const mail = await readMailSettings(db, c.env);
   if (!mail.enabled) throw ApiError.badRequest('邮件服务未启用，请联系管理员');
 
-  // 6 位数字验证码
-  const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+  // 6 位数字验证码（CSPRNG，与注册 OTP 同源）
+  const code = randomDigits(6);
   const now = Date.now();
   const expiresAt = now + 5 * 60 * 1000;
 

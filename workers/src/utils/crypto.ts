@@ -35,6 +35,21 @@ export function randomString(length: number, charset = 'abcdefghijklmnopqrstuvwx
   return out;
 }
 
+/** 均匀随机数字串（CSPRNG + 逐字节拒绝采样剔除 >= 250 的取值，消除 % 10 偏置）：
+ *  邮箱验证码等一次性码统一走这里（注册 / 改密 / 换绑三处同源） */
+export function randomDigits(length: number): string {
+  const cryptoApi = webCrypto();
+  const buf = new Uint8Array(Math.max(length * 2, 16));
+  let out = '';
+  while (out.length < length) {
+    cryptoApi.getRandomValues(buf);
+    for (let i = 0; i < buf.length && out.length < length; i++) {
+      if (buf[i] < 250) out += String(buf[i] % 10);
+    }
+  }
+  return out;
+}
+
 export function uuid(): string {
   return webCrypto()?.randomUUID?.() ?? `${Date.now().toString(36)}-${randomString(16).toLowerCase()}`;
 }
