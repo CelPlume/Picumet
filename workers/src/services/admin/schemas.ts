@@ -8,11 +8,18 @@ import {
   normalizeRoutePrefix,
 } from "../storage/direct-links";
 import { validateEndpoint } from "../../utils/ssrf";
+import {
+  UMAMI_DOMAINS_MAX,
+  UMAMI_URL_MAX,
+  isUmamiWebsiteId,
+  validateUmamiDomains,
+  validateUmamiUrl,
+} from "../../utils/umami";
 
 // 角色名：小写字母开头，仅小写字母、数字、-、_（最长 32）
 export const RoleNameSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);
 
-// 默认权限矩阵（§4.4 第 8 步）：查看/上传/修改/删除/下载 5 项；分享由能力位 can_share 表达，不入矩阵
+// 默认权限矩阵：查看/上传/修改/删除/下载 5 项；分享由能力位 can_share 表达，不入矩阵
 export const RolePermissionsSchema = z
   .array(z.enum(PERMISSION_MATRIX))
   .transform((v) => [...new Set(v)]);
@@ -40,12 +47,19 @@ export const UserUpdateSchema = z.object({
   defaultPath: z.string().min(1).optional(),
   maxStorage: z.number().int().min(0).optional(),
   maxFiles: z.number().int().min(0).optional(),
-  // 能力位（§4.4 防线 5）：can_publish / can_share / can_grant
+  // 能力位（docs/ARCHITECTURE_CN.md「权限服务」）：can_publish / can_share / can_grant
   capabilities: z
     .array(z.enum(["can_publish", "can_share", "can_grant"]))
     .optional(),
   // 用户个别默认权限（矩阵 5 项）：null = 清除个别设置、跟随角色默认
   permissions: UserPermissionsSchema.optional(),
+  // 管理员改密：至少 8 位、最多 128 位；空字符串或 undefined 视为不修改
+  password: z
+    .string()
+    .min(8, "密码长度至少 8 位")
+    .max(128, "密码长度不能超过 128 位")
+    .or(z.literal(""))
+    .optional(),
 });
 
 // 路由前缀（§ ROUTING_CN）：写入先归一化（去尾斜杠、补前导斜杠）再校验枚举；
@@ -69,6 +83,16 @@ export const DirectPrefixSchema = prefixSchema(
   "直链前缀",
 );
 
+// Umami 脚本面地址（script.js / data-host-url）：全站唯一可配置脚本执行面，写入即校验。
+// 口径与站点标识的 validateEndpoint 不同（浏览器加载、无 SSRF 面、不限端口）：见 utils/umami。
+const umamiUrlField = (message: string) =>
+  z
+    .string()
+    .max(UMAMI_URL_MAX)
+    .nullable()
+    .optional()
+    .refine((v) => v == null || v === "" || validateUmamiUrl(v), { message });
+
 // 系统设置
 export const SettingsSchema = z
   .object({
@@ -78,6 +102,13 @@ export const SettingsSchema = z
     allowRegistration: z.boolean().optional(),
     allowGuestAccess: z.boolean().optional(),
     requireEmailVerification: z.boolean().optional(),
+    // 注册设置（邀请码注册机制，迁移 0010 种子键）：开关 / 必填 / 生成权限 / 每用户上限
+    inviteEnabled: z.boolean().optional(),
+    inviteRequired: z.boolean().optional(),
+    inviteGeneration: z.enum(['all_users', 'admin_only']).optional(),
+    inviteMaxPerUser: z.number().int().min(1).max(100).optional(),
+    // 第三方登录（SSO/OIDC，迁移 0012）：站点级总开关；各来源在「OIDC 设置」弹窗内单独启用
+    ssoEnabled: z.boolean().optional(),
     rateLimitEnabled: z.boolean().optional(),
     rateLimitRequestsPerMinute: z.number().int().min(1).max(10000).optional(),
     maxConcurrentTransfers: z.number().int().min(0).max(1000).optional(),
@@ -100,8 +131,8 @@ export const SettingsSchema = z
         }),
       })
       .optional(),
-    // LAB F-13：站点标识资源在写入层即做 SSRF 校验（与取件层 site-asset 的 validateEndpoint 同源），
-    // 私网/非标端口/内嵌凭据的地址直接 400，不再等到取件时才发现配错。'' 与 null = 清空。
+    // 站点标识资源在写入层即做 SSRF 校验（与取件层 site-asset 的 validateEndpoint 同源），
+    // 私网/非标端口/内嵌凭据的地址直接 400，配错在保存时即暴露。'' 与 null = 清空。
     siteLogo: z
       .string()
       .max(1000)
@@ -120,10 +151,43 @@ export const SettingsSchema = z
         message:
           "站点 Favicon 必须是可公网访问的 http(s) 地址（拒绝私网与非标端口）",
       }),
-    // LAB：审计日志策略——记录等级与项目（分组）
+    // 审计日志策略——记录等级与项目（分组）
     auditLogLevel: z.enum(['all', 'essential', 'security']).optional(),
     auditLogItems: z.array(z.enum(['auth', 'upload', 'download', 'share', 'admin', 'failure'])).optional(),
-    // LAB F-08：未知/大小写错误的键直接 400（默认 strip 会静默丢弃，造成「看似保存成功」的假象）
+    // Umami 访问统计（迁移 0011 种子键）：来源二选一 + 脚本面配置。
+    // 跨字段约束（来源为 umami 时脚本地址与 Website ID 必须已有效配置）在 handler 判定。
+    statsSource: z
+      .enum(["d1", "umami"], {
+        errorMap: () => ({ message: "访问统计来源无效，只能是 d1 / umami" }),
+      })
+      .optional(),
+    umamiEnabled: z.boolean().optional(),
+    umamiScriptUrl: umamiUrlField(
+      "Umami 脚本地址必须是有效的 http(s) 地址（无内嵌凭据与 fragment；http 仅限回环地址）",
+    ),
+    umamiWebsiteId: z
+      .string()
+      .max(64)
+      .nullable()
+      .optional()
+      .refine((v) => v == null || v === "" || isUmamiWebsiteId(v), {
+        message: "Umami Website ID 必须是 UUID",
+      }),
+    umamiHostUrl: umamiUrlField(
+      "Umami 上报地址必须是有效的 http(s) 地址（无内嵌凭据与 fragment；http 仅限回环地址）",
+    ),
+    umamiDomains: z
+      .string()
+      .max(UMAMI_DOMAINS_MAX)
+      .nullable()
+      .optional()
+      .refine((v) => v == null || v === "" || validateUmamiDomains(v), {
+        message: "Umami 域名白名单必须是逗号分隔的裸 hostname（不含协议、路径与端口）",
+      }),
+    umamiPerformance: z.boolean().optional(),
+    umamiExcludeSearch: z.boolean().optional(),
+    umamiDoNotTrack: z.boolean().optional(),
+    // 未知/大小写错误的键直接 400（默认 strip 会静默丢弃，造成「看似保存成功」的假象）
   })
   .strict();
 
@@ -132,19 +196,19 @@ export const AnnouncementSchema = z.object({
   title: z.string().min(1).max(200),
   content: z.string().min(1).max(5000),
   level: z.enum(["info", "warning", "danger"]).optional(),
-  /** 显示时长策略：always/daily/interval/until/duration + toast 专用 once（§27） */
+  /** 显示时长策略：always/daily/interval/until/duration + toast 专用 once（docs/ARCHITECTURE_CN.md §27） */
   displayMode: z
     .enum(["always", "daily", "interval", "until", "duration", "once"])
     .optional(),
   /** interval/duration 的间隔秒数 */
   intervalSeconds: z.number().int().min(60).max(31536000).optional(),
-  /** until 模式的绝对截止时间（ms） */
+  /** until 模式的固定截止时间（ms） */
   endsAt: z.number().int().positive().optional(),
   /** 呈现形态：banner 常驻横幅 / toast 临时弹窗 */
   kind: z.enum(["banner", "toast"]).optional(),
 });
 
-// 文件封禁（§26）：PUT /api/admin/files/:id/ban —— true = 封禁、false = 解封
+// 文件封禁：PUT /api/admin/files/:id/ban —— true = 封禁、false = 解封
 export const FileBanSchema = z.object({ banned: z.boolean() });
 
 // 趋势查询（GET /api/admin/dashboard/trends）：metric/granularity 枚举 + 可选毫秒时间戳。

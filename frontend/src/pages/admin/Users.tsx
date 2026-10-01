@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Pencil, Trash2, Settings2, Users } from 'lucide-react';
 import { Badge, Button, Card, ConfirmDialog, Dialog, EmptyState, Input, Label, SEARCH_INPUT_GLASS, Switch } from '@/components/ui/core';
+import { CheckboxWithLabel } from '@/components/ui/checkbox';
 import { useMinLoading } from '@/hooks/useMinLoading';
 import { cn } from '@/lib/utils';
 import { TableSkeleton } from '@/components/ui/skeleton';
@@ -17,6 +18,9 @@ import type { Permission, Quota, User } from '@shared/types';
 
 interface UserRow extends User {
   quota: Quota | null;
+  /** 受邀信息（管理端「邀请人 / 邀请码」两列；未受邀为 null） */
+  inviteCode: string | null;
+  invitedBy: string | null;
 }
 
 /** GET /api/admin/roles 行：角色默认存储设置与成员数 */
@@ -122,17 +126,14 @@ function RoleDefaultsForm({
         <Label>{t('admin.roles.permissions')}</Label>
         <div className="mt-1.5 flex flex-wrap gap-3 text-sm">
           {PERMISSION_OPTIONS.map((perm) => (
-            <label key={perm} className="flex items-center gap-1.5">
-              <input
-                type="checkbox"
-                checked={permissions.includes(perm)}
-                onChange={(e) => {
-                  setPermissions((prev) => (e.target.checked ? [...prev, perm] : prev.filter((p) => p !== perm)));
-                }}
-                className="h-4 w-4 rounded border-border"
-              />
-              {t(`perm.${perm}`)}
-            </label>
+            <CheckboxWithLabel
+              key={perm}
+              checked={permissions.includes(perm)}
+              onChange={(checked) => {
+                setPermissions((prev) => (checked ? [...prev, perm] : prev.filter((p) => p !== perm)));
+              }}
+              label={t(`perm.${perm}`)}
+            />
           ))}
         </div>
         <p className="mt-1 text-xs text-muted-foreground">{t('admin.roles.permissionsHint')}</p>
@@ -145,17 +146,14 @@ function RoleDefaultsForm({
             { id: 'can_publish', label: t('admin.users.canPublish') },
             { id: 'can_grant', label: t('admin.users.canGrant') },
           ].map((cap) => (
-            <label key={cap.id} className="flex items-center gap-1.5">
-              <input
-                type="checkbox"
-                checked={capabilities.includes(cap.id)}
-                onChange={(e) => {
-                  setCapabilities((prev) => (e.target.checked ? [...prev, cap.id] : prev.filter((c) => c !== cap.id)));
-                }}
-                className="h-4 w-4 rounded border-border"
-              />
-              {cap.label}
-            </label>
+            <CheckboxWithLabel
+              key={cap.id}
+              checked={capabilities.includes(cap.id)}
+              onChange={(checked) => {
+                setCapabilities((prev) => (checked ? [...prev, cap.id] : prev.filter((c) => c !== cap.id)));
+              }}
+              label={cap.label}
+            />
           ))}
         </div>
       </div>
@@ -197,7 +195,7 @@ export default function AdminUsers() {
   const { t } = useTranslation();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
-  // 骨架屏最短驻留：数据太快时也保证加载动画可见（§33）
+  // 骨架屏最短驻留：数据太快时也保证加载动画可见
   const showSkeleton = useMinLoading(loading);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -216,6 +214,8 @@ export default function AdminUsers() {
   const [path, setPath] = useState('/');
   const [maxStorageS, setMaxStorageS] = useState('10');
   const [maxFilesS, setMaxFilesS] = useState('10000');
+  // 管理员改密（找回密码 / 强制重置）：空 = 不改；非空则后端哈希落库并使该用户既有会话失效
+  const [newPassword, setNewPassword] = useState('');
   // 「默认用户设置」弹窗：按角色 tabs 管理各角色默认值
   const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [roles, setRoles] = useState<RoleDefaults[]>([]);
@@ -243,6 +243,10 @@ export default function AdminUsers() {
 
   const save = async () => {
     if (!editing) return;
+    // 改密前端先拦一道长度（后端 schema 同样强校验），避免无谓往返
+    if (newPassword.trim() && newPassword.trim().length < 8) {
+      return toast('error', t('admin.users.passwordTooShort'));
+    }
     try {
       await apiFetch(`/api/admin/users/${editing.id}`, {
         method: 'PUT',
@@ -255,6 +259,8 @@ export default function AdminUsers() {
           maxFiles: Number(maxFilesS),
           // 单独设置 = 提交矩阵；关闭 = null（清除个别设置，跟随角色默认）
           permissions: overridePerms ? userPerms : null,
+          // 空串 = 不修改密码
+          password: newPassword.trim(),
         },
       });
       toast('success', t('common.saved'));
@@ -280,6 +286,7 @@ export default function AdminUsers() {
     setEditing(u);
     setRole(u.role);
     setStatus(u.status);
+    setNewPassword('');
     setCapabilities(u.capabilities ?? []);
     setOverridePerms(Array.isArray(u.permissions));
     setUserPerms(Array.isArray(u.permissions) ? u.permissions : [...PERMISSION_OPTIONS]);
@@ -366,42 +373,49 @@ export default function AdminUsers() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className={'px-4 py-2 text-left'}><SortableHeader title={t('admin.user')} sortKey="username" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className={'px-4 py-2 text-left'}><SortableHeader title={t('admin.userRole')} sortKey="role" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className={'px-4 py-2 text-left'}><SortableHeader title={t('admin.userStatus')} sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className={'px-4 py-2 text-left'}><SortableHeader title={t('admin.quota')} sortKey="usedStorage" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className={'px-4 py-2 text-left'}><SortableHeader title={t('admin.users.registeredAt')} sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
-              <th className={'px-4 py-2 text-left'}>{t('common.actions')}</th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.user')} sortKey="username" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.userRole')} sortKey="role" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.userStatus')} sortKey="status" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.quota')} sortKey="usedStorage" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.registeredAt')} sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.invitedBy')} sortKey="invitedBy" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.inviteCode')} sortKey="inviteCode" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}>{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {showSkeleton ? (
-              <tr><td colSpan={6}><TableSkeleton rows={8} cols={6} /></td></tr>
+              <tr><td colSpan={8}><TableSkeleton rows={8} cols={8} /></td></tr>
             ) : sortedRows.length === 0 ? (
-              <tr><td colSpan={6}><EmptyState icon={<Users className="h-7 w-7" />} title={t('admin.users.empty')} description={t('admin.users.emptyDesc')} /></td></tr>
+              <tr><td colSpan={8}><EmptyState icon={<Users className="h-7 w-7" />} title={t('admin.users.empty')} description={t('admin.users.emptyDesc')} /></td></tr>
             ) : (
             sortedRows.map((u, i) => (
               <tr key={u.id} className="reveal border-b hover:bg-accent/50" style={revealDelay(i, 'inner', REVEAL_INNER_BASE + REVEAL_STEP)}>
-                <td className="px-4 py-2">
+                <td className="px-2.5 py-2">
                   <p className="font-medium">{u.displayName || u.username}</p>
                   <p className="text-xs text-muted-foreground">{u.email}</p>
                 </td>
-                <td className="px-4 py-2">
+                <td className="px-2.5 py-2">
                   <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>
                     {u.role === 'admin' ? t('admin.admin') : u.role === 'guest' ? t('admin.guest') : t('admin.user')}
                   </Badge>
                 </td>
-                <td className="px-4 py-2">
+                <td className="px-2.5 py-2">
                   <Badge variant={u.status === 'active' ? 'success' : u.status === 'banned' ? 'destructive' : 'warning'}>
                     {u.status === 'active' ? t('admin.active') : u.status === 'banned' ? t('admin.banned') : t('admin.disabled')}
                   </Badge>
                 </td>
-                <td className="px-4 py-2 text-xs">
+                <td className="px-2.5 py-2 text-xs">
                   <p>{formatBytes(u.quota?.usedStorage ?? 0)} / {formatBytes(u.quota?.maxStorage ?? 0)}</p>
                   <p className="text-muted-foreground">{u.quota?.usedFiles ?? 0} / {u.quota?.maxFiles ?? 0} {t('admin.users.filesUnit')}</p>
                 </td>
-                <td className="px-4 py-2 text-xs text-muted-foreground">{formatDate(u.createdAt)}</td>
-                <td className="px-4 py-2">
+                <td className="px-2.5 py-2 text-xs text-muted-foreground">{formatDate(u.createdAt)}</td>
+                {/* 受邀来源：邀请人 = 邀请码创建人；未受邀或码行已随创建人删除时为 '-' */}
+                <td className="px-2.5 py-2 text-xs text-muted-foreground">{u.invitedBy ?? '-'}</td>
+                <td className="px-2.5 py-2 text-xs text-muted-foreground">
+                  {u.inviteCode ? <code className="font-mono tracking-wide">{u.inviteCode}</code> : '-'}
+                </td>
+                <td className="px-2.5 py-2">
                   <div className="flex gap-1">
                     <button onClick={() => openEdit(u)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
                       <Pencil className="h-4 w-4" />
@@ -477,17 +491,14 @@ export default function AdminUsers() {
                 { id: 'can_publish', label: t('admin.users.canPublish') },
                 { id: 'can_grant', label: t('admin.users.canGrant') },
               ].map((cap) => (
-                <label key={cap.id} className="flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    checked={capabilities.includes(cap.id)}
-                    onChange={(e) => {
-                      setCapabilities((prev) => (e.target.checked ? [...prev, cap.id] : prev.filter((c) => c !== cap.id)));
-                    }}
-                    className="h-4 w-4 rounded border-border"
-                  />
-                  {cap.label}
-                </label>
+                <CheckboxWithLabel
+                  key={cap.id}
+                  checked={capabilities.includes(cap.id)}
+                  onChange={(checked) => {
+                    setCapabilities((prev) => (checked ? [...prev, cap.id] : prev.filter((c) => c !== cap.id)));
+                  }}
+                  label={cap.label}
+                />
               ))}
             </div>
           <div className="space-y-2 rounded-md border p-3">
@@ -498,17 +509,14 @@ export default function AdminUsers() {
             {overridePerms ? (
               <div className="flex flex-wrap gap-3 text-sm">
                 {PERMISSION_OPTIONS.map((perm) => (
-                  <label key={perm} className="flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={userPerms.includes(perm)}
-                      onChange={(e) => {
-                        setUserPerms((prev) => (e.target.checked ? [...prev, perm] : prev.filter((p) => p !== perm)));
-                      }}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                    {t(`perm.${perm}`)}
-                  </label>
+                  <CheckboxWithLabel
+                    key={perm}
+                    checked={userPerms.includes(perm)}
+                    onChange={(checked) => {
+                      setUserPerms((prev) => (checked ? [...prev, perm] : prev.filter((p) => p !== perm)));
+                    }}
+                    label={t(`perm.${perm}`)}
+                  />
                 ))}
               </div>
             ) : (
@@ -530,6 +538,19 @@ export default function AdminUsers() {
               <Label>{t('admin.maxFiles')}</Label>
               <Input type="number" className="mt-1" value={maxFilesS} onChange={(e) => setMaxFilesS(e.target.value)} />
             </div>
+          </div>
+          {/* 改密独立分区（分隔线，见卡中卡原则）：留空 = 不修改 */}
+          <div className="border-t pt-4">
+            <Label>{t('admin.users.newPassword')}</Label>
+            <Input
+              type="password"
+              className="mt-1"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder={t('admin.users.newPasswordPlaceholder')}
+              autoComplete="new-password"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">{t('admin.users.newPasswordHint')}</p>
           </div>
         </div>
       </Dialog>

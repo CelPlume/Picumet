@@ -19,6 +19,7 @@ import { encryptSecret, hashPassword } from '../../utils/crypto';
 import { subtreeMatch } from '../../utils/path';
 import { invalidateAuditPolicyCache } from '../../db';
 import { loadRoutePrefixes } from '../storage/direct-links';
+import { UMAMI_SETTINGS_MAP, isUmamiWebsiteId, validateUmamiUrl } from '../../utils/umami';
 import { AdminUpdateShareSchema } from '../shares/schemas';
 import { encipherSharePassword } from '../shares/handlers';
 import { z } from 'zod';
@@ -140,7 +141,7 @@ adminRoutes.put('/users/:id', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = UserUpdateSchema.safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('用户参数无效');
-  const { maxStorage, maxFiles, capabilities, permissions, ...rest } = parsed.data;
+  const { maxStorage, maxFiles, capabilities, permissions, password, ...rest } = parsed.data;
   const fields: Record<string, unknown> = {};
   if (rest.role !== undefined) fields.role = rest.role;
   if (rest.status !== undefined) fields.status = rest.status;
@@ -151,16 +152,29 @@ adminRoutes.put('/users/:id', async (c) => {
   if (capabilities !== undefined) fields.capabilities = JSON.stringify(capabilities);
   // 用户个别默认权限（§4.4 第 8 步）：null = 清除个别设置、跟随角色默认
   if (permissions !== undefined) fields.permissions = permissions === null ? null : JSON.stringify(permissions);
-  // 禁用/封禁账户时递增会话版本，使其已签发 JWT 立即失效
+  // 管理员改密（找回密码 / 强制重置）：空串 = 不改；非空走 bcrypt，与用户端改密同源
+  const newPassword = password?.trim() ?? '';
+  if (newPassword) fields.password_hash = hashPassword(newPassword);
+  // 禁用/封禁账户时递增会话版本，使其已签发 JWT 立即失效；改密同样立即失效（与用户端改密一致）
   const disableChange = rest.status !== undefined && rest.status !== 'active';
   if (Object.keys(fields).length) {
     await UserRepo.updateUser(db, id, fields);
-    if (disableChange) await UserRepo.bumpSessionVersion(db, id);
+    if (disableChange || newPassword) await UserRepo.bumpSessionVersion(db, id);
+  }
+  if (newPassword) {
+    // 管理员代改凭据属敏感操作：写审计（记操作者与对象用户，不记密码本身）
+    await LogRepo.create(db, {
+      userId: c.get('userId') as string,
+      action: 'admin_password_reset',
+      path: `/api/admin/users/${id}`,
+      ipAddress: requestIp(c.req.raw),
+      userAgent: c.req.header('user-agent'),
+    });
   }
   if (maxStorage !== undefined || maxFiles !== undefined) {
     await QuotaRepo.setQuota(db, id, maxStorage, maxFiles);
   }
-  return ok(c, { message: '已更新' });
+  return ok(c, { message: '已更新', passwordChanged: newPassword ? true : undefined });
 });
 
 adminRoutes.delete('/users/:id', async (c) => {
@@ -319,7 +333,7 @@ adminRoutes.delete('/shares/:id', async (c) => {
   return ok(c, null);
 });
 
-// ============ 公开审核（§4.2：管理公开） + 可见性管理（用户设置的管控面） ============
+// ============ 公开审核（管理公开） + 可见性管理（用户设置的管控面） ============
 adminRoutes.patch('/files/:id/review', async (c) => {
   const db = getDb(c);
   const id = c.req.param('id');
@@ -365,7 +379,7 @@ adminRoutes.patch('/files/:id/review', async (c) => {
 // ============ 全部文件：扁平化树视图 ============
 // 全命名空间按路径前缀取行（文件行 path=父目录、文件夹行 path=自身全路径），带属主用户名。
 // 与列表视图共用 5 项筛选（挂载点/存储桶/用户/可见性/哈希）；5000 行封顶 + truncated 标记；
-// 管理端不做 §4.4a 可见性过滤（管理员全量可见）。
+// 管理端不做可见性过滤（管理员全量可见）。
 adminRoutes.get('/files/tree', async (c) => {
   const db = getDb(c);
   const q = c.req.query();
@@ -392,8 +406,8 @@ adminRoutes.get('/files', async (c) => {
   const q = c.req.query();
   const page = Math.max(1, Number(q.page ?? 1) || 1);
   const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
-  // §26 筛选：bucket=provider 精确、mount=挂载点精确、hash=blob_hash 子串、user=属主精确、
-  // visibility/banned=枚举；非法取值忽略，与既有 search/分页/排序共存
+  // 筛选：bucket=provider 精确、mount=挂载点精确、hash=blob_hash 子串、user=属主精确、
+  // visibility/banned=枚举；非法取值忽略，与 search/分页/排序共存
   const { rows, total } = await FileRepo.searchFiles(db, {
     query: q.search ?? '',
     page,
@@ -414,7 +428,7 @@ adminRoutes.get('/files', async (c) => {
     ? await db.all(`SELECT id, username FROM users WHERE id IN (${ownerIds.map(() => '?').join(',')})`, ownerIds)
     : [];
   const ownerName = new Map(owners.map((o) => [String(o.id), String(o.username)]));
-  // §26 每行富化：挂载点名 / 存储桶名按页 IN 批量补齐（mounts 一条、blob_objects 一条、providers 一条，禁止 N+1）
+  // 每行富化：挂载点名 / 存储桶名按页 IN 批量补齐（mounts 一条、blob_objects 一条、providers 一条，禁止 N+1）
   const mountIds = [...new Set(rows.map((r) => r.mountId))];
   const mountRows = mountIds.length
     ? await db.all(`SELECT id, name FROM mounts WHERE id IN (${mountIds.map(() => '?').join(',')})`, mountIds)
@@ -463,7 +477,7 @@ adminRoutes.get('/files', async (c) => {
   });
 });
 
-// ============ 文件封禁（§26） ============
+// ============ 文件封禁 ============
 adminRoutes.put('/files/:id/ban', async (c) => {
   const db = getDb(c);
   const id = c.req.param('id');
@@ -493,7 +507,7 @@ adminRoutes.get('/logs', async (c) => {
     from: q.from ? Number(q.from) : undefined,
     to: q.to ? Number(q.to) : undefined,
   });
-  // LAB：与全站管理页同一分页契约（页码 + 条数 + 总数），供共享 Pagination 组件渲染跳页/改条数
+  // 与全站管理页同一分页契约（页码 + 条数 + 总数），供共享 Pagination 组件渲染跳页/改条数
   return ok(c, { logs: rows, pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) } });
 });
 
@@ -558,6 +572,11 @@ adminRoutes.get('/settings', async (c) => {
     allowRegistration: get('allow_registration') ?? true,
     allowGuestAccess: get('allow_guest_access') ?? false,
     requireEmailVerification: get('require_email_verification') ?? false,
+    inviteEnabled: get('invite_enabled') ?? false,
+    inviteRequired: get('invite_required') ?? false,
+    inviteGeneration: get('invite_generation') ?? 'all_users',
+    inviteMaxPerUser: Number(get('invite_max_per_user') ?? 5),
+    ssoEnabled: get('sso_enabled') ?? false,
     rateLimitEnabled: get('rate_limit_enabled') ?? true,
     rateLimitRequestsPerMinute: Number(get('rate_limit_requests_per_minute') ?? 50),
     maxConcurrentTransfers: Number(get('max_concurrent_transfers') ?? 4),
@@ -582,6 +601,16 @@ adminRoutes.get('/settings', async (c) => {
         return ['auth', 'upload', 'download', 'share', 'admin', 'failure'];
       }
     })(),
+    // Umami 访问统计（迁移 0011）：来源二选一 + 脚本面配置（管理端全量回显，公开端点另行装配）
+    statsSource: get('stats_source') ?? 'd1',
+    umamiEnabled: get('umami_enabled') ?? false,
+    umamiScriptUrl: get('umami_script_url') ?? '',
+    umamiWebsiteId: get('umami_website_id') ?? '',
+    umamiHostUrl: get('umami_host_url') ?? '',
+    umamiDomains: get('umami_domains') ?? '',
+    umamiPerformance: get('umami_performance') ?? false,
+    umamiExcludeSearch: get('umami_exclude_search') ?? false,
+    umamiDoNotTrack: get('umami_do_not_track') ?? false,
   });
 });
 
@@ -597,6 +626,22 @@ adminRoutes.patch('/settings', async (c) => {
   if (nextRootTarget === 'direct' && nextDirectPrefix !== '') {
     throw ApiError.badRequest('根路径指向直链命名空间时，直链前缀必须留空');
   }
+  // Umami 访问统计：来源二选一同款按「落库后的生效值」校验——来源为 umami 时脚本地址与
+  // Website ID 必须已有效配置，否则公开面静默不注入 tracker（管理员以为开了、实际没开）。
+  const allRaw = await SettingsRepo.getAll(db);
+  const currentOf = (key: string): unknown => {
+    const v = allRaw[key];
+    if (v === undefined || v === 'null') return undefined;
+    return parseJson<unknown>(v, v);
+  };
+  const nextStatsSource = parsed.data.statsSource ?? currentOf('stats_source') ?? 'd1';
+  if (nextStatsSource === 'umami') {
+    const nextScriptUrl = String(parsed.data.umamiScriptUrl ?? currentOf('umami_script_url') ?? '');
+    const nextWebsiteId = String(parsed.data.umamiWebsiteId ?? currentOf('umami_website_id') ?? '');
+    if (!validateUmamiUrl(nextScriptUrl) || !isUmamiWebsiteId(nextWebsiteId)) {
+      throw ApiError.badRequest('访问统计来源为 Umami 时，脚本地址与 Website ID（UUID）必须已有效配置');
+    }
+  }
   const map: Record<string, string> = {
     siteTitle: 'site_title',
     siteHeaderTitle: 'site_header_title',
@@ -605,6 +650,11 @@ adminRoutes.patch('/settings', async (c) => {
     allowRegistration: 'allow_registration',
     allowGuestAccess: 'allow_guest_access',
     requireEmailVerification: 'require_email_verification',
+    inviteEnabled: 'invite_enabled',
+    inviteRequired: 'invite_required',
+    inviteGeneration: 'invite_generation',
+    inviteMaxPerUser: 'invite_max_per_user',
+    ssoEnabled: 'sso_enabled',
     rateLimitEnabled: 'rate_limit_enabled',
     rateLimitRequestsPerMinute: 'rate_limit_requests_per_minute',
     maxConcurrentTransfers: 'max_concurrent_transfers',
@@ -621,6 +671,8 @@ adminRoutes.patch('/settings', async (c) => {
     rootTarget: 'root_target',
     auditLogLevel: 'audit_log_level',
     auditLogItems: 'audit_log_groups',
+    // Umami 访问统计（utils/umami 的 camelCase → snake_case 映射，兼作审计筛选用键集合）
+    ...UMAMI_SETTINGS_MAP,
   };
   const savedKeys: string[] = [];
   for (const [k, v] of Object.entries(parsed.data)) {
@@ -639,11 +691,23 @@ adminRoutes.patch('/settings', async (c) => {
     await SettingsRepo.set(db, dbKey, Array.isArray(v) ? JSON.stringify(v) : v);
     savedKeys.push(dbKey);
   }
-  // LAB：审计策略设置保存后立即失效进程内缓存（否则 60s TTL 内仍旧策略）
+  // 审计策略设置保存后立即失效进程内缓存（否则新值要等 60s 缓存 TTL 到期才生效）
   if (savedKeys.includes('audit_log_level') || savedKeys.includes('audit_log_groups')) {
     invalidateAuditPolicyCache();
   }
-  // LAB F-08：回显实际写入的设置键（ snake_case，与 system_settings 一致），
+  // Umami 访问统计 / 第三方登录总开关：安全敏感设置变更写审计日志（记键不记值；
+  // 二者都直接改变对外暴露的认证/脚本面，改动必须可追溯）
+  const umamiDbKeys: string[] = Object.values(UMAMI_SETTINGS_MAP);
+  const sensitiveKeys = savedKeys.filter((k) => umamiDbKeys.includes(k) || k === 'sso_enabled');
+  if (sensitiveKeys.length > 0) {
+    await LogRepo.create(db, {
+      userId: c.get('userId') as string,
+      action: 'settings_update',
+      path: '/api/admin/settings',
+      metadata: JSON.stringify({ keys: sensitiveKeys }),
+    });
+  }
+  // 回显实际写入的设置键（snake_case，与 system_settings 一致），
   // 让「保存成功」可被客户端核对
   return ok(c, { message: '已保存', savedKeys });
 });
@@ -670,7 +734,7 @@ adminRoutes.post('/settings/test-email', async (c) => {
   try {
     await sendMail(config, parsed.data.to, 'Picumet 测试邮件', '<p>这是一封测试邮件</p>');
   } catch (err) {
-    // LAB F-12：上游 SMTP 异常原文只进服务端日志，客户端拿稳定文案
+    // 上游 SMTP 异常原文只进服务端日志，客户端拿稳定文案
     console.error('[admin] test mail send failed', err);
     throw new ApiError(502, 'MAIL_ERROR', '邮件发送失败，请检查 SMTP 配置或稍后再试');
   }
@@ -696,7 +760,7 @@ adminRoutes.post('/announcements', async (c) => {
     displayMode: parsed.data.displayMode,
     intervalSeconds: parsed.data.intervalSeconds,
     kind: parsed.data.kind,
-    // until 模式的绝对截止时间复用既有 expires_at 列
+    // until 模式的固定截止时间复用 expires_at 列
     expiresAt: parsed.data.endsAt,
   });
   return ok(c, { id }, undefined, 201);
