@@ -1,6 +1,14 @@
 // 数据库层统一出口
 export { Db, type Tx, type Row, type RunResult } from './db';
-export { UserRepo, QuotaRepo } from './repos/users';
+export { UserRepo, QuotaRepo, type UserListRow } from './repos/users';
+export { InviteRepo, type InviteCode, type InvitedUserRow } from './repos/invites';
+export {
+  SsoProviderRepo,
+  SsoIdentityRepo,
+  type SsoProviderRow,
+  type SsoIdentityRow,
+  type SsoTokenSet,
+} from './repos/sso';
 export {
   ProviderRepo,
   MountRepo,

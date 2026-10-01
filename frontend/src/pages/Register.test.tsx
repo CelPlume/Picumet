@@ -1,5 +1,5 @@
 // 注册页组件测试：表单提交调用 /api/auth/register 并跳转登录
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -7,7 +7,7 @@ const navigate = vi.fn();
 const apiFetch = vi.fn();
 
 vi.mock('react-i18next', async () => {
-  // Register 文案已 i18n 化（cac54b4）：mock 用真实 zh 资源解析 key，使断言文案与界面一致。
+  // mock 用真实 zh 资源解析 key，使断言文案与界面一致。
   // 此处必须用动态导入：vi.mock 工厂被提升到文件顶层 import 之前执行，
   // 静态导入的 zhCN 在工厂内处于 TDZ，无法引用（vitest 既有约束）。
   const { zhCN } = await import('../lib/i18n/zh');
@@ -53,6 +53,7 @@ vi.mock('@/components/layout/widgets', () => ({
 
 import Register from './Register';
 import { ApiError } from '@/lib/api';
+import { useSite } from '@/stores/site';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -159,5 +160,79 @@ describe('Register 页面', () => {
 
     // 污染环境下（前序用例泄漏的倒计时定时器）错误段落在 ~1.1s 才渲染，放宽等待
     expect(await screen.findByText('发送过于频繁', {}, { timeout: 3000 })).toBeInTheDocument();
+  });
+});
+
+// 邀请码输入门控：公开设置 inviteEnabled 决定是否渲染，
+// inviteRequired 决定标签必填/选填语义；分段输入即过滤为 [0-9A-Z]{6}
+describe('Register 邀请码', () => {
+  const clearInvite = { inviteEnabled: undefined, inviteRequired: undefined };
+  // i18n mock 不解插值：6 格共享同一 raw aria-label
+  const inviteLabel = '邀请码第 {{index}} 位';
+  const inviteCells = () => screen.getAllByLabelText(inviteLabel) as HTMLInputElement[];
+
+  afterEach(() => {
+    useSite.setState(clearInvite);
+  });
+
+  it('未开启邀请码时不渲染分段输入', () => {
+    useSite.setState(clearInvite);
+    render(
+      <MemoryRouter>
+        <Register />
+      </MemoryRouter>
+    );
+    expect(screen.queryAllByLabelText(inviteLabel)).toHaveLength(0);
+  });
+
+  it('开启 + 必填：渲染邀请码分段输入，提交 body 携带过滤后的码值', async () => {
+    useSite.setState({ inviteEnabled: true, inviteRequired: true });
+    apiFetch.mockResolvedValueOnce({ user: { id: 'u1' }, message: '注册成功' });
+    render(
+      <MemoryRouter>
+        <Register />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText('邀请码')).toBeInTheDocument();
+    expect(inviteCells()).toHaveLength(6);
+    // 小写与非法字符被过滤并转大写（服务端仍区分大小写精确匹配）
+    fireEvent.change(inviteCells()[0], { target: { value: 'ab1-cd2ef' } });
+    expect(inviteCells().map((c) => c.value).join('')).toBe('AB1CD2');
+
+    fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'invitee' } });
+    fireEvent.change(screen.getByPlaceholderText('you@example.com'), { target: { value: 'invitee@test.local' } });
+    fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'password123' } });
+    fireEvent.click(screen.getByRole('button', { name: '注册' }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/api/auth/register', {
+        method: 'POST',
+        body: { username: 'invitee', password: 'password123', email: 'invitee@test.local', inviteCode: 'AB1CD2' },
+      });
+    });
+  });
+
+  it('开启 + 选填：标签为选填语义，留空提交不携带 inviteCode', async () => {
+    useSite.setState({ inviteEnabled: true, inviteRequired: false });
+    apiFetch.mockResolvedValueOnce({ user: { id: 'u1' }, message: '注册成功' });
+    render(
+      <MemoryRouter>
+        <Register />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText('邀请码（选填）')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'noinvite' } });
+    fireEvent.change(screen.getByPlaceholderText('you@example.com'), { target: { value: 'noinvite@test.local' } });
+    fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'password123' } });
+    fireEvent.click(screen.getByRole('button', { name: '注册' }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/api/auth/register', {
+        method: 'POST',
+        body: { username: 'noinvite', password: 'password123', email: 'noinvite@test.local' },
+      });
+    });
   });
 });

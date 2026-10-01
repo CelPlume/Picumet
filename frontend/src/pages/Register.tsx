@@ -10,6 +10,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
 import { useSite } from '@/stores/site';
 import { ThemeToggle, LanguageSwitcher } from '@/components/layout/widgets';
+import { SsoButtons } from '@/components/sso-buttons';
 import type { User } from '@shared/types';
 
 export default function Register() {
@@ -19,10 +20,12 @@ export default function Register() {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [emailCode, setEmailCode] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
+  // OTP 错误态：提交被后端判 INVALID_OTP 时整行抖动（参考 interior/moumen 的 error recovery）
+  const [otpError, setOtpError] = useState(false);
   const [otpSending, setOtpSending] = useState(false);
   const [countdown, setCountdown] = useState(0);
   // 倒计时定时器登记：组件卸载时清除，避免泄漏的定时器串扰后续用例
@@ -34,7 +37,6 @@ export default function Register() {
     setOtpSending(true);
     try {
       await apiFetch('/api/auth/register/send-otp', { method: 'POST', body: { email } });
-      setOtpSent(true);
       setCountdown(60);
       clearInterval(countdownTimerRef.current ?? undefined);
       countdownTimerRef.current = setInterval(() => {
@@ -57,11 +59,12 @@ export default function Register() {
     try {
       const res = await apiFetch<{ user: User; message: string }>('/api/auth/register', {
         method: 'POST',
-        body: { username, password, email, emailCode: emailCode || undefined },
+        body: { username, password, email, emailCode: emailCode || undefined, inviteCode: inviteCode.trim() || undefined },
       });
       navigate(`/login?registered=1`);
       return res;
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'INVALID_OTP') setOtpError(true);
       setError(err instanceof ApiError ? err.message : t('err.network'));
     } finally {
       setLoading(false);
@@ -98,23 +101,45 @@ export default function Register() {
             </div>
             <div>
               <Label className="text-sm font-medium text-foreground">{t('login.email')}</Label>
+              <Input type="email" className="mt-2" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+            </div>
+            {/* 验证码 + 发送按钮：OTP 分段输入 + 右侧发送验证码按钮，行宽与上方文本框一致（预留输入位） */}
+            <div>
+              <Label className="text-sm font-medium text-foreground">{t('auth.emailCode')}</Label>
               <div className="mt-2 flex gap-2">
-                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-                <Button type="button" variant="outline" onClick={sendOtp} loading={otpSending} disabled={countdown > 0} className="shrink-0">
+                <InputOTP
+                  value={emailCode}
+                  onChange={(v) => { setEmailCode(v); setOtpError(false); }}
+                  className="min-w-0 flex-1"
+                  error={otpError}
+                />
+                <Button type="button" variant="outline" className="shrink-0" onClick={sendOtp} loading={otpSending} disabled={countdown > 0}>
                   {countdown > 0 ? `${countdown}s` : t('auth.sendCode')}
                 </Button>
               </div>
             </div>
-            {otpSent && (
-              <div>
-                <Label className="text-sm font-medium text-foreground">{t('auth.emailCode')}</Label>
-                <InputOTP value={emailCode} onChange={setEmailCode} className="mt-2" />
-              </div>
-            )}
             <div>
               <Label className="text-sm font-medium text-foreground">{t('login.password')}</Label>
               <Input className="mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
             </div>
+            {/* 邀请码（系统设置「注册设置」开启时展示；必填语义随 invite_required）：
+                码值仅 [0-9A-Z]{6}，分段输入组件内过滤并转大写，服务端仍按区分大小写精确匹配 */}
+            {site.inviteEnabled && (
+              <div>
+                <Label className="text-sm font-medium text-foreground">
+                  {site.inviteRequired ? t('auth.inviteCode') : t('auth.inviteCodeOptional')}
+                </Label>
+                <InputOTP
+                  mode="alphanumeric"
+                  length={6}
+                  value={inviteCode}
+                  onChange={setInviteCode}
+                  className="mt-2"
+                  ariaLabelKey="auth.inviteDigit"
+                />
+                <p className="mt-1.5 text-xs text-muted-foreground">{t('auth.inviteHint')}</p>
+              </div>
+            )}
 
             {error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -132,9 +157,12 @@ export default function Register() {
             </div>
           </div>
 
-          <Link to="/login" className="block">
-            <Button variant="outline" className="w-full py-2 font-medium">{t('common.login')}</Button>
-          </Link>
+          <div className="space-y-3">
+            <SsoButtons />
+            <Link to="/login" className="block">
+              <Button variant="outline" className="w-full py-2 font-medium">{t('common.login')}</Button>
+            </Link>
+          </div>
         </div>
       </div>
     </div>

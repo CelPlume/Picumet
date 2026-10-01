@@ -14,8 +14,11 @@ import { shareRoutes } from './services/shares/handlers';
 import { userRoutes } from './services/users/handlers';
 import { userRuleRoutes } from './services/users/rules';
 import { keyRoutes } from './services/keys/handlers';
+import { inviteRoutes } from './services/invites/handlers';
+import { ssoRoutes } from './services/sso/handlers';
 import { adminRoutes } from './services/admin/handlers';
 import { adminStorageRoutes } from './services/admin/storage';
+import { adminSsoRoutes } from './services/admin/sso';
 import { compatRoutes } from './services/uploads/compat';
 import { lskyRoutes } from './services/uploads/lsky';
 import { webdavRoutes } from './services/webdav/handlers';
@@ -45,7 +48,7 @@ app.route('/api/public', publicRoutes);
 // 站点 Logo/Favicon 中转（边缘缓存，见 services/public/site-asset.ts）
 app.use('/api/public/site-asset/*', rateLimitMiddleware);
 app.route('/api/public', siteAssetRoutes);
-// 公开目录浏览（§C 游客）：可选认证（区分匿名/登录可见性）+ 限速
+// 公开目录浏览（游客）：可选认证（区分匿名/登录可见性）+ 限速
 const publicFsApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 publicFsApi.use('*', optionalAuthMiddleware, rateLimitMiddleware, downloadRateLimitMiddleware);
 publicFsApi.route('/', publicFsRoutes);
@@ -59,6 +62,9 @@ app.route('/api/gateway', gatewayApi);
 // 认证（注册/登录公开，/me 需认证）
 app.use('/api/auth/*', optionalAuthMiddleware, rateLimitMiddleware);
 app.route('/api/auth', authRoutes);
+// 第三方登录（SSO / OIDC）：/api/auth/sso/:id/start|callback（浏览器 302 入口）
+// + /api/auth/sso/pending|complete（补充注册页）。继承上方 /api/auth/* 的限速。
+app.route('/api/auth/sso', ssoRoutes);
 
 // 兼容上传（PicGo）：Bearer API Key
 app.use('/api/upload', apiKeyAuthMiddleware, rateLimitMiddleware, transferConcurrencyMiddleware);
@@ -112,12 +118,14 @@ app.route('/api/shares', sharesApi);
 protectedApi.route('/users', userRoutes);
 protectedApi.route('/users', userRuleRoutes);
 protectedApi.route('/keys', keyRoutes);
+protectedApi.route('/invites', inviteRoutes);
 
 // 管理员
 const adminApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 adminApi.use('*', authMiddleware, adminMiddleware, csrfMiddleware, rateLimitMiddleware);
 adminApi.route('/', adminRoutes);
 adminApi.route('/', adminStorageRoutes);
+adminApi.route('/', adminSsoRoutes);
 protectedApi.route('/admin', adminApi);
 
 app.route('/api', protectedApi);
@@ -127,7 +135,7 @@ app.get('/', (c) => c.json({ service: 'picumet-api', status: 'ok' }));
 app.get('/api', (c) => ok(c, { service: 'picumet-api', status: 'ok' }));
 
 // 公开路径文件服务（最后注册，避免遮蔽 /api、/webdav 等路由）
-// LAB L-01：直链（path-serve，含签名直链/公开 CDN 语义）是出网流量最大的通道，
+// 直链（path-serve，含签名直链/公开 CDN 语义）是出网流量最大的通道，
 // 必须与网关/分享同受下载限速约束（isDownloadPath 需覆盖直链路径形态；非下载路径零成本放行）。
 app.use('/*', optionalAuthMiddleware, downloadRateLimitMiddleware);
 app.route('/', pathPublicRoutes);

@@ -5,21 +5,21 @@
 
 export type Role = 'admin' | 'user' | 'guest' | (string & {});
 
-/** 三级可见性（§4.4a）：private 仅 owner/授权者；users 全部登录用户可读；public 另进 gallery 匿名面 */
+/** 三级可见性：private 仅 owner/授权者；users 全部登录用户可读；public 另进 gallery 匿名面 */
 export type Visibility = 'private' | 'users' | 'public';
 
 /**
- * 文件级游客可见性（§C）：显式授予**匿名访客**的能力；
+ * 文件级游客可见性：显式授予**匿名访客**的能力；
  * none = 一律拒绝；download = 可下载；view = 可查看（列表/预览）+ 下载。
  * NULL（未设置）不额外开放——匿名访客仍由站点 allow_guest_access 总闸、
  * role='guest' 规则与 visibility 合成规则决定（见 syntheticGuestRule）。
  */
 export type GuestVisibility = 'none' | 'download' | 'view';
 
-/** 公开审核状态（§4.2）：public 提交默认 pending，管理员 approved 后进 gallery */
+/** 公开审核状态：public 提交默认 pending，管理员 approved 后进 gallery */
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
-/** 能力位名称（§4.4 越权防线 5） */
+/** 能力位名称 */
 export const CAPABILITIES = {
   publish: 'can_publish',
   share: 'can_share',
@@ -50,7 +50,7 @@ export interface User {
   /** 能力位 JSON（can_publish/can_share/can_grant）；NULL = 空集 */
   capabilities?: string[];
   /**
-   * 用户个别默认权限（users.permissions，§4.4 第 8 步）：
+   * 用户个别默认权限（users.permissions）：
    * NULL/缺省 = 跟随角色默认（role_defaults.permissions）；空数组 = 显式不放行。
    * 保存角色默认设置时会被角色权限值覆盖（RoleDefaultsRepo.applyToRole）。
    */
@@ -75,6 +75,8 @@ export interface RegisterInput {
   username: string;
   password: string;
   email: string;
+  /** 邀请码（系统设置 invite_enabled 开启时校验；invite_required 决定必填语义） */
+  inviteCode?: string;
 }
 
 export interface LoginInput {
@@ -96,7 +98,7 @@ export type Permission =
 /**
  * 默认权限矩阵（5 项）：查看/上传/修改/删除/下载。
  * 分享**不在矩阵内**——分享/发布/授权的唯一开关是能力位 can_share / can_publish / can_grant
- * （§4.4 防线 5），故矩阵与能力位互不重复。
+ * （能力位优先于权限矩阵），故矩阵与能力位互不重复。
  */
 export const PERMISSION_MATRIX = ['read', 'write', 'update', 'delete', 'download'] as const satisfies readonly Permission[];
 
@@ -146,9 +148,9 @@ export interface Mount {
   quotaReserved: number;
   /** 创建时间（排序稳定平局决胜用） */
   createdAt: number;
-  /** 存储池写入选桶策略（§E）；池成员见 mount_providers */
+  /** 存储池写入选桶策略（§29）；池成员见 mount_providers */
   poolStrategy: PoolStrategy;
-  /** 挂载点展示容量（字节，§26 仪表盘占用率）；null = 未设置 */
+  /** 挂载点展示容量（字节，仪表盘占用率）；null = 未设置 */
   capacityBytes: number | null;
   /**
    * 写入口模式（§28）：free 不额外约束 | user_space 写路径强制 <mountPath>/<用户名> |
@@ -161,7 +163,7 @@ export interface Mount {
 export type UploadMode = 'free' | 'user_space' | 'flat';
 
 /**
- * 存储池写入选桶策略（§E，五档；成员字段见 mount_providers）：
+ * 存储池写入选桶策略（§29，五档；成员字段见 mount_providers）：
  * - `least_used`（默认）：ratio = (成员已用 + 1) / weight 取最小；平局按 provider_id 升序。
  * - `round_robin`：KV 计数器轮转，均摊新写入。
  * - `hash`：对挂载内相对父目录路径做 fnv1a 取模（挂载根 = `/`）→ 同目录粘性，便于按前缀查找/列举；
@@ -223,22 +225,22 @@ export interface FileMetadata {
   accessPassword?: string;
   manualPosition?: number;
   metadata?: string;
-  /** 三级可见性（§4.4a）；folder 置可见性时级联到子树 */
+  /** 三级可见性；folder 置可见性时级联到子树 */
   visibility: Visibility;
   /** 公开审核状态：仅 visibility=public 时进入 gallery 需 approved */
   reviewStatus: ReviewStatus;
-  /** 文件级游客可见性（§C）；null = 未设置（匿名访客不额外开放） */
+  /** 文件级游客可见性；null = 未设置（匿名访客不额外开放） */
   guestVisibility: GuestVisibility | null;
   ownerId: string;
   createdAt: number;
   updatedAt: number;
   sourceCleanupPending?: boolean;
   oldObjectKey?: string;
-  /** 实际落桶 provider（§E 存储池）；NULL = 存量数据，读路径回退 mounts.provider_id */
+  /** 实际落桶 provider（存储池）；NULL = 存量数据，读路径回退 mounts.provider_id */
   providerId?: string | null;
-  /** 物理对象键（§F 内容寻址）：<prefix>/picumet:blob/<h2>/<hash>；未内容寻址行 = object_key */
+  /** 物理对象键（内容寻址）：<prefix>/picumet:blob/<h2>/<hash>；未内容寻址行 = object_key */
   physicalKey?: string | null;
-  /** 内容 SHA-256（§F）；NULL = 未内容寻址（分片上传/存量数据） */
+  /** 内容 SHA-256；NULL = 未内容寻址（分片上传/存量数据） */
   blobHash?: string | null;
 }
 
@@ -257,28 +259,28 @@ export interface FileListItem {
   manualPosition?: number;
   visibility: Visibility;
   reviewStatus: ReviewStatus;
-  /** 文件级游客可见性（§C）；null = 未设置（匿名访客不额外开放） */
+  /** 文件级游客可见性；null = 未设置（匿名访客不额外开放） */
   guestVisibility: GuestVisibility | null;
   ownerId: string;
   createdAt: number;
   updatedAt: number;
-  /** §26 违规封禁：true = 已封禁（前端半透明禁用态，仅可删除） */
+  /** 违规封禁：true = 已封禁（前端半透明禁用态，仅可删除） */
   banned?: boolean;
-  /** 数据所在存储桶名（§26 管理端全部文件列表按页批量补齐；用户端列表不返回） */
+  /** 数据所在存储桶名（管理端全部文件列表按页批量补齐；用户端列表不返回） */
   buckets?: string[];
-  /** 所在挂载点名（§26 管理端全部文件列表按页批量补齐；用户端列表不返回） */
+  /** 所在挂载点名（管理端全部文件列表按页批量补齐；用户端列表不返回） */
   mounts?: string[];
   /**
-   * LAB O4：媒体文件的签名直链缩略图（image/* 与 video/*、无密码时下发，1 小时签名）。
-   * 前端网格/预览格直接消费，不再逐项请求下载令牌。
+   * 媒体文件的签名直链缩略图（image/* 与 video/*、无密码时下发，1 小时签名）。
+   * 前端网格/预览格直接消费，无需逐项请求下载令牌。
    */
   thumbUrl?: string;
   /**
-   * LAB O4：文件夹行的前 4 个子项（与列表同排序、同可见性过滤），文件夹卡片 2×2 预览格
-   * 的数据源；子项可再带 thumbUrl。缺省（旧响应）时前端回退 per-folder 列表请求。
+   * 文件夹行的前 4 个子项（与列表同排序、同可见性过滤），文件夹卡片 2×2 预览格
+   * 的数据源；子项可再带 thumbUrl。缺省时前端回退 per-folder 列表请求。
    */
   previewItems?: FileListItem[];
-  /** 内容 SHA-256（§F）；null = 未内容寻址 */
+  /** 内容 SHA-256；null = 未内容寻址 */
   hash?: string | null;
 }
 
@@ -322,9 +324,9 @@ export interface UploadSession {
   mimeType?: string;
   fileSize: number;
   quotaReserved: number;
-  /** §E 存储池：会话选定落桶 provider（NULL = 回退挂载主 provider） */
+  /** 存储池：会话选定落桶 provider（NULL = 回退挂载主 provider） */
   providerId?: string | null;
-  /** §F 内容寻址：/upload/raw 阶段算出的内容 SHA-256 与物理键 */
+  /** 内容寻址：/upload/raw 阶段算出的内容 SHA-256 与物理键 */
   blobHash?: string | null;
   physicalKey?: string | null;
   uploadId?: string;
@@ -405,7 +407,7 @@ export interface ApiKey {
 
 // ============ 存储与挂载 ============
 
-// type 收敛（§5.2）：'r2' = Worker R2 绑定（endpoint 空），'s3' = S3 兼容端点（AWS/R2 S3 API/Oracle/MinIO）。
+// Provider 类型收敛：'r2' = Worker R2 绑定（endpoint 空），'s3' = S3 兼容端点（AWS/R2 S3 API/Oracle/MinIO）。
 // 由「有无 endpoint」在后端推导，不再是用户选择项。
 export type ProviderType = 'r2' | 's3';
 
@@ -430,6 +432,70 @@ export interface MountConfig extends Mount {
   providerType: ProviderType;
 }
 
+// ============ 第三方登录（SSO / OIDC） ============
+
+/**
+ * 提供商类型（迁移 0012）。
+ * - google / github = 内置端点，各自至多一条（部分唯一索引约束）
+ * - oidc = 通用 OpenID Connect（issuer 由管理员填写，数量不限）
+ */
+export type SsoProviderKind = 'google' | 'github' | 'oidc';
+
+/** 登录页可用的提供商（公开面：只有类型与显示名，无任何凭据） */
+export interface SsoProviderPublic {
+  id: string;
+  kind: SsoProviderKind;
+  name: string;
+}
+
+/** 公开设置 `sso` 字段：总开关关闭或没有启用的来源时 providers 为空数组 */
+export interface SsoPublicConfig {
+  enabled: boolean;
+  providers: SsoProviderPublic[];
+}
+
+/** 管理端提供商视图：clientSecret 只回掩码（`******` 已配置 / `''` 未配置） */
+export interface SsoProviderAdmin {
+  id: string;
+  kind: SsoProviderKind;
+  name: string;
+  /** kind='oidc' 的 issuer（discovery 基地址）；google/github 为 null */
+  issuerUrl: string | null;
+  clientId: string;
+  clientSecret: string;
+  /** 自定义 scope（空格分隔）；null = 按 kind 取默认 */
+  scopes: string | null;
+  enabled: boolean;
+  /**
+   * 是否信任提供方声明的邮箱验证（迁移 0013）：开启后，提供方声明「已验证」的邮箱
+   * 可用于自动关联既有账号。内置 Google/GitHub 默认开启，自定义 OIDC 默认关闭。
+   */
+  trustEmailVerified: boolean;
+  /** 需在提供方后台登记的回调地址（= 站点地址 + /api/auth/sso/{id}/callback） */
+  redirectUri: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 待完成注册的第三方档案（`GET /api/auth/sso/pending` 响应，不含任何令牌） */
+export interface SsoPendingProfile {
+  providerId: string;
+  providerName: string;
+  kind: SsoProviderKind;
+  /** 提供方下发的邮箱（未下发为 null）；前端「使用 OIDC 提供的信息」据此预填 */
+  email: string | null;
+  /** 提供方是否**已验证**该邮箱（verified_email / email_verified 声明） */
+  emailVerified: boolean;
+  username: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  /** 本次注册是否必须通过邮箱验证码（服务端按站点设置与提供方邮箱验证状态判定） */
+  emailVerificationRequired: boolean;
+  /** 邀请码门控（与 /register 同源）：enabled 决定是否渲染输入、required 决定是否必填 */
+  inviteEnabled: boolean;
+  inviteRequired: boolean;
+}
+
 // ============ 系统设置 ============
 
 export interface SystemSettings {
@@ -439,6 +505,23 @@ export interface SystemSettings {
   allowRegistration: boolean;
   allowGuestAccess: boolean;
   requireEmailVerification: boolean;
+  /** 邀请码注册（0010 迁移；「注册设置」分组）：开关 / 必填 / 生成权限 / 每用户上限 */
+  inviteEnabled: boolean;
+  inviteRequired: boolean;
+  inviteGeneration: 'all_users' | 'admin_only';
+  inviteMaxPerUser: number;
+  /** 第三方登录（0012 迁移；「注册设置」分组）：站点级总开关，来源在各提供商行上单独启用 */
+  ssoEnabled: boolean;
+  /** 访问统计（0011 迁移）：来源二选一（d1 = 网关审计 / umami = 前端行为统计）+ Umami 脚本面配置 */
+  statsSource: 'd1' | 'umami';
+  umamiEnabled: boolean;
+  umamiScriptUrl: string;
+  umamiWebsiteId: string;
+  umamiHostUrl: string;
+  umamiDomains: string;
+  umamiPerformance: boolean;
+  umamiExcludeSearch: boolean;
+  umamiDoNotTrack: boolean;
   rateLimitEnabled: boolean;
   rateLimitRequestsPerMinute: number;
   [key: string]: unknown;
