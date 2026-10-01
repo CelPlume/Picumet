@@ -332,6 +332,17 @@ provider 配置 `publicDomain`（公网源站/CDN 域名）会改变**经它存�
 
 只保留顶层挂载（例如 `/storage1` … `/storage3`）而不创建覆盖 `/` 的挂载点时,页面依然能打开:文件页与其树、公开浏览、AList `fs/list`、WebDAV `PROPFIND` 会把顶层挂载聚合成虚拟目录(文件页上标记为 `id = vroot:<路径>`)。这些条目只用于列表——没有元数据行,因此不可分享、移动、重命名、删除,向它们上传返回 `404`。仍推荐保留根挂载（`/`,由种子创建）;完整语义见架构文档。
 
+## 配置第三方登录（SSO / OIDC）
+
+1. **准备来源**（回调地址统一为 `https://{站点域名}/api/auth/sso/{id}/callback`；`{id}` 在保存来源后生成，管理端来源行内提供可复制的权威值）：
+   - **Google**：Google Cloud Console →「API 和服务 → 凭据 → 创建 OAuth 客户端 ID（Web 应用）」，把该地址填进「已获授权的重定向 URI」。scope 用默认 `openid email profile`。
+   - **GitHub**：Settings → Developer settings → OAuth Apps → New OAuth App，「Authorization callback URL」填该地址。GitHub 不签发 `id_token`，本项目改取 `/user` 与 `/user/emails`（primary 且 `verified` 的邮箱才算已验证）。
+   - **自托管 OIDC（authentik / logto / casdoor / Keycloak 等）**：创建「Web 应用 / 机密客户端」，重定向 URI 同上，scope 至少 `openid email profile`。issuer 必须是**公网可达**的 https 地址（端口 80/443、非私网/回环）：Worker 会主动请求 `{issuer}/.well-known/openid-configuration`、token 与 JWKS 端点，属真实 SSRF 面，因此沿用存储端点同一套地址白名单；内网 IdP 请用反向代理暴露到公网域名。**本地开发例外**：设置环境变量 `SSO_ALLOW_LOOPBACK=true`（非生产环境）后才放行 `http://localhost:<port>`，可直接对本地 IdP 容器联调；生产环境无论该变量如何都不放行（避免误把 `ENVIRONMENT` 写成别的值就在生产静默开放回环 SSRF）。
+   - **「信任提供方的邮箱验证」开关**（来源配置内）：开启后，提供方声明「已验证」的邮箱可用于**自动关联既有账号**。仅当该来源确实验证邮箱时才开启——若 IdP 允许用户自填任意邮箱并回 `email_verified=true`，开启它等于允许接管任意既有账号。内置 Google / GitHub 默认开启，自定义 OIDC 默认关闭；关闭时这些用户走补充注册页。
+2. **管理端配置**：系统设置 → 注册设置 → 打开「启用第三方登录」，点「OIDC 设置」新增来源（类型 / 显示名称 / Issuer / Client ID / Client Secret，可自定义 scope），保存后把行内回调地址复制回提供方后台。Google 与 GitHub 各只能配置一个，自定义 OIDC 数量不限。
+3. **登录与注册行为**：来源开启「信任提供方的邮箱验证」且提供方**已验证**的邮箱命中既有账号 → 自动关联并直接登录（顺带补 `email_verified`）；否则进入 `/sso/complete`，由用户自填邮箱 / 用户名 / 密码（提供方信息仅用于一键预填）。邮箱验证码的判定基准是**本次提交的邮箱**：提交值与提供方已验证邮箱一致 → 免验证码；否则站点开启邮箱验证或配置了 SMTP → 必须验证。邀请码门控与普通注册完全一致；同一浏览器绑定 Cookie（`sso_tx` / `sso_pending`，HttpOnly + SameSite=Lax）保证授权与补充注册不能被第三方转发完成。
+4. **密钥与凭据**：`client_secret` 与每个用户的 `access_token` / `refresh_token` 均以 `ENCRYPTION_KEY` 做 AES-256-GCM 加密后落库。**更换 `ENCRYPTION_KEY` 会让既有来源密钥无法解密**（该来源登录时返回 `SSO_SECRET_UNAVAILABLE`），在管理端重新保存一次密钥即可恢复。
+
 ## 成本要点
 
 免费额度足以支撑小规模部署:

@@ -296,6 +296,10 @@ The synthetic root only fills in directory listings when no mount covers the req
 
 Hot reload is unreliable for the Workers API. After you change workers source, restart the process; to be safe, remove `.wrangler` and re-apply migrations to start from a clean state.
 
+### A 302 redirect must go through `c.redirect()`, not `new Response.redirect()`
+
+Helpers such as `setAuthCookie()` that write `Set-Cookie` attach it to the Hono context via `c.header(...)`; if you then `return Response.redirect(url, 302)` and build a brand-new Response, the response headers **will not** carry the cookie just set — which shows up as "after the third-party login / registration completion page bounces back to `/files`, the user is still signed out". Always use `c.redirect(url, 302)` (it carries the response headers already prepared on the context). This bit us once on the SSO callback success branch: the unit test's `Set-Cookie` assertion caught it directly.
+
 ## Development roadmap
 
 The codebase builds in dependency order. Each phase depends on the previous one, and each phase is complete when its acceptance criteria pass.

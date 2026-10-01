@@ -296,6 +296,10 @@ git commit -m "fix(permission): 修复规则匹配的路径边界绕过" \
 
 Workers API 的热重载不可靠。改了 `workers/` 源码后重启进程;保险起见删掉 `.wrangler` 再重跑迁移,从干净状态起步。
 
+### 302 跳转必须走 `c.redirect()`,不要 `new Response.redirect()`
+
+`setAuthCookie()` 这类写 `Set-Cookie` 的辅助函数是通过 `c.header(...)` 挂在 Hono 上下文上的;如果随后 `return Response.redirect(url, 302)` 直接构造一个新 Response,响应头里**不会**带上刚才的 Cookie——表现为「第三方登录 / 注册完成页跳回 `/files` 后仍是未登录」。统一用 `c.redirect(url, 302)`(它会把上下文里已准备的响应头带上)。这条在 SSO 回调的成功分支上踩过一次:单测的 `Set-Cookie` 断言直接把它抓了出来。
+
 ## 开发路线
 
 代码库按依赖顺序分阶段构建,后一阶段依赖前一阶段,每阶段验收标准全部通过才算完成。
