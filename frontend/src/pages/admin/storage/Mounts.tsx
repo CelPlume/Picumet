@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, Pencil, Eye, FolderOpen, ArrowUp, ArrowDown, GripVertical, Check } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog, EmptyState, Switch } from '@/components/ui/core';
+import { CheckboxWithLabel } from '@/components/ui/checkbox';
 import { Dropdown, DropdownItem } from '@/components/ui/dropdown';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { TableSkeleton } from '@/components/ui/skeleton';
@@ -122,31 +123,23 @@ function RoleMatrixEditor({
           return (
             <div key={role} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">
               <span className="w-12 shrink-0 font-medium">{t(`admin.${role}`)}</span>
-              <label className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={inherit}
-                  onChange={(e) => onChange({ ...value, [role]: e.target.checked ? null : [] })}
-                  className="h-4 w-4 rounded border-border"
-                />
-                {inheritLabel}
-              </label>
+              <CheckboxWithLabel
+                checked={inherit}
+                onChange={(checked) => onChange({ ...value, [role]: checked ? null : [] })}
+                label={inheritLabel}
+              />
               <span className={cn('flex flex-wrap items-center gap-x-3 gap-y-1.5', inherit && 'opacity-40')}>
                 {PERMISSION_KEYS.map((perm) => (
-                  <label key={perm} className="flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      disabled={inherit}
-                      checked={!inherit && perms.includes(perm)}
-                      onChange={(e) => {
-                        const next = e.target.checked ? [...perms, perm] : perms.filter((p) => p !== perm);
-                        // 后端把「有条目但权限为空」视为删除该角色条目（= 回落角色默认），这里直接落到不配置态
-                        onChange({ ...value, [role]: next.length === 0 ? null : next });
-                      }}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                    {t(`perm.${perm}`)}
-                  </label>
+                  <CheckboxWithLabel
+                    key={perm}
+                    disabled={inherit}
+                    checked={!inherit && perms.includes(perm)}
+                    onChange={(checked) => {
+                      const next = checked ? [...perms, perm] : perms.filter((p) => p !== perm);
+                      onChange({ ...value, [role]: next.length === 0 ? null : next });
+                    }}
+                    label={t(`perm.${perm}`)}
+                  />
                 ))}
               </span>
             </div>

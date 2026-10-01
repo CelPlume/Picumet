@@ -36,13 +36,13 @@ const ACTION_COLOR: Record<string, string> = {
 /** 表头与数据行共用的网格模板（md 起多一列 IP），保证表头表与行表列对齐；
     路径列给最小宽度下限，窄容器时横向滚动而非塌缩 */
 const LOG_ROW_GRID =
-  'grid items-center grid-cols-[104px_minmax(160px,1fr)_96px_88px_150px] md:grid-cols-[104px_minmax(160px,1fr)_96px_110px_88px_150px]';
+  'grid items-center grid-cols-[168px_minmax(160px,1fr)_96px_88px_150px] md:grid-cols-[168px_minmax(160px,1fr)_96px_110px_88px_150px]';
 
 export default function AdminLogs() {
   const { t } = useTranslation();
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [loading, setLoading] = useState(true);
-  // 骨架屏最短驻留：数据太快时也保证加载动画可见（§33）
+  // 骨架屏最短驻留：数据太快时也保证加载动画可见
   const showSkeleton = useMinLoading(loading);
   /** 双表结构：表体横向滚动时表头同步平移，列保持对齐（表头表在滚动容器外） */
   const headerTableRef = useRef<HTMLTableElement>(null);
@@ -51,7 +51,7 @@ export default function AdminLogs() {
   };
   const [sort, setSort] = useState<string | null>('createdAt');
   const [order, setOrder] = useState<SortOrder>('desc');
-  /** LAB §8：与全站管理页同一共享分页组件——页码跳转 + 每页条数 + 总数 */
+  /** 与全站管理页同一共享分页组件——页码跳转 + 每页条数 + 总数 */
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [total, setTotal] = useState(0);
@@ -115,7 +115,7 @@ export default function AdminLogs() {
         </div>
       </Card>
 
-      {/* LAB §8：共享分页组件（页码跳转 + 每页条数 + 总数），与用户/文件/分享页一致 */}
+      {/* 共享分页组件（页码跳转 + 每页条数 + 总数），与用户/文件/分享页一致 */}
       {logs.length > 0 && (
         <div className="shrink-0 pt-2">
           <Pagination

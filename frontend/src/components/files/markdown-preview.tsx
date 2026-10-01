@@ -1,11 +1,12 @@
-// Markdown 格式化预览（LAB 需求：md 支持渲染格式）。
+// Markdown 格式化预览（支持表格、删除线、任务列表等 GFM 扩展）。
 //
 // 安全模型（对照仓库 XSS 约束「禁止 dangerouslySetInnerHTML，除非明确安全审查」）：
 // - react-markdown **默认不渲染原始 HTML**（无 rehype-raw 时 `<script>` 等标签按文本输出），
 //   正文里不存在任何文档级 dangerouslySetInnerHTML——MD 源里的内联 HTML 都是纯文本节点；
 // - remark-gfm 仅扩展表格/删除线/任务列表等语法，不引入 HTML 注入面；
-// - 围栏代码块经既有代码预览同款防线（先 escapeHtml 再 highlight.js，高亮输出本身
-//   也会转义实体）——与 preview.tsx 代码路径同一套已审查的双重防御。
+// - 围栏代码块把**原始代码**直接交给 highlight.js，其自身的实体转义即是唯一安全边界
+//   （详见下方 highlightFence 的注释）——此处**不**预跑 escapeHtml：那会与 hljs 内部
+//   转义叠加成双重转义（页面显示 `&lt;`）并破坏语法匹配。
 import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';

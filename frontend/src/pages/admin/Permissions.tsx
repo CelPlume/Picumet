@@ -5,7 +5,7 @@ import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog, EmptyState } from '@/components/ui/core';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { Select } from '@/components/ui/select';
-import { Checkbox } from '@/components/ui/checkbox';
+import { Checkbox, CheckboxWithLabel } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from '@/components/ui/toast';
 import { Pagination } from '@/components/ui/pagination';
@@ -287,10 +287,12 @@ export default function AdminPermissions() {
             <Label>{t('admin.rulePermissions')}</Label>
             <div className="mt-1 flex flex-wrap gap-3">
               {ALL_PERMS.map((p) => (
-                <label key={p} className="flex items-center gap-1.5 text-sm">
-                  <Checkbox checked={((form.permissions as string[]) ?? []).includes(p)} onChange={() => togglePerm(p)} label={p} />
-                  {p}
-                </label>
+                <CheckboxWithLabel
+                  key={p}
+                  checked={((form.permissions as string[]) ?? []).includes(p)}
+                  onChange={() => togglePerm(p)}
+                  label={p}
+                />
               ))}
             </div>
           </div>

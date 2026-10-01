@@ -44,7 +44,7 @@ export default function Landing() {
       <header className="lp-header fixed inset-x-0 top-0 z-40" data-scrolled={scrolled ? '' : undefined}>
         <div className="lp-container flex h-14 items-center gap-6">
           <Link to="/" aria-label={site.siteTitle ?? 'Picumet'}>
-            <Logo size={40} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} siteHeaderTitle={site.siteHeaderTitle} />
+            <Logo size={32} siteLogo={site.siteLogo} siteTitle={site.siteTitle ?? 'Picumet'} siteHeaderTitle={site.siteHeaderTitle} />
           </Link>
           <div className="ml-auto flex items-center gap-1">
             <a href={REPO_URL} target="_blank" rel="noreferrer" className="lp-icon-btn lp-hide-sm" aria-label="GitHub">

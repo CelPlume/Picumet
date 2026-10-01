@@ -6,7 +6,7 @@ import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch, ConfirmD
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { revealDelay, REVEAL_INNER_BASE, REVEAL_STEP } from '@/components/ui/reveal';
-import { Checkbox } from '@/components/ui/checkbox';
+import { CheckboxWithLabel } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { timeAgo } from '@/lib/utils';
@@ -202,10 +202,12 @@ export default function ApiKeysPage() {
             <Label>{t('settings.permissions')}</Label>
             <div className="mt-1 flex gap-3">
               {['read', 'write', 'delete'].map((p) => (
-                <label key={p} className="flex items-center gap-1.5 text-sm">
-                  <Checkbox checked={permissions.includes(p)} onChange={() => togglePerm(p)} label={p} />
-                  {p}
-                </label>
+                <CheckboxWithLabel
+                  key={p}
+                  checked={permissions.includes(p)}
+                  onChange={() => togglePerm(p)}
+                  label={p}
+                />
               ))}
             </div>
           </div>
@@ -213,10 +215,12 @@ export default function ApiKeysPage() {
             <Label>{t('settings.protocols')}</Label>
             <div className="mt-1 flex flex-wrap gap-3">
               {(['webdav', 'api', 's3'] as const).map((p) => (
-                <label key={p} className="flex items-center gap-1.5 text-sm">
-                  <Checkbox checked={protocols.includes(p)} onChange={() => toggleProto(p)} label={p === 'webdav' ? t('settings.webdav') : p === 's3' ? t('settings.s3') : t('settings.customApi')} />
-                  {p === 'webdav' ? t('settings.webdav') : p === 's3' ? t('settings.s3') : t('settings.customApi')}
-                </label>
+                <CheckboxWithLabel
+                  key={p}
+                  checked={protocols.includes(p)}
+                  onChange={() => toggleProto(p)}
+                  label={p === 'webdav' ? t('settings.webdav') : p === 's3' ? t('settings.s3') : t('settings.customApi')}
+                />
               ))}
             </div>
           </div>

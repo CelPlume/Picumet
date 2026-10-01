@@ -13,6 +13,7 @@ import { SharePageSkeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { formatBytes, formatDateTime, isImage } from '@/lib/utils';
+import { trackUmami } from '@/lib/umami';
 import type { FileListItem } from '@shared/types';
 
 
@@ -228,13 +229,15 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
   };
 
   /** 走后端换取下载 URL 并打开（密码校验由验证接口完成；请求不携带密码，授权 Cookie 已种下） */
-  const openDownload = async (itemId: string) => {
+  const openDownload = async (item: ShareItemView) => {
     if (!id) return;
     try {
       const res = await apiFetch<{ url: string; expiresIn: number }>(
-        `/api/shares/${id}/download?itemId=${encodeURIComponent(itemId)}`
+        `/api/shares/${id}/download?itemId=${encodeURIComponent(item.id)}`
       );
       window.open(res.data.url, '_blank');
+      // Umami 事件（分享下载）：来源=umami 且 tracker 就绪才实际发出
+      trackUmami('share_download', { name: item.name, size: item.size });
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : t('common.downloadFailed'));
     }
@@ -248,7 +251,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       setPendingAction('download');
       return;
     }
-    void openDownload(item.id);
+    void openDownload(item);
   };
 
   /** 预览流报错：带密码且未验证的文件引导进文件密码验证弹窗（后端对未验证文件返回 401 PASSWORD_REQUIRED） */
@@ -274,7 +277,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       setFilePwItem(null);
       setFilePassword('');
       if (action === 'download') {
-        await openDownload(target.id);
+        await openDownload(target);
       } else {
         setPreviewBust(Date.now());
       }
@@ -329,7 +332,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
   }
 
   if (error || !info) {
-    // 按错误码分支（不再比较中文文案）；图标统一用 lucide
+    // 按错误码分支；图标统一用 lucide
     const ErrorIcon = errorCode === 'LOGIN_REQUIRED' ? Lock : errorCode === 'NOT_FOUND' ? FileQuestion : Ban;
     const errorTitle =
       errorCode === 'LOGIN_REQUIRED'
