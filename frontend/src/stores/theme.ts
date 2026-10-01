@@ -14,8 +14,8 @@ export type MotionLevel = 'off' | 'default' | 'all';
 
 /**
  * 动画速度两档（仅「全部动画」档位暴露开关）：
- * - efficient：默认基线（1.4× 历史 150/300/500 节奏）
- * - comfortable：再放慢一档（时长 ≈2× 历史节奏，错峰延迟 ×2，入场动画族额外 ×1.25）
+ * - efficient：默认基线（时长 1.4×、错峰 1.4×）
+ * - comfortable：再放慢一档（时长 ×2、错峰 ×2，入场动画族额外 ×1.25）
  * 详见 index.css「动画速度两档」。
  */
 export type MotionSpeed = 'efficient' | 'comfortable';
@@ -25,7 +25,7 @@ export interface AppearanceSettings {
   accentColor: string;
   fontColor?: string;
   blurLevel: BlurLevel;
-  /** 动画三档（§33）：off 全关 / default 仅功能性动画 / all 加入场装饰动画 */
+  /** 动画三档：off 全关 / default 仅功能性动画 / all 加入场装饰动画 */
   motionLevel: MotionLevel;
   /** 动画速度两档：efficient 现行时长（默认）/ comfortable 整体放慢一档 */
   motionSpeed: MotionSpeed;
@@ -34,15 +34,18 @@ export interface AppearanceSettings {
   backgroundColor?: string;
   fileIcons: 'iconify' | 'emoji';
   folderPreview: 'icon' | 'contents';
+  /** 用量展示样式（个人资料卡 + 右上角头像菜单）：progress = 两行文本 + 细进度条；
+   *  activity = Apple 风格双圆环运动卡片（见 components/ui/usage.tsx） */
+  usageStyle: 'progress' | 'activity';
   /** 文件页卡片视图每行卡片数（桌面 4–8，默认 6） */
   filesPerRow: number;
   /** 文件页卡片视图每行卡片数（手机 2–5，默认 3）；与桌面值分开记忆 */
   filesPerRowMobile: number;
   rightClickAction: 'properties' | 'menu';
   rightClickMultiSelect: boolean;
-  /** LAB：图片/视频预览尺寸模式——fit=适应窗口（默认）/ original=按原始像素显示（可滚动） */
+  /** 图片/视频预览尺寸模式：fit=适应窗口（默认）/ original=按原始像素显示（可滚动） */
   previewSizeMode: 'fit' | 'original';
-  /** LAB：是否启用文件夹预览格的图片/视频缩略加载（默认关闭=只显示图标，节约流量） */
+  /** 是否启用文件夹预览格的图片/视频缩略加载（默认关闭=只显示图标，节约流量） */
   mediaPreviewsEnabled: boolean;
 }
 
@@ -55,6 +58,7 @@ const DEFAULT: AppearanceSettings = {
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
+  usageStyle: 'progress',
   filesPerRow: 6,
   filesPerRowMobile: 3,
   rightClickAction: 'properties',
@@ -67,7 +71,7 @@ function load(): AppearanceSettings {
   try {
     const raw = localStorage.getItem('picumet:appearance');
     if (!raw) return DEFAULT;
-    // 旧版布尔模糊开关迁移为三档：false → off，true/unset → default
+    // 布尔模糊开关字段兼容存储：false → off，true/unset → default
     const legacy = JSON.parse(raw) as Partial<AppearanceSettings> & { enableBlur?: boolean };
     const { enableBlur: _legacy, ...rest } = legacy;
     const blurLevel = rest.blurLevel ?? (_legacy === false ? 'off' : 'default');
@@ -147,7 +151,7 @@ function applyTheme(s: AppearanceSettings) {
   // default：项目默认强度（blur 20px）；毛玻璃：文件卡片磨砂配方（blur 16px + alpha 0.6）全局化
   // 有背景图时提高 default 档不透明度：深色下背景混入会破坏文字对比度，保住 WCAG AA
   // 小型控件（Tabs 轨道/按钮/搜索框/复选框未选态/视图切换器/⋮ 触发钮）与大表面共用
-  // --glass-alpha：与所在页面的卡片同色同透，杜绝控件发灰与卡片割裂
+  // --glass-alpha：与所在页面的卡片同色同透，避免控件发灰与卡片割裂
   const glass =
     s.blurLevel === 'off'
       ? { alpha: '1', blur: '0px' }
@@ -158,14 +162,14 @@ function applyTheme(s: AppearanceSettings) {
   root.style.setProperty('--glass-alpha', glass.alpha);
   root.style.setProperty('--glass-blur', glass.blur);
 
-  // 动画三档（§33）：落在 <html data-motion> 上，CSS 侧按属性关停对应层级的动画
+  // 动画三档：落在 <html data-motion> 上，CSS 侧按属性关停对应层级的动画
   // - off：全局动画/过渡禁用（唯一例外：reduced-motion 用户本来就被强制禁用）
   // - default：装饰性入场动画（.reveal 等）禁用；功能性动画（图表/tab/弹窗/加载）保留
   // - all：全开（默认）
   root.setAttribute('data-motion', s.motionLevel === 'all' ? 'all' : s.motionLevel);
 
   // 动画速度两档：落在 <html data-motion-speed>，CSS 侧只在 comfortable 下覆写时长 token
-  // 与错峰延迟倍率（efficient 不写覆盖 = 与历史时长逐毫秒一致）。
+  // 与错峰延迟倍率（efficient 不写覆盖 = 与 CSS 默认 token 逐毫秒一致）。
   // 舒适档只在「全部动画」档生效：默认/关闭档没有装饰动画可放慢，剩下的功能性动画一律用
   // 高效档时长（关掉动画档却把弹窗拖慢没有意义）
   root.setAttribute(

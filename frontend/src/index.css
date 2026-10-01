@@ -117,7 +117,7 @@
   /* 小型控件模糊（Tabs 轨道、outline/secondary 按钮、搜索框、复选框未选态、视图切换器、⋮ 触发钮）：
      本类只含 backdrop blur（同一 --glass-blur token），底色透明度由各组件用
      Tailwind 任意透明度语法消费 --glass-alpha（与大表面同 token：default 0.92/0.82、
-     frosted 0.6、off 1），控件与所在页面的卡片同色同透，杜绝灰色割裂；
+     frosted 0.6、off 1），控件与所在页面的卡片同色同透，避免灰度割裂；
      off 档双保险：alpha=1 自动实底 + .no-blur 关停 blur */
   .glass-control {
     -webkit-backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.5);
@@ -147,6 +147,7 @@
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+  .no-blur .glass-surface,
   .no-blur .glass-dialog {
     background-color: hsl(var(--card));
   }
@@ -281,10 +282,10 @@
    - 终点隐式回落到元素自身计算值（transform: none + 业务透明度），不留残余 transform；
    - animation-fill-mode: both 让首帧即 --reveal-delay 期间保持隐藏，mount 后只播一次；
    - 逐项延迟由 --reveal-delay 提供（列表/卡片网格用 CSS 变量，不逐项开 JS 定时器）；
-   - 默认时长复用 --duration-base（300ms），与参考站区块 0.3~0.45s 同量级。
+   - 默认时长复用 --duration-base。
    data-motion 三档与 prefers-reduced-motion 的关停见下方「动画三档」与文件末尾降级方案。 */
-/* 显式 to{opacity:1} + fill both 会永久压过业务透明度（封禁行 opacity-40、文件灰度等
-   被 CSS 动画值盖成 1）——因此只写 from，终点隐式回落到元素自身计算值：普通元素 = 1，
+/* 显式写 to{opacity:1} 时，fill both 的填充值会盖住业务透明度（封禁行 opacity-40、文件灰度等）；
+   因此只写 from，终点隐式回落到元素自身计算值：普通元素 = 1，
    封禁行 = 0.4，且后续业务类变化会跟随。
    同一条规则也适用于 filter：只写 from 的 blur，终点回到元素自身的 filter
    （普通元素 = none，封禁行 = grayscale）。 */
@@ -309,7 +310,7 @@
   animation-delay: calc(var(--reveal-delay, 0ms) * var(--motion-delay-scale, 1));
 }
 
-/* ============ 动画三档（theme store data-motion，§33；与模糊三档并排的外观开关） ============
+/* ============ 动画三档（theme store data-motion；与模糊三档并排的外观开关） ============
    分层原则：动画按「装饰性 / 功能性」划层，档位只关装饰层，永远不动交互反馈的必需过渡。
    - [data-motion="all"]：全开（默认，不写任何覆盖规则）
    - [data-motion="default"]：关停装饰性入场动画（.reveal 家族）；图表绘制、tab/弹窗/抽屉
@@ -362,15 +363,15 @@
 }
 
 /* off 档：装饰层关停（动画 0.01ms + fill both 已让元素瞬时落到终态 opacity:1）。
-   不再强制 opacity/transform：列表行可能自带业务透明度语义（如封禁文件 opacity-40），
-   无差别 !important 会把业务样式抹掉。 */
+   不强制 opacity/transform：列表行可能自带业务透明度语义（如封禁文件 opacity-40），
+   无差别 !important 会抹掉业务样式。 */
 
-/* ============ 动画速度两档（theme store data-motion-speed，§36） ============
-   高效 = `:root` 里的默认值（1.4× 历史 150/300/500 节奏），本文件不写任何覆盖。
-   舒适 = 时长 token 再放大约 1.4 倍（= 历史节奏的 2 倍），并额外做两件事：
+/* ============ 动画速度两档（theme store data-motion-speed） ============
+   高效 = `:root` 里的默认值，本文件不写任何覆盖。
+   舒适 = 时长 token 基准的约 1.4 倍（基准 420ms → 600ms，其余同比例），并额外做两件事：
    1) 错峰延迟倍率 1.4 → 2：入场逐项间隔同步拉长，节奏比例不变；
    2) 入场动画族（页面卡片 .reveal / 表格行 .reveal-row / 下拉菜单与其逐项）在时长之上
-      再乘 1.25 —— 这三族跨度长、同时入场项多，是「舒适」档要求重点放慢的对象。
+      再乘 1.25 —— 这三族入场项多、跨度长，是「舒适」档重点放慢的对象。
    弹窗/抽屉例外：舒适档取高效档的基准 420ms（`--duration-overlay`），不再乘 1.4 ——
    它们每次开关都要等，放慢到 600ms 会拖手感。
    刻意不参与：骨架微光周期（Tailwind animate-pulse 固定 2s，是「加载中」信号）、
@@ -443,7 +444,7 @@
   user-select: none !important;
   -webkit-user-select: none !important;
 }
-/* 文件项（卡片/列表）与分享列表统一（参考 MyShares 列表行）：
+/* 文件项（卡片/列表）与分享列表统一：
    rest = 玻璃表面（--glass-alpha/--glass-blur 三档门控）+ 透明边框；
    hover = accent 填充 + 边框显现；selected = 玻璃底上叠加主色调（任何壁纸下保持可读） */
 .item-surface {
@@ -533,7 +534,7 @@
   background-color: hsl(var(--foreground) / 0.12);
   transition: background-color var(--duration-fast) var(--ease-out);
 }
-/* 拇指复刻 ReactBits Customize scrubber：静止 scale(0.7) + 32% 透明，
+/* 拇指：静止 scale(0.7) + 32% 透明，
    拖动/键盘聚焦弹至全尺寸 90% 透明；hover 同态在下方指针媒体查询里。 */
 .pill-slider-thumb {
   z-index: 3;
@@ -565,7 +566,7 @@
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
 }
-/* hover 反馈整体门控到精确指针（ReactBits scrubber 用 matchMedia 做同一件事）：
+/* hover 反馈整体门控到精确指针：
    触屏没有悬停语义，不设 hover 态避免粘滞；拖动反馈由 data-pressed 承担。 */
 @media (hover: hover) and (pointer: fine) {
   .pill-slider-track:hover .pill-slider-bar {
@@ -581,6 +582,246 @@
     opacity: 0.9;
     transform: translate(-50%, -50%) scale(1);
   }
+}
+
+/* ============ OTP 分段输入 ============ */
+/* 字符入场：新字符从下方 6px 浮起 + 0.97 缩放 + 4px 模糊淡入（220ms, easeOut）；
+   只写 from（同 reveal 约定），终点回落元素自身计算值。
+   功能性微反馈：默认/全部动画档可用，off 档由全局 0.01ms 规则关停。 */
+@keyframes otp-char-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); filter: blur(4px); }
+}
+.otp-char {
+  animation: otp-char-in 220ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+/* 激活空格光标：1.06s 线性闪烁 */
+@keyframes otp-caret-blink {
+  0%, 49.9% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.otp-caret {
+  animation: otp-caret-blink 1.06s linear infinite;
+}
+/* 错误抖动：整行横移 [-5,4,-3] 一次（320ms），错误边框同时点亮 */
+@keyframes otp-shake {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  50% { transform: translateX(4px); }
+  75% { transform: translateX(-3px); }
+  100% { transform: translateX(0); }
+}
+.otp-row-error {
+  animation: otp-shake 320ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.otp-error .otp-cell { border-color: hsl(var(--destructive) / 0.6); }
+.otp-error .otp-cell-active { border-color: hsl(var(--destructive)); box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.25); }
+
+/* ============ 开关（双回弹） ============ */
+/* 位移与轨道色解耦：thumb 走 translate 合成层，轨道背景走自己的时长。
+   默认档 = 普通位移过渡（功能性）；「全部动画」档叠加 overshoot 双回弹 keyframes
+   （is-init 门控：首次交互前不播放，避免挂载即播 off 动画）。
+   --switch-travel 由组件按尺寸内联（sm 8 / default 12 / lg 20）。 */
+.switch-track {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.switch-thumb {
+  translate: 2px 0;
+  will-change: translate;
+  transition: translate var(--duration-fast) var(--ease-out);
+}
+[data-on='true'] .switch-thumb {
+  translate: calc(2px + var(--switch-travel)) 0;
+}
+[data-motion='all'] .switch-track.is-init[data-on='true'] .switch-thumb {
+  animation: switch-bounce-on var(--switch-dur, 350ms) cubic-bezier(0.34, 1.35, 0.64, 1) both;
+}
+[data-motion='all'] .switch-track.is-init[data-on='false'] .switch-thumb {
+  animation: switch-bounce-off var(--switch-dur, 350ms) cubic-bezier(0.34, 1.35, 0.64, 1) both;
+}
+@keyframes switch-bounce-on {
+  0% { translate: 2px 0; }
+  55% { translate: calc(2px + var(--switch-travel) + 1px) 0; }
+  80% { translate: calc(2px + var(--switch-travel)) 0; }
+  100% { translate: calc(2px + var(--switch-travel)) 0; }
+}
+@keyframes switch-bounce-off {
+  0% { translate: calc(2px + var(--switch-travel)) 0; }
+  55% { translate: calc(2px - 1px) 0; }
+  80% { translate: 2px 0; }
+  100% { translate: 2px 0; }
+}
+
+/* ============ 用量展示（双圆环） ============ */
+/* 圆环进度绘制：stroke-dashoffset 从整圆画到目标值；终点由内联 --ring-offset 决定
+   （只写 from，回落计算值），逐环延迟 --ring-delay。圆环属图表（数据可视化）→
+   默认/全部动画档生效（default 档保留功能性动画），off 档由全局 0.01ms 规则关停。 */
+.usage-ring-value {
+  transition: stroke-dashoffset 600ms var(--ease-out);
+  animation: usage-ring-draw calc(var(--duration-slow) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation-delay: calc(var(--ring-delay, 0ms) * var(--motion-delay-scale, 1));
+}
+@keyframes usage-ring-draw {
+  from { stroke-dashoffset: var(--ring-circ); }
+}
+/* 圆环整体缩放淡入（初值 0.8）+ 右侧信息列横向滑入 */
+.usage-rings {
+  animation: usage-rings-in calc(var(--duration-base) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation-delay: calc(var(--rings-delay, 0ms) * var(--motion-delay-scale, 1));
+}
+@keyframes usage-rings-in {
+  from { opacity: 0; transform: scale(0.8); }
+}
+.usage-info {
+  animation: usage-info-in calc(var(--duration-base) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation-delay: calc(var(--info-delay, 0ms) * var(--motion-delay-scale, 1));
+}
+@keyframes usage-info-in {
+  from { opacity: 0; transform: translateX(12px); }
+}
+
+/* ============ Toast 堆叠（Sonner 式） ============ */
+/* 底部锚定，新 toast 从下方 +60px 升起进入；折叠态展示最多 3 层露沿（超出隐藏），展开展示全部。
+   ⚠️ 严禁在 .toast-banner 上挂 filter（如 blur）或 will-change: filter：
+   Chromium 下任何父级 filter 都会截断子元素的 backdrop-filter 采样上下文，
+   导致卡片的 glass-blur 失效，退化为纯平半透明色块。
+   深度位移、透明度、层级与展开几何由 JS 动态计算（支持任意条数、动态高度累加与展开）。
+   时长固定（不随舒适档放慢：与 JS 排程计时耦合，单独放慢会进出不同步）。 */
+.toast-stack { position: relative; }
+.toast-banner {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  transform-origin: 50% 100%;
+  transition:
+    transform 350ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 350ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.toast-banner.is-enter {
+  transition: none !important;
+  transform: translateY(60px) scale(0.97) !important;
+  opacity: 0 !important;
+}
+.toast-banner.is-leaving {
+  z-index: 0 !important;
+  transform-origin: 50% 100%;
+  transform: translateY(-36px) scale(0.82) !important;
+  opacity: 0 !important;
+  transition:
+    transform 250ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 250ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+/* ============ 按钮加载态 ============ */
+/* 面 = grid 同格叠放（col-start-1 row-start-1），容器宽度 = 最宽面 → 加载切换零位移；
+   交叉淡化 opacity + 3px 位移 + 3px 模糊。
+   过渡走全局时长门控：off 档瞬时切换。 */
+.btn-face {
+  transition:
+    opacity 220ms var(--ease-out),
+    transform 220ms var(--ease-out),
+    filter 220ms var(--ease-out);
+}
+.btn-face-out {
+  opacity: 0;
+  transform: translateY(3px);
+  filter: blur(3px);
+  pointer-events: none;
+}
+
+/* ============ 复选框（shadcn 基准 + 「全部动画」档弹簧勾选动效） ============ */
+/* 唯一驱动量 --cb-t（0 = 未勾选 → 1 = 勾选，含弹簧过冲）。**必须经 @property 注册为 <number>**
+   才能参与过渡（未注册的自定义属性不可插值），注册后 fill / box / tick / word 四路读数全部
+   由它推导，组件侧不分支。
+   过冲取 20%（fill 峰值 1.2）：对应阻尼比 zeta ≈ 0.456。
+   档位门控：**只在「全部动画」档挂 --cb-t 过渡** —— 默认档为原生行为
+   （仅颜色过渡 + 指示器瞬时显隐），关闭档由全局 0.01ms 规则瞬时到位。 */
+@property --cb-t {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+/* 按下反馈分离成独立进度量，避免与过冲缩放互相覆盖 */
+@property --cb-press {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 1;
+}
+
+.cb,
+.cb-group {
+  --cb-t: 0;
+  /* 弹簧视觉时长与缓动：easeOutBack(0.34, 1.9, 0.64, 1)，
+     峰值 1.213 → 过冲约 20%（1.2），即填充满格后「弹出一点再回落」 */
+  --cb-dur: 460ms;
+  --cb-ease: cubic-bezier(0.34, 1.9, 0.64, 1);
+}
+.cb[data-checked='true'],
+.cb[data-checked='mixed'],
+.cb-group[data-checked='true'] {
+  --cb-t: 1;
+}
+
+/* 底色过渡（shadcn 默认的 transition-colors）；不写 Tailwind 的 transition-colors 类，
+   避免 utilities 层规则在同一选择器优先级下覆盖本段的 --cb-t 过渡声明 */
+.cb {
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+/* 盒体：裁剪溢出 + 随弹簧过冲微涨（1 + 0.35·max(0, t-1)，SWELL = 0.35） */
+.cb-box {
+  --cb-press: 1;
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  overflow: hidden;
+  transform: scale(var(--cb-press)) scale(calc(1 + 0.35 * max(0, var(--cb-t) - 1)));
+  transition: --cb-press 160ms var(--ease-out);
+}
+.cb:not(:disabled):active .cb-box {
+  --cb-press: 0.92;
+}
+
+
+/* 对勾/半选短横：pathLength=1 归一化后 stroke-dashoffset 1→0 即「描边画出」 */
+.cb-tick {
+  position: relative;
+  width: 75%;
+  height: 75%;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.cb-tick-path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: calc(1 - clamp(0, var(--cb-t), 1));
+}
+
+/* 「全部动画」档：给驱动量挂过渡，并让文字随勾选明暗变化
+   （语义是「开关」而非「待办」→ 未勾选变淡、勾选恢复正常；不加删除线，两个方向都不画）。
+   本条选择器（属性+类 = 0,2,0）会盖过同元素上的 Tailwind `.transition-opacity`，
+   因此**必须把 opacity 一并列入** —— 文件页选择框靠它做悬停淡入（explorer.tsx）。 */
+[data-motion='all'] .cb {
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out),
+    --cb-t var(--cb-dur) var(--cb-ease);
+}
+[data-motion='all'] .cb-group {
+  transition: --cb-t var(--cb-dur) var(--cb-ease);
+}
+[data-motion='all'] .cb-group-word {
+  opacity: calc(0.45 + 0.55 * clamp(0, var(--cb-t), 1));
+  transition: opacity var(--cb-dur) var(--cb-ease);
 }
 
 /* ============ 降级方案 ============ */
@@ -615,7 +856,7 @@
   }
 }
 
-/* ============ Markdown 预览（LAB 需求：md 渲染格式） ============ */
+/* ============ Markdown 预览 ============ */
 /* 排版只消费既有设计 token（muted/primary/border），明暗主题自动跟随；
    react-markdown 默认转义原始 HTML，本容器内不存在文档级 innerHTML 注入面 */
 .md-preview {

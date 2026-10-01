@@ -1,11 +1,12 @@
-// Toast（HeroUI v3 复刻：最新在最上层；折叠态后方层以 0.05 系数缩小（宽高同步变小）
-// 且高度统一压为最前层高度、内容隐藏；悬停展开全部并暂停自动关闭计时）
-// 布局采用绝对定位 + transform 驱动：新增/移除时其余 Toast 通过 transform 过渡自动补位。
-import { useEffect, useRef, useState } from 'react';
+// Toast：右下角横幅堆叠。底部锚定、新 toast 从下方升起、折叠态展示最多 3 层露沿且
+// 后方层隐藏内容（半透明玻璃叠半透明玻璃时渲染文字会重影），悬停展开展示全部并暂停自动关闭计时。
+// 动画档位：default/all 走堆叠；off 不堆叠（竖直静态列表，立即移除）。
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { create } from 'zustand';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useTheme } from '@/stores/theme';
 import { cn } from '@/lib/utils';
 
 export type ToastType = 'success' | 'error' | 'info';
@@ -24,6 +25,8 @@ interface ToastItem {
   action?: ToastAction;
   duration?: number;
   leaving?: boolean;
+  /** 新入栈标记：首帧挂 is-enter 预置姿态，同任务强制 reflow 后由 settleEntering 清除 */
+  entering?: boolean;
 }
 
 interface ToastState {
@@ -31,16 +34,17 @@ interface ToastState {
   push: (t: Omit<ToastItem, 'id'>) => void;
   remove: (id: number) => void;
   markLeaving: (id: number) => void;
+  settleEntering: () => void;
   clearAll: () => void;
 }
 
 let toastSeq = 0;
 
-// HeroUI 时序：进入 350ms、退出 250ms、默认 4s 自动关闭
+// 时序与 index.css「Toast 堆叠」对齐：进入 350ms、退出 250ms、默认 4s 自动关闭
 const LEAVE_MS = 250;
 const DEFAULT_DURATION = 4000;
 
-// 计时器登记表：悬停区域时暂停全部倒计时（记录剩余时间，移出后恢复）
+// 计时器登记表：悬停/展开时暂停全部倒计时（记录剩余时间，移出后恢复）
 const timers = new Map<number, { timer: ReturnType<typeof setTimeout>; remaining: number; started: number }>();
 
 function schedule(id: number, duration: number): void {
@@ -52,7 +56,7 @@ export const useToastStore = create<ToastState>((set) => ({
   toasts: [],
   push: (t) => {
     const id = ++toastSeq;
-    set((s) => ({ toasts: [...s.toasts, { ...t, id }] }));
+    set((s) => ({ toasts: [...s.toasts, { ...t, id, entering: true }] }));
     schedule(id, t.duration ?? DEFAULT_DURATION);
   },
   markLeaving: (id) => {
@@ -62,9 +66,11 @@ export const useToastStore = create<ToastState>((set) => ({
       timers.delete(id);
     }
     set((s) => ({ toasts: s.toasts.map((x) => (x.id === id ? { ...x, leaving: true } : x)) }));
-    // 退场动画播完后移除，恢复堆叠布局
-    setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), LEAVE_MS);
+    // 动画关闭档不堆叠：立即移除；否则等 250ms 退场动画播完
+    const motionOff = document.documentElement.getAttribute('data-motion') === 'off';
+    setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), motionOff ? 0 : LEAVE_MS);
   },
+  settleEntering: () => set((s) => ({ toasts: s.toasts.map((x) => (x.entering ? { ...x, entering: false } : x)) })),
   remove: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   // 路由切换时清空全部 toast（逐条走退场动画）
   clearAll: () => {
@@ -74,7 +80,7 @@ export const useToastStore = create<ToastState>((set) => ({
   },
 }));
 
-/** 暂停/恢复全部倒计时（悬停展开时暂停，移出恢复，与 HeroUI 行为一致） */
+/** 暂停/恢复全部倒计时（悬停/展开时暂停，移出恢复） */
 export function pauseToastTimers(): void {
   const now = Date.now();
   for (const [, entry] of timers) {
@@ -98,60 +104,30 @@ export function toast(
   useToastStore.getState().push({ type, message, title: opts?.title, action: opts?.action, duration: opts?.duration });
 }
 
-// 单条 Toast 的进出场：entered 由双 rAF 翻转；顶部放置时新 Toast 从上方 -105% 滑入，
-// 最前层退出反向滑回上方，非最前层退出缩放 0.96（与 HeroUI 一致）
-function ToastCard({
+/** Toast 卡片内容（图标 + 标题/正文 + 可选操作按钮 + 悬停浮现的右上角关闭钮）。
+ *  折叠态后方层通过 reveal=false 隐藏正文（opacity-0），只露磨砂上沿，绝不透出文字脏影！
+ *  悬停展开时全部内容淡入可见。
+ *  外层容器直接承载 glass-surface glass-blur：带 transform 的父级会让 backdrop-filter
+ *  只采样自身背景，磨砂失效退化为平涂半透明。 */
+function ToastCardContent({
   t,
-  frontmost,
-  expanded,
-  els,
   onClose,
+  isFront = true,
+  spread = false,
 }: {
   t: ToastItem;
-  frontmost: boolean;
-  expanded: boolean;
-  els: { current: Map<number, HTMLElement> };
   onClose: () => void;
+  isFront?: boolean;
+  spread?: boolean;
 }) {
   const { t: translate } = useTranslation();
-  const [entered, setEntered] = useState(false);
-  useEffect(() => {
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => setEntered(true));
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
-  }, []);
-  const reveal = frontmost || expanded;
+  const reveal = isFront || spread;
   return (
-    <div
-      data-toast-id={t.id}
-      ref={(el) => {
-        if (el) els.current.set(t.id, el);
-        else els.current.delete(t.id);
-      }}
-      className={cn(
-        'group glass-surface-popover glass-blur pointer-events-auto relative flex items-start gap-2.5 rounded-2xl border border-border/60 px-4 py-3 text-popover-foreground',
-        // 折叠态非最前层不带投影：投影会被包装层 overflow hidden 的直角裁出方形阴影
-        frontmost || expanded ? 'shadow-lg' : 'shadow-none',
-        'transition-[transform,opacity] [transition-timing-function:cubic-bezier(0.16,1,0.3,1)]',
-        t.leaving && !frontmost ? 'duration-200' : '[transition-duration:350ms]',
-        // 退出：最前层滑回上方；展开态非最前层原地缩退（HeroUI 行为）
-        entered && !t.leaving
-          ? 'translate-y-0 scale-100 opacity-100'
-          : frontmost
-            ? '-translate-y-[105%] opacity-0'
-            : 'scale-[0.96] opacity-0'
-      )}
-      role="status"
-    >
+    <>
       <div
         className={cn(
-          'flex min-w-0 flex-1 items-start gap-2.5 transition-opacity duration-200',
-          reveal ? 'opacity-100' : 'opacity-0'
+          'flex min-w-0 flex-1 items-start gap-2.5 px-4 py-3 transition-opacity duration-200',
+          reveal ? 'opacity-100' : 'pointer-events-none opacity-0'
         )}
       >
         {t.type === 'success' && <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />}
@@ -175,7 +151,7 @@ function ToastCard({
           )}
         </div>
       </div>
-      {/* 关闭按钮：最前层或展开态悬停时浮现（右上角小圆钮，与 HeroUI 一致） */}
+      {/* 关闭按钮：仅在内容可见时悬停浮现 */}
       <button
         onClick={onClose}
         className={cn(
@@ -186,24 +162,22 @@ function ToastCard({
       >
         <X className="h-3 w-3" />
       </button>
-    </div>
+    </>
   );
 }
 
-// 折叠态参数（HeroUI Provider 默认值）：gap 12、缩放系数 0.05、最多可见 3 条。
-// 折叠态后方层下移 PEEK 露出上沿形成堆叠；其高度被最前层裁齐（不会露出底角），
-// 且非最前层不带投影（投影被包装层直角裁切会露出方形阴影）
-const GAP = 12;
-const PEEK = 12;
-const SCALE_FACTOR = 0.05;
-const VISIBLE_LEVELS = 3;
+const STACK_WIDTH = 'w-[356px] max-w-[calc(100vw-2rem)]';
 
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts);
   const markLeaving = useToastStore((s) => s.markLeaving);
+  // 动画关闭档：不堆叠，渲染竖直静态列表（functional 过渡也被全局关停）
+  const motionOff = useTheme((s) => s.motionLevel === 'off');
   const location = useLocation();
   const [hovered, setHovered] = useState(false);
+  const [spread, setSpread] = useState(false);
   const [heights, setHeights] = useState<Record<number, number>>({});
+  const stackRef = useRef<HTMLDivElement | null>(null);
   const els = useRef(new Map<number, HTMLElement>());
   const prevPathRef = useRef(location.pathname);
 
@@ -215,7 +189,15 @@ export function Toaster() {
     }
   }, [location.pathname]);
 
-  // 高度测量：内容随文案/操作按钮变化，用 ResizeObserver 保持展开偏移准确
+  // 新 toast 入场：首帧挂 is-enter 预置姿态，强制一次布局把姿态钉进计算值后同任务清除
+  const entering = toasts.filter((t) => t.entering);
+  useLayoutEffect(() => {
+    if (entering.length === 0) return;
+    if (stackRef.current) void stackRef.current.getBoundingClientRect();
+    useToastStore.getState().settleEntering();
+  }, [entering.length]);
+
+  // 高度测量：内容随文案/操作按钮变化，用 ResizeObserver 保持堆叠盒高度与展开几何准确
   useEffect(() => {
     const ro = new ResizeObserver((entries) => {
       setHeights((prev) => {
@@ -223,7 +205,6 @@ export function Toaster() {
         for (const e of entries) {
           const id = Number((e.target as HTMLElement).dataset.toastId);
           if (!Number.isFinite(id)) continue;
-          // 量边框盒（含 py 内边距）：contentRect 会漏掉内边距导致包装层过矮裁切卡片
           const h = Math.round((e.target as HTMLElement).offsetHeight);
           if (prev[id] !== h) {
             if (next === prev) next = { ...prev };
@@ -235,69 +216,138 @@ export function Toaster() {
     });
     for (const [, el] of els.current) ro.observe(el);
     return () => ro.disconnect();
-  }, [toasts.length]);
+  }, [toasts.length, motionOff]);
 
-  // 渲染顺序 = 最新在前（store 按时间正序 push，反转即最新在顶）
-  const list = [...toasts].reverse();
-  const expanded = hovered || list.length <= 1;
-  const h = (id: number) => heights[id] ?? 56;
-  const frontH = list.length > 0 ? h(list[0].id) : 0;
+  const visible = toasts.filter((t) => !t.leaving);
+  const stackList = [...visible].reverse();
+  const front = stackList[0];
+  const frontH = front ? heights[front.id] ?? 56 : 0;
 
-  // 展开偏移：逐条累加实际高度 + gap；折叠偏移：每层下移 PEEK 露出上沿（堆叠效果）
+  // 展开位移计算：逐条累加各自高度 + 8px 间隙
   let acc = 0;
-  const expandedOffsets = list.map((t) => {
+  const spreadOffsets = stackList.map((t) => {
     const off = acc;
-    acc += h(t.id) + GAP;
+    acc += (heights[t.id] ?? 56) + 8;
     return off;
   });
-  const collapsedOffsets = list.map((_, i) => Math.min(i, VISIBLE_LEVELS - 1) * PEEK);
-  const offsets = expanded ? expandedOffsets : collapsedOffsets;
+  const totalSpreadHeight = Math.max(acc, (frontH + 8) * 2);
 
-  // 容器高度：展开 = 最后一条底部；折叠 = 最前层高度 + 下方各层上沿
-  const stageH =
-    list.length === 0
-      ? 0
-      : expanded
-        ? expandedOffsets[expandedOffsets.length - 1] - GAP + h(list[list.length - 1].id)
-        : frontH + Math.min(list.length - 1, VISIBLE_LEVELS - 1) * PEEK;
+  // 悬停展开（spread）：指针落入折叠堆叠盒即展开，保持到离开「展开列」总高度为止
+  useEffect(() => {
+    if (motionOff || visible.length < 2) return;
+    const onPointerMove = (e: PointerEvent) => {
+      const el = stackRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const inX = e.clientX >= r.left && e.clientX <= r.right;
+      const inCollapsed = inX && e.clientY >= r.top && e.clientY <= r.bottom;
+      const inSpreadColumn = inX && e.clientY >= r.top - totalSpreadHeight && e.clientY <= r.bottom;
+      if (spread) {
+        if (!inSpreadColumn) setSpread(false);
+      } else if (inCollapsed) {
+        setSpread(true);
+      }
+    };
+    const onLeaveDoc = () => setSpread(false);
+    window.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('mouseleave', onLeaveDoc);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('mouseleave', onLeaveDoc);
+    };
+  }, [visible.length, spread, motionOff, totalSpreadHeight]);
 
+  // 悬停/展开期间暂停全部自动关闭倒计时（离开/收起恢复）
+  const paused = hovered || spread;
+  const wasPaused = useRef(false);
+  useEffect(() => {
+    if (paused && !wasPaused.current) {
+      pauseToastTimers();
+      wasPaused.current = true;
+    } else if (!paused && wasPaused.current) {
+      resumeToastTimers();
+      wasPaused.current = false;
+    }
+  }, [paused]);
+
+  // 动画关闭档：竖直静态列表（新到在下），不做任何堆叠/进出场动画
+  if (motionOff) {
+    return (
+      <div className={`pointer-events-none fixed bottom-4 right-4 z-[100] ${STACK_WIDTH}`}>
+        <div className="flex flex-col-reverse gap-2">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              role="status"
+              className="group glass-surface glass-blur pointer-events-auto relative flex w-full items-start gap-2.5 rounded-2xl border border-border/60 text-card-foreground shadow-lg"
+            >
+              <ToastCardContent t={t} onClose={() => markLeaving(t.id)} isFront spread />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // 堆叠渲染：最新在底（depth 0），折叠态展示最多 3 层露沿（超出隐藏），展开展示全部
+  // .toast-banner 本身直接承载 glass-surface 与 glass-blur：外层 transform 容器会截断背景采样
   return (
-    <div
-      className="pointer-events-none fixed right-4 top-4 z-[100] w-[460px] max-w-[calc(100vw-2rem)]"
-      onMouseEnter={() => {
-        setHovered(true);
-        pauseToastTimers();
-      }}
-      onMouseLeave={() => {
-        setHovered(false);
-        resumeToastTimers();
-      }}
-    >
+    <div className={`pointer-events-none fixed bottom-4 right-4 z-[100] ${STACK_WIDTH}`}>
       <div
-        className="relative w-full transition-[height] [transition-duration:350ms] [transition-timing-function:cubic-bezier(0.16,1,0.3,1)]"
-        style={{ height: stageH }}
+        ref={stackRef}
+        className={cn('toast-stack pointer-events-auto w-full', spread && 'is-spread')}
+        style={{ height: frontH }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
       >
-        {list.map((t, i) => (
+        {stackList.map((t, i) => {
+          const isFront = i === 0;
+          return (
+            <div
+              key={t.id}
+              data-toast-id={t.id}
+              data-depth={i}
+              role="status"
+              ref={(el) => {
+                if (el) els.current.set(t.id, el);
+                else els.current.delete(t.id);
+              }}
+              className={cn(
+                'toast-banner group glass-surface glass-blur w-full rounded-2xl border border-border/60 text-card-foreground transition-[box-shadow] duration-200',
+                isFront || spread ? 'shadow-lg' : 'shadow-none',
+                t.entering && 'is-enter'
+              )}
+              style={{
+                transform: spread
+                  ? `translateY(-${spreadOffsets[i]}px) scale(1)`
+                  : isFront
+                    ? 'translateY(0) scale(1)'
+                    : i === 1
+                      ? 'translateY(-12px) scale(0.94)'
+                      : i === 2
+                        ? 'translateY(-24px) scale(0.88)'
+                        : 'translateY(-24px) scale(0.82)',
+                opacity: spread || i < 3 ? 1 : 0,
+                pointerEvents: spread || isFront ? 'auto' : 'none',
+                zIndex: 50 - i,
+              }}
+            >
+              <ToastCardContent t={t} onClose={() => markLeaving(t.id)} isFront={isFront} spread={spread} />
+            </div>
+          );
+        })}
+        {toasts.filter((t) => t.leaving).map((t) => (
           <div
             key={t.id}
-            className={cn(
-              'absolute inset-x-0 top-0',
-              // 仅折叠态的后方层需要裁切（隐藏底角）；最前层/展开层必须可见溢出，
-              // 否则右上角关闭按钮被裁半、卡片投影被直角裁出方形阴影
-              !expanded && i > 0 ? 'overflow-hidden' : 'overflow-visible'
-            )}
-            style={{
-              transform: `translateY(${offsets[i]}px) scale(${expanded ? 1 : 1 - SCALE_FACTOR * i})`,
-              transformOrigin: 'top center',
-              zIndex: list.length - i,
-              height: expanded ? h(t.id) : frontH,
-              opacity: expanded || i < VISIBLE_LEVELS ? 1 : 0,
-              transition:
-                'transform 350ms cubic-bezier(0.16, 1, 0.3, 1), height 350ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease-out',
+            data-toast-id={t.id}
+            role="status"
+            ref={(el) => {
+              if (el) els.current.set(t.id, el);
+              else els.current.delete(t.id);
             }}
+            className="toast-banner is-leaving group glass-surface glass-blur w-full rounded-2xl border border-border/60 text-card-foreground shadow-lg"
           >
-            {/* 关闭走退场动画（markLeaving）而非直接移除：卡片原地缩退/滑出后堆叠平滑回流 */}
-            <ToastCard t={t} frontmost={i === 0} expanded={expanded} els={els} onClose={() => markLeaving(t.id)} />
+            <ToastCardContent t={t} onClose={() => markLeaving(t.id)} isFront spread />
           </div>
         ))}
       </div>

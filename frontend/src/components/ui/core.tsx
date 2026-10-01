@@ -1,5 +1,5 @@
 // 基础 UI 原语（Tailwind 风格，shadcn 美学）
-import { forwardRef, type ButtonHTMLAttributes, type CSSProperties, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, useState, type ButtonHTMLAttributes, type CSSProperties, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode } from 'react';
 import { Loader2, Inbox } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -34,6 +34,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   { className, variant = 'default', size = 'default', loading, icon, children, disabled, ...props },
   ref
 ) {
+  // loading 提供时：内容与加载态（spinner + 同文案）作为 grid 同格叠放的两个面，
+  // 容器宽度 = 最宽面 → 点击进入加载不改变按钮宽度；交叉淡化走 .btn-face（index.css）。
+  const stacked = loading !== undefined;
+  const faceBase = 'btn-face col-start-1 row-start-1 flex min-w-0 items-center justify-center gap-2';
   return (
     <button
       ref={ref}
@@ -46,10 +50,26 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         className
       )}
       disabled={disabled || loading}
+      aria-busy={loading || undefined}
       {...props}
     >
-      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : icon}
-      {children}
+      {stacked ? (
+        <span className="relative grid min-w-0 place-items-center">
+          <span className={cn(faceBase, loading && 'btn-face-out')}>
+            {icon}
+            {children}
+          </span>
+          <span className={cn(faceBase, !loading && 'btn-face-out')} aria-hidden={!loading}>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {children}
+          </span>
+        </span>
+      ) : (
+        <>
+          {icon}
+          {children}
+        </>
+      )}
     </button>
   );
 });
@@ -192,10 +212,13 @@ export function Switch({
   loading?: boolean;
   size?: 'sm' | 'default' | 'lg';
 }) {
+  // 首次交互标记：双回弹 keyframes 只在用户第一次点击后播放
+  // （挂载/程序化置位不播 off 动画，见 index.css「开关」小节）
+  const [init, setInit] = useState(false);
   const sizes = {
-    sm: { container: 'h-3.5 w-6', thumb: 'size-3', translate: 'translate-x-[calc(100%-2px)]' },
-    default: { container: 'h-[1.15rem] w-8', thumb: 'size-4', translate: 'translate-x-[calc(100%-2px)]' },
-    lg: { container: 'h-6 w-11', thumb: 'size-5', translate: 'translate-x-[calc(100%-2px)]' },
+    sm: { container: 'h-3.5 w-6', thumb: 'size-3', travel: 8 },
+    default: { container: 'h-[1.15rem] w-8', thumb: 'size-4', travel: 12 },
+    lg: { container: 'h-6 w-11', thumb: 'size-5', travel: 20 },
   };
   const s = sizes[size];
   return (
@@ -204,11 +227,16 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       disabled={disabled || loading}
-      onClick={() => onChange(!checked)}
+      data-on={checked ? 'true' : 'false'}
+      onClick={() => {
+        setInit(true);
+        onChange(!checked);
+      }}
       className={cn(
-        'relative inline-flex shrink-0 items-center rounded-full border border-transparent shadow-sm transition-all outline-none',
+        'switch-track relative inline-flex shrink-0 items-center rounded-full border border-transparent shadow-sm outline-none',
         'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
         'disabled:cursor-not-allowed disabled:opacity-50',
+        init && 'is-init',
         s.container,
         checked
           ? 'glass-control bg-primary/[var(--glass-alpha,0.72)]'
@@ -216,11 +244,8 @@ export function Switch({
       )}
     >
       <span
-        className={cn(
-          'pointer-events-none block rounded-full bg-background ring-0 transition-transform',
-          s.thumb,
-          checked ? s.translate : 'translate-x-0.5'
-        )}
+        className={cn('switch-thumb pointer-events-none block rounded-full bg-background ring-0', s.thumb)}
+        style={{ '--switch-travel': `${s.travel}px` } as CSSProperties}
       >
         {loading && (
           <span className="flex h-full w-full items-center justify-center">
