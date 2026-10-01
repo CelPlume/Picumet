@@ -55,6 +55,7 @@ flowchart LR
         R2["/login 登录"]
         R3["/register 注册"]
         R4["/reset-password 重置密码"]
+        R4b["/sso/complete 第三方登录补充注册"]
         R5["/free-mode 自由模式"]
         R6["/share/:id 分享页"]
         R7["/i/:id 图床短链"]
@@ -89,6 +90,7 @@ flowchart LR
 | 登录 | `/login` | 公开 | `Login` |
 | 注册 | `/register` | 公开 | `Register` |
 | 重置密码 | `/reset-password` | 公开 | `ResetPassword` |
+| 第三方登录补充注册 | `/sso/complete?token=…` | 公开 | `SsoComplete`（OIDC/GitHub 回调后自填邮箱·用户名·密码，提交即登录） |
 | 自由模式 | `/free-mode` | 公开 | `FreeMode` |
 | 分享页 | `/share/:id` `/i/:id` | 公开 | `SharePage` |
 | 文件管理器 | `/files` `/files/*`（固定前缀） | 登录 | `Files` |
@@ -171,17 +173,17 @@ flowchart LR
 
 **全部文件**（`/admin/files`）表格带**存储桶 / 挂载点 / 哈希值**三列（分页内批量 IN 查询补齐，无 N+1），三视图共用一条工具栏：搜索与筛选开关在左、列表/挂载点/树切换器在右且筛选模式下不消失，筛选行在搜索下方展开——挂载点、存储桶、上传用户、可见性四个下拉与**哈希值子串**输入框（触发器与搜索框同一玻璃配方），行尾是清空与关闭。**挂载点视图**按 桶 → 挂载点 → 文件夹 → 文件 逐级展开成列式图行（每层一列、圆角转角、层级配色，文件夹与挂载点同为空心/实心锚点、文件是叶子点），拼好桶只列出该桶存储的文件；**树视图**把全命名空间渲染为扁平树，沿用同一套服务端筛选，另有按名搜索并保留祖先链。封禁行整行半透明呈现（无独立徽标）。行内「属性设置」弹窗（名称、自定义标题、图标、颜色、可见性、游客可见性、访问密码，文件夹另有**「同时应用到子项」**开关——默认不勾选）之外还有**封禁/解封**入口（二次确认）；选中集含封禁文件时批量栏收敛为仅「删除」。用户侧文件页里被封禁的文件呈半透明幽灵态、菜单收敛为仅可删除，下载等出口由服务端 429 兜底。
 
-管理端「系统设置」页按卡片分区（站点 / 安全 / SMTP / 公告），卡内分区一律用分隔线（不嵌边框盒，见「卡中卡原则」）。「站点」卡的标识字段按**标题在左、图标在右**两行排布：左上角标题（留空 = 顶栏只显示 Logo，独立于标签页标题）+ 左上角 Logo、标签页标题（即 `document.title`）+ Favicon；限流说明写清生效规则：开关旁直接给出每 IP 每分钟请求数（输入框）与生效规则说明——已登录用户按 2 倍、登录/注册等认证接口 5 次/分钟、自由模式按会话 60 / 按用户 120 次/分钟；同一处还有**下载限速**（默认 120 次/分钟，0 = 不限，只统计下载类请求）与**同时传输上限**（默认 4，0 = 不限），按用户（未登录按 IP）限制上传与下载网关的在途请求数，超限返回 429。「公告」卡内联显示时长策略：类型选择（横幅/弹窗）、模式选择（总是/当日/按间隔/到指定时间/指定时长，弹窗另有单次）与条件输入（间隔数值 + 小时/天/周/月单位、`datetime-local` 截止时间、时长 + 分钟/小时/天单位）；每条公告行显示策略摘要，设置各卡标题带 lucide 图标。
+管理端「系统设置」页按卡片分区（左列：站点 / **安全 / 日志审计** / 访问统计；右列：公告 / 注册 / SMTP），卡内分区一律用分隔线（不嵌边框盒，见「卡中卡原则」）。「站点」卡的标识字段按**标题在左、图标在右**两行排布：左上角标题（留空 = 顶栏只显示 Logo，独立于标签页标题）+ 左上角 Logo、标签页标题（即 `document.title`）+ Favicon；「安全设置」卡写清限流生效规则：开关旁直接给出每 IP 每分钟请求数（输入框）与生效规则说明——已登录用户按 2 倍、登录/注册等认证接口 5 次/分钟、自由模式按会话 60 / 按用户 120 次/分钟；同一处还有**下载限速**（默认 120 次/分钟，0 = 不限，只统计下载类请求）与**同时传输上限**（默认 4，0 = 不限），按用户（未登录按 IP）限制上传与下载网关的在途请求数，超限返回 429。「注册设置」卡收纳**开放注册** / **允许访客**两个开关（自「安全设置」卡挪入）与邀请码四项设置（分隔线下「邀请码」小节）：开启邀请码、邀请码必填（必填 = 无码不可注册；未开启时置灰）、生成权限（全部用户 / 仅管理员）与每用户最大生成数量（1-100，默认 5），底部提示码值格式（6 位数字/大写字母）与「同码可多人使用」语义。「公告」卡内联显示时长策略：类型选择（横幅/弹窗）、模式选择（总是/当日/按间隔/到指定时间/指定时长，弹窗另有单次）与条件输入（间隔数值 + 小时/天/周/月单位、`datetime-local` 截止时间、时长 + 分钟/小时/天单位）；每条公告行显示策略摘要，设置各卡标题带 lucide 图标。「访问统计」卡是来源二选一（D1 审计日志 / Umami 前端统计），选 Umami 时才展开脚本面配置：启用开关、脚本地址、Website ID、上报地址、域名白名单与三个采集行为开关（性能指标 / 排除搜索参数 / 遵循 Do Not Track）。
 
 管理端「用户管理 → 默认用户设置」按角色展示**默认权限矩阵**（查看/上传/修改/删除/下载五项；分享由相邻的「能力位 → 可分享」控制，两处不再重复）：内置角色种子为 admin 与 user 全选、guest 仅「下载」，保存后立即对该角色全部成员生效；角色还可设置显示**别名**（如「管理员」），权限规则的主体既可用角色名也可用别名。文件属性面板新增「用户权限默认设置」一节，用于设置**游客可见性**（跟随角色默认 / 游客不可见 / 仅可下载 / 可查看并下载），保存即生效。
 
 「全部文件」的**可见性列**用私密/站内/公开三态徽章 + 图标表示，公开待审核另显审核态；「分享管理」表格补齐创建者、访问权限、密码保护、预览/下载开关、访问与下载计数、过期与状态列，并新增**分享设置（管理员）**弹窗：可改状态（有效/撤销）、有效期、最大访问/下载次数、预览/下载开关、访问权限与指定用户、重置或清除密码，只读展示分享项目、创建者与计数。
 
-设置布局（`/settings/*`）左侧是纵向导航，包含个性化设置、API 密钥、访问规则。访问规则页列出用户以自己身份创建的规则（作用对象、效果、目标、权限），支持二次确认后撤销。管理后台（`/admin`）是两栏结构，左侧纵向导航、右侧内容区，手机上导航堆在内容上方。管理页面包括仪表板（四张紧凑统计卡、存储用量逐行进度、活跃挂载点桶泳道图与下载/分享/登录**趋势面板**——粒度与区间可筛，支持自定义区间；卡片纵向 16px / 双栏横向 24px 的统一节奏）、用户管理（编辑弹窗含角色/状态/能力位勾选与默认存储位置/存储上限/文件数量，宽屏响应式；工具栏「默认用户设置」按角色设置默认存储与限额，支持新建/删除角色，保存后覆盖该角色下全部用户）、存储配置（提供商对话框用预设下拉，R2/AWS S3/Oracle/MinIO/自定义，只预填字段，另带挂载路径；挂载点弹窗分**「存储池 / 具体桶」两个 tab**（新建与编辑共用同一套表单）：**存储池 tab** 左侧是挂载路径 / 名称 / 存储提供商 / 排序方式与方向 / 优先级 / **总容量上限** / **写入策略五档**（最小占用 / 轮询 / 目录粘性哈希 / 空间余量加权 / 指定顺序填满切换）/ **上传模式**（`free` / 用户空间 `user_space` 写路径强制 `<挂载点>/<用户名>` / `flat` 平铺禁建文件夹），右侧列出**该挂载点下的桶**（名称、类型、主存储/备用徽标、硬上限、桶级矩阵摘要，点行跳转到具体桶 tab）；**具体桶 tab** 照「默认用户设置」的角色竖 tab：左侧竖版 tab 选桶（未入池置灰仍可配），右侧是该桶的**桶级角色权限矩阵**（三行 × 五动作 + 「不配置（回落挂载点/角色默认）」态，`share` 不在矩阵内）、**容量上限（GB，硬上限：放置按 `已用 + 在途预留 + 文件大小 ≤ 容量` 判定，放不下按策略次序回退，全部放不下 413）**、**作为备用桶**开关与「加入存储池」勾选；**总上限不得超过各桶上限之和**（前端即时拦截 + 后端 400，未设上限的桶不参与求和））、权限规则（表格带“来源”列区分管理员规则与用户自建规则）、分享管理、全部文件、访问日志和系统设置。挂载点表单的「自动跨桶同步」开关属计划项——仅 Go 后端环境可勾选，当前 Workers（Node）后端不支持该能力，界面按禁用态呈现；挂载点即目录——新建挂载点后父目录列表里立即出现同名文件夹（行内菜单选改名/删除会弹出提示，去存储配置里操作），改挂载路径会迁移该目录行、删除挂载点会清理它。API 密钥页（`/settings/api-keys`）管理网关密钥：创建弹窗收名称、权限、协议与上传路径，成功态按 Tab 展示各协议接入配置（WebDAV、S3、OpenList、自定义 API），列表用本地化状态徽章（启用/已停用）标记每把密钥
+设置布局（`/settings/*`）左侧是纵向导航，包含个性化设置、API 密钥、访问规则。访问规则页列出用户以自己身份创建的规则（作用对象、效果、目标、权限），支持二次确认后撤销。管理后台（`/admin`）是两栏结构，左侧纵向导航、右侧内容区，手机上导航堆在内容上方。管理页面包括仪表板（四张紧凑统计卡、存储用量逐行进度、活跃挂载点桶泳道图与下载/分享/登录**趋势面板**——粒度与区间可筛，支持自定义区间；卡片纵向 16px / 双栏横向 24px 的统一节奏）、用户管理（编辑弹窗含角色/状态/能力位勾选与默认存储位置/存储上限/文件数量，宽屏响应式；工具栏「默认用户设置」按角色设置默认存储与限额，支持新建/删除角色，保存后覆盖该角色下全部用户；用户列表表格在「注册时间」后紧跟「邀请人」与「邀请码」两列，受邀时显示邀请码创建人与码值，未受邀显示 `-`，全表单元格内边距收紧至 `px-2.5` / `10px`，全列支持表头点击排序；**编辑用户弹窗**在存储上限/文件上限之后以分隔线划出「重置密码」分区（密码框 placeholder「留空则不修改」，下方提示「保存后该用户已登录会话立即失效，需重新登录」））、存储配置（提供商对话框用预设下拉，R2/AWS S3/Oracle/MinIO/自定义，只预填字段，另带挂载路径；挂载点弹窗分**「存储池 / 具体桶」两个 tab**（新建与编辑共用同一套表单）：**存储池 tab** 左侧是挂载路径 / 名称 / 存储提供商 / 排序方式与方向 / 优先级 / **总容量上限** / **写入策略五档**（最小占用 / 轮询 / 目录粘性哈希 / 空间余量加权 / 指定顺序填满切换）/ **上传模式**（`free` / 用户空间 `user_space` 写路径强制 `<挂载点>/<用户名>` / `flat` 平铺禁建文件夹），右侧列出**该挂载点下的桶**（名称、类型、主存储/备用徽标、硬上限、桶级矩阵摘要，点行跳转到具体桶 tab）；**具体桶 tab** 照「默认用户设置」的角色竖 tab：左侧竖版 tab 选桶（未入池置灰仍可配），右侧是该桶的**桶级角色权限矩阵**（三行 × 五动作 + 「不配置（回落挂载点/角色默认）」态，`share` 不在矩阵内）、**容量上限（GB，硬上限：放置按 `已用 + 在途预留 + 文件大小 ≤ 容量` 判定，放不下按策略次序回退，全部放不下 413）**、**作为备用桶**开关与「加入存储池」勾选；**总上限不得超过各桶上限之和**（前端即时拦截 + 后端 400，未设上限的桶不参与求和））、权限规则（表格带“来源”列区分管理员规则与用户自建规则）、分享管理、全部文件、访问日志和系统设置。挂载点表单的「自动跨桶同步」开关属计划项——仅 Go 后端环境可勾选，当前 Workers（Node）后端不支持该能力，界面按禁用态呈现；挂载点即目录——新建挂载点后父目录列表里立即出现同名文件夹（行内菜单选改名/删除会弹出提示，去存储配置里操作），改挂载路径会迁移该目录行、删除挂载点会清理它。API 密钥页（`/settings/api-keys`）管理网关密钥：创建弹窗收名称、权限、协议与上传路径，成功态按 Tab 展示各协议接入配置（WebDAV、S3、OpenList、自定义 API），列表用本地化状态徽章（启用/已停用）标记每把密钥。
 
 ### 公开页面
 
-登录（`/login`）、注册（`/register`）、重置密码（`/reset-password`）共用居中的卡片布局。注册需要用户名、密码和邮箱。登录成功后，应用跳转到 `redirect` 指向的页面，没有时就进入 `/files`。已持有有效会话（JWT Cookie）时打开 `/login` 会跳过表单，直接进入 `/files`（或 `redirect` 目标）。自由模式页（`/free-mode`）允许访客用临时凭据连接自己的对象存储桶，表单提供 R2、AWS S3、Oracle、MinIO 等预设（只预填字段，全部保持可编辑），凭据 AES-GCM 加密后短期保存在服务端会话。
+登录（`/login`）、注册（`/register`）、重置密码（`/reset-password`）共用居中的卡片布局。**登录页第一个输入框是「用户名或邮箱」**（`login.identifier` / `login.identifierPlaceholder`，`autoComplete="username"`）：同一输入框既可填用户名也可填邮箱，提交前裁剪两端空白，标识不存在与密码错误回同一错误文案（不泄露账号是否存在）。注册需要用户名、密码和邮箱，并**常驻**邮箱验证码输入：邮箱框独占一行，其下是「**6 位 OTP 分段输入 + 右侧发送验证码按钮**」（总宽与邮箱框一致，倒计时期间按钮显示秒数并禁用），不做「发送后才出现」的条件渲染。站点开启邀请码注册（公开设置 `inviteEnabled`）时密码下方显示**邀请码分段输入**（`InputOTP` alphanumeric 模式：6 位 `[0-9A-Z]` 自动转大写）——必填（`inviteRequired`）时标签为「邀请码」、选填时为「邀请码（选填）」，下方附格式说明；格式不符 / 码无效 / 必填缺码由服务端返回具体错误码并展示在表单错误区。登录成功后，应用跳转到 `redirect` 指向的页面，没有时就进入 `/files`。已持有有效会话（JWT Cookie）时打开 `/login` 会跳过表单，直接进入 `/files`（或 `redirect` 目标）。自由模式页（`/free-mode`）允许访客用临时凭据连接自己的对象存储桶，表单提供 R2、AWS S3、Oracle、MinIO 等预设（只预填字段，全部保持可编辑），凭据 AES-GCM 加密后短期保存在服务端会话。
 
 ### 顶栏组件
 
@@ -190,7 +192,7 @@ flowchart LR
 | `Logo` | 左上 | 品牌标识，使用站点设置里的 Logo 与左上角标题（留空仅显示 Logo）；Logo 图高度固定、宽度随图片比例自适应，宽长图不被压小，标题紧随其后。 |
 | `ThemeToggle` | 右上 | 在浅色、深色、跟随系统之间切换。 |
 | `LanguageSwitcher` | 右上 | 切换中文和英文。 |
-| `UserMenu` | 右上 | 触发器为小头像 + 显示名；菜单头部左侧两行（邮箱 + 昵称），右侧 40px 小头像（高度恰为两行文本）；分隔线下是文件数量与存储空间用量进度条（随 `/api/auth/me` 的 quota 刷新）；再分隔线下依次为文件、设置、管理（管理员）菜单项，底部退出登录。 |
+| `UserMenu` | 右上 | 触发器为小头像 + 显示名；菜单头部左侧两行（邮箱 + 昵称），右侧 40px 小头像（高度恰为两行文本）；分隔线下是用量展示（文件数量 + 存储空间，样式随外观设置 `usageStyle`：进度条 / 运动圆环，随 `/api/auth/me` 的 quota 刷新）；再分隔线下依次为文件、设置、管理（管理员）菜单项，底部退出登录。 |
 | `AnnouncementBanner` | 顶栏下方 | 展示管理员发布的站点公告，按公告的显示策略渲染并触发临时弹窗；横幅无左侧色条。 |
 
 ## 响应式设计
@@ -278,12 +280,53 @@ flowchart LR
 - **右键菜单**：`contextMenu()` 阻止冒泡；打开期间 document 级 `mousedown`/`contextmenu` 监听——菜单外任意按下（含右键其他文件重新定位）即关闭；菜单内部 `mousedown/onContextMenu/onClick` 三重 `stopPropagation`。
 - **弹层表面分层**：`.glass-surface-popover` 透明度比卡片低 0.12（下限 0.5，`hsl(var(--popover) / max(0.5, calc(var(--glass-alpha) - 0.12)))`）——弹层常悬于白色表面之上，需比卡片更透才能读出玻璃感；`off` 档由 `.no-blur` 实底覆盖。
 
-### `components/ui/toast.tsx` — Toast（HeroUI v3 复刻）
+### `components/ui/input-otp.tsx` — 验证码 / 邀请码分段输入
 
-- 最新在最上层；折叠态后方层下移 12px 露上沿 + 0.05 逐层缩小、高度压为最前层、内容隐藏、**非最前层无投影**；仅折叠态后方层 `overflow-hidden`（最前层/展开层必须 visible：关闭按钮 -top-1 与投影会被直角裁切）；最多可见 3 层。
-- 卡片高度内容自适应（RO 量 offsetHeight，勿用 contentRect——漏内边距会裁切）；进入 350ms 上方滑入；退出 250ms：最前层上滑、非最前层原地缩退 0.96；默认 4s；悬停展开全部并暂停倒计时。
-- 关闭走 `markLeaving` 退场，禁止直接 `remove()`（堆叠瞬间塌缩）。
-- `toast('success'|'error'|'info', msg)` 统一触发；成功/失败必须反馈，禁止静默成功；路由切换 `clearAll()` 逐条退场（Toaster 用 `useLocation`，必须在 Router 内）。
+- 全部验证码输入（注册邮箱验证码、修改邮箱验证码、改密邮箱验证码）与**邀请码**统一走本组件（分段输入、自动跳格、粘贴拆分、方向键/退格），禁止裸 `Input` 收验证码。
+- 位长与字符集：验证码 `length=6` 纯数字（服务端 `/register/send-otp`、`/me/password/send-code`、`/me/email/send-otp` 同为 6 位，CSPRNG 逐字节拒绝采样，见 `utils/crypto.ts` 的 `randomDigits`）；邀请码 `mode="alphanumeric"` 收 `[0-9A-Z]` 并自动转大写（`length=6`）。`groupEvery` 默认按 length 对半拆分（6 位 3-3，格间额外 8px 断口）。
+- **布局**：`flex-1 min-w-0` 格子拉伸填满容器——验证码行「OTP ＋ 右侧发送按钮」的总宽与上方文本框一致（两端各自 `flex-1` / `shrink-0`）；格子用 `text-transparent caret-transparent` 的原生 input 承载输入与无障碍，字符由覆盖层绘制。
+- **动效**（参考 interior.dev otp-input / moumenlab otp-segmented-input，功能性微反馈 → **默认档位即可生效**，`off` 档由全局 0.01ms 关停）：新字符从下方 6px 浮起 + 0.97 缩放 + 4px 模糊淡入（`.otp-char-in` 220ms，key=char 重挂载触发）；激活空格显示 1.06s 线性闪烁光标（`.otp-caret`）；校验失败（`error` prop）整行抖动一次 `[0,-5,4,-3,0]` 320ms 并点亮错误边框（`.otp-row-error` / `.otp-error`），输入即清除。
+- 三处调用约定：`Register` 邮箱验证码常驻显示（**不做「发送后才出现」的条件渲染**，右侧挂「发送验证码」按钮，倒计时期间按钮显示秒数并禁用）；`Personalization` 改邮箱/改密两处同样「OTP ＋ 发送按钮」同行；`INVALID_OTP` 失败时置 `error` 触发抖动恢复。
+
+### `components/sso-buttons.tsx` + `pages/SsoComplete.tsx` + `pages/admin/SsoProvidersDialog.tsx` — 第三方登录（SSO / OIDC）
+
+- **登录页 / 注册页入口**：`SsoButtons` 只读公开设置 `site.sso`（`enabled` + 已启用 `providers`），关闭或没有来源时返回 `null`（不留空 wrapper）；每个来源一个**整页跳转**的 `<a href="/api/auth/sso/{id}/start">`（OAuth 授权必须离开 SPA，不能走 `apiFetch`），图标按 `kind` 取（google = `Chrome` / github = `Github` / oidc = `ShieldCheck`），文案 `auth.ssoContinue`（`使用 {{name}} 继续`）。按钮组位于「或」分隔线之下、站点动作（注册 / 自由模式 / 重置密码）之上。
+- **回调错误码**：后端只回 `{站点地址}/login?sso_error=<错误码>`，文案在前端映射（`ssoErrorKey()` → `auth.ssoError.*`，未知码归 `generic`），登录页读 query 后写进表单错误区（不用 toast，避免刷新重复弹）。
+- **补充注册页 `/sso/complete`**：读 `token` → `GET /api/auth/sso/pending` → 渲染「用户名 / 邮箱 / 验证码行 / 密码 / 邀请码」。验证码行与注册页同构（`InputOTP` + 右侧发送验证码按钮、常驻渲染），门控与服务端判定保持一致：服务端说要验证码时显示；服务端说免码（提供方**验证过同一个**邮箱）时，用户一旦把邮箱改成别的地址也要立刻显示该行（否则用户会拿到「邮箱验证码错误或已过期」却看不到输入位）。「使用 {{name}} 提供的信息」一键预填邮箱与用户名——提供方档案只作预填，账号资料以用户在本页填写为准。提交成功必须 `GET /api/auth/me` → `setAuth` 后再跳 `/files`（只跳转不写 store 会被 `RequireAuth` 弹回登录页）；待办令牌失效时渲染错误态 + 返回登录入口。
+- **管理端「OIDC 设置」弹窗**：`pages/admin/SsoProvidersDialog.tsx`，由系统设置「注册设置」卡上的 `OIDC 设置` 按钮打开；形态对齐 `admin/Users.tsx` 的「默认用户设置」弹窗（说明文字 + 列表 + 内联编辑区 + 删除二次确认），卡内分区用分隔线而非嵌套卡片。列表行 = 名称 + 类型徽章 + **回调地址（可复制，需登记到提供方后台）** + 单源开关 + 编辑 / 删除；编辑时类型禁用、密钥输入留空表示保持原值（与 SMTP 密码同约定）；「**信任提供方的邮箱验证**」开关决定该来源声明「已验证」的邮箱能否自动关联既有账号——新建时按类型给默认值（Google / GitHub 开、自定义 OIDC 关），编辑时不自动改写，下方常驻风险说明；Google / GitHub 已存在的场景由后端 `409` 兜底，文案原样 toast。
+
+### `components/ui/usage.tsx` — 用量展示（进度条 / 运动圆环）
+
+
+- 个人资料卡与右上角头像菜单**共用**本组件（`usageStyle` 外观设置二选一），避免两处样式漂移。
+- `progress`（默认）：两行文本 + 细进度条（h-1.5），与历史一致。
+- `activity`：**Apple Fitness 风格双圆环运动卡片**（复刻 kokonutui apple-activity-card）——外环=存储（红 `#FF2D55`）、内环=文件（青 `#04C7DD`），`strokeLinecap=round` + 渐变描边 + 灰轨；内外环**留 4px 空隙**（Apple 同款紧凑嵌套：环过近两道灰轨叠成一个环，过远不像参考图）；`RING_GAP` 常量。
+- 布局：**文字紧挨环左侧、文字右对齐、整块右对齐卡片**（`justify-end` + `text-right`）：每条指标 = 小号大写标签 + 彩色当前值，两行（实际四行）整体高度与环盒同高（`justify-between` + 固定 height），头像菜单用 compact 尺寸（72px 环 / 10px 文字）。
+- **SVG 渐变 id 必须清洗**：`useId()` 返回带冒号的 id（`:r0:`），直接拼进 `url(#...)` 片段引用会解析失败 → 圆环不渲染（只余灰轨）。`useId().replace(/[^a-zA-Z0-9_-]/g, '')`。
+- 动效（`.usage-ring-draw` / `.usage-rings-in` / `.usage-info-in`，见 `index.css`）：圆环属**图表**（数据可视化）→ **默认档位即生效**，不 gate 到「全部动画」；`stroke-dashoffset` 从整圆画到目标值、逐环延迟 160ms；整环 scale 0.8 淡入 + 信息列横向滑入；`off` 档关停。
+
+### `lib/image-cache.ts` + `Logo.tsx` / `widgets.tsx` — 站点标识与头像的持久化缓存
+
+- **一次拉取、长期复用**：Logo / Favicon / 用户头像加载成功后以 **Data URL（base64）写入 `localStorage`**（键 `picumet:asset:<kind>`，含原始 url + 时间戳）；刷新页面时首帧**同步**读取缓存直接渲染，零网络请求。仅当配置的 URL 变化（键内 url 不匹配）才重新拉取并替换。
+- **外链一律经自家 Worker 同源中转**（`assetProxyUrl()` → `/api/public/site-asset/:kind?u=…`）：外链图床/网盘常 302 到带临时 token 的地址且**无 CORS 头**，浏览器直连 `fetch` 必被跨域拦截（实测 `TypeError: Failed to fetch`），Canvas 兜底也会因 `crossOrigin=anonymous` 二次失败并把 `<img>` 打成不可用。中转后同源拉取，天然绕开 CORS 与防盗链，并复用既有边缘缓存（`max-age=604800`）。
+- **`kind=avatar` 的防开放代理**：只中转 `users.avatar_url` 中**已登记**的地址（`SELECT id FROM users WHERE avatar_url = ?`），其余 404；命中后仍走 `validateEndpoint` + 逐跳重定向校验 + 8MB 上限。
+- **两级回落**：`Data URL 缓存` → `中转地址` → `原始 URL`（`onError` 时先试原始外链一次）→ 首字母/默认矢量图标。加载失败不卡死在错误态。
+- **Favicon 默认值**：未配置 favicon 时使用 **Picumet 默认图标**（左上角 Logo 去掉文字的矢量图，`public/favicon.svg` 与 `DEFAULT_FAVICON_DATA_URL`），配置的自定义图标加载失败亦回落该默认图标。
+- 左上角 Logo 尺寸：**32**（`AppShell` / `Landing` / `FreeMode` 三处顶栏统一；登录/注册等居中页仍 48，浏览/分享页 24）。
+
+### `components/ui/toast.tsx` — Toast（Sonner 式堆叠 + transitions.dev banner-stacking 复刻）
+
+- 位置**右下角**固定（Sonner 默认），宽 356px；最新在**最下**（depth 0），后方层逐层上移 12px 露出上沿并按 0.06/层缩小。
+- **⚠️ 三条硬约束（违反即表现为「还是透明的、按理说不该透而是模糊」）**：
+  1. **`.toast-banner` 自己就是玻璃面**（`glass-surface glass-blur rounded-2xl border border-border/60 text-card-foreground`），**不得**再套一层卡片容器。带 `transform`/`will-change` 的父级会把子元素的 `backdrop-filter` 提升为自身背景采样，子元素便采样不到页面内容 → 毛玻璃静默失效退化为平涂半透明。
+  2. `.toast-banner` **禁止挂 `filter`（含 blur）与 `will-change: filter`**：Chromium 下父级 filter 截断子元素 backdrop-filter 的采样上下文（`index.css` 该小节已写明并注释警示）。
+  3. **禁止用 `glass-surface-popover`**：该类专供「悬在白色卡片之上」的弹层，会把不透明度再让 0.12（下限 0.5），比卡片更透；toast 是独立浮层，与卡片/侧栏/顶栏同属大表面，必须走 `.glass-surface`，透明度与模糊 100% 随模糊三档（off 实底 / default 0.72+20px / frosted 0.6+16px）联动。
+- **折叠态后方层隐藏正文**：`reveal = isFront || spread` 为假时内容层 `opacity-0 pointer-events-none`，只露干净的磨砂上沿——半透明玻璃叠加半透明玻璃时后方文字若照常渲染会形成「重影脏字」（用户实测痛点）。
+- **条数不限、堆叠最多 3 层**：队列可累积任意条（不再触发最旧退场）；折叠态仅 depth 0/1/2 可见（`opacity: 1`），depth ≥ 3 隐藏（`opacity: 0`、`pointer-events: none`）；**悬停展开时全部可见**，位移按各自实测高度累加（`ResizeObserver` 量 `offsetHeight` + 8px 间隙）。展开/收起由**几何判定**（指针落入折叠盒即展开，保持到离开展开列总高）——展开后的层间空隙不属于任何元素，`:hover` 覆盖不到；展开期间暂停全部倒计时。
+- 入场：首帧挂 `is-enter`（下方 60px + scale 0.97、opacity 0），在 `useLayoutEffect` 内强制一次 `getBoundingClientRect()` 后同任务清除 → 过渡从预置姿态起播（**双 rAF 会被 React 合并 commit 吞掉**，见坑点）。
+- 时长固定 350ms 进 / 250ms 出 / 默认 4s，**不随「舒适」档放慢**（与 JS 排程计时耦合，单独放慢会进出不同步）；退场走 `markLeaving`（250ms 后移除），禁止直接 `remove()`（堆叠瞬间塌缩）。路由切换 `clearAll()` 逐条退场（Toaster 在 Router 内用 `useLocation`）。
+- **动画档位**：`default`/`all` 走堆叠；`off` **不堆叠**——渲染竖直静态列表（`flex flex-col-reverse`，新到在下）并立即移除（`markLeaving` 读 `<html data-motion>` 判 off → 0ms 摘除）。层级与判定全在 JS 侧一次性分流，CSS 无分支。
+- `toast('success'|'error'|'info', msg, { title?, action?, duration? })` 统一触发；成功/失败必须反馈，禁止静默成功。
 
 ### `components/ui/dialog.tsx` — 对话框
 
@@ -376,10 +419,42 @@ flowchart LR
 - 视觉（复刻 Breno Lasserre「You gotta love sliders」的 pill slider，按项目规范调整）：圆角矩形轨道 `rounded-md`（与输入框/按钮同半径）+ 左侧随值生长的同高浅强调色填充（`bg-primary/20`，比强调色浅一档）+ 填充边界的细竖条拇指（`h-3.5 w-1`）+ 档位锚点（只标可落值的档位，统一 `bg-foreground/15`，不做白色锚点）；标签与数值内嵌轨道两侧（左 `pl-5` 右 `pr-4`）。
 - 交互：原生 range `appearance:none` 全透明承担拖拽/键盘与无障碍（`.pill-slider-*` 见 `index.css`）；0 档贴左、最大档贴右；hover 轨道和填充轻微压暗、拇指加深；按住时只加深拇指并保持轨道尺寸稳定，松开立即回到 hover/rest 层次，不做整轨道外扩或文字漂移；填充与拇指用短促的 ease-out 位移过渡；`aria-valuetext` 随档位文案；档位描述随选中变化。新增滑块复用此文件。
 
-### `components/ui/checkbox.tsx` — 复选框
+### `components/ui/checkbox.tsx` — 复选框（shadcn 基准 + 「全部动画」档 spring-check 勾选动效）
 
-- 选中 `border-primary bg-primary`（符合强调色）；未选中 `glass-control bg-card/[var(--glass-alpha,0.72)]`（原硬编码 `/60 + backdrop-blur-sm` 已并入统一配方）。
+- **基准样式对齐 shadcn（radix-nova）**：`size-4` + `rounded-[4px]` + `border border-input`；`focus-visible:ring-[3px] ring-ring/50`；`after:absolute after:-inset-x-3 after:-inset-y-2` 把命中区从 16×16 扩到 **40×32**（Tailwind 的 `after:*` 工具类自带 `content: var(--tw-content)`，基类默认 `--tw-content: ""` 即生效，无需额外写 `content-*`）；未选态沿用项目统一小型控件玻璃配方（`glass-control` + `--glass-alpha`，禁止硬编码透明度）。
+- **三层结构**：`.cb`（按钮：边框/焦点环/命中区）> `.cb-box`（`overflow:hidden` 裁剪 + 过冲缩放）> `.cb-fill`（填充）+ `.cb-tick`（描边对勾）。填充与对勾都在盒内裁剪，过冲只体现为盒体微涨。
+- **默认档 = shadcn 原生动画**：仅元素自身 `transition-colors`（`color`/`background-color`/`border-color`），**指示器瞬时显隐**（shadcn 的 `transition-none`，无图标缩放/淡入）。实测默认档 `transition-property` 只有三色、勾选在 60ms 内到位。
+- **「全部动画」档 = spring-check 复刻**（`components/ui/checkbox.tsx` 组件侧**零档位分支**，全在 `index.css`）：进度量 `--cb-t`（0 → 1，带弹簧过冲）经 **`@property` 注册为 `<number>`** 后才能参与过渡，再由它推导四路读数（同 reactbits `readings()` 的四路输出）：
+  - `fill` = `scale(max(0, var(--cb-t)))` —— 自中心涨出，**过冲时涨过满格**再回落；
+  - `box` = `scale(1 + 0.35·max(0, var(--cb-t) - 1))` —— 盒体随过冲微涨（`SWELL` 系数同源）；
+  - `tick` = `stroke-dashoffset: calc(1 - clamp(0, var(--cb-t), 1))` —— 对勾 `pathLength=1` 归一化后「描边画出/收回」（实测 `t=0.5` 时正好画一半）；
+  - `word` = `opacity: calc(0.45 + 0.55·clamp(0, var(--cb-t), 1))` —— 文字明暗。
+  - 缓动 `cubic-bezier(0.34, 1.9, 0.64, 1)` + 460ms：实测过冲峰值 **1.213**，对齐 spring-check `bounce=0.2`（zeta≈0.456）的 20% 过冲（fill 峰值 1.213、box 峰值 1.075）。
+- **文字明暗的语义反转**：spring-check 是「待办」隐喻（勾选 = 完成 → 文字变淡 + 加删除线）；本项目是「开关」隐喻，故**反转为未勾选变淡（0.45）、勾选恢复正常（1）**，且**两个方向都不画删除线**（`text-decoration: none`，spring-check 的 `strike` 线不移植）。`CheckboxWithLabel` 把 `data-checked` 放在包裹层，`--cb-t` 经 `@property { inherits: true }` 继承给复选框与文字，两者同源同步。
+- **过渡声明的两个坑**：① 不写 Tailwind 的 `transition-colors` 类——utilities 层与 `.cb`（components 层）同优先级且后出现，会覆盖掉 `--cb-t` 的过渡，故颜色过渡也写在 `index.css`；② `[data-motion='all'] .cb`（0,2,0）会盖过同元素上的 `.transition-opacity`，因此**必须把 `opacity` 一并列入过渡列表**，否则文件页选择框的悬停淡入退化为瞬变（`explorer.tsx`）。
+- **按下反馈**：`.cb-box` 单独用 `--cb-press`（0.92）承载 `:active` 按压，与过冲缩放分离、互不覆盖（免 JS）。
+- 关闭档由全局 `0.01ms` 规则瞬时到位；`prefers-reduced-motion` 走文件末尾统一降级。
 
+### `components/ui/core.tsx` — Button 加载态 + Switch 双回弹
+
+- **Button 加载态（复刻 interior.dev loading-button）**：传 `loading` 时内容面与加载面（spinner + 同文案）作为 **grid 同格叠放的两个面**（`col-start-1 row-start-1`），容器宽度 = 最宽面 → **点击进入加载不改变按钮宽度**（实测恒定，禁止改回「插入 spinner 撑宽」）。交叉淡化用 `.btn-face`（opacity + 3px 位移 + 3px 模糊，220ms）走全局时长门控，`off` 档瞬时切换；加载中置 `aria-busy` + disabled。不传 `loading` 时不套叠层，宽度与历史完全一致。
+- **Switch 双回弹（复刻 transitions.dev toggle）**：拇指走 CSS `translate` 属性（合成层）+ `--switch-travel`（sm 8 / default 12 / lg 20px，2px 内边距），`data-on` 切换；默认档是普通位移过渡（功能性），**「全部动画」档叠加 overshoot 双回弹 keyframes**（`switch-bounce-on/off`，350ms + `cubic-bezier(0.34,1.35,0.64,1)`：55% 冲过终点 1px、80% 回落、100% 落定）。`is-init` 类在**首次交互**后才加（挂载/程序化置位不播 off 动画）。
+- 轨道底色过渡与位移解耦（`--duration-fast`），thumb 用 `will-change: translate`。
+### `components/ui/date-picker.tsx` — 3D 滚轮日期时间选择器（DatePicker / DateRangePicker）
+
+- **交互方式（弹出式下拉）**：点击触发框弹出 3D 滚轮浮层（类似下拉菜单），取代浏览器原生 `input[type="date"]` 与 `datetime-local`。单时间点放 1 个（`DatePicker`，如创建分享链接失效时间、公告截止时间）；起止时间段放 2 个（`DateRangePicker`，如仪表盘自定义区间，起止并列两栏）。
+- **触发框样式 100% 对齐弹窗内其他文本框**：`border border-input bg-transparent dark:bg-input/30 shadow-sm`，无多余二次 `glass-control`（弹窗窗体 `.glass-dialog` 的多级模糊自然透出，避免二次挂载导致模糊冲突与色块割裂）。
+- **浮层结构与表面规范**：复用项目 `DROPDOWN_MENU_CLASS`（`shadow-md`、`border border-border/60`、`rounded-xl`、`glass-surface-popover glass-blur`）；浮层内部**不嵌套第二层玻璃边框盒子**（选择器与弹窗窗体一体化模糊，消除嵌套双重卡片）。
+- **单套字体体系，杜绝重影**：所有候选项与激活项共用单套 `<ul>` 列表与 `text-base`（16px）基线，激活项居中时在 `paint()` 中动态赋予 `hsl(var(--primary))` 与 700 字重，离心项半透明淡化；**严禁使用两套不同字号的 `<ul>` 上下叠加**（beUI 原版的双列表会导致基线不一致产生重影重字，必须使用单套 DOM + 动态样式）。
+- **日期激活条无边框线**：中心指示条为纯色软高亮衬底（`bg-primary/15 rounded-lg`），**绝不添加上下 border 细线**。
+- **首帧内联直出与渲染保活**：
+  - **中间向两端透明度增大**（中间 100% 不透明、向上下边缘平滑淡化至 0% 完全透明）：严禁使用 `mask-image`（Chromium 会截断 3D 渲染图层致使数字全隐），也**严禁添加纯白渐变遮罩层**（覆盖数字形成刺眼实底白块）；全部由 `paint()` 与 JSX 内联的条目透明度曲线 `Math.max(0, 1 - (dist / cutoff) ** 1.35)` 纯净驱动；
+  - 严禁在 `<ul>` 或 `<li>` 上挂全局 `backface-visibility: hidden`（转过 90° 的项目会被浏览器整列剔除）；
+  - `WheelPicker` 容器声明 `w-full shrink-0` 配合内联 `style={{ height: 160 }}`，**禁止使用 `flex-1 min-w-0`**（父级为 `flex-col` 时会导致垂直轴 `flex-basis: 0%`，把容器高度压垮为 0px 并被 `overflow-hidden` 全切）；
+  - 首帧在 JSX style 中直算初始旋转角度与条目属性，并在 `useLayoutEffect` 中同步刷入 `paint()`，确保首次挂载即清晰见字。
+- **语言自适应排序**：
+  - 中文（`zh`）：`YYYY/MM/DD` 居左，时分秒 `HH : mm : ss` 居右（带视觉垂直分隔线）；
+  - 英文（`en`）：`MM/DD/YYYY` 居左，时分秒 `HH : mm : ss` 居右。
 ### 小型控件玻璃（tabs / buttons / select / switches / 搜索框 / 视图切换器）
 
 - `.glass-control`（`index.css`）只含 backdrop blur（同一 `--glass-blur` token + `saturate(1.5)`），底色透明度由各组件用 Tailwind 任意透明度 `bg-*/[var(--glass-alpha,0.72)]` 消费——**与大表面共用同一 token，无控件独立档**：default 0.92/0.82（有壁纸）/0.8/0.72（无壁纸）、frosted 0.6、off 1；控件与所在页面的卡片同色同透，杜绝灰色割裂（历史 bug：控件独立 0.6/0.75 档在白卡片旁发灰）。off 档双保险（alpha=1 自动实底 + `.no-blur` 关停 blur）。
@@ -439,12 +514,14 @@ flowchart LR
 
 ### `pages/settings/Personalization.tsx` — 个性化设置
 
-- `lg:grid-cols-2` 两列：左列个人资料（头像行右侧内联存储空间/文件数量双进度条，无默认路径字段）、邮箱管理、修改密码；右列右键单击行为（独立卡）、主题（强调色整行 + 文件图标/文件夹显示两列 + 模糊滑块 + 自定义背景置于模糊之后）。
+- `lg:grid-cols-2` 两列：左列个人资料（头像行右侧内联**用量展示**，无默认路径字段；样式由外观设置 `usageStyle` 决定，见 `components/ui/usage.tsx`）、邮箱管理、修改密码、**邀请码**（仅对有生成权限的用户显示，见下条）；右列右键单击行为（独立卡）、主题（强调色整行 + 文件图标风格/文件夹显示两列 + **用量展示样式独占整行、两个选项左右并列**（`sm:col-span-2` + `grid-cols-2`）+ 三个滑块 + 动画速度 + 自定义背景置于滑块之后）。邀请码卡显示时右列两卡的 reveal 序号顺延（3/4 → 4/5），隐藏时回落原序号。
+- 三处验证码输入统一走 `components/ui/input-otp.tsx`（6 位数字）：改邮箱与改密两卡都是「**OTP 分段输入 + 右侧发送验证码按钮**」同行、上方为对应文本框（新邮箱 / 邮箱验证码说明）；改邮箱的「验证」按钮在发码成功后才出现。
+- 邀请码卡（`settings.invites.*`，docs/PROGRESS.md「邀请码注册机制」）：生成入口 =「名称（可选）」输入 + 生成按钮，计数文案「已生成 x / y」在累计达上限（`inviteMaxPerUser`，默认 5）时附「已达生成数量上限」并禁用按钮；码列表按创建时间倒序，每行 = 等宽码值 + 复制按钮（ghost）+ 名称 + 创建时间，多码之间 `divide-y` 分隔（卡中卡原则）；码列表下方不再逐码下挂，而在末尾挂一张独立的**受邀用户汇总表**（表头含用户名、使用的邀请码、注册时间，支持按用户名或注册时间升降序排序，默认注册时间降序；空态以居中 EmptyState 呈现「暂无受邀用户」）。可见性门禁 = 公开设置 `inviteGeneration`（all_users / admin_only）+ 本人角色，且在 site store `loaded` 后才判定（避免缓存缺失时先渲染再翻转）；后端 403（设置刚被改为仅管理员）时整块隐藏、不弹 toast。
 - 文件自定义图标三态：属性面板可输入 Emoji、图片 URL 或 SVG 代码（`FileIcon` 按 URL/SVG/emoji 自动判别渲染，SVG 经 `data:` URL 由 `<img>` 承载防止脚本执行，图片 404 回退默认图标）。
 
 ### 布局与滚动条（AppShell / 设置 / 管理页 / `index.css`）
 
-- 设置/管理内容 `lg:grid-cols-2`；admin 系统设置左列堆叠"系统设置+公告"、右列 SMTP。
+- 设置/管理内容 `lg:grid-cols-2`；admin 系统设置左列堆叠「站点 + 安全 + 日志审计 + 访问统计」、右列堆叠「公告 + 注册 + SMTP」。
 - 设置/管理侧栏 sticky + 内滚；内滚区域 `scrollbar-none`，可见滚动条用 `scrollbar-thin`（8px 圆角 muted）。两者是普通 CSS 类，**不支持 `md:` 变体前缀**（写 `md:scrollbar-none` 无效，历史 bug 来源）。
 - 后台/设置内容列接入有界高度链（出口 `h-full min-h-0` + `md:self-stretch`，行 `items-start` 让侧栏贴内容高）；外壳 `h-screen` 弹性列给出精确可视高度，表格卡因此改用 `flex-1 min-h-0` 而不再各写视口算式，公告横幅出现时表格变矮而非把分页挤出视口。滚动条保持 `scrollbar-none`（main、内容包裹层）或 `scrollbar-thin`（表体）——原生滚动条不出现。
 
