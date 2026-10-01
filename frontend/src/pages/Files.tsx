@@ -29,11 +29,12 @@ import { PropertiesPanel } from '@/components/files/PropertiesPanel';
 import FileIcon from '@/components/files/FileIcon';
 import { normalizeVirtualPath, cn, isImage, isVideo, isAudio, isCode, isText, formatBytes, isVirtualRootItem, operableFileIds } from '@/lib/utils';
 import { ApiError, apiFetch } from '@/lib/api';
+import { trackUmami } from '@/lib/umami';
 import { revealDelay } from '@/components/ui/reveal';
 import { useMinLoading } from '@/hooks/useMinLoading';
 import type { FileListItem } from '@shared/types';
 
-// 排序字段选项；升序/降序在同一下拉内切换（不再是独立按钮）
+// 排序字段选项；升序/降序在同一下拉内切换
 const SORT_FIELDS = [
   { value: 'name', label: 'files.sortName' },
   { value: 'time', label: 'files.sortTime' },
@@ -58,7 +59,7 @@ function CopyLinksDialog({
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // 每次打开重置选择（保持与旧的条件挂载行为一致）
+  // 每次打开重置选择
   useEffect(() => {
     if (open) {
       setFormat('direct');
@@ -84,6 +85,8 @@ function CopyLinksDialog({
       await navigator.clipboard.writeText(links.join('\n'));
       setCopied(true);
       toast('success', signed ? t('files.copiedSignedLinks', { count: links.length }) : t('files.copiedLinks', { count: links.length }));
+      // Umami 事件（复制链接，弹窗多文件形态）：来源=umami 且 tracker 就绪才实际发出
+      trackUmami('copy_link', { count: files.length, format, signed });
     } catch {
       toast('error', t('files.copyLinkFailed'));
     } finally {
@@ -440,7 +443,7 @@ export default function Files() {
     page,
     limit: pageSize,
   });
-  // 骨架屏最短驻留（§33）：数据太快时也保证加载动画可见
+  // 骨架屏最短驻留：数据太快时也保证加载动画可见
   const showSkeleton = useMinLoading(isLoading);
   // 树视图数据源：当前挂载点整棵子树（仅 tree 视图启用）
   const treeQuery = useFilesTreeQuery(path, view === 'tree');
@@ -453,7 +456,7 @@ export default function Files() {
   const copyLinks = useCopyLinks();
 
   const items = data?.items ?? [];
-  // LAB：预览内「上一个/下一个」——当前显示顺序里可预览条目（图片/视频）的 id 序列
+  // 预览内「上一个/下一个」：当前显示顺序里可预览条目（图片/视频）的 id 序列
   const previewableIds = useMemo(
     () => items.filter((i) => i.type === 'file' && (isImage(i.name) || isVideo(i.name))).map((i) => i.id),
     [items]
@@ -506,6 +509,8 @@ export default function Files() {
       }
       const res = await apiFetch<{ url: string }>(`/api/files/${f.id}/download`);
       window.open(res.data.url, '_blank');
+      // Umami 事件（文件下载）：携带文件名/大小，使下载行为进入访问统计
+      trackUmami('file_download', { name: f.name, size: f.size });
     } catch (err) {
       toast('error', err instanceof ApiError ? err.message : t('files.downloadFailed'));
     }
@@ -532,6 +537,7 @@ export default function Files() {
         }
         await navigator.clipboard.writeText(text);
         toast('success', signed ? t('files.signedLinkCopied') : t('files.linkCopied'));
+        trackUmami('copy_link', { name: f.name, format, signed });
       } catch {
         toast('error', t('files.copyLinkFailed'));
       }
@@ -879,10 +885,10 @@ export default function Files() {
           </div>
 
           {/* 内容：树视图独立取数（treeQuery），不受当前文件夹列表加载/空态影响；高度链内滚动。
-              key=view：切换视图时重建容器，触发子项 reveal 入场（视图切换动画，§33） */}
+              key=view：切换视图时重建容器，触发子项 reveal 入场（视图切换动画） */}
           <div key={view} className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-none">
           {view === 'tree' ? (
-            /* 扁平化树视图：单子目录链合并、缩进引导线、虚拟滚动（pierre trees 风格） */
+            /* 扁平化树视图：单子目录链合并、缩进引导线、虚拟滚动 */
             <div className="flex h-full min-h-0 flex-col gap-1">
               {treeQuery.isLoading ? (
                 <FileListSkeleton />
@@ -1065,6 +1071,7 @@ export default function Files() {
                       );
                       await navigator.clipboard.writeText(links.join('\n'));
                       toast('success', t('files.copiedLinks', { count: links.length }));
+                      trackUmami('copy_link', { count: links.length });
                     } catch {
                       toast('error', t('files.copyLinkFailed'));
                     }
