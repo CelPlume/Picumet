@@ -99,7 +99,7 @@ flowchart LR
 
 ## 服务明细
 
-每个服务目录结构一致：`handlers.ts` 放 API handlers，`schemas.ts` 放 Zod 校验，`types.ts` 放 TypeScript 类型，领域逻辑视需要单独成文件。所有 API 入参都经过 Zod 校验。每个服务还带一份 `README.md` 记录职责与契约（admin、auth、files、free-mode、keys、permissions、public、shares、storage、uploads、users、webdav 共 12 个；`alist/`、`s3gw/` 与单文件 `cleanup.ts` 尚未补）。
+每个服务目录结构一致：`handlers.ts` 放 API handlers，`schemas.ts` 放 Zod 校验，`types.ts` 放 TypeScript 类型，领域逻辑视需要单独成文件。所有 API 入参都经过 Zod 校验。每个服务还带一份 `README.md` 记录职责与契约（admin、auth、files、free-mode、invites、keys、permissions、public、shares、storage、uploads、users、webdav 共 13 个；`alist/`、`s3gw/` 与单文件 `cleanup.ts` 尚未补）。
 
 ### 认证服务
 
@@ -114,7 +114,7 @@ services/auth/
 
 | 方法 | 路径 | 说明 |
 | :--- | :--- | :--- |
-| POST | `/api/auth/register` | 创建账号。 |
+| POST | `/api/auth/register` | 创建账号；站点开启邀请码注册时校验 `inviteCode` 并同事务核销（`users.invited_by_code_id`）。 |
 | POST | `/api/auth/login` | 认证并写入 HttpOnly JWT Cookie。 |
 | POST | `/api/auth/logout` | 清除会话。 |
 | GET | `/api/auth/me` | 返回当前用户信息。 |
@@ -124,6 +124,35 @@ services/auth/
 | POST | `/api/auth/reset-password` | 重置密码。 |
 
 **依赖**：`middleware/auth.ts`、`middleware/rate-limit.ts`、`middleware/csrf.ts`、`utils/crypto.ts`、`utils/smtp.ts`，以及用户、配额、设置、日志等仓库。
+
+### SSO / OIDC 登录服务
+
+**职责**：第三方身份登录（Google / GitHub / 自托管 OIDC），身份关联与令牌凭据落库，以及第三方注册的补充注册页。
+
+```
+services/sso/
+├── handlers.ts    // /api/auth/sso/:id/start|callback、/pending、/complete
+├── config.ts      // 总开关、公开配置装配、issuer/端点地址校验、凭据加解密、回调地址
+├── oidc.ts        // discovery（KV 缓存 1h）、授权跳转、code 换 token、id_token 验签、档案归一化
+├── schemas.ts     // 管理端配置与补充注册的 Zod 校验
+├── types.ts       // 内部类型（归一化档案 / 令牌 / discovery / state / pending）
+└── README.md
+services/admin/sso.ts   // 管理端来源 CRUD（/api/admin/sso/providers）
+```
+
+**登录链路**（入口与回调都是浏览器 302，不是 JSON 接口）：
+
+1. `GET /api/auth/sso/:id/start`：生成 `state` + PKCE（S256）+ OIDC `nonce` 写 KV（10 分钟），并给发起浏览器写 `sso_tx` 绑定 Cookie（值 = state）后 `302` 到提供方授权端点。
+2. 提供方回调 `GET /api/auth/sso/:id/callback?code=&state=`：**先校验 `sso_tx` 绑定 Cookie**（缺失/不匹配即拒，state 同时作废）→ `state` 一次性消费并核对来源 → `code` 换 token → 校验 `id_token`（JWKS 本地验签 + `iss`/`aud`/`nonce`）→ 取归一化档案（`sub`/`email`/`email_verified`/`username`/`display_name`/`avatar_url`）。
+3. 归属判定：
+   - `(provider_id, subject)` 已关联 → 直接登录（刷新凭据与档案快照）；
+   - 来源开启 `trust_email_verified` 且提供方**已验证**的邮箱命中既有账号（大小写无关）→ 自动关联并登录（补 `email_verified=1` + `sso_link` 审计）；
+   - 其余 → 暂存档案 + 一次性令牌（KV 15 分钟）+ `sso_pending` 绑定 Cookie → `302` 到前端 `/sso/complete?token=…`。
+4. 补充注册（`GET /api/auth/sso/pending` + `POST /api/auth/sso/complete`，均须携带 `sso_pending` Cookie）：账号资料由用户**自行填写**（不复用提供方档案，前端可一键预填邮箱与用户名），走与 `/api/auth/register` 同源的注册开关、邮箱验证码（共用 `email:otp:register:*`；判定基准是**本次提交的邮箱**）与邀请码门控；提交即建号 + 建立身份关联 + 发放与密码登录**完全相同**的 JWT Cookie。来源在补充注册期间被停用/删除则拒绝。
+
+**GitHub 特例**：GitHub 的 OAuth 流程不签发 `id_token`，因此走 OAuth2 web application flow，回调后取 `/user` 与 `/user/emails`（primary 且 `verified` 的邮箱才视为已验证）。
+
+**为什么没有引入 Auth.js**（经 Context7 核实其官方文档后的决策）：Auth.js 的 provider 列表是**构建期静态配置**（本项目的来源是管理员在 D1 里运行时增删的），自带 session/adapter 表结构（`accounts`/`sessions`/`users`/`verification_tokens`，与本项目自有的 `users`/`sso_identities` 冲突），且登录态由它自己签发 Cookie（本项目的 `session_version` 撤销通道、CSRF、限流都挂在自有 JWT 上）。三项冲突都在核心路径，最终用已有依赖 `jose` + `fetch` 直连实现协议面（约 400 行），换取「D1 运行时配置 + 自签 JWT Cookie + 自定义补充注册页」三处的完全可控。
 
 ### 权限服务
 
@@ -407,6 +436,27 @@ services/keys/
 
 **依赖**：API 密钥、规则仓库，`utils/crypto.ts`、`utils/path.ts`。
 
+### 邀请码服务
+
+**职责**：在开放注册之上叠加受邀注册——批量生成邀请码、「我的邀请码与受邀记录」列表。注册链路的门控与核销在认证服务内消费本服务的领域模块（`loadInviteSettings` / `INVITE_CODE_PATTERN` 是设置与码值格式的唯一来源）。
+
+```
+services/invites/
+├── handlers.ts    // POST/GET /api/invites
+├── invites.ts     // loadInviteSettings / canGenerateInvites / generateInviteCode
+├── schemas.ts     // CreateInvitesSchema
+└── types.ts
+```
+
+安全要点：
+
+- 码值 `[0-9A-Z]{6}`，crypto 随机生成（`randomString` 的 `getRandomValues` 通道），UNIQUE 约束 + 碰撞重试；匹配区分大小写（BINARY 排序精确等值）。
+- 两个端点都按生成权限门禁（`invite_generation`：all_users / admin_only），admin_only 时非管理员 `403`；累计数量上限（`invite_max_per_user`，默认 5）超限 `403 INVITE_LIMIT`。
+- 设置读取 fail-safe：开关缺行/脏值 = 关闭（不意外收紧注册）、权限缺行 = all_users、上限脏值 = 默认 5。
+- 核销与建号在 `UserRepo.createUser` 的同一事务内原子完成；码行并发消失时外键约束使事务整体回滚。
+
+**依赖**：`InviteRepo`（`db/repos/invites.ts`）、设置仓库、`utils/crypto.ts`。
+
 ### 公开服务
 
 **职责**：站点设置、公告、健康检查、公开空间 gallery，无需认证；另有站点 Logo / Favicon 中转（`/api/public/site-asset/:kind`，只中转当前配置的两个地址并做边缘缓存）。
@@ -468,7 +518,7 @@ D1 里存以下核心表：
 
 | 表 | 作用 |
 | :--- | :--- |
-| `users` | 账号、角色、状态、默认路径、语言偏好、能力位。 |
+| `users` | 账号、角色、状态、默认路径、语言偏好、能力位、受邀核销关联（`invited_by_code_id`，迁移 0010）。 |
 | `user_quotas` | 已用和预留的存储、文件数、上限。 |
 | `storage_providers` | S3 协议提供商配置，凭据加密存储。 |
 | `mounts` | 把提供商映射到虚拟路径，带排序偏好、写入配额（`max_storage`）、存储池策略（`pool_strategy`）、展示容量（`capacity_bytes`，NULL = 未设置）与写入口模式（`upload_mode`：free/user_space/flat，§28）。 |
@@ -482,6 +532,9 @@ D1 里存以下核心表：
 | `operation_jobs` | 异步的移动、复制、删除任务。 |
 | `path_rules` | 挂在挂载点上的权限规则，带来源（admin/user/system）与创建者。 |
 | `api_keys` | API 密钥，含权限、协议和上传根目录。 |
+| `invite_codes` | 邀请码（迁移 0010）：码值唯一（`[0-9A-Z]{6}`）、备注名称与创建人；一码可多人核销，创建人删除时级联删除，被核销用户侧置 NULL。 |
+| `sso_providers` | 第三方登录来源（迁移 0012）：`kind`（`google`/`github`/`oidc`）、名称、issuer（仅 `oidc`）、`client_id`、`client_secret`（`enc:` 密文）与单源开关；Google/GitHub 由部分唯一索引保证各只有一条。 |
+| `sso_identities` | 第三方身份关联（迁移 0012）：`(provider_id, subject)` 唯一 + `user_id`，附关联当时的提供方档案快照与 `access_token`/`refresh_token`（均 `enc:` 密文）、`token_type`/`scope`/`expires_at`；来源或用户删除时级联删除。 |
 | `shares` | 分享链接，含密码、过期时间和访问限制；`file_id` 为首个项目（兼容单文件语义）。 |
 | `share_items` | 分享项目：一个分享的 1..50 个项目（文件/文件夹混合）与顺序，随分享/文件删除级联。 |
 | `transfer_slots` | 传输并发槽位（在途请求计数，30 分钟泄漏阈值）。 |
@@ -495,7 +548,12 @@ D1 里存以下核心表：
 
 迁移脚本在 `workers/migrations/` 下：
 
-- `0001_initial.sql`：单文件迁移。包含基础表结构，以及按时间顺序追加的增量段（分片与下载令牌、挂载隔离与会话版本、SMTP/OTP、提供商类型收敛、用户模型、存储池 §E、内容哈希寻址 §F、公告显示时长 §27 等）。历史迁移已合并进该文件；新增变更以新段追加，既有的段不再改写（存量库按缺失段补跑）。
+- `0001_initial.sql`：单文件迁移。包含基础表结构，以及按时间顺序追加的增量段（分片与下载令牌、挂载隔离与会话版本、SMTP/OTP、提供商类型收敛、用户模型、存储池 §E、内容哈希寻址 §F、公告显示时长 §27 等）。历史迁移已合并进该文件；既有的段不再改写（存量库按缺失段补跑）。
+- `0006`–`0009`：provider 外键收紧、blob 复合主键（`(hash, mount_id)`）、生命周期队列、审计冷热分层。
+- `0010_invite_codes.sql`：邀请码注册机制——`invite_codes` 表、`users.invited_by_code_id` 核销列与 4 个「注册设置」种子键（`invite_enabled` / `invite_required` / `invite_generation` / `invite_max_per_user`）。
+- `0011_umami.sql`：Umami 访问统计的 9 个设置种子键（来源二选一 + 脚本面配置），无表结构变更。
+- `0012_sso.sql`：第三方登录——`sso_providers`（部分唯一索引约束 Google/GitHub 单例）、`sso_identities`（`(provider_id, subject)` 唯一）与 `sso_enabled` 总开关种子键。
+- `0013_sso_trust.sql`：`sso_providers.trust_email_verified`——逐来源的「信任提供方邮箱验证」开关（自动关联既有账号的依据；内置来源回填为 1，自定义 OIDC 默认 0）。
 
 ### 关键字段
 
@@ -503,7 +561,7 @@ D1 里存以下核心表：
 
 | 表 | 关键字段 |
 | :--- | :--- |
-| `users` | `role`（admin/user/guest）、`status`、`default_path`、`permissions`（NULL = 跟随角色）、`capabilities`、`session_version`（会话撤销）、`email_verified`。 |
+| `users` | `role`（admin/user/guest）、`status`、`default_path`、`permissions`（NULL = 跟随角色）、`capabilities`、`session_version`（会话撤销）、`email_verified`、`invited_by_code_id`（邀请码核销，迁移 0010）。 |
 | `file_metadata` | `(mount_id, object_key)` 唯一、`physical_key` + `blob_hash`（§F）、`path`、`owner_id`、`visibility` + `review_status`、`guest_visibility`、`banned`、`access_password`。 |
 | `api_keys` | 令牌只存 SHA-256 哈希（原文不落库）、`secret_cipher`（S3 网关 SigV4 需要可逆 secret，AES-GCM）、`permissions` / `protocols` / `upload_path` / `allowed_ips` / `status`。 |
 | `mounts` | `mount_path`、`provider_id`、`pool_strategy`（§29）、`max_storage`、`capacity_bytes`（展示容量）、`upload_mode`（§28）。 |
@@ -586,6 +644,9 @@ D1 里存以下核心表：
 - **大文件内存**：PicGo 兼容上传、WebDAV、自由模式都流式转发请求体，不整包进内存。
 - **就绪探针**：`/api/public/health/live` 和 `/ready` 做探针；生产未初始化时业务接口返回 `503`。
 - **CSP**：`script-src 'self' https://challenges.cloudflare.com`，不含 `unsafe-inline`。
+- **访问统计脚本面（Umami）**：tracker 脚本地址是全站**唯一可配置脚本执行面**（浏览器直接加载，等价于把全站 JS 执行权交给该地址），因此写入口按安全敏感设置对待——仅管理员可改 + 变更写审计日志（`action=settings_update`，记键不记值）+ 写入即校验（`utils/umami.ts`）：仅 `http(s):`、无内嵌凭据、无 fragment、长度上限，`http` 仅限回环主机（本地联调）；Website ID 按 UUID 校验，域名白名单逐项校验为裸 hostname。公开端点下发前再复核一次（`resolveUmamiPublicConfig`），DB 里即便落了脏值也不会被注入。前端注入一律 `document.createElement` + `setAttribute`，只认六个白名单 `data-*` 属性（`data-before-send` 这类指向全局函数名的事件面不支持）。**CSP 待决项**：SPA 由 Pages 承载且仓库无 `_headers`/meta CSP，页面当前没有 CSP，tracker 无需放行即可工作；将来若给 Pages 加 CSP，需定方案（首方代理 `script.js` + `data-host-url` 指回真实实例，或 `script-src https:` 粗放放行），不默认放行。
+
+- **第三方登录（SSO / OIDC）**：issuer 与 discovery 文档里的 authorization / token / jwks / userinfo 端点逐个过地址白名单（生产口径同 `validateEndpoint`：公网 http(s)、端口 80/443、拒私网/回环/内嵌凭据、issuer 不带查询串，并要求文档声明 `issuer` 且与配置一致；缓存读取同样复核）。**授权事务与发起浏览器绑定**：`/start` 写 `sso_tx` Cookie（值 = state）、回调必须携带同值 Cookie，补充注册的 `sso_pending` 同规则——否则「攻击者跑完授权把回调/补注册链接丢给受害者」即可让受害者拿到攻击者的会话（登录 CSRF / 会话固定），Cookie 是攻击者无法替受害者预置的那一环；`state` 在回调到达时即作废。所有上游请求 `redirect: 'manual'`，3xx 一律拒绝（`SSO_UPSTREAM_REDIRECT`），防止被入侵的提供方用 302 把 `client_secret` / Bearer token 引向内网或云元数据。OIDC 一律带 PKCE(S256) + `nonce`，`id_token` 用 issuer JWKS **本地**验签并校验 `iss`/`aud`/`nonce`（失败不区分原因、细节只进服务端日志，对外仅回错误码）。`client_secret` 与 `access_token` / `refresh_token` 全部 AES-256-GCM（`enc:` 前缀）落库（含补充注册的 KV 暂存），管理端列表只回掩码 `******`，配置变更写审计（记键不记值）；自动关联还会写一条 `sso_link`。自动关联的前提是**逐来源开关** `trust_email_verified` + 提供方声明的已验证邮箱（自定义 OIDC 默认关闭）；邮箱比较大小写无关（`users.email` 是 BINARY 排序，精确匹配会漏掉大小写变体并允许同一邮箱建出两个账号，注册/改绑/补充注册的查重统一走 `findByEmailInsensitive`）。补充注册的验证码基准是**本次提交的邮箱**，并复用注册总闸（`allow_registration`）与邀请码门控，因此第三方登录不会绕过任何注册限制；来源停用/删除后在途令牌同样失效。回环 issuer 需要 `SSO_ALLOW_LOOPBACK=true` 且非生产环境（生产无论其值如何都不放行，避免 `ENVIRONMENT` 拼写错误导致生产静默开放 SSRF 面）。
 
 ## 相关文档
 

@@ -99,7 +99,7 @@ The layout avoids cyclic dependencies. `index.ts` only assembles routes and midd
 
 ## Service details
 
-Every service directory follows the same shape: `handlers.ts` for API handlers, `schemas.ts` for Zod validation, `types.ts` for TypeScript types, and optional domain files. All API input passes through Zod validation. Each service also ships a `README.md` describing its responsibilities and contracts (12 of them: admin, auth, files, free-mode, keys, permissions, public, shares, storage, uploads, users, webdav; `alist/`, `s3gw/` and the single-file `cleanup.ts` are still missing one).
+Every service directory follows the same shape: `handlers.ts` for API handlers, `schemas.ts` for Zod validation, `types.ts` for TypeScript types, and optional domain files. All API input passes through Zod validation. Each service also ships a `README.md` describing its responsibilities and contracts (13 of them: admin, auth, files, free-mode, invites, keys, permissions, public, shares, storage, uploads, users, webdav; `alist/`, `s3gw/` and the single-file `cleanup.ts` are still missing one).
 
 ### Auth service
 
@@ -114,7 +114,7 @@ services/auth/
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
-| POST | `/api/auth/register` | Creates a user account. |
+| POST | `/api/auth/register` | Creates a user account; when the site enables invite-code registration it validates `inviteCode` and redeems it in the same transaction (`users.invited_by_code_id`). |
 | POST | `/api/auth/login` | Authenticates the user and sets an HttpOnly JWT cookie. |
 | POST | `/api/auth/logout` | Clears the session. |
 | GET | `/api/auth/me` | Returns the current user. |
@@ -124,6 +124,35 @@ services/auth/
 | POST | `/api/auth/reset-password` | Resets the password. |
 
 Dependencies**: `middleware/auth.ts`, `middleware/rate-limit.ts`, `middleware/csrf.ts`, `utils/crypto.ts`, `utils/smtp.ts`, and the user, quota, settings, and log repositories.
+
+### SSO / OIDC login service
+
+**Responsibilities**: third-party identity login (Google / GitHub / self-hosted OIDC), identity linking and token-credential persistence, and the supplementary-registration page for third-party sign-ups.
+
+```
+services/sso/
+├── handlers.ts    // /api/auth/sso/:id/start|callback, /pending, /complete
+├── config.ts      // master switch, public-config assembly, issuer/endpoint address validation, credential encryption/decryption, callback URL
+├── oidc.ts        // discovery (KV-cached 1h), authorization redirect, code→token exchange, id_token verification, profile normalization
+├── schemas.ts     // Zod validation for admin config and supplementary registration
+├── types.ts       // internal types (normalized profile / token / discovery / state / pending)
+└── README.md
+services/admin/sso.ts   // admin provider CRUD (/api/admin/sso/providers)
+```
+
+**Login flow** (both the entry point and the callback are browser 302s, not JSON APIs):
+
+1. `GET /api/auth/sso/:id/start`: generates `state` + PKCE (S256) + OIDC `nonce` written to KV (10 minutes), writes the `sso_tx` binding cookie for the initiating browser (value = state), then `302`s to the provider's authorization endpoint.
+2. Provider callback `GET /api/auth/sso/:id/callback?code=&state=`: **first validates the `sso_tx` binding cookie** (rejects if missing/mismatched, and the state is invalidated at the same time) → the state is consumed once and checked against the provider → `code` exchange for token → verify `id_token` (JWKS local signature verification + `iss`/`aud`/`nonce`) → fetch the normalized profile (`sub`/`email`/`email_verified`/`username`/`display_name`/`avatar_url`).
+3. Attribution decision:
+   - `(provider_id, subject)` already linked → sign in directly (refresh credentials and profile snapshot);
+   - The provider has `trust_email_verified` enabled and the provider's **verified** email hits an existing account (case-insensitively) → link automatically and sign in (setting `email_verified=1` + `sso_link` audit);
+   - Otherwise → stash the profile + one-time token (KV 15 minutes) + the `sso_pending` binding cookie → `302` to the frontend `/sso/complete?token=…`.
+4. Supplementary registration (`GET /api/auth/sso/pending` + `POST /api/auth/sso/complete`, both must carry the `sso_pending` cookie): the account details are **filled in by the user** (the provider profile is not reused; the frontend can one-click prefill the email and username), and it goes through the same registration switch, email verification code (sharing `email:otp:register:*`; the basis is **the email submitted this time**), and invite-code gating as `/api/auth/register`; submitting creates the account + the identity link + issues a JWT Cookie **exactly the same** as password login. If the provider is disabled/deleted during supplementary registration, it is rejected.
+
+**GitHub special case**: GitHub's OAuth flow does not issue an `id_token`, so it uses the OAuth2 web application flow and, after the callback, fetches `/user` and `/user/emails` (only a primary and `verified` email counts as verified).
+
+**Why Auth.js was not adopted** (a decision made after verifying its official documentation via Context7): Auth.js's provider list is **build-time static configuration** (this project's providers are added/removed at runtime by an administrator in D1), it brings its own session/adapter tables (`accounts`/`sessions`/`users`/`verification_tokens`, which conflict with this project's own `users`/`sso_identities`), and it signs its own login cookie (this project's `session_version` revocation channel, CSRF, and rate limiting all hang off its own JWT). All three conflicts sit on core paths, so in the end the protocol surface was implemented directly with the existing `jose` + `fetch` dependencies (~400 lines), trading for full control over all three of "D1 runtime configuration + self-signed JWT cookie + custom supplementary-registration page".
 
 ### Permissions service
 
@@ -407,6 +436,27 @@ Security notes:
 
 **Dependencies**: the API key and rule repositories, `utils/crypto.ts`, and `utils/path.ts`.
 
+### Invites service
+
+**Responsibilities**: invite-only registration on top of open sign-up — batch generation of invite codes and the "my codes and invited users" listing. The registration-path gating and redemption live in the auth service, which consumes this service's domain module (`loadInviteSettings` / `INVITE_CODE_PATTERN` are the single source for settings and code format).
+
+```
+services/invites/
+├── handlers.ts    // POST/GET /api/invites
+├── invites.ts     // loadInviteSettings / canGenerateInvites / generateInviteCode
+├── schemas.ts     // CreateInvitesSchema
+└── types.ts
+```
+
+Security notes:
+
+- Codes are `[0-9A-Z]{6}`, crypto-random (the `randomString` `getRandomValues` channel), under a UNIQUE constraint with collision retry; matching is case-sensitive (BINARY collation, exact equality).
+- Both endpoints are gated by the generation permission (`invite_generation`: all_users / admin_only) — non-admins get `403` under admin_only; exceeding the cumulative cap (`invite_max_per_user`, default 5) returns `403 INVITE_LIMIT`.
+- Settings reads are fail-safe: a missing/garbled toggle = off (registration never tightens by accident), a missing permission = all_users, a garbled cap = default 5.
+- Redemption and account creation complete atomically inside one `UserRepo.createUser` transaction; if the code row disappears concurrently, the foreign key rolls the whole transaction back.
+
+**Dependencies**: `InviteRepo` (`db/repos/invites.ts`), the settings repository, and `utils/crypto.ts`.
+
 ### Public service
 
 **Responsibilities**: site settings, announcements, health checks, and the public gallery without authentication; plus the site logo/favicon relay (`/api/public/site-asset/:kind`, which serves only the two currently configured addresses behind an edge cache).
@@ -468,7 +518,7 @@ D1 stores the following core tables:
 
 | Table | Purpose |
 | :--- | :--- |
-| `users` | User accounts, roles, status, default path, locale preferences, and capability bits. |
+| `users` | User accounts, roles, status, default path, locale preferences, capability bits, and the invite redemption link (`invited_by_code_id`, migration 0010). |
 | `user_quotas` | Used and reserved storage, file counts, and limits. |
 | `storage_providers` | S3-protocol provider configuration with encrypted credentials. |
 | `mounts` | Maps a provider to a virtual path with sorting preferences, a write quota (`max_storage`), a storage pool strategy (`pool_strategy`), a display capacity (`capacity_bytes`, NULL = unset) and the write-entry mode (`upload_mode`: free/user_space/flat, §28). |
@@ -482,6 +532,9 @@ D1 stores the following core tables:
 | `operation_jobs` | Asynchronous move, copy, and delete jobs. |
 | `path_rules` | Permission rules scoped to a mount, with origin (admin/user/system) and creator. |
 | `api_keys` | API keys with permissions, protocols, and upload root. |
+| `invite_codes` | Invite codes (migration 0010): unique code value (`[0-9A-Z]{6}`), optional label, and creator; one code can be redeemed by many users, cascades on creator deletion, and sets NULL on the redeemed-user side. |
+| `sso_providers` | Third-party login providers (migration 0012): `kind` (`google`/`github`/`oidc`), name, issuer (only `oidc`), `client_id`, `client_secret` (`enc:` ciphertext), and a per-provider switch; partial unique indexes guarantee at most one Google/GitHub row each. |
+| `sso_identities` | Third-party identity links (migration 0012): unique `(provider_id, subject)` + `user_id`, plus the provider profile snapshot and `access_token`/`refresh_token` (both `enc:` ciphertext), `token_type`/`scope`/`expires_at` at link time; cascades on provider or user deletion. |
 | `shares` | Share links with password, expiry, and access limits; `file_id` is the first item (keeping single-file semantics). |
 | `share_items` | Share items: the 1..50 items of one share (files/folders mixed) and their order, cascading on share or file deletion. |
 | `transfer_slots` | Transfer concurrency slots (in-flight request counts, 30-minute leak threshold). |
@@ -495,7 +548,12 @@ D1 stores the following core tables:
 
 Migrations live in `workers/migrations/`:
 
-- `0001_initial.sql` is the single migration file: the base schema plus dated sections appended over time (multipart parts and download tokens, mount isolation and session version, SMTP/OTP, provider type unification, the user model, storage pool §E, content-hash addressing §F, announcement display policies §27, and so on). Earlier migrations merged into this file; new changes append a section and never rewrite existing ones, so existing databases only re-apply the missing sections.
+- `0001_initial.sql` is the base migration file: the base schema plus dated sections appended over time (multipart parts and download tokens, mount isolation and session version, SMTP/OTP, provider type unification, the user model, storage pool §E, content-hash addressing §F, announcement display policies §27, and so on). Earlier migrations merged into this file; existing sections are never rewritten, so existing databases only re-apply the missing sections.
+- `0006`–`0009`: provider foreign-key tightening, the blob composite primary key (`(hash, mount_id)`), lifecycle queues, and audit hot/cold tiering.
+- `0010_invite_codes.sql`: the invite-code registration mechanism — the `invite_codes` table, the `users.invited_by_code_id` redemption column, and the four "Registration" seed settings (`invite_enabled` / `invite_required` / `invite_generation` / `invite_max_per_user`).
+- `0011_umami.sql`: the nine Umami access-statistics seed settings (source either/or + script surface configuration), with no schema change.
+- `0012_sso.sql`: third-party login — `sso_providers` (partial unique indexes constraining the Google/GitHub singletons), `sso_identities` (unique `(provider_id, subject)`), and the `sso_enabled` master-switch seed setting.
+- `0013_sso_trust.sql`: `sso_providers.trust_email_verified` — the per-provider "trust the provider's email verification" switch (the basis for auto-linking existing accounts; built-in providers are backfilled to 1, custom OIDC defaults to 0).
 
 ### Key fields
 
@@ -503,7 +561,7 @@ Migrations live in `workers/migrations/`:
 
 | Table | Key fields |
 | :--- | :--- |
-| `users` | `role` (admin/user/guest), `status`, `default_path`, `permissions` (NULL = follow the role), `capabilities`, `session_version` (session revocation), `email_verified`. |
+| `users` | `role` (admin/user/guest), `status`, `default_path`, `permissions` (NULL = follow the role), `capabilities`, `session_version` (session revocation), `email_verified`, `invited_by_code_id` (invite redemption, migration 0010). |
 | `file_metadata` | `(mount_id, object_key)` unique, `physical_key` + `blob_hash` (§F), `path`, `owner_id`, `visibility` + `review_status`, `guest_visibility`, `banned`, `access_password`. |
 | `api_keys` | SHA-256 token hash only (the raw secret is never stored), `secret_cipher` (the S3 gateway needs a reversible secret for SigV4, AES-GCM), `permissions` / `protocols` / `upload_path` / `allowed_ips` / `status`. |
 | `mounts` | `mount_path`, `provider_id`, `pool_strategy` (§29), `max_storage`, `capacity_bytes` (display capacity), `upload_mode` (§28). |
@@ -586,6 +644,9 @@ The security model applies defense in depth across the request lifecycle:
 - **Large-file memory**: PicGo-compatible upload, WebDAV, and free-mode paths stream request bodies instead of buffering them.
 - **Readiness**: `/api/public/health/live` and `/ready` probes gate the API; before initialization, business endpoints return `503`.
 - **CSP**: `script-src 'self' https://challenges.cloudflare.com` with no `unsafe-inline`.
+- **Access-statistics script surface (Umami)**: the tracker script URL is the site's **only configurable script execution surface** (the browser loads it directly, which is equivalent to handing site-wide JS execution to that URL), so the write path is treated as a security-sensitive setting — admin-only, every change lands in the audit log (`action=settings_update`, keys only, never values), and every write is validated (`utils/umami.ts`): `http(s):` only, no embedded credentials, no fragment, length cap, `http` limited to loopback hosts (local development); the Website ID is validated as a UUID and the domain allowlist item by item as bare hostnames. The public endpoint re-validates before handing the config out (`resolveUmamiPublicConfig`), so even a dirty value in the database is never injected. The frontend injects with `document.createElement` + `setAttribute` and honours exactly six whitelisted `data-*` attributes (event surfaces that name a global function, such as `data-before-send`, are unsupported). **Pending CSP decision**: the SPA is served from Pages and the repo ships no `_headers`/meta CSP, so pages currently have no CSP and the tracker works without an allowance; if a CSP is added to Pages later, the approach needs a decision (first-party proxy of `script.js` with `data-host-url` pointing back at the real instance, or a coarse `script-src https:`) rather than a default allow.
+
+- **Third-party login (SSO / OIDC)**: the issuer and the authorization / token / jwks / userinfo endpoints in the discovery document each pass the address allowlist (production uses the same rules as `validateEndpoint`: public http(s), ports 80/443, rejects private/loopback/embedded credentials, issuer without a query string, and requires the document to declare an `issuer` matching the configuration; cached reads are re-checked as well). **The authorization transaction is bound to the initiating browser**: `/start` writes the `sso_tx` cookie (value = state), the callback must carry a cookie with the same value, and the `sso_pending` of supplementary registration follows the same rule — otherwise "an attacker completes the authorization and hands the callback / supplementary-registration link to the victim" is enough for the victim to end up with the attacker's session (login CSRF / session fixation); the cookie is the one link an attacker cannot pre-set for the victim, and `state` is invalidated the moment the callback arrives. All upstream requests use `redirect: 'manual'`, and any 3xx is rejected (`SSO_UPSTREAM_REDIRECT`), preventing a compromised provider from using a 302 to steer `client_secret` / Bearer tokens toward an intranet or cloud metadata. OIDC always carries PKCE(S256) + `nonce`, and the `id_token` is verified **locally** with the issuer JWKS plus `iss`/`aud`/`nonce` checks (failures are not differentiated; details go only to server logs, and only an error code is returned externally). `client_secret` and `access_token` / `refresh_token` are all stored as AES-256-GCM (`enc:` prefix) (including the KV stash of supplementary registration), the admin list returns only the `******` mask, and configuration changes are audited (keys only, never values); auto-linking additionally writes an `sso_link` entry. Auto-linking requires the **per-provider switch** `trust_email_verified` + an email the provider declares as verified (off by default for custom OIDC); emails are compared case-insensitively (`users.email` uses a BINARY collation, so exact matching would miss case variants and let the same email create two accounts; the uniqueness checks of registration / email change / supplementary registration all go through `findByEmailInsensitive`). The supplementary-registration verification code is based on **the email submitted this time**, and it reuses the registration master switch (`allow_registration`) and invite-code gating, so third-party login never bypasses any registration restriction; after the provider is disabled/deleted, in-flight tokens are invalidated too. A loopback issuer requires `SSO_ALLOW_LOOPBACK=true` and a non-production environment (production never allows loopback regardless of its value, avoiding a misspelled `ENVIRONMENT` silently opening an SSRF surface in production).
 
 ## What's next
 
