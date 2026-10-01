@@ -96,6 +96,23 @@ Failed requests return an error envelope with an HTTP status code and a machine-
 | `PASSWORD_REQUIRED` | `403` | The file is password-protected and the password is not verified. | Call the password-verify endpoint first. |
 | `NOT_FOUND` | `404` | The resource, file, mount, or path does not exist. | Confirm the identifier or path and retry. |
 | `INVALID_PATH` | `400` | The path is invalid (missing the leading `/`, contains `..` / `~`, or is out of bounds), or the upload hit the file-type blocklist (message like "禁止上传 .exe 文件"). | Fix the path or use a different file type. |
+| `INVITE_NOT_ENABLED` | `400` | The registration request carried an invite code, but invite-code registration is disabled. | Remove the invite code field and retry. |
+| `INVITE_CODE_REQUIRED` | `400` | Invite codes are enabled and required, but the registration request has none. | Provide a valid invite code. |
+| `INVITE_CODE_FORMAT` | `400` | The invite code format is invalid (must be 6 digits/uppercase letters; matching is case-sensitive). | Check the code and retry. |
+| `INVITE_CODE_INVALID` | `400` | The invite code does not exist. | Confirm the code with your inviter. |
+| `INVITE_LIMIT` | `403` | The cumulative invite-code count reached the limit (system setting `invite_max_per_user`, default 5). | Ask an administrator to raise the limit or reuse an existing code. |
+| `SSO_DISABLED` | `403` | The site has not enabled third-party login (system setting `sso_enabled=false`). | Ask an administrator to enable it. |
+| `SSO_PROVIDER_NOT_FOUND` | `404` | The login provider does not exist or is disabled. | Start again from the login page. |
+| `SSO_PROVIDER_EXISTS` | `409` | A Google / GitHub provider already exists (each allows only one). | Edit or delete the existing provider. |
+| `SSO_STATE_INVALID` | `400` | The authorization session is missing / expired / does not match the provider, or the `state` was already used. | Click the third-party login button again. |
+| `SSO_PENDING_INVALID` | `400` | The supplementary-registration session is missing, expired, or already consumed. | Click the third-party login button again. |
+| `SSO_CANCELLED` | `400` | The user cancelled or denied authorization at the provider. | Start the login again. |
+| `SSO_ID_TOKEN_INVALID` | `401` | `id_token` signature verification failed (signature / `iss` / `aud` / time window). | Check that the provider configuration is correct. |
+| `SSO_NONCE_MISMATCH` | `401` | The `id_token` `nonce` does not match this authorization (replay protection). | Start the login again. |
+| `SSO_TOKEN_FAILED` / `SSO_PROFILE_FAILED` / `SSO_PROFILE_INVALID` / `SSO_DISCOVERY_FAILED` / `SSO_DISCOVERY_MISMATCH` / `SSO_DISCOVERY_INVALID` / `SSO_JWKS_FAILED` / `SSO_UPSTREAM_REDIRECT` | `502` | Provider-side failure (token exchange, userinfo, discovery, JWKS), or the endpoint returned a 3xx redirect (refused by security policy). | Retry later or double-check the provider configuration. |
+| `SSO_SECRET_UNAVAILABLE` | `500` | The provider's Client Secret cannot be decrypted (usually because `ENCRYPTION_KEY` was changed). | Re-save the provider secret in the admin UI. |
+| `SSO_ACCOUNT_DISABLED` | `403` | The third-party identity is linked to a disabled account. | Contact an administrator. |
+| `REGISTRATION_DISABLED` | `403` | The site has registration disabled (`allow_registration=false`), so supplementary registration is impossible. | Contact an administrator. |
 | `ALREADY_EXISTS` | `409` | A file or folder with the same name already exists. | Use a different name. |
 | `OPERATION_FAILED` | `409` / `422` | The operation cannot proceed because of the current state. | Check the error message and retry. |
 | `SHARE_EXPIRED` | `410` | The share link has expired. | Ask the creator for a new link. |
@@ -114,7 +131,7 @@ Authentication endpoints manage registration, login, sessions, email verificatio
 
 ### Register a user
 
-Creates a user account and, when the site requires email verification, sends a verification link.
+Creates a user account and, when the site requires email verification, sends a verification link. When invite-code registration is enabled (system setting `inviteEnabled`), the code is validated per `inviteRequired`: required means registration without a code is rejected, optional means a supplied code is validated, and disabled means an invite code is not accepted. Redemption (`users.invited_by_code_id`) and account creation complete atomically in one transaction.
 
 `POST /api/auth/register`
 
@@ -125,6 +142,7 @@ Creates a user account and, when the site requires email verification, sends a v
 | `username` | `string` | Yes | 3 to 20 characters. Letters, digits, and underscores only. |
 | `password` | `string` | Yes | At least 8 characters, at most 128. |
 | `email` | `string` | Yes | A valid email address. |
+| `inviteCode` | `string` | Conditional | Invite code (`[0-9A-Z]{6}`, case-sensitive). Required when invite codes are enabled and mandatory; optional when enabled but not mandatory; must be omitted when disabled. |
 
 #### Response
 
@@ -152,6 +170,9 @@ Returns the new user and a confirmation message with status `201`.
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | A field violates the format rules. | Correct the field and retry. |
+| `INVITE_CODE_REQUIRED` | `400` | Invite codes are enabled and required, but none was supplied. | Provide a valid invite code. |
+| `INVITE_CODE_FORMAT` / `INVITE_CODE_INVALID` | `400` | The invite code is malformed or does not exist. | Check the code and retry. |
+| `INVITE_NOT_ENABLED` | `400` | An invite code was supplied but invite-code registration is disabled. | Remove the invite code field. |
 | `FORBIDDEN` | `403` | This site does not allow registration. | Contact the administrator. |
 | `ALREADY_EXISTS` | `409` | The username or email is already registered. | Choose another username or email. |
 
@@ -165,7 +186,7 @@ curl -X POST https://{domain}/api/auth/register \
 
 ### Log in
 
-Authenticates a user and sets an HttpOnly `auth_token` cookie for 7 days.
+Authenticates a user and sets an HttpOnly `auth_token` cookie for 7 days. The login identifier (the `username` field) accepts **either a username or an email address**, with surrounding whitespace trimmed.
 
 `POST /api/auth/login`
 
@@ -173,8 +194,10 @@ Authenticates a user and sets an HttpOnly `auth_token` cookie for 7 days.
 
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `username` | `string` | Yes | The username. |
+| `username` | `string` | Yes | Login identifier: **username or email**. Usernames match exactly (case-sensitive); values containing `@` match the email column **case-insensitively** (both `Li.Mixed@x.com` and `li.mixed@x.com` work). The field keeps the name `username` for compatibility with existing clients. |
 | `password` | `string` | Yes | The password. |
+
+> An unknown identifier and a wrong password return the **same** `401 INVALID_CREDENTIALS` ("invalid username or password"), so the endpoint never reveals whether an account exists.
 
 #### Response
 
@@ -380,6 +403,81 @@ Sets a new password with the token from the reset link. A successful reset revok
 | Error Code | HTTP Status | Cause | Recommended Action |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | The token is invalid, expired, or the password is too short. | Request a new reset link. |
+
+### Third-party login (SSO / OIDC)
+
+The third-party login entry point and callback are both **browser-redirect** endpoints (success `302`s to a frontend page; failure `302`s back to `/login?sso_error=<error code>`),
+not JSON APIs; only the two endpoints the supplementary-registration page depends on are JSON. Providers are configured by an administrator under "System Settings → Registration → OIDC Settings"
+(Google and GitHub each allow only one; custom OIDC providers are unlimited); when the master switch is off, every entry point is rejected.
+
+#### Start login
+
+`GET /api/auth/sso/{id}/start`
+
+Generates `state` + PKCE (`code_challenge`, S256) + OIDC `nonce` (written to KV, 10 minutes), then `302`s to the provider's authorization endpoint.
+
+| Parameter | Location | Description |
+| :--- | :--- | :--- |
+| `id` | Path | The provider id, taken from `sso.providers` in `GET /api/public/settings`. |
+
+On failure (such as `SSO_DISABLED`, `SSO_PROVIDER_NOT_FOUND`) it `302`s to `{site URL}/login?sso_error=<error code>`.
+
+#### Authorization callback
+
+`GET /api/auth/sso/{id}/callback?code=&state=`
+
+**The `sso_tx` binding cookie written at initiation must be present** (set by `/start`, value = `state`, HttpOnly + `SameSite=Lax` + Path limited to `/api/auth/sso`); if missing or mismatched it returns `SSO_STATE_INVALID`. This binding locks the authorization transaction to the browser that initiated it, preventing the login CSRF / session fixation caused by "an attacker completes the authorization and hands the callback link to the victim" (`state` is invalidated the moment the callback request arrives, regardless of whether the later checks pass).
+
+`code` exchange for token → verify `id_token` (JWKS local signature verification + `iss`/`aud`/`nonce`; GitHub does not issue `id_token`, so instead it fetches the primary and verified email from `/user` and `/user/emails`) → settles in this order:
+
+1. `(provider_id, subject)` already linked → sign in directly, `302` to `{site URL}/files` (and refresh credentials and profile snapshot).
+2. This provider has **`trustEmailVerified` enabled** and the provider's **verified** email hits an existing account (compared case-insensitively) → link automatically and sign in, `302` to `/files` (setting `email_verified=1` along the way, and writing an `sso_link` audit); for `kind=oidc` providers this switch defaults to off.
+3. Otherwise → `302` to `{site URL}/sso/complete?token=<one-time token>` (valid 15 minutes), and writes the `sso_pending` binding cookie.
+
+Failures always `302` to `/login?sso_error=<error code>`. The callback URL must be registered in the provider backend:
+`{site URL}/api/auth/sso/{id}/callback` (the admin provider list offers a copyable value).
+
+#### Read the pending profile
+
+`GET /api/auth/sso/pending?token=<one-time token>`
+
+**The `sso_pending` binding cookie written by the callback must be present** (value = that pending token); if missing or mismatched it returns `SSO_PENDING_INVALID`. After the provider is disabled or deleted it likewise returns `SSO_PROVIDER_NOT_FOUND`.
+
+Response `data` fields: `providerId` / `providerName` / `kind` / `email` / `emailVerified` / `username` / `displayName` / `avatarUrl` / `emailVerificationRequired` / `inviteEnabled` / `inviteRequired` (no tokens included).
+
+`emailVerificationRequired` determination (for the frontend to decide whether to render the code row): the provider **verified the email in the pending profile** → `false` (email ownership proven); otherwise the site has email verification enabled **or** the site has sending capability (`smtp_host` configured) → `true`. Note that the basis is always **the email about to be submitted this time** — when the user changes the email to a different address (at `/complete` the submitted value differs from the provider-verified email), the server still requires a code, and the frontend should show the code row accordingly.
+
+#### Complete supplementary registration
+
+`POST /api/auth/sso/complete`
+
+**The `sso_pending` binding cookie must be present** (missing/mismatched → `SSO_PENDING_INVALID`): the token is no longer a bare URL capability that a third party can forward. The account details are **filled in by the user** (the provider profile is not reused; the frontend can one-click prefill the email and username with "use the info provided by …"):
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `token` | `string` | Yes | The one-time token from `pending` (must match the `sso_pending` cookie). |
+| `username` | `string` | Yes | 3-20 letters/digits/underscores, same rules as `POST /api/auth/register`. |
+| `password` | `string` | Yes | At least 8 characters. |
+| `email` | `string` | Yes | The email; the verification code is sent to this address. Uniqueness is checked **case-insensitively** (case variants of the same email cannot create a second account). |
+| `emailCode` | `string` | Conditional | **Required when the submitted email differs from the provider-verified email** (the provider verifying email A cannot waive the code for email B); the code shares `POST /api/auth/register/send-otp` and the same storage with registration (one-time consumption). |
+| `inviteCode` | `string` | Conditional | Required when invite-code registration is enabled and mandatory, with the same semantics and error codes as `POST /api/auth/register`. |
+
+Success `201`: `data.user` / `data.quota`, and issues a JWT Cookie **exactly the same** as password login (`auth_token`, HttpOnly + SameSite=Strict, 7 days); it also creates the identity link (`sso_identities`: provider profile snapshot + `access_token` / `refresh_token`, both stored as `enc:` ciphertext). The pending token and the `sso_pending` cookie are invalidated immediately after a successful submission.
+
+Failure: the registration switch and invite-code gating follow the registration chain (`REGISTRATION_DISABLED` / `INVITE_*`), plus the `SSO_PENDING_INVALID`, `INVALID_OTP`, and `ALREADY_EXISTS` from the table above (`ALREADY_EXISTS`: the email already belongs to an existing account and this provider has not enabled `trustEmailVerified` auto-linking — prompt the user to sign in with a password instead).
+
+#### Example
+
+```sh
+# 1) Open directly in a browser (it 302s to the provider): {domain}/api/auth/sso/{id}/start
+# 2) After the callback, read the pending profile (needs the sso_pending binding cookie)
+curl "https://{domain}/api/auth/sso/pending?token=..." -b cookies.txt
+# 3) Submit supplementary registration (completes the login; also needs the sso_pending binding cookie)
+curl -X POST https://{domain}/api/auth/sso/complete \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"token":"...","username":"alice","email":"alice@example.com","password":"secret123","emailCode":"123456"}'
+```
 
 ## Files
 
@@ -2274,6 +2372,92 @@ curl -X DELETE https://{domain}/api/keys/{id} \
   -b cookies.txt
 ```
 
+## Invite codes
+
+Invite-code endpoints generate codes and list redemption records. They pair with the "Registration" group of system settings: `inviteEnabled` toggles the mechanism, `inviteRequired` makes codes mandatory, `inviteGeneration` (`all_users` / `admin_only`) decides who may generate codes, and `inviteMaxPerUser` (default 5) caps each user's cumulative count. Codes are 6 digits/uppercase letters (`[0-9A-Z]{6}`, crypto-random, unique constraint with collision retry, case-sensitive matching); one code can be redeemed by many users, with no usage cap or expiry. Both endpoints are gated by the generation permission: non-admins get `403` under `admin_only`.
+
+### Generate invite codes
+
+Generates invite codes in one batch; `name` is an optional label shared by the batch. Rejected when the cumulative count (existing + this batch) exceeds the limit.
+
+`POST /api/invites`
+
+#### Request body
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `count` | `integer` | No | How many codes to generate, 1 to 10, default 1. |
+| `name` | `string` | No | Label, at most 50 characters; an empty string counts as unset. |
+
+#### Response
+
+Returns the newly created codes with status `201`.
+
+```json
+{
+  "success": true,
+  "data": {
+    "codes": [
+      { "id": "uuid", "code": "A1B2C3", "name": "Teammates", "createdAt": 1710000000000 }
+    ]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### Errors
+
+| Error Code | HTTP Status | Cause | Recommended Action |
+| :--- | :--- | :--- | :--- |
+| `FORBIDDEN` | `403` | Generation is admin-only and the caller is not an admin. | Ask an admin to generate codes, or change `inviteGeneration`. |
+| `INVITE_LIMIT` | `403` | The cumulative count reached `inviteMaxPerUser`. | Raise the limit or reuse existing codes. |
+| `VALIDATION_ERROR` | `400` | `count` / `name` violates the format rules. | Correct the fields and retry. |
+
+#### Example
+
+```sh
+curl -X POST https://{domain}/api/invites \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"count":2,"name":"Batch one"}'
+```
+
+### List my invite codes
+
+Returns your own codes (newest first) with invited users aggregated per code (username, code used, registration time).
+
+`GET /api/invites`
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "codes": [
+      {
+        "id": "uuid",
+        "code": "A1B2C3",
+        "name": "Teammates",
+        "createdAt": 1710000000000,
+        "invitedUsers": [
+          { "username": "bob", "code": "A1B2C3", "registeredAt": 1710000600000 }
+        ]
+      }
+    ],
+    "max": 5
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### Example
+
+```sh
+curl https://{domain}/api/invites -b cookies.txt
+```
+
 ## Admin
 
 Admin endpoints manage users, shares, files, logs, settings, announcements, storage providers, mounts, and permission rules. All of them require an administrator session.
@@ -2517,6 +2701,7 @@ Lists, updates, and deletes users.
 | `maxStorage` | `integer` | No | The storage quota in bytes. |
 | `maxFiles` | `integer` | No | The file-count quota. |
 | `capabilities` | `string[]` | No | Capability bits, replaced wholesale: `can_publish`, `can_share`, `can_grant`. |
+| `password` | `string` | No | Resets the user's password (recovery / forced reset). An empty string or omission changes nothing; a non-empty value must be 8–128 characters. After the reset the user's **issued JWTs stop working immediately** (`session_version` is bumped, same semantics as a self-service password change) and they must sign in again; every reset writes an `admin_password_reset` audit entry (never containing the password). |
 
 #### List response
 
@@ -2524,7 +2709,17 @@ Lists, updates, and deletes users.
 {
   "success": true,
   "data": {
-    "users": [{ "id": "user-uuid", "username": "alice", "role": "user", "status": "active", "quota": {} }],
+    "users": [
+      {
+        "id": "user-uuid",
+        "username": "alice",
+        "role": "user",
+        "status": "active",
+        "invitedBy": "inv_admin",
+        "inviteCode": "A1B2C3",
+        "quota": {}
+      }
+    ],
     "pagination": { "total": 12, "page": 1, "limit": 20, "pages": 1 }
   },
   "timestamp": 1710000000000
@@ -2844,6 +3039,11 @@ All fields are optional.
 | `allowRegistration` | `boolean` | No | Allow new user registration. |
 | `allowGuestAccess` | `boolean` | No | Allow guest access. |
 | `requireEmailVerification` | `boolean` | No | Require email verification on registration. |
+| `inviteEnabled` | `boolean` | No | Enable invite-code registration ("Registration" group). |
+| `inviteRequired` | `boolean` | No | Whether the invite code is mandatory once enabled; mandatory = no registration without a code. |
+| `inviteGeneration` | `string` | No | Who may generate invite codes: `all_users` (default) or `admin_only`. |
+| `inviteMaxPerUser` | `integer` | No | Per-user cumulative invite-code cap, 1 to 100, default 5. |
+| `ssoEnabled` | `boolean` | No | Whether to enable the third-party login (SSO / OIDC) master switch; when off, the login page shows no providers and all `/api/auth/sso/*` endpoints are rejected. Providers themselves are configured in the "OIDC Settings" dialog (`/api/admin/sso/providers`). |
 | `rateLimitEnabled` | `boolean` | No | Enable rate limiting. |
 | `rateLimitRequestsPerMinute` | `integer` | No | Requests per minute, 1 to 10000. Takes effect in production only: the value applies per IP, signed-in users get ×2, the server pins auth endpoints such as sign-in and sign-up at 5 per minute, and free mode allows 60 per session and 120 per user per minute. |
 | `maxConcurrentTransfers` | `integer` | No | Maximum concurrent transfers, 0 to 1000, default 4, where `0` means unlimited. Caps in-flight requests per user (per IP when signed out) across every upload channel and the download gateway, and returns `429 CONCURRENCY_LIMIT_EXCEEDED` beyond it. |
@@ -2860,6 +3060,17 @@ All fields are optional.
 | `emailEnabled` | `boolean` | No | Enable email service. |
 | `auditLogLevel` | `string` | No | Audit log level: `all` (everything), `essential` (skip successful downloads/reads; failures always logged), `security` (auth/admin/failures only). |
 | `auditLogItems` | `array` | No | Logged item groups (multi-select): `auth` / `upload` / `download` / `share` / `admin` / `failure`. Stored as a JSON array; level and items apply together and take effect immediately after saving. |
+| `statsSource` | `string` | No | Access statistics source: `d1` (gateway audit log, default) or `umami` (frontend behavior statistics). With `umami`, the script URL and Website ID must already be validly configured, otherwise `400`. |
+| `umamiEnabled` | `boolean` | No | Umami kill switch (applies when `statsSource=umami`). |
+| `umamiScriptUrl` | `string` | No | Umami tracker script URL. Self-hosted `https://<instance>/script.js`; Umami Cloud `https://cloud.umami.is/script.js`. The only configurable script execution surface in the site, validated on write: `http(s):` only, no embedded credentials, no fragment, length ≤500; `http` is limited to loopback hosts (local development), everything else must be `https`. |
+| `umamiWebsiteId` | `string` | No | Umami website ID (`data-website-id`); must be a UUID. |
+| `umamiHostUrl` | `string` | No | Collection endpoint override (`data-host-url`); same validation as `umamiScriptUrl`. Empty string clears it. |
+| `umamiDomains` | `string` | No | Domain allowlist (`data-domains`), comma-separated bare hostnames (no scheme/path/port), each ≤253 characters. |
+| `umamiPerformance` | `boolean` | No | Collect performance metrics (`data-performance`, Core Web Vitals). |
+| `umamiExcludeSearch` | `boolean` | No | Exclude search parameters (`data-exclude-search`). |
+| `umamiDoNotTrack` | `boolean` | No | Respect the browser Do Not Track setting (`data-do-not-track`). |
+
+Changes to any access-statistics key are written to the audit log (`action=settings_update`, keys only, never values).
 
 #### Example
 
@@ -2945,6 +3156,44 @@ curl -X POST https://{domain}/api/admin/announcements \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
   -d '{"title":"Maintenance","content":"Downtime on Saturday","level":"warning","displayMode":"daily","kind":"banner"}'
+```
+
+### Manage third-party login providers
+
+Configures third-party login (SSO / OIDC) providers. `client_secret` is stored as AES-256-GCM ciphertext; read endpoints return only the mask `******`.
+
+`GET /api/admin/sso/providers`
+
+`POST /api/admin/sso/providers`
+
+`PATCH /api/admin/sso/providers/{id}`
+
+`DELETE /api/admin/sso/providers/{id}`
+
+#### Fields
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `kind` | `string` | On create | `google` / `github` / `oidc`. The first two use built-in endpoints and each allows only one (the second returns `409 SSO_PROVIDER_EXISTS`); `oidc` is unlimited. Immutable after creation. |
+| `name` | `string` | Yes | The display name (login-page button text), 1-50 characters. |
+| `issuerUrl` | `string` | Conditional | Required for `kind=oidc`: the OIDC discovery base URL (e.g. `https://idp.example.com`). Production requires a public http(s) host, ports 80/443, non-private/non-loopback, with no query string or embedded credentials; non-production additionally allows loopback hosts and arbitrary ports (local IdP integration). |
+| `clientId` | `string` | Yes | The Client ID issued by the provider. |
+| `clientSecret` | `string` | On create | The Client Secret issued by the provider; on update, passing `''` or `******` keeps the current value. |
+| `scopes` | `string` | No | Space-separated scopes; empty means the type default (OIDC: `openid email profile`; GitHub: `read:user user:email`). |
+| `enabled` | `boolean` | No | Per-provider switch (default `true`); the site master switch is the `ssoEnabled` system setting (`sso_enabled`). |
+| `trustEmailVerified` | `boolean` | No | Whether to trust the email verification declared by the provider (used to **auto-link existing accounts**). Defaults: `google` / `github` = `true`, `oidc` = `false`. Only enable it when this provider truly verifies emails; once enabled, when a user signs in with this provider and the provider email is verified, they go straight into the existing account matching that email (local `users.email` compared case-insensitively), and an `sso_link` audit is written. |
+
+The `redirectUri` in the response is the callback URL that **must be registered in the provider backend** (= `{site URL}/api/auth/sso/{id}/callback`).
+Deleting a provider cascades to delete its identity links (users and files are unaffected); after re-adding the same provider, a fresh login is required.
+
+#### Example
+
+```sh
+curl -X POST https://{domain}/api/admin/sso/providers \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"kind":"oidc","name":"Company SSO","issuerUrl":"https://idp.example.com","clientId":"picumet","clientSecret":"s3cret"}'
 ```
 
 ### Manage storage providers
@@ -3375,7 +3624,7 @@ Public endpoints require no authentication.
 
 ### Get public settings
 
-Returns site-wide settings for the landing page and login screen.
+Returns site-wide settings for the landing page, login screen, and registration form (including invite-code gating).
 
 `GET /api/public/settings`
 
@@ -3391,11 +3640,42 @@ Returns site-wide settings for the landing page and login screen.
     "siteFavicon": null,
     "allowGuestAccess": false,
     "allowRegistration": true,
-    "requireEmailVerification": false
+    "requireEmailVerification": false,
+    "inviteEnabled": false,
+    "inviteRequired": false,
+    "inviteGeneration": "all_users",
+    "sso": { "enabled": false, "providers": [] },
+    "umami": null
   },
   "timestamp": 1710000000000
 }
 ```
+
+`sso` is the public face of third-party login: when the master switch is off it is `{ "enabled": false, "providers": [] }`; once enabled, `providers` lists the **enabled** providers (only `id` / `kind` / `name`, no credentials), and the login page renders "Continue with …" buttons from it in order:
+
+```json
+{
+  "enabled": true,
+  "providers": [{ "id": "83d34fbc-7860-47c6-b6ac-d766b8e06a0d", "kind": "oidc", "name": "Company SSO" }]
+}
+```
+
+`umami` carries the tracker configuration when the access-statistics source is `umami`, the switch is on, and the script URL / Website ID pass re-validation (the frontend injects it); otherwise it is `null` (nothing is injected):
+
+```json
+{
+  "enabled": true,
+  "scriptUrl": "https://umami.example.com/script.js",
+  "websiteId": "94db1cb1-74f4-4a40-ad6c-962362670409",
+  "hostUrl": "https://stats.example.com",
+  "domains": "example.com",
+  "performance": true,
+  "excludeSearch": true,
+  "doNotTrack": false
+}
+```
+
+The frontend injects exactly six whitelisted attributes (`data-website-id` / `data-host-url` / `data-domains` / `data-performance` / `data-exclude-search` / `data-do-not-track`) via `document.createElement` + `setAttribute`; the tracker records SPA route-change pageviews automatically.
 
 #### Example
 

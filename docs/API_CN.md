@@ -96,6 +96,23 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 | `PASSWORD_REQUIRED` | `403` | 文件受密码保护，且密码未通过验证。 | 先调用密码验证端点。 |
 | `NOT_FOUND` | `404` | 资源、文件、挂载点或路径不存在。 | 核对标识或路径后重试。 |
 | `INVALID_PATH` | `400` | 路径非法（未以 `/` 开头、包含 `..` / `~`、越界），或命中上传文件类型黑名单（消息如「禁止上传 .exe 文件」）。 | 修正路径，或更换文件类型。 |
+| `INVITE_NOT_ENABLED` | `400` | 注册请求携带邀请码，但站点未开启邀请码注册。 | 移除邀请码字段后重试。 |
+| `INVITE_CODE_REQUIRED` | `400` | 站点开启邀请码且必填，注册请求未携带邀请码。 | 填写有效邀请码。 |
+| `INVITE_CODE_FORMAT` | `400` | 邀请码格式无效（须为 6 位数字或大写字母，匹配区分大小写）。 | 核对码值后重试。 |
+| `INVITE_CODE_INVALID` | `400` | 邀请码不存在。 | 向邀请人确认码值。 |
+| `INVITE_LIMIT` | `403` | 邀请码累计数量达到上限（系统设置 `invite_max_per_user`，默认 5）。 | 联系管理员提高上限或使用已有码。 |
+| `SSO_DISABLED` | `403` | 站点未启用第三方登录（系统设置 `sso_enabled=false`）。 | 联系管理员开启。 |
+| `SSO_PROVIDER_NOT_FOUND` | `404` | 登录来源不存在或已停用。 | 从登录页重新发起。 |
+| `SSO_PROVIDER_EXISTS` | `409` | Google / GitHub 来源已存在（两者各只能配置一个）。 | 编辑或删除既有来源。 |
+| `SSO_STATE_INVALID` | `400` | 授权会话缺失 / 过期 / 与来源不匹配，或 `state` 已被使用。 | 重新点击第三方登录按钮。 |
+| `SSO_PENDING_INVALID` | `400` | 补充注册会话缺失、过期或已消费。 | 重新点击第三方登录按钮。 |
+| `SSO_CANCELLED` | `400` | 用户在提供方处取消或拒绝授权。 | 重新发起登录。 |
+| `SSO_ID_TOKEN_INVALID` | `401` | `id_token` 验签失败（签名 / `iss` / `aud` / 时间窗）。 | 检查来源配置是否正确。 |
+| `SSO_NONCE_MISMATCH` | `401` | `id_token` 的 `nonce` 与本次授权不一致（重放防护）。 | 重新发起登录。 |
+| `SSO_TOKEN_FAILED` / `SSO_PROFILE_FAILED` / `SSO_PROFILE_INVALID` / `SSO_DISCOVERY_FAILED` / `SSO_DISCOVERY_MISMATCH` / `SSO_DISCOVERY_INVALID` / `SSO_JWKS_FAILED` / `SSO_UPSTREAM_REDIRECT` | `502` | 身份提供商侧失败（换 token、取用户信息、discovery、JWKS），或端点返回 3xx 重定向（按安全策略拒绝跟随）。 | 稍后重试或核对来源配置。 |
+| `SSO_SECRET_UNAVAILABLE` | `500` | 该来源的 Client Secret 无法解密（通常因更换了 `ENCRYPTION_KEY`）。 | 在管理端重新保存该来源密钥。 |
+| `SSO_ACCOUNT_DISABLED` | `403` | 第三方身份关联到已被禁用的账号。 | 联系管理员。 |
+| `REGISTRATION_DISABLED` | `403` | 站点关闭注册（`allow_registration=false`），无法补充注册。 | 联系管理员。 |
 | `ALREADY_EXISTS` | `409` | 同名文件或文件夹已存在。 | 换一个名称。 |
 | `OPERATION_FAILED` | `409` / `422` | 当前状态不允许执行该操作。 | 查看错误说明后重试。 |
 | `SHARE_EXPIRED` | `410` | 分享链接已过期。 | 请创建者重新生成。 |
@@ -114,7 +131,7 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 
 ### 注册用户
 
-创建用户账号。站点开启邮箱验证时，会向邮箱发送验证链接。
+创建用户账号。站点开启邮箱验证时，会向邮箱发送验证链接。站点开启邀请码注册（系统设置 `inviteEnabled`）时按 `inviteRequired` 语义校验：必填时无码不可注册，选填时给了才校验，未开启时不接受邀请码；核销（`users.invited_by_code_id`）与建号在同一事务内原子完成。
 
 `POST /api/auth/register`
 
@@ -125,6 +142,7 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 | `username` | `string` | 是 | 3 到 20 个字符，只能包含字母、数字、下划线。 |
 | `password` | `string` | 是 | 至少 8 位，最多 128 位。 |
 | `email` | `string` | 是 | 合法邮箱地址。 |
+| `inviteCode` | `string` | 条件 | 邀请码（`[0-9A-Z]{6}`，区分大小写）。站点开启邀请码且必填时必传；开启但非必填时选传；未开启时不得携带。 |
 
 #### 响应
 
@@ -152,6 +170,9 @@ API 密钥是不透明令牌，格式为 `pk_{24 位}.sk_{48 位}`。服务端�
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | 字段不符合格式要求。 | 修正字段后重试。 |
+| `INVITE_CODE_REQUIRED` | `400` | 站点开启邀请码且必填，未携带邀请码。 | 填写有效邀请码。 |
+| `INVITE_CODE_FORMAT` / `INVITE_CODE_INVALID` | `400` | 邀请码格式无效或不存在。 | 核对码值后重试。 |
+| `INVITE_NOT_ENABLED` | `400` | 携带邀请码但站点未开启邀请码注册。 | 移除邀请码字段。 |
 | `FORBIDDEN` | `403` | 站点已关闭注册。 | 联系管理员。 |
 | `ALREADY_EXISTS` | `409` | 用户名或邮箱已被注册。 | 换一个用户名或邮箱。 |
 
@@ -165,7 +186,7 @@ curl -X POST https://{domain}/api/auth/register \
 
 ### 登录
 
-验证用户身份，并设置有效期 7 天的 HttpOnly `auth_token` Cookie。
+验证用户身份，并设置有效期 7 天的 HttpOnly `auth_token` Cookie。登录标识（`username` 字段）**用户名或邮箱皆可**，两端空白自动裁剪。
 
 `POST /api/auth/login`
 
@@ -173,8 +194,10 @@ curl -X POST https://{domain}/api/auth/register \
 
 | 字段 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `username` | `string` | 是 | 用户名。 |
+| `username` | `string` | 是 | 登录标识：**用户名或邮箱**。用户名按精确匹配（大小写敏感）；含 `@` 时按邮箱匹配且**大小写无关**（`Li.Mixed@x.com` 与 `li.mixed@x.com` 均可）。字段名沿用 `username` 以兼容既有客户端。 |
 | `password` | `string` | 是 | 密码。 |
+
+> 标识不存在与密码错误回**同一** `401 INVALID_CREDENTIALS`「用户名或密码错误」，不泄露账号是否存在。
 
 #### 响应
 
@@ -380,6 +403,81 @@ curl -X POST https://{domain}/api/auth/forgot-password \
 | 错误码 | HTTP 状态 | 原因 | 处理建议 |
 | :--- | :--- | :--- | :--- |
 | `VALIDATION_ERROR` | `400` | 令牌无效、已过期，或密码过短。 | 重新申请重置链接。 |
+
+### 第三方登录（SSO / OIDC）
+
+第三方登录的入口与回调都是**浏览器跳转**端点（成功 `302` 落到前端页面，失败 `302` 回 `/login?sso_error=<错误码>`），
+不是 JSON 接口；只有补充注册页依赖的两个端点是 JSON。来源由管理员在「系统设置 → 注册设置 → OIDC 设置」配置
+（Google 与 GitHub 各只能配置一个，自定义 OIDC 数量不限）；总开关关闭时全部入口拒绝。
+
+#### 发起登录
+
+`GET /api/auth/sso/{id}/start`
+
+生成 `state` + PKCE（`code_challenge`，S256）+ OIDC `nonce`（写 KV，10 分钟）后 `302` 跳转到提供方授权端点。
+
+| 参数 | 位置 | 说明 |
+| :--- | :--- | :--- |
+| `id` | 路径 | 来源 id，取自 `GET /api/public/settings` 的 `sso.providers`。 |
+
+失败（如 `SSO_DISABLED`、`SSO_PROVIDER_NOT_FOUND`）`302` 到 `{站点地址}/login?sso_error=<错误码>`。
+
+#### 授权回调
+
+`GET /api/auth/sso/{id}/callback?code=&state=`
+
+**必须携带发起时写入的 `sso_tx` 绑定 Cookie**（`/start` 下发，值 = `state`，HttpOnly + `SameSite=Lax` + Path 限 `/api/auth/sso`）；缺失或不匹配返回 `SSO_STATE_INVALID`。这层绑定把授权事务锁在发起它的浏览器上，防止「攻击者跑完授权、把回调链接丢给受害者」导致的登录 CSRF / 会话固定（`state` 在回调请求到达时即作废，无论后续校验是否通过）。
+
+`code` 换 token → 校验 `id_token`（JWKS 本地验签 + `iss`/`aud`/`nonce`；GitHub 不签发 `id_token`，改取 `/user` 与 `/user/emails` 的 primary 且 verified 邮箱）→ 按下列顺序落定：
+
+1. `(provider_id, subject)` 已关联 → 直接登录，`302` 到 `{站点地址}/files`（并刷新凭据与档案快照）。
+2. 该来源 **`trustEmailVerified` 开启** 且提供方**已验证**的邮箱命中既有账号（比较大小写无关）→ 自动关联并登录，`302` 到 `/files`（顺带补 `email_verified=1`，并写 `sso_link` 审计）；`kind=oidc` 的来源该开关默认关闭。
+3. 其余 → `302` 到 `{站点地址}/sso/complete?token=<一次性令牌>`（15 分钟有效），并写入 `sso_pending` 绑定 Cookie。
+
+失败一律 `302` 到 `/login?sso_error=<错误码>`。回调地址必须在提供方后台登记：
+`{站点地址}/api/auth/sso/{id}/callback`（管理端来源列表内提供可复制值）。
+
+#### 读取待填档案
+
+`GET /api/auth/sso/pending?token=<一次性令牌>`
+
+**必须携带回调写入的 `sso_pending` 绑定 Cookie**（值 = 该待办令牌）；缺失或不匹配返回 `SSO_PENDING_INVALID`。来源被停用或删除后同样返回 `SSO_PROVIDER_NOT_FOUND`。
+
+响应 `data` 字段：`providerId` / `providerName` / `kind` / `email` / `emailVerified` / `username` / `displayName` / `avatarUrl` / `emailVerificationRequired` / `inviteEnabled` / `inviteRequired`（不含任何令牌）。
+
+`emailVerificationRequired` 判定（供前端决定是否渲染验证码行）：提供方**验证过待填档案里的那个邮箱** → `false`（邮箱控制权已证明）；否则站点开启邮箱验证**或**站点具备发信能力（`smtp_host` 已配置）→ `true`。注意判定基准始终是**本次要提交的邮箱**——用户把邮箱改成别的地址时（`/complete` 时提交值与提供方已验证邮箱不一致），服务端仍会要求验证码，前端应据此显示验证码行。
+
+#### 完成补充注册
+
+`POST /api/auth/sso/complete`
+
+**必须携带 `sso_pending` 绑定 Cookie**（缺失/不匹配 → `SSO_PENDING_INVALID`）：令牌不再是可以被第三方转发的裸 URL 能力。账号资料由用户**自行填写**（不复用提供方档案；前端可用「使用 … 提供的信息」一键预填邮箱与用户名）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `token` | `string` | 是 | `pending` 的一次性令牌（须与 `sso_pending` Cookie 一致）。 |
+| `username` | `string` | 是 | 3-20 位字母/数字/下划线，与 `POST /api/auth/register` 同规则。 |
+| `password` | `string` | 是 | 至少 8 位。 |
+| `email` | `string` | 是 | 邮箱；验证码发往该地址。查重**大小写无关**（同一邮箱的大小写变体不能建出第二个账号）。 |
+| `emailCode` | `string` | 条件 | **提交的邮箱与提供方已验证邮箱不一致时必填**（提供方验证过 A 邮箱不能免掉 B 邮箱的验证码）；与注册共用 `POST /api/auth/register/send-otp` 与同一存储（一次性消费）。 |
+| `inviteCode` | `string` | 条件 | 站点开启邀请码注册且必填时必填，语义与错误码同 `POST /api/auth/register`。 |
+
+成功 `201`：`data.user` / `data.quota`，并下发与密码登录**完全相同**的 JWT Cookie（`auth_token`，HttpOnly + SameSite=Strict，7 天）；同时建立身份关联（`sso_identities`：提供方档案快照 + `access_token` / `refresh_token`，均以 `enc:` 密文存储）。提交成功后待办令牌与 `sso_pending` Cookie 立即失效。
+
+失败：注册开关与邀请码门控同注册链路（`REGISTRATION_DISABLED` / `INVITE_*`），以及上表的 `SSO_PENDING_INVALID`、`INVALID_OTP`、`ALREADY_EXISTS`（邮箱已属于既有账号且该来源未开启 `trustEmailVerified` 自动关联时，提示改用密码登录）。
+
+#### 示例
+
+```sh
+# 1) 浏览器直接打开（会 302 到提供方）：{domain}/api/auth/sso/{id}/start
+# 2) 回调后读取待填档案（需带 sso_pending 绑定 Cookie）
+curl "https://{domain}/api/auth/sso/pending?token=..." -b cookies.txt
+# 3) 提交补充注册（完成即登录；同样需带 sso_pending 绑定 Cookie）
+curl -X POST https://{domain}/api/auth/sso/complete \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"token":"...","username":"alice","email":"alice@example.com","password":"secret123","emailCode":"123456"}'
+```
 
 ## 文件管理
 
@@ -2274,6 +2372,92 @@ curl -X DELETE https://{domain}/api/keys/{id} \
   -b cookies.txt
 ```
 
+## 邀请码
+
+邀请码端点负责生成邀请码与查看受邀记录。与系统设置「注册设置」分组配合：`inviteEnabled` 开关、`inviteRequired` 必填语义、`inviteGeneration`（`all_users` / `admin_only`）决定谁可生成、`inviteMaxPerUser`（默认 5）限制每用户累计生成数量。码值为 6 位数字或大写字母（`[0-9A-Z]{6}`，crypto 随机生成，唯一约束 + 碰撞重试，匹配区分大小写）；同一邀请码可被多人核销，不设使用上限与过期。两个端点均按生成权限门禁：`admin_only` 时非管理员返回 `403`。
+
+### 生成邀请码
+
+批量生成邀请码；`name` 为可选备注（同批共用）。累计数量（既有 + 本批）超过上限时拒绝。
+
+`POST /api/invites`
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `count` | `integer` | 否 | 生成数量，1 到 10，默认 1。 |
+| `name` | `string` | 否 | 备注名称，最长 50 字符；空串视同未填。 |
+
+#### 响应
+
+返回新建的邀请码，状态码 `201`。
+
+```json
+{
+  "success": true,
+  "data": {
+    "codes": [
+      { "id": "uuid", "code": "A1B2C3", "name": "同事用", "createdAt": 1710000000000 }
+    ]
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### 错误
+
+| 错误码 | HTTP 状态 | 原因 | 处理建议 |
+| :--- | :--- | :--- | :--- |
+| `FORBIDDEN` | `403` | 生成权限为「仅管理员」且调用者不是管理员。 | 由管理员生成，或调整 `inviteGeneration`。 |
+| `INVITE_LIMIT` | `403` | 累计数量达到 `inviteMaxPerUser` 上限。 | 提高上限或使用已有邀请码。 |
+| `VALIDATION_ERROR` | `400` | `count` / `name` 不符合格式。 | 修正字段后重试。 |
+
+#### 示例
+
+```sh
+curl -X POST https://{domain}/api/invites \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"count":2,"name":"批次一"}'
+```
+
+### 列出我的邀请码
+
+返回自己生成的邀请码（按创建时间倒序）与按码聚合的受邀用户（用户名、所用邀请码、注册时间）。
+
+`GET /api/invites`
+
+#### 响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "codes": [
+      {
+        "id": "uuid",
+        "code": "A1B2C3",
+        "name": "同事用",
+        "createdAt": 1710000000000,
+        "invitedUsers": [
+          { "username": "bob", "code": "A1B2C3", "registeredAt": 1710000600000 }
+        ]
+      }
+    ],
+    "max": 5
+  },
+  "timestamp": 1710000000000
+}
+```
+
+#### 示例
+
+```sh
+curl https://{domain}/api/invites -b cookies.txt
+```
+
 ## 管理员
 
 管理员端点负责用户、分享、文件、日志、系统设置、公告、存储提供商、挂载点和权限规则的管理。全部需要管理员会话。
@@ -2517,6 +2701,7 @@ curl "https://{domain}/api/admin/dashboard/mount-folders?mountId={mount_id}&prov
 | `maxStorage` | `integer` | 否 | 存储配额，单位字节。 |
 | `maxFiles` | `integer` | 否 | 文件数量配额。 |
 | `capabilities` | `string[]` | 否 | 能力位，全量覆盖：`can_publish`、`can_share`、`can_grant`。 |
+| `password` | `string` | 否 | 管理员重置该用户密码（找回密码 / 强制重置）。留空串或不传 = 不修改；非空须为 8–128 位。改密后该用户的**已签发 JWT 立即失效**（递增 `session_version`，与用户自助改密同语义），需重新登录；每次改密写一条 `admin_password_reset` 审计（不含密码内容）。 |
 
 #### 列表响应
 
@@ -2524,7 +2709,17 @@ curl "https://{domain}/api/admin/dashboard/mount-folders?mountId={mount_id}&prov
 {
   "success": true,
   "data": {
-    "users": [{ "id": "user-uuid", "username": "alice", "role": "user", "status": "active", "quota": {} }],
+    "users": [
+      {
+        "id": "user-uuid",
+        "username": "alice",
+        "role": "user",
+        "status": "active",
+        "invitedBy": "inv_admin",
+        "inviteCode": "A1B2C3",
+        "quota": {}
+      }
+    ],
     "pagination": { "total": 12, "page": 1, "limit": 20, "pages": 1 }
   },
   "timestamp": 1710000000000
@@ -2840,6 +3035,11 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 | `allowRegistration` | `boolean` | 否 | 是否允许注册。 |
 | `allowGuestAccess` | `boolean` | 否 | 是否允许游客访问。 |
 | `requireEmailVerification` | `boolean` | 否 | 注册是否需要邮箱验证。 |
+| `inviteEnabled` | `boolean` | 否 | 是否开启邀请码注册（「注册设置」分组）。 |
+| `inviteRequired` | `boolean` | 否 | 开启后邀请码是否必填；必填 = 无码不可注册。 |
+| `inviteGeneration` | `string` | 否 | 邀请码生成权限：`all_users`（全部用户，默认）或 `admin_only`（仅管理员）。 |
+| `inviteMaxPerUser` | `integer` | 否 | 每用户累计可生成的邀请码数量上限，范围 1 到 100，默认 5。 |
+| `ssoEnabled` | `boolean` | 否 | 是否启用第三方登录（SSO / OIDC）总开关；关闭时登录页不展示来源、`/api/auth/sso/*` 全部拒绝。来源本身在「OIDC 设置」弹窗配置（`/api/admin/sso/providers`）。 |
 | `rateLimitEnabled` | `boolean` | 否 | 是否启用限流。 |
 | `rateLimitRequestsPerMinute` | `integer` | 否 | 每分钟请求数，范围 1 到 10000。仅生产环境生效：按 IP 限制该值、登录用户按 2 倍；登录/注册等认证接口固定 5 次/分钟；自由模式按会话 60、按用户 120 次/分钟。 |
 | `maxConcurrentTransfers` | `integer` | 否 | 同时传输上限，范围 0 到 1000，默认 4，`0` 表示不限。按用户（未登录按 IP）限制上传各通道与下载网关的在途请求数，超限返回 `429 CONCURRENCY_LIMIT_EXCEEDED`。 |
@@ -2856,6 +3056,17 @@ curl "https://{domain}/api/admin/logs?action=upload&limit=50" -b cookies.txt
 | `emailEnabled` | `boolean` | 否 | 是否启用邮件服务。 |
 | `auditLogLevel` | `string` | 否 | 审计日志记录等级：`all`（全部）、`essential`（不记成功下载/读取，失败恒记）、`security`（仅认证/管理/失败）。 |
 | `auditLogItems` | `array` | 否 | 记录的项目分组（多选）：`auth` / `upload` / `download` / `share` / `admin` / `failure`。数组落库为 JSON；等级与项目同时生效，设置保存后立即生效。 |
+| `statsSource` | `string` | 否 | 访问统计来源：`d1`（网关审计日志，默认）或 `umami`（前端行为统计）。取 `umami` 时脚本地址与 Website ID 必须已有效配置，否则返回 `400`。 |
+| `umamiEnabled` | `boolean` | 否 | Umami 启用开关（`statsSource=umami` 时生效）。 |
+| `umamiScriptUrl` | `string` | 否 | Umami tracker 脚本地址。自托管 `https://<实例>/script.js`；Umami Cloud `https://cloud.umami.is/script.js`。全站唯一可配置脚本执行面，写入即校验：仅 `http(s):`、无内嵌凭据、无 fragment、长度 ≤500；`http` 仅限回环主机（本地联调），其余一律 `https`。 |
+| `umamiWebsiteId` | `string` | 否 | Umami 站点 ID（`data-website-id`），必须为 UUID。 |
+| `umamiHostUrl` | `string` | 否 | 采集端点覆盖（`data-host-url`），校验口径同 `umamiScriptUrl`；空串清空。 |
+| `umamiDomains` | `string` | 否 | 域名白名单（`data-domains`），逗号分隔裸 hostname（不含协议/路径/端口），每项 ≤253 字符。 |
+| `umamiPerformance` | `boolean` | 否 | 采集性能指标（`data-performance`，Core Web Vitals）。 |
+| `umamiExcludeSearch` | `boolean` | 否 | 排除搜索参数（`data-exclude-search`）。 |
+| `umamiDoNotTrack` | `boolean` | 否 | 遵循浏览器 Do Not Track（`data-do-not-track`）。 |
+
+命中任一访问统计面键的变更写审计日志（`action=settings_update`，记键不记值）。
 
 #### 示例
 
@@ -2940,6 +3151,44 @@ curl -X POST https://{domain}/api/admin/announcements \
   -H "X-CSRF-Token: {csrf_token}" \
   -b cookies.txt \
   -d '{"title":"维护通知","content":"周六停机维护","level":"warning","displayMode":"daily","kind":"banner"}'
+```
+
+### 管理第三方登录来源
+
+配置第三方登录（SSO / OIDC）来源。`client_secret` 以 AES-256-GCM 密文落库，读取接口只回掩码 `******`。
+
+`GET /api/admin/sso/providers`
+
+`POST /api/admin/sso/providers`
+
+`PATCH /api/admin/sso/providers/{id}`
+
+`DELETE /api/admin/sso/providers/{id}`
+
+#### 字段
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `kind` | `string` | 创建时是 | `google` / `github` / `oidc`。前两者使用内置端点且各只能一个（第二个返回 `409 SSO_PROVIDER_EXISTS`）；`oidc` 数量不限。创建后不可修改。 |
+| `name` | `string` | 是 | 显示名称（登录页按钮文案），1-50 字符。 |
+| `issuerUrl` | `string` | 条件 | `kind=oidc` 必填：OIDC discovery 基地址（如 `https://idp.example.com`）。生产环境要求公网 http(s)、端口 80/443、非私网/回环、不带查询串与内嵌凭据；非生产环境额外放行回环主机与任意端口（本地 IdP 联调）。 |
+| `clientId` | `string` | 是 | 提供方签发的 Client ID。 |
+| `clientSecret` | `string` | 创建时是 | 提供方签发的 Client Secret；更新时传 `''` 或 `******` 表示保持原值。 |
+| `scopes` | `string` | 否 | 空格分隔的 scope；留空按类型取默认（OIDC：`openid email profile`；GitHub：`read:user user:email`）。 |
+| `enabled` | `boolean` | 否 | 单源开关（默认 `true`）；站点总开关为系统设置 `ssoEnabled`（`sso_enabled`）。 |
+| `trustEmailVerified` | `boolean` | 否 | 是否信任提供方声明的邮箱验证（用于**自动关联既有账号**）。默认：`google` / `github` = `true`，`oidc` = `false`。仅当该来源确实验证邮箱时才可开启；开启后用户用该来源登录且提供方邮箱已验证时，会直接进入邮箱对应的既有账号（本地 `users.email` 比较大小写无关），并写 `sso_link` 审计。 |
+
+响应中的 `redirectUri` 是**必须登记到提供方后台**的回调地址（= `{站点地址}/api/auth/sso/{id}/callback`）。
+删除来源会级联删除其身份关联（用户与文件不受影响），重新添加同一来源后需重新完成一次登录。
+
+#### 示例
+
+```sh
+curl -X POST https://{domain}/api/admin/sso/providers \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: {csrf_token}" \
+  -b cookies.txt \
+  -d '{"kind":"oidc","name":"公司 SSO","issuerUrl":"https://idp.example.com","clientId":"picumet","clientSecret":"s3cret"}'
 ```
 
 ### 管理存储提供商
@@ -3370,7 +3619,7 @@ curl -L "https://{domain}/api/gateway/download/{token}" -o photo.jpg
 
 ### 获取公开设置
 
-返回落地页和登录页需要的站点设置。
+返回落地页、登录页与注册页需要的站点设置（含邀请码注册门控）。
 
 `GET /api/public/settings`
 
@@ -3386,11 +3635,42 @@ curl -L "https://{domain}/api/gateway/download/{token}" -o photo.jpg
     "siteFavicon": null,
     "allowGuestAccess": false,
     "allowRegistration": true,
-    "requireEmailVerification": false
+    "requireEmailVerification": false,
+    "inviteEnabled": false,
+    "inviteRequired": false,
+    "inviteGeneration": "all_users",
+    "sso": { "enabled": false, "providers": [] },
+    "umami": null
   },
   "timestamp": 1710000000000
 }
 ```
+
+`sso` 为第三方登录公开面：总开关关闭时为 `{ "enabled": false, "providers": [] }`；开启后 `providers` 列出**已启用**的来源（只有 `id` / `kind` / `name`，不含任何凭据），登录页据此渲染「使用 … 继续」按钮并按顺序展示：
+
+```json
+{
+  "enabled": true,
+  "providers": [{ "id": "83d34fbc-7860-47c6-b6ac-d766b8e06a0d", "kind": "oidc", "name": "公司 SSO" }]
+}
+```
+
+`umami` 为访问统计来源选 `umami` 且启用、脚本地址与 Website ID 复核通过时的 tracker 配置（前端据此注入），否则为 `null`（不注入）：
+
+```json
+{
+  "enabled": true,
+  "scriptUrl": "https://umami.example.com/script.js",
+  "websiteId": "94db1cb1-74f4-4a40-ad6c-962362670409",
+  "hostUrl": "https://stats.example.com",
+  "domains": "example.com",
+  "performance": true,
+  "excludeSearch": true,
+  "doNotTrack": false
+}
+```
+
+前端仅按白名单注入 `data-website-id` / `data-host-url` / `data-domains` / `data-performance` / `data-exclude-search` / `data-do-not-track` 六个属性（`document.createElement` + `setAttribute`），SPA 路由切换的 pageview 由 tracker 自动记录。
 
 #### 示例
 
