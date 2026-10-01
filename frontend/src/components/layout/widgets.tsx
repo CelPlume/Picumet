@@ -1,12 +1,14 @@
 // 主题切换 + 语言切换 + 用户菜单（顶栏小组件）
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Moon, Sun, Languages, LogOut, Settings, Shield, FolderOpen, Monitor, Check } from 'lucide-react';
 import { useAuth } from '@/stores/auth';
 import { useTheme } from '@/stores/theme';
 import { setLocale } from '@/lib/i18n';
 import { Dropdown, DropdownItem, DropdownLabel, DropdownSeparator } from '@/components/ui/dropdown';
-import { Button, Progress } from '@/components/ui/core';
-import { formatBytes } from '@/lib/utils';
+import { Button } from '@/components/ui/core';
+import { UsageDisplay } from '@/components/ui/usage';
+import { getCachedAsset, cacheAsset, assetProxyUrl } from '@/lib/image-cache';
 
 const THEME_OPTIONS = [
   { value: 'light', labelKey: 'settings.themeLight', icon: <Sun className="h-4 w-4" /> },
@@ -125,23 +127,11 @@ export function UserMenu() {
             </span>
           </div>
           <DropdownSeparator />
-          {/* 用量区：文件数量 + 存储空间进度条（auth store 已随 /api/auth/me 返回 quota） */}
+          {/* 用量区：文件数量 + 存储空间（auth store 已随 /api/auth/me 返回 quota）；
+              进度条 / 运动圆环由外观设置 usageStyle 决定，个人资料卡与头像菜单共用 */}
           {quota && (
-            <div className="space-y-2 px-2 py-1.5">
-              <div>
-                <div className="mb-1 flex justify-between gap-4 text-xs text-muted-foreground">
-                  <span>{t('settings.filesUsed')}</span>
-                  <span className="font-medium text-foreground">{quota.usedFiles} / {quota.maxFiles}</span>
-                </div>
-                <Progress value={quota.filesPercent} className="h-1.5" />
-              </div>
-              <div>
-                <div className="mb-1 flex justify-between gap-4 text-xs text-muted-foreground">
-                  <span>{t('settings.profile.storageSpace')}</span>
-                  <span className="font-medium text-foreground">{formatBytes(quota.usedStorage)} / {formatBytes(quota.maxStorage)}</span>
-                </div>
-                <Progress value={quota.storagePercent} className="h-1.5" />
-              </div>
+            <div className="px-2 py-1.5">
+              <UsageDisplay quota={quota} compact />
             </div>
           )}
           <DropdownSeparator />
@@ -167,12 +157,49 @@ export function UserMenu() {
 }
 
 export function Avatar({ name, url, size = 32 }: { name: string; url?: string; size?: number }) {
-  if (url) {
-    return <img src={url} alt={name} className="rounded-full object-cover" style={{ width: size, height: size }} />;
+  const [imgError, setImgError] = useState(false);
+  const proxy = assetProxyUrl('avatar', url);
+  const [src, setSrc] = useState<string | undefined>(() => getCachedAsset('avatar', url) || proxy || url);
+
+  useEffect(() => {
+    setImgError(false);
+    if (!url) {
+      setSrc(undefined);
+      return;
+    }
+    const cached = getCachedAsset('avatar', url);
+    if (cached) {
+      setSrc(cached);
+    } else {
+      const target = assetProxyUrl('avatar', url) || url;
+      setSrc(target);
+      void cacheAsset('avatar', url).then((dataUrl) => {
+        if (dataUrl) setSrc(dataUrl);
+      });
+    }
+  }, [url]);
+
+  if (src && !imgError) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        className="rounded-full object-cover"
+        style={{ width: size, height: size }}
+        onError={() => {
+          // 若中转端点失败，尝试直接请求原始外链一次；均失败才回落首字母头像
+          if (src !== url && url) {
+            setSrc(url);
+          } else {
+            setImgError(true);
+          }
+        }}
+      />
+    );
   }
   return (
     <div
-      className="flex items-center justify-center rounded-full bg-primary text-primary-foreground font-medium"
+      className="flex items-center justify-center rounded-full bg-primary font-medium text-primary-foreground"
       style={{ width: size, height: size, fontSize: size * 0.4 }}
     >
       {name.slice(0, 1).toUpperCase()}
