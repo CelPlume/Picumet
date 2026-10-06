@@ -468,6 +468,34 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 
 **已知遗留（非本批引入，报告备查）**：`docs/PROGRESS.md` 的「2026-09-30 追加」编号在多次追加中被重复占用——**追加五 2 处、追加六 2 处、追加八 2 处**（追加二/三/四/七各 1 处），且条目物理顺序与编号不一致（追加八出现在追加七之前，追加三/五散落其间），检索时易误定位；本条取当时未占用的「追加九」，未去动既有编号以免打乱他处交叉引用（`AGENTS.md` 变更记录中已有多处按编号引用这些条目）。
 
+### 2026-10-06：模糊强度第四档「Aero 玻璃」（复刻 Win7 DWM 玻璃）
+
+个性化设置「模糊效果」滑块由三档扩为四档，新增最高档 `aero`——Win7 Aero 玻璃（Authentic / Energetic / Reflective / Open）的 Web 复刻。设计手法取自四个参考实现（`7.css` 的 `--w7-w-glass` 斜向条纹 + 角光、`makeaero` 窗体 box-shadow 栈与 specular 高光、`7-Aero-Stylesheet` 内侧白倒角、`win7site` 聚焦投影），按项目既有「token 门控 + 组件零分支」架构落地：
+
+| 层 | 内容 | 实现位置 |
+| :--- | :--- | :--- |
+| 档位类型与 token | `BlurLevel` 增 `'aero'`；`applyTheme` 在根元素挂 `.glass-aero`，`--glass-alpha` = 有壁纸 0.22（浅）/0.28（深）、无壁纸 0.26/0.3（全站最低——玻璃后文字可辨但略模糊，接近 7-Aero-Stylesheet 任务栏 `#00000016` ≈ 0.09 + blur 5px 的极透配方，远低于 frosted 的白 0.6），`--glass-blur` = 12px（全站最小半径）；弹层在 aero 档覆写填充 `hsl(var(--popover) / max(0.2, α-0.02))` + 同一片 fixed 条纹玻璃板（基础类 0.5 下限在低 α 下会反向比卡片更实），`.glass-dialog` 下限 0.6 既有补偿公式不变 | `stores/theme.ts`、`index.css` |
+| 强调色 tint | background-image **最底层**叠低强度平铺色桶 `hsl(var(--primary) / 0.07)`（深色 0.09；弹窗 0.06）——makeaero 手法「色度烤进 tint、高光全强度叠加」，玻璃随个性化强调色泛色（默认 #4e80ee 即 Win7 蓝玻璃观感）；`.glass-surface` / `.glass-surface-popover` / `.glass-dialog` / `.item-surface` 四类面都带 | `index.css`「Aero 玻璃」节 |
+| 色度增益 | backdrop `saturate(1.5)` → `1.8`（DWM 玻璃的饱和度提升，壁纸轮廓透出更鲜艳），覆盖 `.glass-blur` / `.glass-control` / `.item-surface`，`.glass-dialog` 在自身补偿公式内同步（blur ×0.92 + brightness 1.75 保持不变） | `index.css`「Aero 玻璃」节 |
+| 斜向反光条纹 | 54° 多段亮暗交替渐变，`background-attachment: fixed` 钉在视口——全站玻璃共享同一片「玻璃板」，滚动时条纹不动（7.css 手法）；大面板（`.glass-surface`）、弹窗与弹层菜单消费；文件项（`.item-surface`，数量大）不给 fixed 条纹（大量 fixed 背景拖慢滚动重绘），只吃 tint + 顶部高光 | `index.css` |
+| 高光与立体感 | 顶部镜面高光（峰值 0.32、18% 内衰减完）+ 左上/右上 135°/225° 角部光泽 + 底部沉影（0.04、12%），比例收小与低不透明度玻璃协调；全部走 `background-image` 叠层（绘制在半透明底色之上、内容之下）；`.item-surface` 的 hover/selected 状态类声明在后且特异性同阶，状态切换照常覆盖，条纹不与其打架 | `index.css` |
+| 柔和投影与倒角 | 只给「窗口」面：`.glass-dialog`（`0 24px 64px` 长投影 + `0 0 36px hsl(var(--primary)/0.16)` 强调色环境光晕 + `inset 0 0 0 1px` 内侧白倒角 + 内部白泛光）、`.glass-surface-popover`（柔投影 + 上缘内高光）；**不覆写** `.glass-surface` 与 toast——`ring`/`focus-visible` 与 toast 堆叠深度都走 box-shadow，整条覆写会丢键盘焦点环 / 破坏「后方层 shadow-none」的堆叠表达 | `index.css` |
+| 文件项适配 | `.item-surface`（文件页网格卡片 / 列表行 / 分享卡 = 三视图）在 aero 档补 tint + 顶部高光（透明度与模糊走共享 token）；hover/selected 状态类声明在后照常整层覆盖 | `index.css` |
+| 文字发光 | 四类玻璃面文字带同色系光晕 `0 0 6px` + `0 0 12px`（7.css 标题 8× `0 0 10px #fff` / makeaero 4× `0 0 4px #fff` 手法）——低不透明度下垫亮文字身后的玻璃增强可读性，`text-shadow` 继承到面内所有文本；深色模式反转暗晕 `rgb(0 0 0 / 0.45)`（字幕式压暗） | `index.css` |
+| 深浅模式 | `.dark.glass-aero` 各一套强度：暗色高光减半、条纹白带更细、底部沉影加深，投影整体加重 | `index.css` |
+| 滑块与文案 | `BlurSlider` 四档（锚点/读屏值由 `BLUR_LEVELS` 数组长度自动推导）；`common.blurAero` / `common.blurDescAero` 中英两份语言包同步 | `components/ui/slider.tsx`、`lib/i18n/{zh,en}.ts` |
+| 回归 | `slider.test.tsx`：锚点数 3→4，新增第 4 档取值断言（`aria-valuetext` + 描述文案联动） | `components/ui/slider.test.tsx` |
+
+设计约束（写入 docs/UI_CN.md）：条纹/投影**不落到** `.item-surface` 与 toast；box-shadow 覆写面只限无 ring 需求的弹窗与弹层面。`off`/`default`/`frosted` 不挂 `.glass-aero`，装饰层全部失效；aero 与 `.no-blur` 互斥（同一 `blurLevel` 单值），无需交叉规则。
+
+### 2026-10-06：默认强调色换 `#4e80ee` + 默认 favicon 同步换色
+
+- **默认强调色** `#D8632B` → **`#4e80ee`**（`stores/theme.ts` 的 `DEFAULT.accentColor`）；`ACCENT_PRESETS` 首位同步替换，第二位放 `#c96a3a`（原默认橙的调和版），其余预设保留。已存过个性化强调色的用户不受影响（localStorage 原值优先）。
+- **默认 favicon / 兜底图标**换色：`frontend/public/favicon.svg` 与 `lib/image-cache.ts` 的 `DEFAULT_FAVICON_SVG`（首帧兜底 data URL）内 `#D8632B` → `#4e80ee`；`Logo` 组件的默认矢量图标走 `currentColor text-primary` 自动跟随新强调色，无需改动。
+- **落地页回退值**（`landing.css` JS 未生效时的 `--primary`）：明暗两块 `19.4 69% 50.8%` → `221 82% 62%`、`--primary-foreground` → `210 40% 98%`（YIQ 125.6 < 128 → 白字，与旧默认橙同侧；浅色模式运行时仍有 AA 压暗循环兜底）。
+- 浅色模式下 `#4e80ee`（YIQ 125.6）白字对比 3.7:1 不达 AA，`applyTheme` 的既有压暗循环自动把它压到 ≈ L56%（对比 ≥4.5:1）后才停——与旧默认橙同一机制，无需新代码。
+- 文档同步：docs/UI_CN.md / UI.md「强调色」「落地页独立」两节、AGENTS.md 前端 UI 规则「落地页独立」条目与本变更历史。
+
 ## 当前基线
 
 - 后端：78 个测试文件 / 717 个 Vitest 用例通过（本条新增 `randomDigits` 5 例）；`tsc --noEmit` 干净。

@@ -27,7 +27,7 @@ if (typeof Promise.withResolvers === 'undefined') {
 
 
 export const DEFAULT_FAVICON_SVG =
-  `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none"><rect x="4" y="8" width="40" height="28" rx="6" fill="#D8632B"/><path d="M16 20 L24 30 L32 20" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 40 H34" stroke="#D8632B" stroke-width="3" stroke-linecap="round"/></svg>`;
+  `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none"><rect x="4" y="8" width="40" height="28" rx="6" fill="#4e80ee"/><path d="M16 20 L24 30 L32 20" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 40 H34" stroke="#4e80ee" stroke-width="3" stroke-linecap="round"/></svg>`;
 
 export const DEFAULT_FAVICON_DATA_URL =
   'data:image/svg+xml,' + encodeURIComponent(DEFAULT_FAVICON_SVG);

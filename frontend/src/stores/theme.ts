@@ -1,8 +1,9 @@
 // 主题与外观（localStorage 持久化）
 import { create } from 'zustand';
 
-/** 模糊强度三档：off 全站实底；default 项目默认强度；frosted 文件卡片磨砂配方全局化 */
-export type BlurLevel = 'off' | 'default' | 'frosted';
+/** 模糊强度四档：off 全站实底；default 项目默认强度；frosted 文件卡片磨砂配方全局化；
+ *  aero Win7 Aero 玻璃（最低不透明度 + 最强模糊，根元素挂 .glass-aero 叠加反光/高光/投影签名层） */
+export type BlurLevel = 'off' | 'default' | 'frosted' | 'aero';
 
 /**
  * 动画三档（与模糊三档并排的外观开关）：
@@ -51,7 +52,7 @@ export interface AppearanceSettings {
 
 const DEFAULT: AppearanceSettings = {
   theme: 'system',
-  accentColor: '#D8632B',
+  accentColor: '#4e80ee',
   blurLevel: 'default',
   motionLevel: 'all',
   motionSpeed: 'efficient',
@@ -146,9 +147,12 @@ function applyTheme(s: AppearanceSettings) {
       s.backgroundType === 'color' && s.backgroundColor ? s.backgroundColor : '';
   }
 
-  // 模糊三档（全站统一玻璃表面：--glass-alpha 控制底色透明度，--glass-blur 控制 blur 半径）
+  // 模糊四档（全站统一玻璃表面：--glass-alpha 控制底色透明度，--glass-blur 控制 blur 半径）
   // off：全站实底无模糊（.no-blur 类使所有 backdrop-filter 失效，文件卡片也不再有磨砂底）
   // default：项目默认强度（blur 20px）；毛玻璃：文件卡片磨砂配方（blur 16px + alpha 0.6）全局化
+  // aero：Win7 Aero 玻璃（blur 12px + 全站最低不透明度，玻璃后文字可辨但略模糊，根元素
+  //       挂 .glass-aero；反光条纹/高光/强调色 tint/窗体投影等签名层全部由 index.css
+  //       「Aero 玻璃」节按该类门控，组件零分支）
   // 有背景图时提高 default 档不透明度：深色下背景混入会破坏文字对比度，保住 WCAG AA
   // 小型控件（Tabs 轨道/按钮/搜索框/复选框未选态/视图切换器/⋮ 触发钮）与大表面共用
   // --glass-alpha：与所在页面的卡片同色同透，避免控件发灰与卡片割裂
@@ -157,8 +161,11 @@ function applyTheme(s: AppearanceSettings) {
       ? { alpha: '1', blur: '0px' }
       : s.blurLevel === 'frosted' && bgImage
         ? { alpha: '0.6', blur: '16px' }
-        : { alpha: bgImage ? (dark ? '0.92' : '0.82') : dark ? '0.8' : '0.72', blur: '20px' };
+        : s.blurLevel === 'aero'
+          ? { alpha: bgImage ? (dark ? '0.28' : '0.22') : dark ? '0.3' : '0.26', blur: '12px' }
+          : { alpha: bgImage ? (dark ? '0.92' : '0.82') : dark ? '0.8' : '0.72', blur: '20px' };
   root.classList.toggle('no-blur', s.blurLevel === 'off');
+  root.classList.toggle('glass-aero', s.blurLevel === 'aero');
   root.style.setProperty('--glass-alpha', glass.alpha);
   root.style.setProperty('--glass-blur', glass.blur);
 
@@ -214,8 +221,8 @@ function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: n
 const initial = load();
 applyTheme(initial);
 
-/** 强调色预设：#D8632B 为默认，原蓝色 #3B82F6 次之（个性化设置与落地页共用） */
-export const ACCENT_PRESETS = ['#D8632B', '#3B82F6', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#0EA5E9', '#64748B'];
+/** 强调色预设：#4e80ee 为默认，#c96a3a（原默认橙的调和版）次之（个性化设置与落地页共用） */
+export const ACCENT_PRESETS = ['#4e80ee', '#c96a3a', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#0EA5E9', '#64748B'];
 
 /**
  * 强调色 → HSL 三元组 + 前景色（落地页等独立表面消费）。

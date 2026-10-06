@@ -1,4 +1,4 @@
-// 落地页：独立视觉系统（components/landing/）。强调色跟随个性化设置（默认 #D8632B），
+// 落地页：独立视觉系统（components/landing/）。强调色跟随个性化设置（默认 #4e80ee），
 // 其余外观（模糊/壁纸/动画档位）不消费；只跟随明暗与语言。
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
@@ -38,7 +38,7 @@ export default function Landing() {
       ref={rootRef}
       className="landing min-h-screen overflow-x-clip"
       lang={zh ? 'zh' : 'en'}
-      // 强调色跟随个性化设置（默认 #D8632B）：内联变量覆盖 landing.css 的回退值
+      // 强调色跟随个性化设置（默认 #4e80ee）：内联变量覆盖 landing.css 的回退值
       style={{ '--primary': primary, '--primary-foreground': foreground } as CSSProperties}
     >
       <header className="lp-header fixed inset-x-0 top-0 z-40" data-scrolled={scrolled ? '' : undefined}>

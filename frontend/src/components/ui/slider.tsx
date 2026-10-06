@@ -5,19 +5,21 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import type { BlurLevel, MotionLevel } from '@/stores/theme';
 
-const BLUR_LEVELS: BlurLevel[] = ['off', 'default', 'frosted'];
+const BLUR_LEVELS: BlurLevel[] = ['off', 'default', 'frosted', 'aero'];
 const MOTION_LEVELS: MotionLevel[] = ['off', 'default', 'all'];
 
 const BLUR_LABEL_KEYS: Record<BlurLevel, string> = {
   off: 'common.blurOff',
   default: 'common.blurDefault',
   frosted: 'common.blurFrosted',
+  aero: 'common.blurAero',
 };
 
 const BLUR_DESCRIPTION_KEYS: Record<BlurLevel, string> = {
   off: 'common.blurDescOff',
   default: 'common.blurDescDefault',
   frosted: 'common.blurDescFrosted',
+  aero: 'common.blurDescAero',
 };
 
 const MOTION_LABEL_KEYS: Record<MotionLevel, string> = {
@@ -288,7 +290,7 @@ function PillSlider({
   );
 }
 
-/** 离散档位滑块（外观设置-模糊强度）：三档，标签与读屏值内嵌，下方跟随当前档描述。 */
+/** 离散档位滑块（外观设置-模糊强度）：四档（off/default/frosted/aero），标签与读屏值内嵌，下方跟随当前档描述。 */
 export function BlurSlider({
   value,
   onChange,

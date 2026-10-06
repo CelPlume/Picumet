@@ -154,6 +154,199 @@
   .no-blur .glass-surface-popover {
     background-color: hsl(var(--popover));
   }
+  /* ============ Aero 玻璃（第四档模糊强度，blurLevel === 'aero'） ============
+     Win7 DWM 玻璃复刻，签名手法取自四个参考实现：
+     - 不透明度对齐参考仓库：makeaero 的玻璃不透明度滑杆 0.3–0.9（色桶在 tint 里，
+       hsl(hue 65% 52% / α)）；7-Aero-Stylesheet 窗体 #46a2ff5e ≈ 0.37；7.css 玻璃层
+       为 0.6 的纯色。三处都是「彩色玻璃」，且普遍低于本项目 frosted 的白 0.6 ——
+       故 aero 档 --glass-alpha 取 0.22/0.28（有壁纸）/ 0.26/0.3（无壁纸，浅/深）+ blur
+       12px —— 玻璃后的文字与壁纸轮廓可辨、只是略微模糊（真实 Aero 的透视读法），
+       并在最底层叠一层低强度强调色 tint（makeaero 手法：色度烤进 tint，高光全强度叠上
+       玻璃随个性化强调色泛色（默认 #4e80ee 即 Win7 蓝玻璃观感）。
+     - 斜向反光条纹（7.css --w7-w-glass 的 54° 多段亮暗带）：background-attachment
+       fixed 钉在视口上 —— 全站玻璃共享同一片「玻璃板」，窗口滚动时条纹不动，与真实
+       玻璃板的折射一致；仅大面板消费（.glass-surface 每页只有少数几个），文件项
+       （.item-surface，数量大）只吃 token 不吃条纹，避免大量 fixed 背景的滚动重绘。
+     - 顶部镜面高光 + 左上/右上角部光泽 + 底部沉影（makeaero specular / 7.css 角光）：
+       全部走 background-image 叠层 —— 绘制在半透明底色之上、内容之下，不动布局，
+       也不与 hover/selected 的 background-image 状态打架（后者特异性同为 0,2,0 但
+       声明在后，选中态主色叠加照常生效）。高光与沉影只做窄窄的一条（峰值 0.32、
+       18% 内衰减完 / 底部 0.04、12%），比例收小保持与低不透明度玻璃协调。
+     - 窗体级柔和投影 + 内侧 1px 白色倒角（makeaero box-shadow 栈 / 7-Aero-Stylesheet
+       inset #fcfcfc）：只给「窗口」面 —— .glass-dialog 与 .glass-surface-popover，
+       它们不承载 focus ring（ring 走 box-shadow，不能被整条覆写）；toast 堆叠依赖
+       shadow-lg/shadow-none 分层表达深度，同样不覆写。
+     - 饱和度提升 saturate(1.5→1.8)：DWM 玻璃的色度增益，让壁纸轮廓透出来更鲜艳。
+     off/frosted/default 档不挂 .glass-aero，本节全部失效；aero 与 .no-blur 互斥
+     （同一 blurLevel 单值），无需交叉规则。 */
+  .glass-aero .glass-blur,
+  .glass-aero .glass-control,
+  .glass-aero .item-surface {
+    -webkit-backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.8);
+    backdrop-filter: blur(var(--glass-blur, 20px)) saturate(1.8);
+  }
+  .glass-aero .glass-dialog {
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur, 20px) * 0.92)) saturate(1.8) brightness(1.75);
+    backdrop-filter: blur(calc(var(--glass-blur, 20px) * 0.92)) saturate(1.8) brightness(1.75);
+  }
+  .glass-aero .glass-surface {
+    background-image:
+      /* 顶部镜面高光：窄亮线快速衰减（makeaero specular，收小比例） */
+      linear-gradient(to bottom, rgb(255 255 255 / 0.32), rgb(255 255 255 / 0.09) 8%, rgb(255 255 255 / 0) 18%),
+      /* 左上 / 右上角部光泽（7.css 135°/225° 角光） */
+      linear-gradient(135deg, rgb(255 255 255 / 0.26), rgb(255 255 255 / 0) 22%),
+      linear-gradient(225deg, rgb(255 255 255 / 0.2), rgb(255 255 255 / 0) 22%),
+      /* 底部沉影：玻璃厚度感（7.css 窗体下缘暗带，收小比例） */
+      linear-gradient(to top, rgb(0 0 0 / 0.04), rgb(0 0 0 / 0) 12%),
+      /* 斜向反光条纹：54° 多段亮暗交替，fixed 钉在视口（7.css --w7-w-glass 手法） */
+      linear-gradient(54deg,
+        rgb(0 0 0 / 0.045) 0 5%, rgb(255 255 255 / 0.05) 7% 9%,
+        rgb(0 0 0 / 0.045) 13% 15%, rgb(255 255 255 / 0.07) 17% 19%,
+        rgb(0 0 0 / 0.045) 24% 26%, rgb(255 255 255 / 0.06) 28% 30%,
+        rgb(0 0 0 / 0.045) 37% 39%, rgb(255 255 255 / 0.08) 41% 47%,
+        rgb(0 0 0 / 0.045) 52% 54%, rgb(255 255 255 / 0.05) 56% 62%,
+        rgb(0 0 0 / 0.045) 67% 69%, rgb(255 255 255 / 0.07) 71% 77%,
+        rgb(0 0 0 / 0.045) 82% 84%, rgb(255 255 255 / 0.05) 86% 92%,
+        rgb(0 0 0 / 0.04) 96%),
+      /* 强调色 tint：烤在最底层（makeaero：色度进 tint，高光全强度叠加） */
+      linear-gradient(hsl(var(--primary) / 0.07), hsl(var(--primary) / 0.07));
+    background-attachment: scroll, scroll, scroll, scroll, fixed, scroll;
+    background-size: auto, auto, auto, auto, 100vw 100vh, auto;
+  }
+  .dark.glass-aero .glass-surface {
+    background-image:
+      linear-gradient(to bottom, rgb(255 255 255 / 0.18), rgb(255 255 255 / 0.05) 8%, rgb(255 255 255 / 0) 18%),
+      linear-gradient(135deg, rgb(255 255 255 / 0.14), rgb(255 255 255 / 0) 22%),
+      linear-gradient(225deg, rgb(255 255 255 / 0.1), rgb(255 255 255 / 0) 22%),
+      linear-gradient(to top, rgb(0 0 0 / 0.09), rgb(0 0 0 / 0) 12%),
+      linear-gradient(54deg,
+        rgb(0 0 0 / 0.09) 0 5%, rgb(255 255 255 / 0.028) 7% 9%,
+        rgb(0 0 0 / 0.09) 13% 15%, rgb(255 255 255 / 0.036) 17% 19%,
+        rgb(0 0 0 / 0.09) 24% 26%, rgb(255 255 255 / 0.032) 28% 30%,
+        rgb(0 0 0 / 0.09) 37% 39%, rgb(255 255 255 / 0.045) 41% 47%,
+        rgb(0 0 0 / 0.09) 52% 54%, rgb(255 255 255 / 0.028) 56% 62%,
+        rgb(0 0 0 / 0.09) 67% 69%, rgb(255 255 255 / 0.04) 71% 77%,
+        rgb(0 0 0 / 0.09) 82% 84%, rgb(255 255 255 / 0.028) 86% 92%,
+        rgb(0 0 0 / 0.08) 96%),
+      linear-gradient(hsl(var(--primary) / 0.09), hsl(var(--primary) / 0.09));
+    background-attachment: scroll, scroll, scroll, scroll, fixed, scroll;
+    background-size: auto, auto, auto, auto, 100vw 100vh, auto;
+  }
+  /* 弹窗窗体（应用里的「窗口」）：同条纹玻璃板 + Aero 窗体投影栈
+     （柔和长投影 + 强调色环境光晕 + 内侧白倒角 + 内部白泛光） */
+  .glass-aero .glass-dialog {
+    background-image:
+      linear-gradient(to bottom, rgb(255 255 255 / 0.3), rgb(255 255 255 / 0.09) 10%, rgb(255 255 255 / 0) 20%),
+      linear-gradient(135deg, rgb(255 255 255 / 0.24), rgb(255 255 255 / 0) 18%),
+      linear-gradient(225deg, rgb(255 255 255 / 0.18), rgb(255 255 255 / 0) 18%),
+      linear-gradient(to top, rgb(0 0 0 / 0.04), rgb(0 0 0 / 0) 14%),
+      linear-gradient(54deg,
+        rgb(0 0 0 / 0.04) 0 5%, rgb(255 255 255 / 0.045) 7% 9%,
+        rgb(0 0 0 / 0.04) 13% 15%, rgb(255 255 255 / 0.06) 17% 19%,
+        rgb(0 0 0 / 0.04) 24% 26%, rgb(255 255 255 / 0.05) 28% 30%,
+        rgb(0 0 0 / 0.04) 37% 39%, rgb(255 255 255 / 0.07) 41% 47%,
+        rgb(0 0 0 / 0.04) 52% 54%, rgb(255 255 255 / 0.045) 56% 62%,
+        rgb(0 0 0 / 0.04) 67% 69%, rgb(255 255 255 / 0.06) 71% 77%,
+        rgb(0 0 0 / 0.04) 82% 84%, rgb(255 255 255 / 0.045) 86% 92%,
+        rgb(0 0 0 / 0.035) 96%),
+      linear-gradient(hsl(var(--primary) / 0.06), hsl(var(--primary) / 0.06));
+    background-attachment: scroll, scroll, scroll, scroll, fixed, scroll;
+    background-size: auto, auto, auto, auto, 100vw 100vh, auto;
+    box-shadow:
+      0 24px 64px rgb(0 0 0 / 0.4),
+      0 4px 16px rgb(0 0 0 / 0.2),
+      0 0 36px hsl(var(--primary) / 0.16),
+      inset 0 0 0 1px rgb(255 255 255 / 0.8),
+      inset 0 0 28px rgb(255 255 255 / 0.14);
+  }
+  .dark.glass-aero .glass-dialog {
+    box-shadow:
+      0 24px 64px rgb(0 0 0 / 0.55),
+      0 4px 16px rgb(0 0 0 / 0.3),
+      0 0 36px hsl(var(--primary) / 0.2),
+      inset 0 0 0 1px rgb(255 255 255 / 0.32),
+      inset 0 0 28px rgb(255 255 255 / 0.06);
+  }
+  /* 弹层菜单（悬于内容之上的「小窗口」）：同样参与 aero 玻璃 —— 比卡片再让一档的
+     透明度 + 强调色 tint + 同一片 fixed 条纹玻璃板（基础类的 max(0.5, α-0.12) 下限在
+     低 α 下会顶到 0.5、反而比卡片更实，故此处按 aero 档覆写）。
+     柔和投影 + 上缘内高光同「窗口」面。 */
+  .glass-aero .glass-surface-popover {
+    background-color: hsl(var(--popover) / max(0.2, calc(var(--glass-alpha, 0.72) - 0.02)));
+    background-image:
+      linear-gradient(to bottom, rgb(255 255 255 / 0.26), rgb(255 255 255 / 0) 16%),
+      linear-gradient(135deg, rgb(255 255 255 / 0.2), rgb(255 255 255 / 0) 20%),
+      linear-gradient(225deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0) 20%),
+      linear-gradient(to top, rgb(0 0 0 / 0.03), rgb(0 0 0 / 0) 10%),
+      linear-gradient(54deg,
+        rgb(0 0 0 / 0.04) 0 5%, rgb(255 255 255 / 0.045) 7% 9%,
+        rgb(0 0 0 / 0.04) 13% 15%, rgb(255 255 255 / 0.06) 17% 19%,
+        rgb(0 0 0 / 0.04) 24% 26%, rgb(255 255 255 / 0.05) 28% 30%,
+        rgb(0 0 0 / 0.04) 37% 39%, rgb(255 255 255 / 0.07) 41% 47%,
+        rgb(0 0 0 / 0.04) 52% 54%, rgb(255 255 255 / 0.045) 56% 62%,
+        rgb(0 0 0 / 0.04) 67% 69%, rgb(255 255 255 / 0.06) 71% 77%,
+        rgb(0 0 0 / 0.04) 82% 84%, rgb(255 255 255 / 0.045) 86% 92%,
+        rgb(0 0 0 / 0.035) 96%),
+      linear-gradient(hsl(var(--primary) / 0.07), hsl(var(--primary) / 0.07));
+    background-attachment: scroll, scroll, scroll, scroll, fixed, scroll;
+    background-size: auto, auto, auto, auto, 100vw 100vh, auto;
+    box-shadow:
+      0 12px 40px rgb(0 0 0 / 0.26),
+      0 2px 8px rgb(0 0 0 / 0.14),
+      inset 0 1px 0 rgb(255 255 255 / 0.5);
+  }
+  .dark.glass-aero .glass-surface-popover {
+    background-image:
+      linear-gradient(to bottom, rgb(255 255 255 / 0.14), rgb(255 255 255 / 0) 16%),
+      linear-gradient(135deg, rgb(255 255 255 / 0.1), rgb(255 255 255 / 0) 20%),
+      linear-gradient(225deg, rgb(255 255 255 / 0.08), rgb(255 255 255 / 0) 20%),
+      linear-gradient(to top, rgb(0 0 0 / 0.07), rgb(0 0 0 / 0) 10%),
+      linear-gradient(54deg,
+        rgb(0 0 0 / 0.08) 0 5%, rgb(255 255 255 / 0.025) 7% 9%,
+        rgb(0 0 0 / 0.08) 13% 15%, rgb(255 255 255 / 0.032) 17% 19%,
+        rgb(0 0 0 / 0.08) 24% 26%, rgb(255 255 255 / 0.028) 28% 30%,
+        rgb(0 0 0 / 0.08) 37% 39%, rgb(255 255 255 / 0.04) 41% 47%,
+        rgb(0 0 0 / 0.08) 52% 54%, rgb(255 255 255 / 0.025) 56% 62%,
+        rgb(0 0 0 / 0.08) 67% 69%, rgb(255 255 255 / 0.036) 71% 77%,
+        rgb(0 0 0 / 0.08) 82% 84%, rgb(255 255 255 / 0.025) 86% 92%,
+        rgb(0 0 0 / 0.07) 96%),
+      linear-gradient(hsl(var(--primary) / 0.09), hsl(var(--primary) / 0.09));
+    background-attachment: scroll, scroll, scroll, scroll, fixed, scroll;
+    background-size: auto, auto, auto, auto, 100vw 100vh, auto;
+    box-shadow:
+      0 12px 40px rgb(0 0 0 / 0.45),
+      0 2px 8px rgb(0 0 0 / 0.24),
+      inset 0 1px 0 rgb(255 255 255 / 0.22);
+  }
+  /* 文字发光（7.css 标题文字 8× `0 0 10px #fff` / makeaero 4× `0 0 4px #fff` 手法）：
+     玻璃面上的文字带一圈同色系光晕，低不透明度下把文字身后那一小片玻璃「垫亮」，
+     增强可读性；继承到面内所有文本（Win7 对按钮文字同样发光）。深色模式反转：
+     亮字配暗晕（字幕式压暗）。 */
+  .glass-aero .glass-surface,
+  .glass-aero .glass-surface-popover,
+  .glass-aero .glass-dialog,
+  .glass-aero .item-surface {
+    text-shadow: 0 0 6px rgb(255 255 255 / 0.5), 0 0 12px rgb(255 255 255 / 0.28);
+  }
+  .dark.glass-aero .glass-surface,
+  .dark.glass-aero .glass-surface-popover,
+  .dark.glass-aero .glass-dialog,
+  .dark.glass-aero .item-surface {
+    text-shadow: 0 0 6px rgb(0 0 0 / 0.45), 0 0 12px rgb(0 0 0 / 0.25);
+  }
+  /* 文件项（卡片/列表行 = 文件页三视图与分享列表）：aero 档也吃强调色 tint + 顶部
+     高光（scroll 附件）。不给 fixed 条纹——数量大，大量 fixed 背景会拖慢滚动重绘；
+     hover/selected 状态类声明在后，切换时照常整层覆盖。 */
+  .glass-aero .item-surface {
+    background-image:
+      linear-gradient(to bottom, rgb(255 255 255 / 0.26), rgb(255 255 255 / 0) 14%),
+      linear-gradient(hsl(var(--primary) / 0.07), hsl(var(--primary) / 0.07));
+  }
+  .dark.glass-aero .item-surface {
+    background-image:
+      linear-gradient(to bottom, rgb(255 255 255 / 0.12), rgb(255 255 255 / 0) 14%),
+      linear-gradient(hsl(var(--primary) / 0.09), hsl(var(--primary) / 0.09));
+  }
   .scrollbar-thin {
     scrollbar-width: thin;
   }

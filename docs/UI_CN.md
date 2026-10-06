@@ -232,13 +232,21 @@ flowchart LR
 
 用户从预设或取色器里选强调色。应用把十六进制值转成 HSL 三元组，写到 `--primary` 和 `--ring` 变量，Tailwind 以 `hsl(var(--primary))` 消费。再用 YIQ 公式算出前景色，浅色或深色强调色下文字和图标都保持可读。
 
-- **默认强调色 `#D8632B`**。预设常量 `ACCENT_PRESETS` 在 `stores/theme.ts`，个性化设置与落地页共用。
+- **默认强调色 `#4e80ee`**，预设第二位 `#c96a3a`（原默认橙的调和版）。预设常量 `ACCENT_PRESETS` 在 `stores/theme.ts`，个性化设置与落地页共用。
 - 浅色模式下，强调色与白字的对比度不足 4.5:1 时会逐步压暗（最低压到 35% 亮度）再按 YIQ 定前景；深色模式不压暗。
 - 落地页走 `accentHsl()`（`stores/theme.ts`）消费**原色**——不做压暗循环，因为落地页几乎没有 primary 底上放正文的场景；强调色一换，主页的点缀、进度条、图表色全部跟随。
 
 ### 模糊与背景
 
-- **模糊三档**：个性化设置的「模糊效果」滑块控制 `blurLevel = 'off' | 'default' | 'frosted'`（默认 default），写入 `--glass-alpha` 与 `--glass-blur` 两个 CSS 变量（小型控件与大表面共用，无独立 token）；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩、文件项磨砂底、菜单）失效为实底。
+- **模糊四档**：个性化设置的「模糊效果」滑块控制 `blurLevel = 'off' | 'default' | 'frosted' | 'aero'`（默认 default），写入 `--glass-alpha` 与 `--glass-blur` 两个 CSS 变量（小型控件与大表面共用，无独立 token）；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩、文件项磨砂底、菜单）失效为实底。
+- **Aero 玻璃（第四档，复刻 Win7 DWM 玻璃）**：`aero` 时根元素加 `.glass-aero`，token 取全站最低不透明度 + 最小模糊半径（blur 12px；alpha 有壁纸 0.22/0.28（浅/深）、无壁纸 0.26/0.3——玻璃后的文字与壁纸轮廓可辨、只是略微模糊（真实 Aero 的透视读法，接近 7-Aero-Stylesheet 任务栏 `#00000016` ≈ 0.09 + blur 5px 的极透配方，远低于 frosted 的白 0.6；makeaero 滑杆下限 0.3），backdrop 饱和度 1.5→1.8（DWM 色度增益）。签名装饰层全部按 `.glass-aero` 门控在 `index.css`「Aero 玻璃」节，组件零分支：
+  - **强调色 tint**：background-image 最底层叠 `hsl(var(--primary) / 0.07)`（深色 0.09）平铺色桶——makeaero 手法「色度烤进 tint、高光全强度叠加」，玻璃随个性化强调色泛色（默认 #4e80ee 即 Win7 蓝玻璃观感）；`.glass-surface` / `.glass-surface-popover` / `.glass-dialog` / `.item-surface` 四类面都带。
+  - **斜向反光条纹**：54° 多段亮暗交替渐变，`background-attachment: fixed` 钉在视口——全站玻璃共享同一片「玻璃板」，滚动时条纹不动（7.css `--w7-w-glass` 手法）；大面板（`.glass-surface`）、弹窗（`.glass-dialog`）与弹层菜单（`.glass-surface-popover`）消费；文件项（`.item-surface`，数量大）不给 fixed 条纹（大量 fixed 背景拖慢滚动重绘），只吃 tint + 顶部高光。
+  - **顶部镜面高光 + 角部光泽 + 底部沉影**：走 `background-image` 叠层（绘制在底色之上、内容之下），不与 hover/selected 的 background-image 状态打架（`.item-surface` 状态类声明在后照常生效）；高光峰值 0.32（18% 内衰减完）、底部沉影 0.04（12%），比例收小与低不透明度玻璃协调。
+  - **窗体级柔和投影 + 内侧白倒角**：只给「窗口」面——`.glass-dialog`（长投影 + 强调色环境光晕 + `inset 0 0 0 1px` 白倒角 + 内部白泛光）与 `.glass-surface-popover`（柔和投影 + 上缘内高光）；不覆写 `.glass-surface` 与 toast（ring/focus 与堆叠深度都走 box-shadow，不能被整条覆写）。
+  - **弹层也参与 aero**：`.glass-surface-popover` 在 aero 档覆写填充为 `hsl(var(--popover) / max(0.2, α-0.02))`——基础类 `max(0.5, α-0.12)` 的下限在低 α 下会顶到 0.5、反而比卡片更实，与 aero 的通透方向相反。
+  - **文件项也参与 aero**：`.item-surface`（文件页网格卡片 / 列表行 / 分享卡）在 aero 档吃 tint + 顶部高光（透明度与模糊走共享 token），三视图统一泛色。
+  - **文字发光**：玻璃面文字带同色系光晕（`0 0 6px` + `0 0 12px` 两层，7.css 标题 8× `0 0 10px #fff` / makeaero 4× `0 0 4px #fff` 手法）——低不透明度下把文字身后那片玻璃「垫亮」增强可读性，继承到面内所有文本；深色模式反转暗晕（`rgb(0 0 0 / 0.45)` 字幕式压暗）。
 - **统一表面**：以下组件共享同一套表面类（`frontend/src/index.css` + `components/ui/`）：导航栏、侧栏（文件树）、下拉菜单、右键菜单、Select 弹层、Toast、弹窗窗体、文件卡片与列表、设置和管理面板、骨架屏。禁止硬编码模糊/透明度，一律消费 `--glass-alpha` / `--glass-blur`。小型控件（Tabs 轨道、secondary/outline 按钮、搜索框、复选框未选态、⋮ 触发钮、Switch 轨道）走 `.glass-control` + `--glass-alpha`，与卡片同色同透。
 - **背景图片**：用户可上传不超过 `2MB` 的图片（JPG/PNG/WebP）或不用背景，图片以 base64 data URL 存于 `localStorage`；有壁纸时 default 档自动提高不透明度（深 0.92 / 浅 0.82）保证 WCAG AA。纯色背景选项已移除。
 
@@ -267,7 +275,7 @@ flowchart LR
 
 ### `stores/theme.ts` + `index.css` — 玻璃拟态与主题
 
-- 表面统一 `glass-surface`（卡片/面板/侧栏/文件项，--card 底）、`glass-surface-popover`（菜单/弹层，--popover 底）+ `glass-blur`；遮罩 `glass-overlay`。强度由 `blurLevel = 'off' | 'default' | 'frosted'`（默认 default）写入 `--glass-alpha` / `--glass-blur`；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩/文件项/菜单）失效为实底。禁止硬编码模糊/透明度。
+- 表面统一 `glass-surface`（卡片/面板/侧栏/文件项，--card 底）、`glass-surface-popover`（菜单/弹层，--popover 底）+ `glass-blur`；遮罩 `glass-overlay`。强度由 `blurLevel = 'off' | 'default' | 'frosted' | 'aero'`（默认 default）写入 `--glass-alpha` / `--glass-blur`；`off` 时根元素加 `.no-blur`，全站 backdrop-filter（含遮罩/文件项/菜单）失效为实底；`aero` 时根元素加 `.glass-aero`，Win7 DWM 玻璃签名层（斜向反光条纹/高光/窗体投影，见「模糊与背景」）按该类门控。禁止硬编码模糊/透明度。
 - 壁纸（根元素 `has-bg-image`）时 default 档自动提高不透明度（深 0.92 / 浅 0.82）保 WCAG AA。
 - 强调色：accent → HSL 写 `--primary`/`--ring`，**不做深色提亮补偿**（黑色默认方案已放弃）；浅色模式白色文字 <4.5:1 时压暗循环（最低 35%）；前景由 YIQ 决定。
 
@@ -320,7 +328,7 @@ flowchart LR
 - **⚠️ 三条硬约束（违反即表现为「还是透明的、按理说不该透而是模糊」）**：
   1. **`.toast-banner` 自己就是玻璃面**（`glass-surface glass-blur rounded-2xl border border-border/60 text-card-foreground`），**不得**再套一层卡片容器。带 `transform`/`will-change` 的父级会把子元素的 `backdrop-filter` 提升为自身背景采样，子元素便采样不到页面内容 → 毛玻璃静默失效退化为平涂半透明。
   2. `.toast-banner` **禁止挂 `filter`（含 blur）与 `will-change: filter`**：Chromium 下父级 filter 截断子元素 backdrop-filter 的采样上下文（`index.css` 该小节已写明并注释警示）。
-  3. **禁止用 `glass-surface-popover`**：该类专供「悬在白色卡片之上」的弹层，会把不透明度再让 0.12（下限 0.5），比卡片更透；toast 是独立浮层，与卡片/侧栏/顶栏同属大表面，必须走 `.glass-surface`，透明度与模糊 100% 随模糊三档（off 实底 / default 0.72+20px / frosted 0.6+16px）联动。
+  3. **禁止用 `glass-surface-popover`**：该类专供「悬在白色卡片之上」的弹层，会把不透明度再让 0.12（下限 0.5），比卡片更透；toast 是独立浮层，与卡片/侧栏/顶栏同属大表面，必须走 `.glass-surface`，透明度与模糊 100% 随模糊四档（off 实底 / default 0.72+20px / frosted 0.6+16px / aero 0.22-0.28+12px）联动。
 - **折叠态后方层隐藏正文**：`reveal = isFront || spread` 为假时内容层 `opacity-0 pointer-events-none`，只露干净的磨砂上沿——半透明玻璃叠加半透明玻璃时后方文字若照常渲染会形成「重影脏字」（用户实测痛点）。
 - **条数不限、堆叠最多 3 层**：队列可累积任意条（不再触发最旧退场）；折叠态仅 depth 0/1/2 可见（`opacity: 1`），depth ≥ 3 隐藏（`opacity: 0`、`pointer-events: none`）；**悬停展开时全部可见**，位移按各自实测高度累加（`ResizeObserver` 量 `offsetHeight` + 8px 间隙）。展开/收起由**几何判定**（指针落入折叠盒即展开，保持到离开展开列总高）——展开后的层间空隙不属于任何元素，`:hover` 覆盖不到；展开期间暂停全部倒计时。
 - 入场：首帧挂 `is-enter`（下方 60px + scale 0.97、opacity 0），在 `useLayoutEffect` 内强制一次 `getBoundingClientRect()` 后同任务清除 → 过渡从预置姿态起播（**双 rAF 会被 React 合并 commit 吞掉**，见坑点）。
@@ -457,7 +465,7 @@ flowchart LR
   - 英文（`en`）：`MM/DD/YYYY` 居左，时分秒 `HH : mm : ss` 居右。
 ### 小型控件玻璃（tabs / buttons / select / switches / 搜索框 / 视图切换器）
 
-- `.glass-control`（`index.css`）只含 backdrop blur（同一 `--glass-blur` token + `saturate(1.5)`），底色透明度由各组件用 Tailwind 任意透明度 `bg-*/[var(--glass-alpha,0.72)]` 消费——**与大表面共用同一 token，无控件独立档**：default 0.92/0.82（有壁纸）/0.8/0.72（无壁纸）、frosted 0.6、off 1；控件与所在页面的卡片同色同透，杜绝灰色割裂（历史 bug：控件独立 0.6/0.75 档在白卡片旁发灰）。off 档双保险（alpha=1 自动实底 + `.no-blur` 关停 blur）。
+- `.glass-control`（`index.css`）只含 backdrop blur（同一 `--glass-blur` token + `saturate(1.5)`），底色透明度由各组件用 Tailwind 任意透明度 `bg-*/[var(--glass-alpha,0.72)]` 消费——**与大表面共用同一 token，无控件独立档**：default 0.92/0.82（有壁纸）/0.8/0.72（无壁纸）、frosted 0.6、aero 0.22/0.28（有壁纸）/0.26/0.3（无壁纸）、off 1；控件与所在页面的卡片同色同透，杜绝灰色割裂（历史 bug：控件独立 0.6/0.75 档在白卡片旁发灰）。off 档双保险（alpha=1 自动实底 + `.no-blur` 关停 blur）。
 - 适用范围：`TabsList` 轨道（`bg-card/[…]`，active 滑块为 `bg-muted` 实底凸起）、`Button` 的 **secondary/outline** 变体、**Dropdown 触发钮**（文件/分享行的 ⋮ 图标钮、文件页排序钮——点开的菜单本身已有玻璃面）、**Switch** 轨道（checked `bg-primary/[…]`、unchecked `bg-input/[…]`）、**搜索框**、复选框未选态。
 - **填色按钮（default/destructive）明确不做模糊**：半透明主色底随背景混色，活动与不可用/相邻状态无法区分——保持实底 `bg-primary` / `bg-destructive`；ghost/link 透明也不参与。
 - **搜索框项目级统一**：`core.tsx` 导出 `SEARCH_INPUT_GLASS`（`glass-control + bg-card/[…]` 含 dark 变体——底色用 `--card` 与卡片精确同色），文件页与管理后台（Users/Files）共用——禁止各自写 bg（历史不一致：文件页实底 `bg-background`、管理页透明）。
@@ -527,7 +535,7 @@ flowchart LR
 
 ### `pages/Landing.tsx` + `components/landing/` — 落地页独立视觉系统
 
-- **强调色跟随个性化设置（默认 #D8632B）**：`accentHsl()` 把 accentColor 算成 `--primary` / `--primary-foreground` 内联到 `.landing` 根（landing.css 里同名变量只是回退值）；强调色一换，主页点缀、进度条、图表全部跟随。**模糊档位 / 壁纸 / 动画档位仍不消费**：根元素实底铺满遮住 body 壁纸，不使用任何 `glass-*` 类（`.no-blur` 不触达）；只跟随明暗模式（`.dark`）与语言（根 `lang` 属性驱动 `:lang(zh)` 收紧 CJK 字距）。样式 `landing.css` 随落地页 chunk 懒加载。
+- **强调色跟随个性化设置（默认 #4e80ee）**：`accentHsl()` 把 accentColor 算成 `--primary` / `--primary-foreground` 内联到 `.landing` 根（landing.css 里同名变量只是回退值）；强调色一换，主页点缀、进度条、图表全部跟随。**模糊档位 / 壁纸 / 动画档位仍不消费**：根元素实底铺满遮住 body 壁纸，不使用任何 `glass-*` 类（`.no-blur` 不触达）；只跟随明暗模式（`.dark`）与语言（根 `lang` 属性驱动 `:lang(zh)` 收紧 CJK 字距）。样式 `landing.css` 随落地页 chunk 懒加载。
 - **动画独立**：`index.css` 的 `data-motion` 三档对 `.landing` 子树豁免（`[data-motion='off'] :not(.landing, .landing *)`），落地页只尊重 `prefers-reduced-motion`。
 - **文件划分**：`pages/Landing.tsx` 只做装配（顶栏 + 区块 + 页脚）；区块在 `sections.tsx`（hero / providers / workflow / pool / admin / details / integrations / security / edge / deploy / faq / cta）；模拟界面 `mockups.tsx`；SVG 插画 `Thumb.tsx`；服务商标识 `brands.tsx`；示例二维码 `share-qr.ts`；原语与钩子 `primitives.tsx`。
 - **顶栏只有** Logo（size 40）、GitHub 图标、主题、语言、**查看文档**（紧挨登录/打开文件左侧）、登录/打开文件，**没有站内导航**；区块 id 仍保留（`#workflow` `#storage` `#admin` `#integrations` `#deploy` `#faq`）。hero 的次要按钮也是「查看文档」。

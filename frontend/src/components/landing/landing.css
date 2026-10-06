@@ -1,5 +1,5 @@
 /* 落地页独立视觉系统（只由 pages/Landing.tsx 引入，随落地页 chunk 懒加载）
-   - 强调色跟随个性化设置（默认 #D8632B）：pages/Landing.tsx 用 accentHsl() 把
+   - 强调色跟随个性化设置（默认 #4e80ee）：pages/Landing.tsx 用 accentHsl() 把
      accentColor 算成 --primary/--primary-foreground 内联到 .landing 根上，
      这里的 --primary 值只是 JS 未生效时的回退；模糊档位 / 背景 / 动画档位仍不消费。
      根元素实底铺满，遮住 body 上的壁纸与纯色背景；不使用任何 glass-* 类（.no-blur 规则不触达）。
@@ -14,9 +14,9 @@
   --card-foreground: 240 10% 4%;
   --popover: 0 0% 100%;
   --popover-foreground: 240 10% 4%;
-  /* #D8632B 的回退值；实际由 Landing.tsx 按个性化强调色内联覆盖 */
-  --primary: 19.4 69% 50.8%;
-  --primary-foreground: 0 0% 100%;
+  /* #4e80ee 的回退值；实际由 Landing.tsx 按个性化强调色内联覆盖 */
+  --primary: 221 82% 62%;
+  --primary-foreground: 210 40% 98%;
   --secondary: 240 5% 96%;
   --secondary-foreground: 240 10% 4%;
   --muted: 240 5% 96%;
@@ -54,8 +54,8 @@
   --card-foreground: 0 0% 95%;
   --popover: 240 5% 7%;
   --popover-foreground: 0 0% 95%;
-  --primary: 19.4 69% 50.8%;
-  --primary-foreground: 0 0% 100%;
+  --primary: 221 82% 62%;
+  --primary-foreground: 210 40% 98%;
   --secondary: 240 4% 11%;
   --secondary-foreground: 0 0% 95%;
   --muted: 240 4% 11%;

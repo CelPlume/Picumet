@@ -8,7 +8,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 function BlurHarness() {
-  const [value, setValue] = useState<'off' | 'default' | 'frosted'>('default');
+  const [value, setValue] = useState<'off' | 'default' | 'frosted' | 'aero'>('default');
   return <BlurSlider value={value} onChange={setValue} />;
 }
 
@@ -17,7 +17,7 @@ describe('slider', () => {
     const { container } = render(<BlurHarness />);
     const input = screen.getByRole('slider', { name: 'common.blurStrength' });
     expect(input).toHaveAttribute('aria-valuetext', 'common.blurDefault');
-    expect(container.querySelectorAll('.pill-slider-tick')).toHaveLength(3);
+    expect(container.querySelectorAll('.pill-slider-tick')).toHaveLength(4);
     expect(container.querySelector('.pill-slider-track')).not.toHaveAttribute('data-pulling');
   });
 
@@ -28,6 +28,10 @@ describe('slider', () => {
     expect(input).toHaveValue('2');
     expect(input).toHaveAttribute('aria-valuetext', 'common.blurFrosted');
     expect(screen.getByText('common.blurDescFrosted')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '3' } });
+    expect(input).toHaveValue('3');
+    expect(input).toHaveAttribute('aria-valuetext', 'common.blurAero');
+    expect(screen.getByText('common.blurDescAero')).toBeInTheDocument();
   });
 
   it('marks the track pressed only while the pointer is down', () => {
