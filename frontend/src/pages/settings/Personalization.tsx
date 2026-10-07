@@ -32,7 +32,7 @@ import { FormCardSkeleton } from '@/components/ui/skeleton';
 import { RadioGroup } from '@/components/ui/radio-group';
 import { InputOTP } from '@/components/ui/input-otp';
 import { Select } from '@/components/ui/select';
-import { BlurSlider, FilesPerRowSlider, MotionSlider } from '@/components/ui/slider';
+import { BlurSlider, FilesPerRowSlider, MotionSlider, OverscrollSlider } from '@/components/ui/slider';
 import { revealDelay, innerDelay } from '@/components/ui/reveal';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -907,8 +907,18 @@ export default function PersonalizationPage() {
               </div>
             )}
 
+            {/* 过滚动效果：动画默认/全部档显示（关闭动画档没有可回弹的动效）；引擎见 lib/overscroll.ts */}
+            {theme.motionLevel !== 'off' && (
+              <div className="reveal-row" style={innerDelay(themeIdx, theme.motionLevel === 'all' ? 8 : 7)}>
+                <OverscrollSlider
+                  value={theme.overscrollEffect}
+                  onChange={(level) => theme.set({ overscrollEffect: level })}
+                />
+              </div>
+            )}
+
             {/* 自定义背景（置于三个滑块之后） */}
-            <div className="reveal-row space-y-2" style={innerDelay(themeIdx, 8)}>
+            <div className="reveal-row space-y-2" style={innerDelay(themeIdx, 9)}>
               <Label>{t('settings.background')}</Label>
               <RadioGroup
                 className="grid-cols-2"

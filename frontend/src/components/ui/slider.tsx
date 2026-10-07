@@ -3,10 +3,25 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
-import type { BlurLevel, MotionLevel } from '@/stores/theme';
+import type { BlurLevel, MotionLevel, OverscrollLevel } from '@/stores/theme';
 
 const BLUR_LEVELS: BlurLevel[] = ['off', 'default', 'frosted', 'aero'];
 const MOTION_LEVELS: MotionLevel[] = ['off', 'default', 'all'];
+
+/** 过滚动三选一：左 = 关（默认），中 = 橡皮筋（iOS），右 = 拉伸过滚动（Android 12） */
+const OVERSCROLL_LEVELS: OverscrollLevel[] = ['off', 'rubberBand', 'stretch'];
+
+const OVERSCROLL_LABEL_KEYS: Record<OverscrollLevel, string> = {
+  off: 'common.overscrollOff',
+  rubberBand: 'common.overscrollRubber',
+  stretch: 'common.overscrollStretch',
+};
+
+const OVERSCROLL_DESCRIPTION_KEYS: Record<OverscrollLevel, string> = {
+  off: 'common.overscrollDescOff',
+  rubberBand: 'common.overscrollDescRubber',
+  stretch: 'common.overscrollDescStretch',
+};
 
 const BLUR_LABEL_KEYS: Record<BlurLevel, string> = {
   off: 'common.blurOff',
@@ -348,6 +363,38 @@ export function MotionSlider({
         ariaValueText={t(MOTION_LABEL_KEYS[level])}
       />
       <p className="mt-2 text-xs text-muted-foreground">{t(MOTION_DESCRIPTION_KEYS[level])}</p>
+    </div>
+  );
+}
+
+/** 离散档位滑块（外观设置-过滚动效果）：左 = Android 12 拉伸，中 = 关，右 = iOS 橡皮筋。
+ *  仅动画默认/全部档显示（个性化设置页门控）；引擎见 lib/overscroll.ts。 */
+export function OverscrollSlider({
+  value,
+  onChange,
+  className,
+}: {
+  value: OverscrollLevel;
+  onChange: (level: OverscrollLevel) => void;
+  className?: string;
+}) {
+  const { t } = useTranslation();
+  const index = Math.max(OVERSCROLL_LEVELS.indexOf(value), 0);
+  const level = OVERSCROLL_LEVELS[index];
+
+  return (
+    <div className={cn('select-none', className)}>
+      <PillSlider
+        label={t('common.overscrollEffect')}
+        value={index}
+        min={0}
+        max={OVERSCROLL_LEVELS.length - 1}
+        onChange={(next) => onChange(OVERSCROLL_LEVELS[clamp(Math.round(next), 0, OVERSCROLL_LEVELS.length - 1)])}
+        format={(next) => t(OVERSCROLL_LABEL_KEYS[OVERSCROLL_LEVELS[clamp(Math.round(next), 0, OVERSCROLL_LEVELS.length - 1)]])}
+        ariaLabel={t('common.overscrollEffect')}
+        ariaValueText={t(OVERSCROLL_LABEL_KEYS[level])}
+      />
+      <p className="mt-2 text-xs text-muted-foreground">{t(OVERSCROLL_DESCRIPTION_KEYS[level])}</p>
     </div>
   );
 }

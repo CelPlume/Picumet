@@ -109,6 +109,13 @@ export const zhCN = {
     motionDescOff: '全部动画禁用，界面即时切换（低性能设备/动效敏感适用）',
     motionDescDefault: '仅保留图表、标签页、弹窗等必要动画，关闭页面入场等装饰效果',
     motionDescAll: '页面切换与卡片入场等装饰动画全部开启',
+    overscrollEffect: '过滚动效果',
+    overscrollStretch: '拉伸回弹',
+    overscrollOff: '关闭',
+    overscrollRubber: '橡皮筋',
+    overscrollDescStretch: '滚动到边缘继续拉时内容拉伸变形，松手缩回（Android 12 拉伸过滚动）',
+    overscrollDescOff: '滚动到边缘即停止，没有回弹动画',
+    overscrollDescRubber: '整页拉出留白再弹回（iOS 橡皮筋）',
     blurStrength: '模糊强度',
   },
   nav: {

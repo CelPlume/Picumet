@@ -5,6 +5,11 @@ import { create } from 'zustand';
  *  aero Win7 Aero 玻璃（最低不透明度 + 最强模糊，根元素挂 .glass-aero 叠加反光/高光/投影签名层） */
 export type BlurLevel = 'off' | 'default' | 'frosted' | 'aero';
 
+/** 过滚动效果三选一：stretch = Android 12 拉伸过滚动（内容拉伸变形再缩回）；
+ *  off = 关闭（默认）；rubberBand = iOS 橡皮筋（整页拉出留白再弹回）。
+ *  物理实现见 lib/overscroll.ts（flutter#87839 / fluid-scroll / Squishy 参数） */
+export type OverscrollLevel = 'stretch' | 'off' | 'rubberBand';
+
 /**
  * 动画三档（与模糊三档并排的外观开关）：
  * - off：全部动画禁用（即时切换，适配低性能设备/动效敏感用户）
@@ -30,6 +35,8 @@ export interface AppearanceSettings {
   motionLevel: MotionLevel;
   /** 动画速度两档：efficient 现行时长（默认）/ comfortable 整体放慢一档 */
   motionSpeed: MotionSpeed;
+  /** 过滚动效果三选一（仅动画默认/全部档显示）：stretch / off（默认）/ rubberBand */
+  overscrollEffect: OverscrollLevel;
   backgroundType: 'none' | 'image' | 'color';
   backgroundUrl?: string;
   backgroundColor?: string;
@@ -56,6 +63,7 @@ const DEFAULT: AppearanceSettings = {
   blurLevel: 'default',
   motionLevel: 'all',
   motionSpeed: 'efficient',
+  overscrollEffect: 'off',
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
@@ -174,6 +182,10 @@ function applyTheme(s: AppearanceSettings) {
   // - default：装饰性入场动画（.reveal 等）禁用；功能性动画（图表/tab/弹窗/加载）保留
   // - all：全开（默认）
   root.setAttribute('data-motion', s.motionLevel === 'all' ? 'all' : s.motionLevel);
+
+  // 过滚动效果：落在 <html data-overscroll>，lib/overscroll.ts 的事件引擎按该值分派
+  // （stretch = Android 12 拉伸 / rubberBand = iOS 橡皮筋 / off = 不拦截），off 为缺省
+  root.setAttribute('data-overscroll', s.overscrollEffect);
 
   // 动画速度两档：落在 <html data-motion-speed>，CSS 侧只在 comfortable 下覆写时长 token
   // 与错峰延迟倍率（efficient 不写覆盖 = 与 CSS 默认 token 逐毫秒一致）。

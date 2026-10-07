@@ -7,7 +7,12 @@ import './lib/i18n';
 // 外观设置（明暗/壁纸/模糊/动画档位）在模块装载时就 applyTheme：认证检查或路由懒加载期间
 // 渲染的 AppSkeleton 也要长在用户自己的壁纸与玻璃观感上（否则等出来的是无背景图无模糊的实底）
 import './stores/theme';
+// 全局过滚动引擎：外观设置「过滚动效果」的事件驱动实现（data-overscroll 门控，
+// off 缺省零开销——监听器只做一次属性读判）
+import { initOverscroll } from './lib/overscroll';
 import './index.css';
+
+initOverscroll();
 
 const queryClient = new QueryClient({
   defaultOptions: {

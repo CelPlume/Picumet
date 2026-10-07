@@ -109,6 +109,13 @@ export const enUS = {
     motionDescOff: 'All animations are disabled; the UI switches instantly (good for low-power devices or motion sensitivity)',
     motionDescDefault: 'Keep functional animations (charts, tabs, dialogs); page-entrance decorations are disabled',
     motionDescAll: 'Page transitions and card entrance animations are all enabled',
+    overscrollEffect: 'Overscroll effect',
+    overscrollStretch: 'Stretch',
+    overscrollOff: 'Off',
+    overscrollRubber: 'Rubber band',
+    overscrollDescStretch: 'Content stretches when pulled past the edge and settles back (Android 12 stretch overscroll)',
+    overscrollDescOff: 'Scrolling stops at the edge with no bounce animation',
+    overscrollDescRubber: 'The page pulls past the edge into blank space and springs back (iOS rubber band)',
     blurStrength: 'Blur strength',
   },
   nav: {

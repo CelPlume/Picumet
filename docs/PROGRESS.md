@@ -496,6 +496,21 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 - 浅色模式下 `#4e80ee`（YIQ 125.6）白字对比 3.7:1 不达 AA，`applyTheme` 的既有压暗循环自动把它压到 ≈ L56%（对比 ≥4.5:1）后才停——与旧默认橙同一机制，无需新代码。
 - 文档同步：docs/UI_CN.md / UI.md「强调色」「落地页独立」两节、AGENTS.md 前端 UI 规则「落地页独立」条目与本变更历史。
 
+### 2026-10-06：过滚动效果（Overscroll Effect）滑块 + 全局引擎
+
+个性化设置「动画效果」下方新增**过滚动效果**三选一滑块（默认关，仅动画默认/全部档显示），配全局事件引擎。物理参数取自 `~/scroll-test` 四个参考实现：
+
+| 项 | 内容 | 位置 |
+| :--- | :--- | :--- |
+| 档位与门控 | `OverscrollLevel = 'stretch' \| 'off' \| 'rubberBand'`（默认 off）；`applyTheme` 落 `<html data-overscroll>`；滑块 `OverscrollSlider` 三档锚点自动推导，**仅动画默认/全部档显示**（关闭档没有可回弹的动效）；`common.overscroll*` 中英文案 | `stores/theme.ts`、`components/ui/slider.tsx`、`lib/i18n/{zh,en}.ts` |
+| 引擎 | `lib/overscroll.ts`（main.tsx 模块级装载）：window 级 wheel/touch 监听（wheel/touchmove non-passive），事件目标向上找最近纵向滚动容器；容器停在边缘且输入继续外推才消费（preventDefault 阻断滚动链接）；滚轮停顿 150ms / 触摸松手即回弹；反向输入线性回退、越过起点交还原生滚动 | `lib/overscroll.ts` |
+| 拉伸回弹（Android 12） | 内容**原位变形、无整体位移**：`scaleY(1 + s)`，`s = 0.016·pull + 0.016·(1 − e^(−pull·e/0.33))`（pull = 累计越界 px / 视口高度），transform-origin 钉在被拉的边（flutter alignment 映射）；**拉伸程度舒适 1.0 / 高效 0.75（cap 0.10/0.08）**；缩回**舒适 400ms / 高效 340ms** `Curves.decelerate`；**仅真实滚动溢出容器生效**——预留高度但内容不满的卡片（管理端表格等）跳过，避免整块空卡片抖动 | `lib/overscroll.ts` |
+| 橡皮筋（iOS） | 整页拉出：`disp = dir·(1 − 1/(raw/range·0.55 + 1))·range`（cap 0.4·range，**位移距离高效 = 舒适的 1/2**）；松手阻尼谐振闭式解 `offset(t) = (c1 + c2·t)·e^(−λt)`（λ = 2π/0.575，c2 带触摸速度可轻微过冲，阈值 0.1px / 10px/s），**最短播放高效 600ms / 舒适 400ms**（小振幅时间轴放慢，杜绝「瞬间消失」） | `lib/overscroll.ts` |
+| 目标规则 | **卡片页面全部卡片作为一个整体回弹**：变换目标 = 指针落点卡片向上最近一个含 ≥2 张顶层卡片的公共包裹层（单卡 → 卡片本身；候选含 nav → 退回卡片，侧栏不跟随）；卡片外滚动区域回落为滚动上下文本身，但跳过含侧栏/导航的布局框架——页面标题、描述文字、侧栏永不跟随 | `lib/overscroll.ts` |
+| 门控 | `data-overscroll=off`（默认）零拦截；`data-motion=off` 与 `prefers-reduced-motion` 不生效；档位切换经 MutationObserver 实时归位 | `lib/overscroll.ts` |
+| 已知权衡 | 拉拽进行中 transform 祖先使后代 backdrop-filter 短暂退化为自身采样（同「Toast 玻璃层级」约束），回弹结束清空 transform 即恢复 | — |
+| 回归 | `slider.test.tsx` 增过滚动滑块用例（3 锚点、默认 off、两端取值与描述联动） | `components/ui/slider.test.tsx` |
+
 ## 当前基线
 
 - 后端：78 个测试文件 / 717 个 Vitest 用例通过（本条新增 `randomDigits` 5 例）；`tsc --noEmit` 干净。
