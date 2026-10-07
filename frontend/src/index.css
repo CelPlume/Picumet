@@ -256,23 +256,34 @@
       0 24px 64px rgb(0 0 0 / 0.4),
       0 4px 16px rgb(0 0 0 / 0.2),
       0 0 36px hsl(var(--primary) / 0.16),
-      inset 0 0 0 1px rgb(255 255 255 / 0.8),
-      inset 0 0 28px rgb(255 255 255 / 0.14);
+      inset 0 0 0 1px rgb(255 255 255 / 0.42),
+      inset 0 0 20px rgb(255 255 255 / 0.07);
   }
   .dark.glass-aero .glass-dialog {
     box-shadow:
       0 24px 64px rgb(0 0 0 / 0.55),
       0 4px 16px rgb(0 0 0 / 0.3),
       0 0 36px hsl(var(--primary) / 0.2),
-      inset 0 0 0 1px rgb(255 255 255 / 0.32),
-      inset 0 0 28px rgb(255 255 255 / 0.06);
+      inset 0 0 0 1px rgb(255 255 255 / 0.2),
+      inset 0 0 20px rgb(255 255 255 / 0.035);
+  }
+  /* 弹窗/抽屉（.glass-dialog，浅深两态）与 Toast 横幅在 aero 档放透一档：
+     用户反馈相对卡片太实 —— 基础类 0.6 下限（弹窗）/ 卡片同值（toast）在 aero 的
+     低 α 下会变成近乎实底的白板；统一 = α-0.04（下限 0.16），
+     弹窗身后的 dim 遮罩由既有 brightness(1.75) 补偿，观感不灰 */
+  .glass-aero .glass-dialog {
+    background-color: hsl(var(--card) / max(0.16, calc(var(--glass-alpha, 0.72) - 0.04)));
+  }
+  .glass-aero .toast-banner {
+    background-color: hsl(var(--card) / max(0.16, calc(var(--glass-alpha, 0.72) - 0.04)));
   }
   /* 弹层菜单（悬于内容之上的「小窗口」）：同样参与 aero 玻璃 —— 比卡片再让一档的
      透明度 + 强调色 tint + 同一片 fixed 条纹玻璃板（基础类的 max(0.5, α-0.12) 下限在
      低 α 下会顶到 0.5、反而比卡片更实，故此处按 aero 档覆写）。
-     柔和投影 + 上缘内高光同「窗口」面。 */
+     柔和投影 + 上缘内高光同「窗口」面。aero 档填充 = α-0.04（下限 0.16）：
+     用户反馈浮动面相对卡片太实，统一放透（卡片 0.22/0.26，浮动面 0.18/0.22）。 */
   .glass-aero .glass-surface-popover {
-    background-color: hsl(var(--popover) / max(0.2, calc(var(--glass-alpha, 0.72) - 0.02)));
+    background-color: hsl(var(--popover) / max(0.16, calc(var(--glass-alpha, 0.72) - 0.04)));
     background-image:
       linear-gradient(to bottom, rgb(255 255 255 / 0.26), rgb(255 255 255 / 0) 16%),
       linear-gradient(135deg, rgb(255 255 255 / 0.2), rgb(255 255 255 / 0) 20%),
@@ -293,7 +304,7 @@
     box-shadow:
       0 12px 40px rgb(0 0 0 / 0.26),
       0 2px 8px rgb(0 0 0 / 0.14),
-      inset 0 1px 0 rgb(255 255 255 / 0.5);
+      inset 0 1px 0 rgb(255 255 255 / 0.3);
   }
   .dark.glass-aero .glass-surface-popover {
     background-image:
@@ -316,23 +327,27 @@
     box-shadow:
       0 12px 40px rgb(0 0 0 / 0.45),
       0 2px 8px rgb(0 0 0 / 0.24),
-      inset 0 1px 0 rgb(255 255 255 / 0.22);
+      inset 0 1px 0 rgb(255 255 255 / 0.14);
   }
   /* 文字发光（7.css 标题文字 8× `0 0 10px #fff` / makeaero 4× `0 0 4px #fff` 手法）：
      玻璃面上的文字带一圈同色系光晕，低不透明度下把文字身后那一小片玻璃「垫亮」，
-     增强可读性；继承到面内所有文本（Win7 对按钮文字同样发光）。深色模式反转：
-     亮字配暗晕（字幕式压暗）。 */
+     增强可读性；继承到面内所有文本（Win7 对按钮文字同样发光）。浅色模式四层光晕
+     （大幅减弱后的两层弱光晕）；glass-control（tab 栏、按钮、滑块面）
+     与 radio 选项行一并纳入。
+     深色模式反转：亮字配暗晕（字幕式压暗）。 */
+  .glass-aero {
+    --aero-text-glow: 0 0 1px rgb(255 255 255 / 0.4), 0 0 6px rgb(255 255 255 / 0.22);
+  }
+  .dark.glass-aero {
+    --aero-text-glow: 0 0 1px rgb(0 0 0 / 0.35), 0 0 6px rgb(0 0 0 / 0.2);
+  }
   .glass-aero .glass-surface,
   .glass-aero .glass-surface-popover,
   .glass-aero .glass-dialog,
-  .glass-aero .item-surface {
-    text-shadow: 0 0 6px rgb(255 255 255 / 0.5), 0 0 12px rgb(255 255 255 / 0.28);
-  }
-  .dark.glass-aero .glass-surface,
-  .dark.glass-aero .glass-surface-popover,
-  .dark.glass-aero .glass-dialog,
-  .dark.glass-aero .item-surface {
-    text-shadow: 0 0 6px rgb(0 0 0 / 0.45), 0 0 12px rgb(0 0 0 / 0.25);
+  .glass-aero .glass-control,
+  .glass-aero .item-surface,
+  .glass-aero .radio-option {
+    text-shadow: var(--aero-text-glow);
   }
   /* 文件项（卡片/列表行 = 文件页三视图与分享列表）：aero 档也吃强调色 tint + 顶部
      高光（scroll 附件）。不给 fixed 条纹——数量大，大量 fixed 背景会拖慢滚动重绘；
@@ -346,6 +361,14 @@
     background-image:
       linear-gradient(to bottom, rgb(255 255 255 / 0.12), rgb(255 255 255 / 0) 14%),
       linear-gradient(hsl(var(--primary) / 0.09), hsl(var(--primary) / 0.09));
+  }
+  /* 过滚动拉拽进行中：transform 会让后代/自身的 background-attachment: fixed 条纹
+     退化为元素锚定并随形变拉伸 —— 与其让纹理在拉拽首帧跳变，不如整段会话显式切到
+     元素锚定（scroll），条纹随玻璃形变自然走动；回弹结束（resetSession）同帧恢复 fixed，
+     此时 transform 已归位，无中间帧。数据属性由 lib/overscroll.ts 会话生命周期驱动。 */
+  [data-ovs-active] .glass-surface,
+  [data-ovs-active].glass-surface {
+    background-attachment: scroll;
   }
   .scrollbar-thin {
     scrollbar-width: thin;
@@ -450,6 +473,20 @@
   animation: fade-in var(--duration-base) var(--ease-out);
 }
 
+/* Tab 面板入场：只用 transform。opacity 动画的祖先会成为 backdrop root（Filter Effects 2），
+   动画期间后代玻璃面的 backdrop-filter 采样不到页面背景 —— 存储管理等 Tabs 页面
+   「进入时先半透明、动画结束才覆盖模糊」的根因；transform 不是 backdrop root 触发条件
+   （toast banner 自带 transform 且磨砂正常为证），玻璃面从首帧起完整生效 */
+@keyframes tab-in {
+  from {
+    translate: 0 6px;
+  }
+}
+
+.animate-tab-in {
+  animation: tab-in var(--duration-base) var(--ease-out);
+}
+
 .animate-scale-in {
   animation: scale-in var(--duration-base) var(--ease-out);
 }
@@ -473,11 +510,14 @@
 /* 入场：内容/卡片/列表/卡内元素的统一次序入场（原语见 components/ui/reveal.tsx）
    - 只动 opacity 与 transform，元素首帧就占位，不产生布局位移（CLS）；
    - 终点隐式回落到元素自身计算值（transform: none + 业务透明度），不留残余 transform；
-   - animation-fill-mode: both 让首帧即 --reveal-delay 期间保持隐藏，mount 后只播一次；
+   - animation-fill-mode: backwards 让首帧即 --reveal-delay 期间保持隐藏，mount 后只播一次；
+     （不能用 both：结束后会永久持有 from 帧的 blur(0px) filter + 恒等 transform 残留——
+      filter 残留把包装层变成 backdrop root，内部玻璃卡磨砂失效（仪表盘趋势卡），
+      transform 残留让后代 background-attachment: fixed 的 aero 条纹错位；backwards 结束即归零）
    - 逐项延迟由 --reveal-delay 提供（列表/卡片网格用 CSS 变量，不逐项开 JS 定时器）；
    - 默认时长复用 --duration-base。
    data-motion 三档与 prefers-reduced-motion 的关停见下方「动画三档」与文件末尾降级方案。 */
-/* 显式写 to{opacity:1} 时，fill both 的填充值会盖住业务透明度（封禁行 opacity-40、文件灰度等）；
+/* 显式写 to{opacity:1} 时，fill both/backwards 的填充值会盖住业务透明度（封禁行 opacity-40、文件灰度等）；
    因此只写 from，终点隐式回落到元素自身计算值：普通元素 = 1，
    封禁行 = 0.4，且后续业务类变化会跟随。
    同一条规则也适用于 filter：只写 from 的 blur，终点回到元素自身的 filter
@@ -487,7 +527,7 @@
 }
 
 .reveal {
-  animation: reveal-in calc(var(--reveal-duration, var(--duration-base)) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation: reveal-in calc(var(--reveal-duration, var(--duration-base)) * var(--motion-entrance-scale, 1)) var(--ease-out) backwards;
   animation-delay: calc(var(--reveal-delay, 0ms) * var(--motion-delay-scale, 1));
 }
 
@@ -499,7 +539,7 @@
 }
 
 .reveal-row {
-  animation: reveal-row-in calc(var(--reveal-duration, var(--duration-base)) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation: reveal-row-in calc(var(--reveal-duration, var(--duration-base)) * var(--motion-entrance-scale, 1)) var(--ease-out) backwards;
   animation-delay: calc(var(--reveal-delay, 0ms) * var(--motion-delay-scale, 1));
 }
 
@@ -518,7 +558,7 @@
    先起势，步长 20ms、第 13 项起同延迟封顶（长列表不拖出长尾）；只淡入不位移。
    default 档规则不存在 → 自动关停；off/reduced-motion 由全局 0.01ms + 下方延迟归零兜底。 */
 [data-motion='all'] .animate-dropdown > * {
-  animation: reveal-row-in calc(var(--duration-fast) * var(--motion-entrance-scale, 1)) var(--ease-out) both;
+  animation: reveal-row-in calc(var(--duration-fast) * var(--motion-entrance-scale, 1)) var(--ease-out) backwards;
 }
 [data-motion='all'] .animate-dropdown > *:nth-child(1) { animation-delay: calc(30ms * var(--motion-delay-scale, 1)); }
 [data-motion='all'] .animate-dropdown > *:nth-child(2) { animation-delay: calc(50ms * var(--motion-delay-scale, 1)); }
@@ -725,7 +765,8 @@
 .pill-slider-tick {
   z-index: 2;
   background-color: hsl(var(--foreground) / 0.12);
-  transition: background-color var(--duration-fast) var(--ease-out);
+  /* opacity 随填充过渡：被填充覆盖的锚点淡出，避免半透明叠半透明的重影 */
+  transition: background-color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 /* 拇指：静止 scale(0.7) + 32% 透明，
    拖动/键盘聚焦弹至全尺寸 90% 透明；hover 同态在下方指针媒体查询里。 */
@@ -1011,10 +1052,6 @@
 }
 [data-motion='all'] .cb-group {
   transition: --cb-t var(--cb-dur) var(--cb-ease);
-}
-[data-motion='all'] .cb-group-word {
-  opacity: calc(0.45 + 0.55 * clamp(0, var(--cb-t), 1));
-  transition: opacity var(--cb-dur) var(--cb-ease);
 }
 
 /* ============ 降级方案 ============ */

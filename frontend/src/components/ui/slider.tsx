@@ -253,19 +253,26 @@ function PillSlider({
         />
       </div>
 
-      {stops.map((stop) => (
-        <span
-          key={stop}
-          aria-hidden
-          className="pill-slider-tick pointer-events-none absolute top-1/2 h-2.5 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{ left: `clamp(1.5px, ${((stop - min) / range) * 100}%, calc(100% - 1.5px))` }}
-        />
-      ))}
+      {stops.map((stop) => {
+        // 已被填充覆盖的锚点隐藏（半透明填充叠半透明锚点会晕成重影），未覆盖的保持清晰
+        const covered = (stop - min) / range <= percent / 100 + 1e-9;
+        return (
+          <span
+            key={stop}
+            aria-hidden
+            className="pill-slider-tick pointer-events-none absolute top-1/2 h-2.5 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+            style={{
+              left: `clamp(1.5px, ${((stop - min) / range) * 100}%, calc(100% - 1.5px))`,
+              opacity: covered ? 0 : undefined,
+            }}
+          />
+        );
+      })}
 
-      <span className="pointer-events-none absolute inset-y-0 left-5 z-10 flex items-center whitespace-nowrap text-sm font-medium text-muted-foreground">
+      <span className="pointer-events-none absolute inset-y-0 left-5 z-10 flex items-center whitespace-nowrap text-sm font-medium text-foreground">
         {label}
       </span>
-      <span className="pointer-events-none absolute inset-y-0 right-4 z-10 flex items-center whitespace-nowrap text-sm font-medium tabular-nums text-foreground">
+      <span className="pointer-events-none absolute inset-y-0 right-4 z-10 flex items-center whitespace-nowrap text-sm font-medium tabular-nums text-muted-foreground">
         {display}
       </span>
 

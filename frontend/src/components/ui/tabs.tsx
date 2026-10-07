@@ -44,7 +44,7 @@ export function TabsList({ children, className }: { children: ReactNode; classNa
       {ind.ready && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-y-1 rounded-lg bg-muted shadow-sm ring-1 ring-border transition-all [transition-duration:var(--duration-base)] ease-out"
+          className="pointer-events-none absolute inset-y-1 rounded-lg bg-primary/10 transition-all [transition-duration:var(--duration-base)] ease-out"
           style={{ left: ind.pos, width: ind.size }}
         />
       )}
@@ -100,5 +100,8 @@ export function TabsContent({
 
   if (ctx.value !== value) return null;
 
-  return <div className={cn('animate-fade-in mt-4', className)}>{children}</div>;
+  // 入场动画只用 transform（.animate-tab-in）：opacity 动画的祖先会成为 backdrop root，
+  // 动画期间内部玻璃卡的 backdrop-filter 只能采到空组 —— 存储管理页「进入时先半透明、
+  // 动画结束才覆盖模糊」的根因；transform 不隔离背景采样（toast banner 同证），玻璃全程正常
+  return <div className={cn('animate-tab-in mt-4', className)}>{children}</div>;
 }

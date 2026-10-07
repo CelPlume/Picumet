@@ -20,7 +20,9 @@ const roundnessMap: Record<TooltipRoundness, string> = {
 };
 
 const variantMap: Record<TooltipVariant, string> = {
-  default: "bg-background",
+  // default 走项目玻璃弹层类（bg-background 实底不随四档模糊/透明度门控，
+  // 仪表盘趋势卡的用户反馈）；hover 在卡片上时 backdrop 采样卡片内容，观感与菜单一致
+  default: "glass-surface-popover glass-blur",
   "frosted-glass": "bg-background/70 backdrop-blur-sm",
 };
 

@@ -143,6 +143,7 @@ function resetSession(): void {
   cancelAnimationFrame(session.raf);
   window.clearTimeout(session.wheelTimer);
   window.clearTimeout(session.cleanupTimer);
+  delete session.mover.dataset.ovsActive;
   session.mover.style.transition = '';
   session.mover.style.transform = '';
   session.mover.style.transformOrigin = '';
@@ -254,7 +255,9 @@ function resolveMover(target: EventTarget | null, container: HTMLElement): HTMLE
   if (target instanceof Element) {
     const card = target.closest<HTMLElement>('.glass-surface');
     if (card) {
+      // 侧栏（nav landmark）与顶栏（header landmark）永不回弹：指针落在其上不消费
       if (card.closest('nav')) return null;
+      if (card.closest('header')) return null;
       let node: HTMLElement | null = card.parentElement;
       while (node && container.contains(node) && node !== container) {
         if (node.querySelector('nav')) break;
@@ -278,10 +281,6 @@ function resolveMover(target: EventTarget | null, container: HTMLElement): HTMLE
 function advance(container: HTMLElement, effect: OverscrollEffect, edge: Edge, push: number, forward: boolean, target: EventTarget | null): boolean {
   const mover = resolveMover(target, container);
   if (!mover) return false;
-  // 拉伸需要真实滚动溢出：预留高度但内容不满的卡片（管理端表格等）没有可变形的
-  // 内容边缘，原位 scale 只会让整块空卡片抖动，故不消费（橡皮筋照常平移）
-  const hasOverflow = container.scrollHeight > container.clientHeight + 1;
-  if (effect === 'stretch' && !hasOverflow) return false;
 
   if (session && (session.mover !== mover || session.releasing)) {
     resetSession();
@@ -306,6 +305,9 @@ function advance(container: HTMLElement, effect: OverscrollEffect, edge: Edge, p
       wheelTimer: 0,
       cleanupTimer: 0,
     };
+    // 拉拽期间条纹层切元素锚定（见 index.css [data-ovs-active]）：transform 会令
+    // background-attachment: fixed 退化为元素锚定，与其首帧跳变，不如显式声明
+    session.mover.dataset.ovsActive = 'true';
     if (effect === 'stretch') {
       // 首帧先给出部分拉伸再逐帧逼近目标（flutter 的 tween 语义）
       session.stretch = stretchTarget(session.pullNormalized) * 0.4;

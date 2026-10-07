@@ -34,7 +34,8 @@ export function RadioGroup({
             aria-checked={active}
             onClick={() => onChange(opt.value)}
             className={cn(
-              'flex w-full cursor-pointer items-center gap-3 rounded-lg border p-3 text-left text-sm transition-colors',
+              // radio-option：aero 档文字光晕的挂点（index.css「文字发光」节）
+              'radio-option flex w-full cursor-pointer items-center gap-3 rounded-lg border p-3 text-left text-sm transition-colors',
               active
                 ? 'border-primary bg-primary/10'
                 : 'border-border hover:bg-foreground/5'
