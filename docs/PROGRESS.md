@@ -511,6 +511,24 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 | 已知权衡 | 拉拽进行中 transform 祖先使后代 backdrop-filter 短暂退化为自身采样（同「Toast 玻璃层级」约束），回弹结束清空 transform 即恢复 | — |
 | 回归 | `slider.test.tsx` 增过滚动滑块用例（3 锚点、默认 off、两端取值与描述联动） | `components/ui/slider.test.tsx` |
 
+### 2026-10-07：aero 可读性与滑块反馈
+
+- **aero 文字发光重构**：`.glass-aero` 上新增 `--aero-text-glow` 变量统一分发，覆盖面扩到 `.glass-control`（tab 栏/按钮/滑块面，此前零光晕）与 `.radio-option`（`radio-group.tsx` 选项行新增挂点类）；强度经两轮反馈收敛到两层弱光晕 `0 0 1px + 0 0 6px`（浅色白晕 / 深色暗晕；四层强版喧宾夺主，按「大幅减弱」定档）。（`index.css`、`components/ui/radio-group.tsx`）
+- **滑块标签/数值对比交换**：左标签 `text-muted-foreground` → `text-foreground`（黑），右数值 → `text-muted-foreground`（灰）——常量标签承担最重视线，随档位变化的数值退后。（`components/ui/slider.tsx`）
+- **锚点重影修复**：已被填充覆盖的档位锚点随值隐藏（半透明填充叠半透明锚点会晕成重影），`.pill-slider-tick` 过渡补 opacity；首末锚点维持贴轨道两端（「内缩 2/3 文字距」方案经用户确认后回退）。（`components/ui/slider.tsx`、`index.css`）
+- 验证：`tsc --noEmit` 干净，前端 13 文件 / 93 用例全绿，`vite build` 通过；浏览器实测滑块几何（锚点 2/480 贴边、文字 20/16 内缩、覆盖锚点 opacity 0）与六类面文字光晕计算值。
+
+### 2026-10-07（追加）：玻璃一致性 / 过滚动拉伸改位移 / 管理页结构批次
+
+- **reveal 残留修复**：入场动画 `fill both → backwards`——both 结束后永久持有 from 帧 `blur(0px)` filter + 恒等 transform：filter 残留使包装层成 backdrop root（仪表盘趋势卡整卡无磨砂、用户管理工具栏无光晕），transform 残留令后代 fixed 条纹错位（存储管理纹理与全站不一致）；常见坑点同步。（`index.css`）
+- **Tab 面板入场去 opacity**：`animate-fade-in` → `animate-tab-in`（translate-only）——opacity 动画祖先是 backdrop root，存储管理页「进入先半透明、动画结束才覆盖模糊」的根因。（`components/ui/tabs.tsx`、`index.css`）
+- **图表 tooltip 玻璃化**：evilcharts tooltip default 变体 `bg-background` 实底 → `glass-surface-popover glass-blur`（随四档门控）。（`components/charts/evilcharts/ui/recharts-tooltip.tsx`）
+- **aero 浮动面**：弹窗/抽屉/弹层/Toast 填充统一 `α-0.04`（下限 0.16），白倒角/泛光收敛（0.42/0.07、弹层 0.3）——用户反馈白边大于高光光线、相对卡片太实。（`index.css`）
+- **过滚动拉伸维持原位 scaleY**（曾按建议改整体位移，实测与橡皮筋趋同后按用户要求还原）；会话期间 mover 挂 `data-ovs-active` 条纹层切元素锚定（fixed 条纹在 transform 下首帧跳变）；移除「仅真实溢出容器」门槛；导航栏（header landmark）永不参与。（`lib/overscroll.ts`、`index.css`）
+- **管理页结构**：存储管理「添加」按钮与 TabsList 同行右对齐（addTick 信号下发）；管理页计数文字删除（admin.users.total / admin.itemCount / admin.permissions.ruleCount 及孤儿键清理），工具行改右对齐；「默认用户设置」角色列表与「桶设置」左侧导航补滑动指示器 + hover 统一强调色淡化；挂载的桶拖动排序恒可用（去策略门控）、行点击跳转移除；「添加桶」菜单改项目 Checkbox（div[role=menuitemcheckbox]，button 不嵌 button）；「具体桶」改名「桶设置」；TabsList 指示器改 `bg-primary/10` 半透明 tint。（`pages/admin/Storage.tsx`、`storage/{Providers,Mounts}.tsx`、`pages/admin/{Users,Permissions}.tsx`、`components/ui/tabs.tsx`、`checkbox.tsx`、`lib/i18n/{zh,en}.ts`）
+- **骨架长在玻璃卡里**（用户选定方案）：admin Settings 七卡与 settings ApiKeys 卡片壳常驻、卡内行骨架（CardRowsSkeleton）+ 数据到位内层 `animate-fade-in` 150ms 淡入，缓解骨架→aero 闪烁。（`pages/admin/Settings.tsx`、`pages/settings/ApiKeys.tsx`）
+- **aero 文字发光 / checkbox**：`--aero-text-glow` 变量分发 + glass-control/radio-option 覆盖（大幅减弱两层光晕）；滑块标签/数值对比交换、覆盖锚点隐藏；checkbox「全部动画」档未勾选文字变灰移除。（`index.css`、`radio-group.tsx`、`slider.tsx`、`checkbox` 相关）
+
 ## 当前基线
 
 - 后端：78 个测试文件 / 717 个 Vitest 用例通过（本条新增 `randomDigits` 5 例）；`tsc --noEmit` 干净。

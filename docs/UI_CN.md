@@ -243,10 +243,10 @@ flowchart LR
   - **强调色 tint**：background-image 最底层叠 `hsl(var(--primary) / 0.07)`（深色 0.09）平铺色桶——makeaero 手法「色度烤进 tint、高光全强度叠加」，玻璃随个性化强调色泛色（默认 #4e80ee 即 Win7 蓝玻璃观感）；`.glass-surface` / `.glass-surface-popover` / `.glass-dialog` / `.item-surface` 四类面都带。
   - **斜向反光条纹**：54° 多段亮暗交替渐变，`background-attachment: fixed` 钉在视口——全站玻璃共享同一片「玻璃板」，滚动时条纹不动（7.css `--w7-w-glass` 手法）；大面板（`.glass-surface`）、弹窗（`.glass-dialog`）与弹层菜单（`.glass-surface-popover`）消费；文件项（`.item-surface`，数量大）不给 fixed 条纹（大量 fixed 背景拖慢滚动重绘），只吃 tint + 顶部高光。
   - **顶部镜面高光 + 角部光泽 + 底部沉影**：走 `background-image` 叠层（绘制在底色之上、内容之下），不与 hover/selected 的 background-image 状态打架（`.item-surface` 状态类声明在后照常生效）；高光峰值 0.32（18% 内衰减完）、底部沉影 0.04（12%），比例收小与低不透明度玻璃协调。
-  - **窗体级柔和投影 + 内侧白倒角**：只给「窗口」面——`.glass-dialog`（长投影 + 强调色环境光晕 + `inset 0 0 0 1px` 白倒角 + 内部白泛光）与 `.glass-surface-popover`（柔和投影 + 上缘内高光）；不覆写 `.glass-surface` 与 toast（ring/focus 与堆叠深度都走 box-shadow，不能被整条覆写）。
+  - **窗体级柔和投影 + 内侧白倒角**：只给「窗口」面——`.glass-dialog`（长投影 + 强调色环境光晕 + `inset 0 0 0 1px` 白倒角 + 内部白泛光）与 `.glass-surface-popover`（柔和投影 + 上缘内高光）；aero 档白倒角/泛光大幅收敛（1px 白线 0.42、泛光 0.07/20px、弹层上缘 0.3——用户反馈白边大于高光光线）；aero 档弹窗/抽屉/弹层/Toast 填充统一 `α-0.04`（下限 0.16，用户反馈浮动面相对卡片太实）；不覆写 `.glass-surface` 与 toast 的窗体投影（ring/focus 与堆叠深度都走 box-shadow，不能被整条覆写）。
   - **弹层也参与 aero**：`.glass-surface-popover` 在 aero 档覆写填充为 `hsl(var(--popover) / max(0.2, α-0.02))`——基础类 `max(0.5, α-0.12)` 的下限在低 α 下会顶到 0.5、反而比卡片更实，与 aero 的通透方向相反。
   - **文件项也参与 aero**：`.item-surface`（文件页网格卡片 / 列表行 / 分享卡）在 aero 档吃 tint + 顶部高光（透明度与模糊走共享 token），三视图统一泛色。
-  - **文字发光**：玻璃面文字带同色系光晕（`0 0 6px` + `0 0 12px` 两层，7.css 标题 8× `0 0 10px #fff` / makeaero 4× `0 0 4px #fff` 手法）——低不透明度下把文字身后那片玻璃「垫亮」增强可读性，继承到面内所有文本；深色模式反转暗晕（`rgb(0 0 0 / 0.45)` 字幕式压暗）。
+  - **文字发光**：玻璃面文字带同色系光晕（`0 0 1px` + `0 0 6px` 两层弱光晕，7.css 标题 8× `0 0 10px #fff` / makeaero 4× `0 0 4px #fff` 手法的大幅减弱版——四层强版会喧宾夺主）——低不透明度下把文字身后那片玻璃「垫亮」增强可读性，继承到面内所有文本；覆盖 `.glass-surface` / `.glass-surface-popover` / `.glass-dialog` / `.item-surface` / `.glass-control`（tab 栏、按钮、滑块面）/ `.radio-option`（radio 选项行），统一经 `.glass-aero` 上的 `--aero-text-glow` 变量分发；深色模式反转暗晕（`rgb(0 0 0 / 0.35)` 字幕式压暗）。
 - **统一表面**：以下组件共享同一套表面类（`frontend/src/index.css` + `components/ui/`）：导航栏、侧栏（文件树）、下拉菜单、右键菜单、Select 弹层、Toast、弹窗窗体、文件卡片与列表、设置和管理面板、骨架屏。禁止硬编码模糊/透明度，一律消费 `--glass-alpha` / `--glass-blur`。小型控件（Tabs 轨道、secondary/outline 按钮、搜索框、复选框未选态、⋮ 触发钮、Switch 轨道）走 `.glass-control` + `--glass-alpha`，与卡片同色同透。
 - **背景图片**：用户可上传不超过 `2MB` 的图片（JPG/PNG/WebP）或不用背景，图片以 base64 data URL 存于 `localStorage`；有壁纸时 default 档自动提高不透明度（深 0.92 / 浅 0.82）保证 WCAG AA。纯色背景选项已移除。
 
@@ -424,17 +424,17 @@ flowchart LR
 ### `components/ui/slider.tsx` — 滑块（全部滑块单文件收敛）
 
 - 全部滑块（`BlurSlider` / `MotionSlider` / `FilesPerRowSlider` 与基础 `PillSlider`）收敛在这一个文件；不同位置引入传不同标签文案与档位区间，锚点数量随档位数自动生成。
-- 视觉（复刻 Breno Lasserre「You gotta love sliders」的 pill slider，按项目规范调整）：圆角矩形轨道 `rounded-md`（与输入框/按钮同半径）+ 左侧随值生长的同高浅强调色填充（`bg-primary/20`，比强调色浅一档）+ 填充边界的细竖条拇指（`h-3.5 w-1`）+ 档位锚点（只标可落值的档位，统一 `bg-foreground/15`，不做白色锚点）；标签与数值内嵌轨道两侧（左 `pl-5` 右 `pr-4`）。
+- 视觉（复刻 Breno Lasserre「You gotta love sliders」的 pill slider，按项目规范调整）：圆角矩形轨道 `rounded-md`（与输入框/按钮同半径）+ 左侧随值生长的同高浅强调色填充（`bg-primary/20`，比强调色浅一档）+ 填充边界的细竖条拇指（`h-3.5 w-1`）+ 档位锚点（只标可落值的档位，统一 `bg-foreground/15`，不做白色锚点；**首末锚点贴轨道两端**）；标签与数值内嵌轨道两侧（左 `pl-5` 右 `pr-4`），**左侧标签用前景色（黑）、右侧数值用弱化灰**（对比交换：标签是常量读起来最重，数值随档位变化不抢视线）；**已被填充覆盖的锚点隐藏**（半透明填充叠半透明锚点会晕成重影，覆盖/露出随值过渡）。
 - 交互：原生 range `appearance:none` 全透明承担拖拽/键盘与无障碍（`.pill-slider-*` 见 `index.css`）；0 档贴左、最大档贴右；hover 轨道和填充轻微压暗、拇指加深；按住时只加深拇指并保持轨道尺寸稳定，松开立即回到 hover/rest 层次，不做整轨道外扩或文字漂移；填充与拇指用短促的 ease-out 位移过渡；`aria-valuetext` 随档位文案；档位描述随选中变化。新增滑块复用此文件。
 - `OverscrollSlider`（外观设置-过滚动效果）：左 = **关**（默认）、中 = **橡皮筋**（iOS）、右 = **拉伸回弹**（Android 12），仅动画默认/全部档显示（关闭动画档没有可回弹的动效）；物理引擎见下节。
 
 ### `lib/overscroll.ts` — 过滚动引擎（Win7 档之外的第四种滚动反馈）
 
 - **目标规则（规定）**：**卡片页面全部卡片作为一个整体回弹**——变换目标 = 指针落点卡片向上最近一个包含 ≥2 张顶层卡片的公共包裹层（单卡 → 卡片本身）；指针落在侧栏（nav landmark）内不消费；候选包含 nav（布局框架）→ 退回卡片本身。卡片外的滚动区域（文件页网格列等）回落为滚动上下文本身，但跳过含侧栏/导航的布局框架——页面标题、描述文字、侧栏永不跟随。落点不在任何可回弹区域内（落地页裸内容）不消费事件。
-- **拉伸回弹（Android 12，flutter#87839 StretchingOverscrollIndicator）**：内容**原位变形、无整体位移**——`scaleY(1 + s)`，`s = 0.016·pull + 0.016·(1 - e^(-pull·e/0.33))`（pull = 累计越界 px / 视口高度），transform-origin 钉在被拉的边（内容沿拉动方向伸长）；松手缩回 `Curves.decelerate`：**高效 340ms / 舒适 400ms**（现值 400 归入舒适，高效再快一点点）；**拉伸程度舒适 > 高效**（强度系数 1.0 vs 0.75，cap 0.10/0.08）；**仅作用于有真实滚动溢出的容器**——预留高度但内容不满的卡片（管理端表格等）跳过（橡皮筋照常）。
+- **拉伸回弹（Android 12，flutter#87839 StretchingOverscrollIndicator）**：内容**原位变形、无整体位移**——`scaleY(1 + s)`，`s = 0.016·pull + 0.016·(1 - e^(-pull·e/0.33))`（pull = 累计越界 px / 视口高度），transform-origin 钉在被拉的边（内容沿拉动方向伸长）；**拉伸程度舒适 > 高效**（强度系数 1.0 vs 0.75，cap 0.10/0.08）；松手缩回 `Curves.decelerate`：**高效 340ms / 舒适 400ms**；与橡皮筋同口径，**未铺满容器同样生效**。
 - **橡皮筋（iOS，fluid-scroll rubber_band.rs）**：内容整体位移 `disp = dir·(1 - 1/(raw/range·0.55 + 1))·range`（cap 0.4·range），整页拉出留白；**位移距离高效 = 舒适的 1/2**；松手走阻尼谐振闭式解 `offset(t) = (c1 + c2·t)·e^(-λt)`（λ = 2π/0.575，带触摸速度可轻微过冲），**最短播放高效 600ms / 舒适 400ms**（小振幅时间轴放慢，杜绝「瞬间消失」）。
 - **拦截与门控**：window 级 wheel/touchmove（non-passive），事件目标向上找最近纵向滚动容器（内容未占满时回落到最近的 overflow 容器，两条边同时可用）；容器停在边缘且输入继续外推才消费（preventDefault 阻断滚动链接），滚轮停顿 150ms / 触摸松手即回弹，反向输入线性回退、越过起点交还原生滚动。`data-overscroll=off` / `data-motion=off` / `prefers-reduced-motion` 整体不生效。
-- **已知权衡**：transform 祖先会让后代 backdrop-filter 退化为自身采样（同「Toast 玻璃层级」约束），拉拽进行中玻璃面磨砂短暂失效，回弹结束清空 transform 即恢复。
+- **拉拽期纹理与磨砂**：会话期间 mover 挂 `data-ovs-active`，条纹层显式切元素锚定（transform 会让 fixed 条纹首帧跳变，与其跳不如随玻璃位移/形变走动），回弹结束同帧恢复 fixed；transform 祖先仍会使后代 backdrop-filter 退化为自身采样（同「Toast 玻璃层级」约束），拉拽中磨砂短暂失效、回弹结束恢复。
 
 ### `components/ui/checkbox.tsx` — 复选框（shadcn 基准 + 「全部动画」档 spring-check 勾选动效）
 
