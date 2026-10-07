@@ -25,13 +25,17 @@ interface Provider {
   hasCredentials: boolean;
 }
 
-export function StorageProviders() {
+export function StorageProviders({ addTick = 0 }: { addTick?: number }) {
   const { t } = useTranslation();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState<string | null>('name');
   const [order, setOrder] = useState<SortOrder>('asc');
   const [showCreate, setShowCreate] = useState(false);
+  // 父页「添加存储提供商」按钮（与 TabsList 同行）经 tick 信号打开弹窗
+  useEffect(() => {
+    if (addTick > 0) setShowCreate(true);
+  }, [addTick]);
   const [form, setForm] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState<string | null>(null);
   const [editing, setEditing] = useState<Provider | null>(null);
@@ -126,10 +130,6 @@ export function StorageProviders() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{t('admin.nav.storage')} · {t('admin.itemCount', { n: providers.length })}</p>
-        <Button onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('admin.addProvider')}</Button>
-      </div>
 
 
       <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">

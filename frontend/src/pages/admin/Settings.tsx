@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Switch,
 import { SsoProvidersDialog } from './SsoProvidersDialog';
 import { useMinLoading } from '@/hooks/useMinLoading';
 import { revealDelay, innerDelay } from '@/components/ui/reveal';
-import { FormCardSkeleton } from '@/components/ui/skeleton';
+import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { Select } from '@/components/ui/select';
 import { DatePicker } from '@/components/ui/date-picker';
@@ -57,6 +57,20 @@ interface Settings {
   umamiPerformance: boolean;
   umamiExcludeSearch: boolean;
   umamiDoNotTrack: boolean;
+}
+
+/** 卡内行骨架：卡片壳（玻璃纹理）常驻，数据到位前仅在卡内绘制行骨架 —— 骨架长在玻璃卡里 */
+function CardRowsSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="space-y-3">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="space-y-1.5">
+          <Skeleton className="h-3.5 w-24" />
+          <Skeleton className="h-9 w-full rounded-md" />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function AdminSettings() {
@@ -173,8 +187,6 @@ export default function AdminSettings() {
     }
   };
 
-  if (showSkeleton || !settings) return <FormCardSkeleton />;
-
   return (
     <div className="h-full max-w-7xl space-y-4 overflow-y-auto scrollbar-none lg:grid lg:grid-cols-2 lg:items-start lg:gap-6 lg:space-y-0">
       {/* 左列：站点设置 + 安全设置 + 日志审计 + 访问统计 */}
@@ -186,6 +198,10 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={4} />
+          ) : (
+            <>
           {/* 站点标识：标题在左、图标在右各占一行 —— 左上角（标题 + Logo）与浏览器标签页（标题 + Favicon）；
               左上角标题留空 = 只显示 Logo；标签页标题即 document.title */}
           <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(0, 1)}>
@@ -243,6 +259,8 @@ export default function AdminSettings() {
           <div className="reveal-row" style={innerDelay(0, 4)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -255,6 +273,10 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={4} />
+          ) : (
+            <>
           <div className="reveal-row space-y-2" style={innerDelay(1, 1)}>
             <p className="text-sm font-medium">{t('admin.rateLimit')}</p>
             <div className="flex items-center justify-between">
@@ -311,6 +333,8 @@ export default function AdminSettings() {
           <div className="reveal-row" style={innerDelay(1, 2)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
       {/* 日志审计：记录等级与项目（独立卡片） */}
@@ -321,6 +345,10 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={4} />
+          ) : (
+            <>
           <div className="reveal-row space-y-2" style={innerDelay(2, 1)}>
             <div>
               <Label>{t('admin.auditLogLevel')}</Label>
@@ -370,6 +398,8 @@ export default function AdminSettings() {
           <div className="reveal-row" style={innerDelay(2, 2)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -381,6 +411,10 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={6} />
+          ) : (
+            <>
           <div className="reveal-row space-y-2" style={innerDelay(3, 1)}>
             <div>
               <Label>{t('admin.statsSourceLabel')}</Label>
@@ -462,6 +496,8 @@ export default function AdminSettings() {
           <div className="reveal-row" style={innerDelay(3, 3)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
       </div>
@@ -476,6 +512,10 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={6} />
+          ) : (
+            <>
           <div className="reveal-row space-y-2" style={innerDelay(4, 1)}>
             <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t('admin.announcementTitle')} />
             <Input value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder={t('admin.announcementContent')} />
@@ -564,6 +604,8 @@ export default function AdminSettings() {
               </div>
             ))}
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -575,6 +617,10 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={5} />
+          ) : (
+            <>
           <div className="reveal-row space-y-2" style={innerDelay(5, 1)}>
             <div className="flex items-center justify-between">
               <span className="text-sm">{t('admin.allowRegistration')}</span>
@@ -641,6 +687,8 @@ export default function AdminSettings() {
           <div className="reveal-row" style={innerDelay(5, 4)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -651,6 +699,10 @@ export default function AdminSettings() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={4} />
+          ) : (
+            <>
           <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(6, 1)}>
             <div>
               <Label>{t('admin.systemSettings.smtpHost')}</Label>
@@ -708,6 +760,8 @@ export default function AdminSettings() {
               <Send className="h-4 w-4" /> {t('admin.systemSettings.sendTestEmail')}
             </Button>
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

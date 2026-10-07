@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { KeyRound, Copy, Trash2, Check , AlertTriangle, Boxes, Database, Link2 , Wrench } from 'lucide-react';
 import { Card, Button, Input, Label, EmptyState, Badge, Dialog, Switch, ConfirmDialog } from '@/components/ui/core';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { FormCardSkeleton } from '@/components/ui/skeleton';
+import { TableSkeleton } from '@/components/ui/skeleton';
 import { revealDelay, REVEAL_INNER_BASE, REVEAL_STEP } from '@/components/ui/reveal';
 import { CheckboxWithLabel } from '@/components/ui/checkbox';
 import { toast } from '@/components/ui/toast';
@@ -119,10 +119,13 @@ export default function ApiKeysPage() {
         </Button>
       </div>
 
-      {loading ? (
-        <FormCardSkeleton />
-      ) : (
-        <Card className="reveal min-h-0 flex-1 scrollbar-thin overflow-auto py-0" style={revealDelay(1)}>
+      <Card className="reveal min-h-0 flex-1 scrollbar-thin overflow-auto py-0" style={revealDelay(1)}>
+        {loading ? (
+          <div className="p-4">
+            <TableSkeleton rows={6} cols={5} />
+          </div>
+        ) : (
+        <div className="animate-fade-in">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
@@ -178,8 +181,9 @@ export default function ApiKeysPage() {
               )}
             </tbody>
           </table>
-        </Card>
-      )}
+        </div>
+        )}
+      </Card>
 
       {/* 创建密钥 */}
       <Dialog

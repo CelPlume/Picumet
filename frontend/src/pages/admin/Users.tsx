@@ -1,10 +1,11 @@
 // 管理员：用户管理
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Pencil, Trash2, Settings2, Users } from 'lucide-react';
 import { Badge, Button, Card, ConfirmDialog, Dialog, EmptyState, Input, Label, SEARCH_INPUT_GLASS, Switch } from '@/components/ui/core';
 import { CheckboxWithLabel } from '@/components/ui/checkbox';
 import { useMinLoading } from '@/hooks/useMinLoading';
+import { INDICATOR_CLASS, useIndicator } from '@/components/ui/indicator';
 import { cn } from '@/lib/utils';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { revealDelay, REVEAL_INNER_BASE, REVEAL_STEP } from '@/components/ui/reveal';
@@ -221,6 +222,8 @@ export default function AdminUsers() {
   const [roles, setRoles] = useState<RoleDefaults[]>([]);
   const [rolesLoading, setRolesLoading] = useState(false);
   const [activeRole, setActiveRole] = useState('');
+  const roleNavRef = useRef<HTMLDivElement>(null);
+  const roleInd = useIndicator(roleNavRef, activeRole);
   const [newRole, setNewRole] = useState('');
   const [newAlias, setNewAlias] = useState('');
   const [creating, setCreating] = useState(false);
@@ -355,8 +358,7 @@ export default function AdminUsers() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="reveal flex items-center justify-between gap-3" style={revealDelay(0)}>
-        <p className="text-sm text-muted-foreground">{t('admin.users.total', { count: total })}</p>
+      <div className="reveal flex items-center justify-end gap-3" style={revealDelay(0)}>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setDefaultsOpen(true)}>
             <Settings2 className="h-4 w-4" />
@@ -591,8 +593,11 @@ export default function AdminUsers() {
             <TableSkeleton rows={3} cols={3} />
           ) : (
             <div className="flex gap-4">
-              {/* 左侧角色导航（样式对齐 SettingsLayout 侧栏：active 用 text-primary + bg-primary/10） */}
-              <div className="flex w-40 shrink-0 flex-col gap-1">
+              {/* 左侧角色导航：滑动指示器色块为唯一选中指示（同 SettingsLayout 侧栏配方） */}
+              <div ref={roleNavRef} className="relative flex w-40 shrink-0 flex-col gap-1">
+                {roleInd.ready && (
+                  <span aria-hidden className={cn(INDICATOR_CLASS, 'inset-x-0')} style={{ top: roleInd.pos, height: roleInd.size }} />
+                )}
                 {roles.map((r) => {
                   const perms = r.permissions ?? FALLBACK_PERMISSIONS[r.role] ?? DEFAULT_PERMISSIONS;
                   const permSummary = PERMISSION_OPTIONS.filter((p) => perms.includes(p))
@@ -606,10 +611,10 @@ export default function AdminUsers() {
                       onClick={() => setActiveRole(r.role)}
                       title={`${r.alias || r.role} · ${permSummary}`}
                       className={cn(
-                        'w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors',
+                        'relative z-[1] w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors',
                         activeRole === r.role
-                          ? 'bg-primary/10 font-medium text-primary'
-                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                          ? 'font-medium text-primary'
+                          : 'text-muted-foreground hover:bg-primary/10 hover:text-primary'
                       )}
                     >
                       <span className="block truncate">{`${r.alias || r.role} · ${t('admin.roles.members', { count: r.members })}`}</span>

@@ -131,8 +131,7 @@ export default function AdminPermissions() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="reveal shrink-0 flex items-center justify-between" style={revealDelay(0)}>
-        <p className="text-sm text-muted-foreground">{t('admin.nav.permissions')} · {t('admin.permissions.ruleCount', { n: total })}</p>
+      <div className="reveal shrink-0 flex items-center justify-end" style={revealDelay(0)}>
         <Button onClick={() => { setShowCreate(true); setEditMode('gui'); setJsonError(null); setJsonText(''); }}><Plus className="h-4 w-4" /> {t('admin.addRule')}</Button>
       </div>
 

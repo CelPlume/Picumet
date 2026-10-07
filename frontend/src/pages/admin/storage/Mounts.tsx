@@ -1,13 +1,14 @@
 // 管理员：挂载点配置
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, Trash2, Pencil, Eye, FolderOpen, ArrowUp, ArrowDown, GripVertical, Check } from 'lucide-react';
+import { Plus, Trash2, Pencil, Eye, FolderOpen, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
 import { Card, Button, Input, Label, Badge, Dialog, ConfirmDialog, EmptyState, Switch } from '@/components/ui/core';
-import { CheckboxWithLabel } from '@/components/ui/checkbox';
-import { Dropdown, DropdownItem } from '@/components/ui/dropdown';
+import { Checkbox, CheckboxWithLabel } from '@/components/ui/checkbox';
+import { Dropdown, DROPDOWN_ITEM_CLASS } from '@/components/ui/dropdown';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { revealDelay } from '@/components/ui/reveal';
+import { INDICATOR_CLASS, useIndicator } from '@/components/ui/indicator';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -357,23 +358,25 @@ function AddBucketMenu({
       ) : (
         providers.map((p) => {
           const selected = Boolean(value[p.id]?.selected);
+          // 多选行用 div[role=menuitemcheckbox] + 项目 Checkbox 组件（button 里不能再套 button）；
+          // Checkbox 自身的 click 会 stopPropagation 并走同一 onChange，两处路径都只切换一次
           return (
-            <DropdownItem
+            <div
               key={p.id}
-              selected={selected}
+              role="menuitemcheckbox"
+              aria-checked={selected}
+              tabIndex={-1}
               onClick={() => onChange(withMember(value, p.id, { selected: !selected }))}
+              className={cn(DROPDOWN_ITEM_CLASS, 'cursor-pointer select-none', selected && 'bg-primary/10')}
             >
-              <span
-                className={cn(
-                  'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
-                  selected ? 'border-primary bg-primary text-primary-foreground' : 'border-input'
-                )}
-              >
-                {selected && <Check className="h-3 w-3" />}
-              </span>
+              <Checkbox
+                checked={selected}
+                onChange={() => onChange(withMember(value, p.id, { selected: !selected }))}
+                label={p.name}
+              />
               <span className="truncate">{p.name}</span>
               <span className="ml-auto shrink-0 text-xs text-muted-foreground">{p.type}</span>
-            </DropdownItem>
+            </div>
           );
         })
       )}
@@ -381,21 +384,18 @@ function AddBucketMenu({
   );
 }
 
-/** 「挂载的桶」：只列**已入池**的桶（= 「具体桶」tab 的成员），按上传顺序排列。
-    每行：拖动柄 + ↑↓ + 顺序值（仅 ordered 档可用）、容量上限、备用徽标；点行进入该桶的「具体桶」设置。
+/** 「挂载的桶」：只列**已入池**的桶（= 「桶设置」tab 的成员），按上传顺序排列。
+    每行：拖动柄 + ↑↓ + 顺序值、容量上限、备用徽标；**行仅供排序**（拖动 / ↑↓ 恒可用，
+    不再点行跳转「桶设置」，选中桶在「桶设置」tab 左侧导航完成）。
     加入 / 移出存储池由右上角「添加桶」多选下拉统一完成；主桶（后端 provider_id 锚点）不在此暴露。 */
 function MountedBuckets({
   providers,
   value,
   onChange,
-  ordered,
-  onOpenBucket,
 }: {
   providers: Provider[];
   value: PoolDraft;
   onChange: (next: PoolDraft) => void;
-  ordered: boolean;
-  onOpenBucket: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const sequence = poolMemberIds(providers, value);
@@ -429,7 +429,6 @@ function MountedBuckets({
   const moveUpLabel = t('admin.storageMounts.poolMemberMoveUp');
   const moveDownLabel = t('admin.storageMounts.poolMemberMoveDown');
   const dragLabel = t('admin.storageMounts.poolMemberDrag');
-  const openLabel = t('admin.storageMounts.poolMemberOpen');
 
   return (
     <div>
@@ -443,7 +442,7 @@ function MountedBuckets({
         <div className="mt-1 space-y-1.5">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="w-4 shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-right">{!ordered && t('admin.storageMounts.poolMemberOrderHint')}</span>
+            <span className="min-w-0 flex-1 truncate text-right">{t('admin.storageMounts.poolMemberDrag')}</span>
             <span className="w-28 shrink-0">{t('admin.storageMounts.poolMemberCapacity')}</span>
             <span className="w-16 shrink-0 text-center">{t('admin.storageMounts.poolMemberOrder')}</span>
             <span className="w-14 shrink-0" />
@@ -453,17 +452,6 @@ function MountedBuckets({
             return (
               <div
                 key={id}
-                role="button"
-                tabIndex={0}
-                title={openLabel}
-                onClick={() => onOpenBucket(id)}
-                onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onOpenBucket(id);
-                  }
-                }}
                 onDragOver={(e) => {
                   if (!dragging || dragging === id) return;
                   e.preventDefault();
@@ -477,16 +465,16 @@ function MountedBuckets({
                   setDragOver(null);
                 }}
                 className={cn(
-                  'flex cursor-pointer items-center gap-2 rounded-md text-sm hover:bg-accent',
+                  'flex items-center gap-2 rounded-md text-sm hover:bg-accent/50',
                   dragOver === id && 'bg-accent/60 ring-1 ring-primary/40',
                   dragging === id && 'opacity-50'
                 )}
               >
                 <span
                   tabIndex={-1}
-                  draggable={ordered}
+                  draggable
                   aria-label={dragLabel}
-                  title={ordered ? dragLabel : t('admin.storageMounts.poolMemberOrderHint')}
+                  title={dragLabel}
                   onClick={(e) => e.stopPropagation()}
                   onDragStart={(e) => {
                     e.dataTransfer.setData('text/plain', id);
@@ -497,10 +485,8 @@ function MountedBuckets({
                     setDragging(null);
                     setDragOver(null);
                   }}
-                  className={cn(
-                    'flex h-7 w-4 shrink-0 items-center justify-center text-muted-foreground',
-                    ordered ? 'cursor-grab active:cursor-grabbing' : 'opacity-40'
-                  )}
+                  className="flex h-7 w-4 shrink-0 cursor-grab items-center justify-center text-muted-foreground active:cursor-grabbing"
+                
                 >
                   <GripVertical className="h-4 w-4" />
                 </span>
@@ -521,7 +507,6 @@ function MountedBuckets({
                 <Input
                   type="number"
                   className="w-16 shrink-0"
-                  disabled={!ordered}
                   onClick={(e) => e.stopPropagation()}
                   value={value[id]?.sortOrder ?? ''}
                   onChange={(e) => onChange(withMember(value, id, { sortOrder: e.target.value }))}
@@ -536,7 +521,7 @@ function MountedBuckets({
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7 text-muted-foreground"
-                    disabled={!ordered || index === 0}
+                    disabled={index === 0}
                     title={moveUpLabel}
                     aria-label={moveUpLabel}
                     onClick={() => move(id, -1)}
@@ -548,7 +533,7 @@ function MountedBuckets({
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7 text-muted-foreground"
-                    disabled={!ordered || index === sequence.length - 1}
+                    disabled={index === sequence.length - 1}
                     title={moveDownLabel}
                     aria-label={moveDownLabel}
                     onClick={() => move(id, 1)}
@@ -585,6 +570,8 @@ function BucketSettings({
   const members = providers.filter((p) => value[p.id]?.selected);
   const currentId = members.some((p) => p.id === active) ? active : (members[0]?.id ?? '');
   const current = members.find((p) => p.id === currentId) ?? null;
+  const bucketNavRef = useRef<HTMLDivElement>(null);
+  const bucketInd = useIndicator(bucketNavRef, currentId);
 
   if (!current) {
     return <p className="text-sm text-muted-foreground">{t('admin.storageMounts.poolBucketsEmpty')}</p>;
@@ -598,8 +585,11 @@ function BucketSettings({
 
   return (
     <>
-      {/* 左侧桶导航（样式对齐「默认用户设置」的角色竖 tab：active 用 text-primary + bg-primary/10） */}
-      <div className="flex w-44 shrink-0 flex-col gap-1 overflow-y-auto scrollbar-thin pr-1">
+      {/* 左侧桶导航：滑动指示器色块为唯一选中指示（同「默认用户设置」角色列表配方） */}
+      <div ref={bucketNavRef} className="relative flex w-44 shrink-0 flex-col gap-1 overflow-y-auto scrollbar-thin pr-1">
+        {bucketInd.ready && (
+          <span aria-hidden className={cn(INDICATOR_CLASS, 'inset-x-0')} style={{ top: bucketInd.pos, height: bucketInd.size }} />
+        )}
         {members.map((p) => (
           <button
             key={p.id}
@@ -607,10 +597,10 @@ function BucketSettings({
             data-active={currentId === p.id ? 'true' : 'false'}
             onClick={() => onActive(p.id)}
             className={cn(
-              'w-full rounded-md px-3 py-2 text-left text-sm transition-colors',
+              'relative z-[1] w-full rounded-md px-3 py-2 text-left text-sm transition-colors',
               currentId === p.id
-                ? 'bg-primary/10 font-medium text-primary'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                ? 'font-medium text-primary'
+                : 'text-muted-foreground hover:bg-primary/10 hover:text-primary'
             )}
           >
             <span className="block truncate">{p.name}</span>
@@ -786,16 +776,7 @@ function MountDialogForm({
             </div>
           </div>
 
-          <MountedBuckets
-            providers={providers}
-            value={pool}
-            onChange={onPool}
-            ordered={strategy === 'ordered'}
-            onOpenBucket={(id) => {
-              setActiveBucket(id);
-              onTab(TAB_BUCKETS);
-            }}
-          />
+          <MountedBuckets providers={providers} value={pool} onChange={onPool} />
         </div>
 
         {/* 挂载点级默认矩阵：桶级矩阵「不配置」的角色回落到这里 */}
@@ -823,7 +804,7 @@ function MountDialogForm({
   );
 }
 
-export function StorageMounts() {
+export function StorageMounts({ addTick = 0 }: { addTick?: number }) {
   const { t } = useTranslation();
   const [mounts, setMounts] = useState<MountItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -831,6 +812,13 @@ export function StorageMounts() {
   const [order, setOrder] = useState<SortOrder>('asc');
   const [providers, setProviders] = useState<Provider[]>([]);
   const [showCreate, setShowCreate] = useState(false);
+  // 父页「添加挂载」按钮（与 TabsList 同行）经 tick 信号打开弹窗（默认落存储池 tab）
+  useEffect(() => {
+    if (addTick > 0) {
+      setDialogTab(TAB_POOL);
+      setShowCreate(true);
+    }
+  }, [addTick]);
   const [form, setForm] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<MountItem | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
@@ -955,10 +943,6 @@ export function StorageMounts() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{t('admin.mounts')} · {t('admin.itemCount', { n: mounts.length })}</p>
-        <Button onClick={() => { setDialogTab(TAB_POOL); setShowCreate(true); }}><Plus className="h-4 w-4" /> {t('admin.addMount')}</Button>
-      </div>
 
 
       <Card className="mt-3 min-h-0 flex-1 scrollbar-thin overflow-auto py-0">
