@@ -85,6 +85,20 @@ Keep `[[r2_buckets]] binding = "R2"` in `wrangler.toml`: the binding is a deploy
 
 The only thing that is impossible is creating a second native binding for another bucket — a Cloudflare Workers platform constraint (bindings are fixed at deploy time), not a defect. Also, `bucket_name` is just a name: Wrangler resolves it against the resources of the `account_id`, so the binding can only point at a bucket in the deploying account — buckets in other accounts must take the S3-protocol path (create an R2 API token in that other account). The S3-protocol path is functionally equivalent (multipart, range reads, and batch deletes are all supported). Note: a binding-mode provider always reads and writes the bucket the `R2` binding points to; the bucket field on the provider row is display-only and does not switch buckets.
 
+### Single-Worker full-stack deployment (static assets + API on one origin)
+
+The frontend calls `/api/*` same-origin (`apiFetch` uses relative paths throughout), so frontend and API **must share one origin**. Besides "Pages + reverse proxy", the recommended setup is to attach the frontend dist directly to the Worker's `[assets]` (the recipe this deployment was verified with):
+
+```toml
+[assets]
+directory = "../frontend/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+```
+
+- `run_worker_first = ["/api/*"]` is required: without it, paths that miss static assets (such as `/files`) enter the Worker and 404, breaking the SPA fallback.
+- Static asset requests do not count against the Workers request quota; `/` and `/assets/*` are served by the assets layer. Build the frontend first (`cd frontend && bun run build`); `directory` resolves relative to the config file's directory.
+
 ### Initial accounts: created automatically by the seed
 
 On first startup (the KV `seed:done` marker) the seed creates the accounts:
@@ -268,7 +282,7 @@ Production password rules:
 | `ENCRYPTION_KEY` | Yes | AES-GCM key for encrypting storage provider credentials at rest. |
 | `ADMIN_PASSWORD` | Production | Initial administrator password; the API fails closed when it is missing. |
 | `ADMIN_USERNAME` | No | Initial administrator username (defaults to `admin`). |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | Email delivery for verification and password reset. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | Email delivery for verification and password reset. TLS semantics: only **465** uses implicit TLS — if your provider's 994 is also implicit SSL, use 465 instead; other ports default to auto (STARTTLS when advertised, plaintext otherwise); `SMTP_SECURE='true'` forces STARTTLS (fails if unsupported) and `'false'` forces plaintext. |
 
 `ENVIRONMENT`, `APP_BASE_URL`, and `ALLOWED_ORIGINS` are plain vars in `wrangler.toml`, not secrets.
 
@@ -343,7 +357,7 @@ Concurrent runs for the same branch cancel each other (`concurrency.cancel-in-pr
 | `ADMIN_PASSWORD` | secret | Production | Initial administrator password; at least 12 characters with letters and digits. |
 | `ADMIN_USERNAME` | secret | No | Initial administrator username (defaults to `admin`). |
 | `DEMO_PASSWORD` | secret | No | Demo user password (development only). |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | secret | No | Email delivery. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | secret | No | Email delivery. TLS semantics as above: only 465 maps to implicit TLS (use 465 for implicit-SSL ports like 994); other ports auto-upgrade STARTTLS; `SMTP_SECURE` forces or disables TLS. |
 
 Bindings in `wrangler.toml`: `DB` (D1), `KV` (KV namespace), and `R2` (R2 bucket).
 

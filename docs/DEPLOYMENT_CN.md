@@ -85,6 +85,20 @@ wrangler login
 
 加不了的只有「为另一个桶再建一个原生绑定」——这是 Cloudflare Workers 的平台约束(绑定在部署期写死),不是缺陷;且 `bucket_name` 只写桶名,按 `account_id` 名下的资源解析,**只能绑部署账号自己的桶**,跨账号的桶一律走 S3 协议路径(在对方账号创建 R2 API 令牌)。S3 协议路径功能等价(分片上传/区间读/批量删除均支持)。注意:绑定模式 provider 实际读写固定落在 `R2` 绑定指向的桶,provider 行内的 bucket 字段只作展示、不会切换桶。
 
+### 单 Worker 全栈部署（前端静态资源 + API 同域）
+
+前端代码按同源调用 `/api/*`（`apiFetch` 全部相对路径），前端与 API **必须同域**。除「Pages + 反向代理」外，推荐把前端 dist 直接挂到 Worker 的 `[assets]`（本次部署实测配方）：
+
+```toml
+[assets]
+directory = "../frontend/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+```
+
+- `run_worker_first = ["/api/*"]` 必须配置：缺省时未命中静态资源的路径（如 `/files`）会进入 Worker 返回 404，SPA 回退失效。
+- 静态资源请求不计入 Workers 请求配额，`/` 与 `/assets/*` 由 assets 层直接服务；部署前先构建前端（`cd frontend && bun run build`），`directory` 相对配置文件所在目录解析。
+
 ### 初始账号:seed 自动创建,无需手工建号
 
 首次启动(KV `seed:done` 标记)时 seed 自动创建账号:
@@ -268,7 +282,7 @@ bunx wrangler secret put ADMIN_PASSWORD
 | `ENCRYPTION_KEY` | 必需 | 对存储提供商凭据做 AES-GCM 静态加密的密钥。 |
 | `ADMIN_PASSWORD` | 生产必需 | 初始管理员密码;缺失时 API fail-closed。 |
 | `ADMIN_USERNAME` | 可选 | 初始管理员用户名,默认 `admin`。 |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | 可选 | 邮件发送,用于邮箱验证与密码重置。 |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | 可选 | 邮件发送,用于邮箱验证与密码重置。TLS 语义:仅 **465** 走隐式 TLS——服务商的 994 同为隐式 SSL 时改填 465;其余端口默认 auto,按服务器宣告升级 STARTTLS、未宣告则明文;`SMTP_SECURE='true'` 强制 STARTTLS(服务器不支持即失败)、`'false'` 强制明文。 |
 
 `ENVIRONMENT`、`APP_BASE_URL`、`ALLOWED_ORIGINS` 是 `wrangler.toml` 里的普通变量,不算密钥。
 
@@ -343,7 +357,7 @@ bunx wrangler pages deploy dist --project-name=picumet
 | `ADMIN_PASSWORD` | 密钥 | 生产必需 | 初始管理员密码,至少 12 位且含字母和数字。 |
 | `ADMIN_USERNAME` | 密钥 | 可选 | 初始管理员用户名,默认 `admin`。 |
 | `DEMO_PASSWORD` | 密钥 | 可选 | 演示用户密码,仅开发环境。 |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | 密钥 | 可选 | 邮件发送。 |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | 密钥 | 可选 | 邮件发送。TLS 语义见上:仅 465 走隐式 TLS(994 等隐式 SSL 端口请改填 465),其余端口 auto 升级 STARTTLS;`SMTP_SECURE` 可强制/禁用。 |
 
 `wrangler.toml` 里的绑定:`DB`(D1)、`KV`(KV 命名空间)、`R2`(R2 存储桶)。
 

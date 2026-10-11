@@ -1,4 +1,5 @@
 // 极简 SMTP 客户端（cloudflare:sockets TCP）：AUTH LOGIN 发送 HTML 邮件。
+import { parseJson } from '../db/row';
 //
 // TLS 语义（secure 开关，来自系统设置 `smtp_secure` / 环境变量 `SMTP_SECURE`）：
 // - true  ：强制加密。465 端口隐式 TLS；其余端口必须宣告 STARTTLS，否则失败（fail closed）。
@@ -50,6 +51,14 @@ function resolveTlsMode(port: number, secure: boolean | undefined): 'implicit' |
   if (secure === true) return 'starttls';
   if (secure === false) return 'none';
   return 'opportunistic';
+}
+
+/** cloudflare:sockets 模块形状（workerd 专属运行时模块，Node/vitest 无法解析，只能动态导入） */
+interface CloudflareSockets {
+  connect(
+    address: { hostname: string; port: number },
+    options?: { secureTransport?: 'off' | 'on' | 'starttls'; allowHalfOpen?: boolean },
+  ): SmtpSocket;
 }
 
 /** 单次 I/O 超时包装；超时/失败一律关断 socket，避免悬挂连接 */
@@ -144,13 +153,17 @@ export async function sendMail(
   const opMs = () => Math.max(50, Math.min(opBase, deadline - Date.now()));
   const mode = resolveTlsMode(config.port, config.secure);
 
-  // cloudflare:sockets 仅存在于 workerd 运行时；动态导入避免 Node 测试环境在模块加载期崩
-  const sockets = (await import('cloudflare:sockets')) as unknown as {
-    connect(opts: { hostname: string; port: number }): unknown;
-  };
+  // cloudflare:sockets 仅存在于 workerd 运行时（平台专属模块），Node/vitest 静态导入会在模块加载期崩，故动态导入
+  const sockets = (await import('cloudflare:sockets')) as unknown as CloudflareSockets;
   let conn: Conn;
   try {
-    let socket = sockets.connect({ hostname: config.host, port: config.port }) as SmtpSocket;
+    // workerd 约束：startTls() 升级要求连接时声明 secureTransport: 'starttls'（'off' 之后调用会被拒绝）。
+    // 隐式 TLS（465）= 同一声明 + 连接后立即 startTls()，等效 TLS 从首字节开始，不发送任何明文。
+    // 注意 connect 是双参签名：地址对象与选项对象必须分开，合并写进地址对象会被静默忽略。
+    let socket = sockets.connect(
+      { hostname: config.host, port: config.port },
+      { secureTransport: mode === 'none' ? 'off' : 'starttls' },
+    );
     if (mode === 'implicit') socket = socket.startTls({ expectedServerHostname: config.host });
     conn = {
       socket,
@@ -221,9 +234,15 @@ export async function resolveSmtpConfig(
   raw: Record<string, unknown>,
   env: { SMTP_HOST?: string; SMTP_PORT?: string; SMTP_SECURE?: string; SMTP_USER?: string; SMTP_PASS?: string; SMTP_FROM?: string; ENCRYPTION_KEY: string }
 ): Promise<SmtpConfig | null> {
-  const get = (key: string) => {
+  const get = (key: string): string | undefined => {
     const v = raw[key];
     if (v === undefined || v === null || v === 'null') return undefined;
+    // 设置值按 JSON 存储的约定（迁移 0001 种子写入 '"587"' 这类带引号值，SettingsRepo.set 写裸字符串）：
+    // 先按 JSON 解析取真实值，标量归一为字符串，解析失败回退原值。
+    // 裸 String(v) 会让 Number('"587"') 变 NaN，cloudflare:sockets connect 直接抛转换错误。
+    const parsed = parseJson<unknown>(v, v);
+    if (typeof parsed === 'string') return parsed;
+    if (typeof parsed === 'boolean' || typeof parsed === 'number') return String(parsed);
     return String(v);
   };
   const host = get('smtp_host') || env.SMTP_HOST;
