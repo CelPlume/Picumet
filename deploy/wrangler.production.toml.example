@@ -1,0 +1,51 @@
+# 生产环境 Workers 配置模板。复制为 deploy/wrangler.production.toml 并替换占位符；
+# 部署步骤、变量语义、R2 绑定与初始账号说明见 docs/DEPLOYMENT_CN.md「deploy/ 部署配置目录」。
+# 密钥不在这里，见 deploy/secrets.env.example。
+
+name = "picumet-api"
+main = "../workers/src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "替换为你的 Cloudflare 账号 ID"
+
+# @aws-sdk/xml-builder 必须整包替换为 vendored 纯 JS shim（workerd 无 DOMParser，S3 的 XML 响应解析会全部失败），
+# 原因与路径解析规则见部署文档
+[alias]
+"@aws-sdk/xml-builder" = "../workers/src/shims/aws-xml-builder.ts"
+
+[vars]
+ENVIRONMENT = "production"
+APP_BASE_URL = "https://yourdomain.com"
+ALLOWED_ORIGINS = "https://yourdomain.com"
+# RATE_LIMIT_FORCE = "true"  # 仅 staging/本地回归强制启用限速用，生产不要设置
+# 生产禁止设置 SSO_ALLOW_LOOPBACK：回环 issuer 仅限非生产环境的本地 IdP 联调
+
+# 自定义 API 域名（DNS 走 Cloudflare 代理）时取消注释：
+# routes = [
+#   { pattern = "api.yourdomain.com/*", zone_name = "yourdomain.com" }
+# ]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "picumet-db"
+database_id = "替换为你的 D1 database_id"
+migrations_dir = "../workers/migrations"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "替换为你的 KV 命名空间 ID"
+
+# 默认对象存储（部署期绑定，管理端加不了）：bucket_name 按 account_id 名下的桶解析，
+# 即只能绑本账号的桶；跨账号桶走管理端 S3 协议 provider。seed 的根挂载点走此绑定，零凭据。
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "picumet-storage"
+
+# 可选：审计日志冷归档桶，取消注释即启用（未配置 = 归档任务整体跳过，只读不删）
+# [[r2_buckets]]
+# binding = "AUDIT_BUCKET"
+# bucket_name = "picumet-audit"
+
+# 定时清理：上传预留释放、对象回收、对账、分享过期标记、审计归档
+[triggers]
+crons = ["*/10 * * * *"]

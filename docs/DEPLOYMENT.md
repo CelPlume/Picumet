@@ -44,6 +44,54 @@ wrangler login
 
 The API source lives in `workers/` and the frontend in `frontend/`; both share types from `shared/`.
 
+## The `deploy/` configuration directory
+
+`deploy/` holds deployment config templates. Only files ending in `*.example` are tracked; the real files you create by copying and filling them in (such as `wrangler.production.toml` and `secrets.env`) are git-ignored and never committed.
+
+| Template | Copy to | Purpose |
+| :--- | :--- | :--- |
+| `deploy/wrangler.production.toml.example` | `deploy/wrangler.production.toml` | Production Wrangler config: non-secret vars, the `DB` / `KV` / `R2` bindings, and cron triggers. |
+| `deploy/secrets.env.example` | `deploy/secrets.env` | Production secret checklist, applied one by one with `wrangler secret put`. |
+
+### How to use
+
+1. Copy both templates to `deploy/wrangler.production.toml` and `deploy/secrets.env`, replace the placeholders, and fill in the secrets. `--config` detects the config format by file extension, so `*.example` files cannot be passed to it directly; copy to `.toml` first.
+2. Deploy (run inside `workers/`):
+
+   ```sh
+   bunx wrangler deploy --config ../deploy/wrangler.production.toml
+   ```
+
+3. Apply the secrets (run inside `workers/`; skip keys left empty):
+
+   ```sh
+   set -a; . ../deploy/secrets.env; set +a
+   printf '%s' "$JWT_SECRET" | bunx wrangler secret put JWT_SECRET
+   printf '%s' "$ENCRYPTION_KEY" | bunx wrangler secret put ENCRYPTION_KEY
+   printf '%s' "$ADMIN_PASSWORD" | bunx wrangler secret put ADMIN_PASSWORD
+   # Repeat for the remaining keys; generate random values with openssl rand -base64 32
+   ```
+
+4. Migrations (after human review): `bunx wrangler d1 migrations apply picumet-db --remote --config ../deploy/wrangler.production.toml`
+
+Paths inside the template (the `main` entry point, `migrations_dir`, and the alias shim) resolve relative to the config file's directory and need no changes. The `[alias]` block swaps `@aws-sdk/xml-builder` for a vendored pure-JS implementation (`workers/src/shims/aws-xml-builder.ts`): the original package resolves to a DOMParser-based build via its browser condition, and workerd has no DOMParser, so every S3 XML response parse (multipart, move, ListObjects, etc.) would fail.
+
+### The R2 binding vs. storage providers added in the admin UI
+
+Keep `[[r2_buckets]] binding = "R2"` in `wrangler.toml`: the binding is a deploy-time resource and cannot be added at runtime. The admin "Storage → Providers" page can attach R2 in two ways:
+
+- **Binding mode**: leave endpoint/AccessKey/SecretKey empty — the provider uses the `R2` binding directly, with zero credentials. The seeded default provider "本地存储" and the root mount `/` work this way; without the binding, the first upload/download fails — the readiness probe only checks the KV seed marker, not storage, so the breakage is silent.
+- **S3 protocol**: fill in R2's S3 API endpoint (`https://<account_id>.r2.cloudflarestorage.com`) plus an API token (AccessKey/SecretKey) — this can point at **any** R2 bucket; AWS S3, Oracle, and any other S3-compatible storage take the same path, with credentials stored encrypted.
+
+The only thing that is impossible is creating a second native binding for another bucket — a Cloudflare Workers platform constraint (bindings are fixed at deploy time), not a defect. Also, `bucket_name` is just a name: Wrangler resolves it against the resources of the `account_id`, so the binding can only point at a bucket in the deploying account — buckets in other accounts must take the S3-protocol path (create an R2 API token in that other account). The S3-protocol path is functionally equivalent (multipart, range reads, and batch deletes are all supported). Note: a binding-mode provider always reads and writes the bucket the `R2` binding points to; the bucket field on the provider row is display-only and does not switch buckets.
+
+### Initial accounts: created automatically by the seed
+
+On first startup (the KV `seed:done` marker) the seed creates the accounts:
+
+- **Admin**: username = `ADMIN_USERNAME` (default `admin`), password = `ADMIN_PASSWORD`. Production requires a strong password (≥12 chars with letters and digits); if it is missing, no admin is created and every business API returns `503 INITIALIZATION_REQUIRED`. In development the default is `admin/admin123456`. After deploying, log in as `admin` with the `ADMIN_PASSWORD` you set.
+- **Demo user** `demo` (role user, development only): password = `DEMO_PASSWORD` (default `demo123456`) — it is not the admin password and does not appear in the production secret checklist.
+
 ## Deploy the Workers API
 
 ### Create the Cloudflare resources
@@ -73,7 +121,7 @@ The API source lives in `workers/` and the frontend in `frontend/`; both share t
 
 ### Configure wrangler.toml
 
-Replace the placeholder IDs in `workers/wrangler.toml` with the real resource IDs, and set `ENVIRONMENT` to `production`:
+For production, prefer the `deploy/` template flow described above and leave `workers/wrangler.toml` untouched (it doubles as the `wrangler dev` local development config). If you deploy from this file instead, replace the placeholder IDs with the real resource IDs and set `ENVIRONMENT` to `production`:
 
 ```toml
 name = "picumet-api"

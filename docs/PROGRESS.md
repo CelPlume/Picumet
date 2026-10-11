@@ -17,7 +17,7 @@
 | :--- | :--- | :--- |
 | Phase 1 | 核心平台：认证、文件、配额、角色、存储源、系统设置 | Done |
 | Phase 2 | 上传（分片/断点续传）、预览、分享、管理面板、API 密钥、WebDAV、自由模式 | Done |
-| Phase 3 | AWS S3、外观主题、管理员登录、公告关闭 | 基本完成；Oracle provider 待实现 |
+| Phase 3 | AWS S3、外观主题、管理员登录、公告关闭 | 基本完成；Oracle 无专属代码——迁移 0005 已把 `oracle` 类型折叠为 `s3`，经 S3 兼容协议接入（前端有预设，OCI 实测与专属测试未做），见「功能区域」存储提供商行 |
 | Phase 4 | 路径变量 DSL（`{year}/{month}`）、Umami 访问统计、SSO/OIDC 登录、Cloudflare Turnstile 人机验证 | Umami 访问统计 Done；邀请码注册机制已提前完成（见「功能区域」与 2026-09-30 追加二）；SSO/OIDC 登录 Done（见 2026-09-30 追加五）；其余 Planned |
 | 未来 | monorepo 双后端：Workers 版 + Go 高性能版（跨桶复制/DR、无配额长任务） | Planned |
 
@@ -26,7 +26,7 @@
 | 区域 | 状态 | 说明 |
 | :--- | :--- | :--- |
 | 部署：Cloudflare Pages + Workers | Done | Vercel 与 EdgeOne 已拒绝。 |
-| 存储提供商 | Done | R2 与 S3 已实现；Oracle 待做；其余 9 家已拒绝。 |
+| 存储提供商 | Done | R2 与 S3 已实现；Oracle 经 S3 兼容协议接入但**无专属代码**（迁移 0005 把 `oracle` 折叠为 `s3`，`frontend/src/lib/storage-presets.ts` 提供 OCI compat endpoint 预设，能力矩阵见架构文档；OCI 实测与专属测试未做）；其余 9 家已拒绝。自建 S3 兼容（RustFS / MinIO 等）经 `s3` 类型协议可用，但 endpoint 受公网 80/443 校验约束（见「即将规划 — 自建 S3 兼容存储的内网接入受限」）。 |
 | 文件浏览（卡片/列表/树视图） | Done | `GET /api/files` + `GET /api/files/tree`，排序、搜索、分页、扁平树视图。 |
 | 上传（单文件） | Done | 会话制并原子预留配额。 |
 | 上传（分片 / 大文件） | Done | 断点续传 + 服务端分片记录。 |
@@ -537,7 +537,7 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 
 ## 即将规划
 
-近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面一项详细规划与七项新方向（液态玻璃动效、组件色彩体系、Workers 稳定性调查、存储驱动与上传修复、出口机制与协议挂载、SMTP 完整测试、第一版上线）。
+近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面一项详细规划与九项新方向（液态玻璃动效、组件色彩体系、Workers 稳定性调查、存储驱动与上传修复、出口机制与协议挂载、SMTP 完整测试、第一版上线、自建 S3 兼容存储的内网接入受限、两步验证（2FA / TOTP））。
 
 ### Cloudflare Turnstile 人机验证（登录 / 注册 / 分享下载 / 直链访问 / 文件下载）
 
@@ -560,6 +560,20 @@ Cloudflare Turnstile 接入方案，管理端可按面开关。背景：初版�
 - **测试**：后端 `workers/tests/turnstile.test.ts`（stub fetch siteverify）——开关矩阵（总关/面关跳过）、缺 token 403、验证失败 403、action 不符 403、siteverify 异常 503 fail-closed、dummy secret 恒过/恒败矩阵；path-serve 过渡页——浏览器 UA 无 cookie 得 HTML、有效 cookie 直出、cookie 签名篡改拒绝、非浏览器 403；前端——组件按公开设置门控渲染（未启用不加载脚本）、过期回调清 token、提交失败 reset；覆盖率聚焦新组件与 Login/Register 改动（`Register.test.tsx` 有 CI 门禁先例）。
 - **文档联动**：API 参考补 `X-Turnstile-Token` 请求头、`TURNSTILE_REQUIRED`/`TURNSTILE_FAILED` 错误码与公开设置 `turnstile` 字段；架构文档安全设计补「人机验证」小节；部署指南补 Turnstile 密钥申请（Cloudflare Dashboard → Turnstile）与官方测试键说明；UI 指南补五面交互。
 - **明确不做（本期）**：pre-clearance（绑定 CF zone WAF，不适用多面 SPA）；过渡页 cookie 跨面复用（短 TTL 足够）；WebDAV/S3 网关/AList API 面（已有 API Key 认证 + 限流）；gallery 下载与找回密码（与分享下载/登录同模式，需要时一键纳入）。
+
+### 两步验证（2FA / TOTP，登录第二因子）
+
+规划依据经 Context7 核实（`/hectorm/otpauth`，RFC 4226 HOTP / RFC 6238 TOTP）：otpauth 支持 Node/Deno/Bun/浏览器四运行时，默认构建自带纯 JS HMAC（无 Node 内建依赖，Workers 可用）；`otpauth/bare` 需自备**同步** HMAC 函数（Web Crypto subtle 是异步的），真走 bare 构建时需内置同步实现或换库，落地时以实测为准。
+
+- **库选型（后端）**：`otpauth` —— `new OTPAuth.Secret({ size: 20 })`（CSPRNG，官方建议 ≥128 位）、`totp.generate()`、`totp.validate({ token, window: 1 })`（返回 delta/null；窗口保持最小防爆破，官方明确要求服务端节流）、`totp.counter()`（重放防护）、`totp.toString()` 产出 `otpauth://totp/…` URI。默认 SHA1 / 6 位 / 30s（与主流验证器兼容，官方建议非必要不改）。
+- **数据模型（迁移 0014，编号以落地时为准）**：`users` 加 `totp_secret_enc`（`enc:` AES-GCM 密文，与存储凭据/SSO token 同一约定）、`totp_enabled`、`totp_last_used_counter`；新表 `totp_backup_codes`（user_id、HMAC-SHA256(ENCRYPTION_KEY) 哈希、used_at）——备用码是高熵随机值非口令，不需要 bcrypt。
+- **启用流程**：`POST /api/users/2fa/setup` 生成 secret（未启用态）→ 返回 otpauth:// URI，前端 `qrcode` 渲染 QR（otpauth 官方把 QR 编码留给外部库）；`POST /api/users/2fa/enable` 带 `code` 验证通过才置 `totp_enabled` 并发放 10 个一次性备用码（仅此一次明文展示）；禁用需密码 + 当前 TOTP 码。
+- **登录流程**：`POST /api/auth/login` 密码通过且 `totp_enabled` 而缺 `totpCode` → `403 TOTP_REQUIRED`（前端进入第二步，复用既有 `InputOTP` 6 位组件）；带码 → TOTP validate（window 1）或备用码（单次消费），通过才 `setAuthCookie`。注意：`TOTP_REQUIRED` 在密码正确后才返回，本身确认了密码正确（业界同型，可接受）。
+- **重放与节流**：成功验证记录 `totp_last_used_counter`，同/更早 counter 拒绝（30s 有效期内防同码复用）；TOTP 校验走认证限流同款（5 次/分钟/IP，fail-closed）。
+- **不加验的面**：API 密钥协议面（WebDAV / S3 网关 / AList / PicList）不叠 2FA——密钥认证不是密码认证，能持密钥即视为已过登录；找回密码改密递增 `session_version` 已使旧会话失效。**待决**：SSO/OIDC 完成是否叠加第二因子（该路径不经本站密码）。
+- **会话语义**：2FA 是登录门，不递增 `session_version`；已登录会话开启 2FA 不踢下线。
+- **前端**：个性化设置「修改密码」同区新增「两步验证」卡（状态 / 启用向导：QR + 确认码 + 备用码一次性展示 / 禁用）；登录页第二步输入。i18n zh/en 两份。
+- **测试**：enroll 矩阵（错码不启用、对码启用 + 备用码发放）、登录加验（缺码 `TOTP_REQUIRED` / 对码 200 / 错码 401 同文案）、备用码单次消费、同 counter 重放拒绝、限流 fail-closed、禁用后恢复单因子登录。
 
 ### 液态玻璃引入与动效 / 组件优化
 
@@ -587,6 +601,15 @@ Cloudflare Turnstile 接入方案，管理端可按面开关。背景：初版�
 
 - 完善 S3 / R2 / Oracle 等存储驱动，修复文件上传链路遗留问题（已知问题清单见会话记录：`/home/excnies/.omp/agent/sessions/-Picumet/2026-09-28T06-54-28-456Z_01a0e6cb-2668-7450-90d7-699c1d12e680.jsonl`，同批测试暴露的分片/预签名/配额边界问题以此为准）。
 - **agent 安全上传与鉴权链路**：agent 调用指定接口不依赖密码鉴权——调用前生成鉴权码，经邮箱发送或浏览器访问交付；鉴权码鉴权 + 用户确认 agent 请求的操作后才放行，agent 执行请求范围外的操作将被拦截。
+
+### 自建 S3 兼容存储的内网接入受限（2026-10-11 确认）
+
+已知缺陷：自建 S3 兼容对象存储（RustFS / MinIO / VersityGW / SeaweedFS 等）**无法以内网地址或非标端口配置为存储后端**，必须以公网 http(s) + 80/443 暴露。协议面本身完全兼容——`S3Provider`（`workers/src/services/storage/s3.ts`）就是通用 S3 endpoint：path-style、SigV4、分片、预签名、Range、DeleteObjects 均经 VersityGW 实验室全链路实测，RustFS 属同类。
+
+- **表现**：管理端创建/更新 Provider（`workers/src/services/admin/storage.ts:80,137`）与自由模式自接存储（`free-mode/handlers.ts:96-100`）统一过 `validateEndpoint`（`workers/src/utils/ssrf.ts`）：仅 http(s)、端口仅 80/443、拒绝私网/回环/保留地址与内嵌凭据，违规 400「存储端点无效：必须为公网 http(s) 地址，且不允许私网/保留地址」。内网 RustFS（如 `http://192.168.1.10:9000`）创建即被拒；`publicDomain` 直链域名（`httpsUrl`）同样拒私网。
+- **性质**：有意防护而非疏漏——Worker 会主动请求该地址，属真实 SSRF 面（审计项 SEC-02/SEC-12，回归 `admin-provider-update.test.ts` 与 lab `assert_endpoint_guard`）；且 Workers 运行时出口本就回源不了用户私网，放开校验也连不上。本地实验室靠直写 SQLite 绕过（`scripts/lab/fixtures.py` 的 `seed_provider_direct`），仅限本地开发。
+- **实际约束**：自建 S3 需 Nginx/Caddy 等 TLS 反代到 443/80 并暴露公网域名才可接入；纯内网部署（NAS、VPC 内）在 Workers 版不可用。
+- **候选方向（待决策）**：① 维持现状——内网自建存储不是 Workers 版的目标部署形态；② 环境变量级私网白名单（如 `S3_ENDPOINT_ALLOWLIST`，管理员显式声明、仅解封指定 endpoint，其余私网段照拒）；③ 并入「将来规划 — Go 高性能版」：自托管部署形态下私网 endpoint 既可达又合理，允许列表 + 校验开关自然落在那一版。
 
 ### 出口机制与协议兼容完善
 

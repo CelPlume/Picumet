@@ -44,6 +44,54 @@ wrangler login
 
 后端代码在 `workers/`,前端在 `frontend/`,两者共用 `shared/` 里的类型。
 
+## deploy/ 部署配置目录
+
+`deploy/` 存放部署配置模板,仓库只跟踪 `*.example` 后缀的模板文件;复制填写真实值后的实配文件(如 `wrangler.production.toml`、`secrets.env`)已被 `.gitignore` 忽略,不会入库。
+
+| 模板 | 复制为 | 用途 |
+| :--- | :--- | :--- |
+| `deploy/wrangler.production.toml.example` | `deploy/wrangler.production.toml` | 生产环境 wrangler 配置:非密钥变量与 `DB` / `KV` / `R2` 绑定、定时任务。 |
+| `deploy/secrets.env.example` | `deploy/secrets.env` | 生产密钥清单,逐条 `wrangler secret put` 写入。 |
+
+### 使用步骤
+
+1. 复制两个模板为 `deploy/wrangler.production.toml` 与 `deploy/secrets.env`,替换占位符、填写密钥。`--config` 按扩展名识别配置格式,`*.example` 文件不能直接传入,必须先复制成 `.toml`。
+2. 部署(在 `workers/` 目录执行):
+
+   ```sh
+   bunx wrangler deploy --config ../deploy/wrangler.production.toml
+   ```
+
+3. 应用密钥(在 `workers/` 目录,值为空的密钥跳过):
+
+   ```sh
+   set -a; . ../deploy/secrets.env; set +a
+   printf '%s' "$JWT_SECRET" | bunx wrangler secret put JWT_SECRET
+   printf '%s' "$ENCRYPTION_KEY" | bunx wrangler secret put ENCRYPTION_KEY
+   printf '%s' "$ADMIN_PASSWORD" | bunx wrangler secret put ADMIN_PASSWORD
+   # 其余密钥逐条同样操作;随机值用 openssl rand -base64 32 生成
+   ```
+
+4. 迁移(人工审核后):`bunx wrangler d1 migrations apply picumet-db --remote --config ../deploy/wrangler.production.toml`
+
+模板内的路径(`main` 入口、`migrations_dir`、alias shim)相对配置文件所在目录解析,无需改动。`[alias]` 把 `@aws-sdk/xml-builder` 整包替换为 vendored 纯 JS 实现(`workers/src/shims/aws-xml-builder.ts`):原包按 browser 条件解析到 DOMParser 版解析器,workerd 无 DOMParser,S3 的 XML 响应解析(分片上传/移动/ListObjects 等)会全部失败。
+
+### R2 绑定与管理端存储提供商的关系
+
+`wrangler.toml` 里的 `[[r2_buckets]] binding = "R2"` 必须保留:绑定是部署期资源,运行时无法添加。管理端「存储管理 → 存储提供商」有两条路接入 R2:
+
+- **绑定模式**:endpoint/AccessKey/SecretKey 全留空——provider 直接使用 `R2` 绑定,零凭据。种子的默认 provider「本地存储」与根挂载点 `/` 就是这一种;不配 R2 绑定时,首次上传/下载才会失败——就绪探针只查 KV seed 标记,不查存储,故障是静默的。
+- **S3 协议**:填 R2 的 S3 API endpoint(`https://<account_id>.r2.cloudflarestorage.com`)+ API 令牌(AccessKey/SecretKey),可指向**任意** R2 桶;AWS S3 / Oracle 等任何 S3 兼容存储同样走这条路,凭据加密落库。
+
+加不了的只有「为另一个桶再建一个原生绑定」——这是 Cloudflare Workers 的平台约束(绑定在部署期写死),不是缺陷;且 `bucket_name` 只写桶名,按 `account_id` 名下的资源解析,**只能绑部署账号自己的桶**,跨账号的桶一律走 S3 协议路径(在对方账号创建 R2 API 令牌)。S3 协议路径功能等价(分片上传/区间读/批量删除均支持)。注意:绑定模式 provider 实际读写固定落在 `R2` 绑定指向的桶,provider 行内的 bucket 字段只作展示、不会切换桶。
+
+### 初始账号:seed 自动创建,无需手工建号
+
+首次启动(KV `seed:done` 标记)时 seed 自动创建账号:
+
+- **管理员**:用户名 = `ADMIN_USERNAME`(默认 `admin`),密码 = `ADMIN_PASSWORD`。生产必配强密码(≥12 位且同时含字母和数字),缺失时不创建、业务 API 一律 `503 INITIALIZATION_REQUIRED`;开发环境默认 `admin/admin123456`。部署完成后直接用 `admin` + 你设置的 `ADMIN_PASSWORD` 登录。
+- **演示用户** `demo`(角色 user,仅开发环境):密码 = `DEMO_PASSWORD`(默认 `demo123456`)——它不是管理员密码,生产密钥清单里没有这一项。
+
 ## 部署 Workers API
 
 ### 创建云资源
@@ -73,7 +121,7 @@ wrangler login
 
 ### 配置 wrangler.toml
 
-把 `workers/wrangler.toml` 里的占位 ID 换成真实资源 ID,并把 `ENVIRONMENT` 改为 `production`:
+生产部署推荐用上文 `deploy/` 的模板流程,不必改动 `workers/wrangler.toml`(它同时是 `wrangler dev` 本地开发配置)。沿用本文件部署时,把占位 ID 换成真实资源 ID,并把 `ENVIRONMENT` 改为 `production`:
 
 ```toml
 name = "picumet-api"

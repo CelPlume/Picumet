@@ -17,3 +17,7 @@ screenshots/
 # Python 验收脚本缓存
 __pycache__/
 *.pyc
+
+# deploy/ 部署实配：只跟踪 *.example 模板，复制填写真实值后的实配文件一律不入库
+deploy/*
+!deploy/*.example
