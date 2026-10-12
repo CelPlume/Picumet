@@ -29,6 +29,8 @@ export async function apiFetch<T = unknown>(
     body?: unknown;
     headers?: Record<string, string>;
     signal?: AbortSignal;
+    /** 跳过 CSRF 令牌获取（登录等未认证端点：取令牌必 401，白白多一次往返） */
+    skipCsrf?: boolean;
   } = {}
 ): Promise<SuccessResponse<T>> {
   const headers: Record<string, string> = { ...(options.headers ?? {}) };
@@ -43,7 +45,7 @@ export async function apiFetch<T = unknown>(
   }
 
   const method = options.method ?? 'GET';
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !(body instanceof FormData)) {
+  if (!options.skipCsrf && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !(body instanceof FormData)) {
     // CSRF token：FormData 走兼容/上传接口（API Key 认证，无需 CSRF）
     try {
       const token = await getCsrfToken();

@@ -20,7 +20,7 @@
 // 纵向滚动容器（先找有溢出的真实滚动容器；整链都无溢出时回落到最近的 overflow 容器，
 // 供「内容未占满仍可拉拽」）；容器停在边缘且输入继续向外推时拦截事件（preventDefault
 // 阻断滚动链接）施加 transform；滚轮停顿 / 触摸松手后按各自物理回弹。
-// 门控：<html data-overscroll>（off 缺省不拦截）+ data-motion=off 不生效 +
+// 门控：<html data-overscroll>（rubberBand 缺省，off 不拦截）+ data-motion=off 不生效 +
 // prefers-reduced-motion 不生效。
 // 已知权衡：transform 祖先会让后代 backdrop-filter 退化为自身采样（AGENTS.md「Toast 玻璃
 // 层级」同源约束），拉拽进行中玻璃面磨砂短暂失效，回弹结束清空 transform 即恢复 —— 这是

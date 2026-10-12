@@ -6,7 +6,7 @@ import { create } from 'zustand';
 export type BlurLevel = 'off' | 'default' | 'frosted' | 'aero';
 
 /** 过滚动效果三选一：stretch = Android 12 拉伸过滚动（内容拉伸变形再缩回）；
- *  off = 关闭（默认）；rubberBand = iOS 橡皮筋（整页拉出留白再弹回）。
+ *  off = 关闭；rubberBand = iOS 橡皮筋（默认，整页拉出留白再弹回）。
  *  物理实现见 lib/overscroll.ts（flutter#87839 / fluid-scroll / Squishy 参数） */
 export type OverscrollLevel = 'stretch' | 'off' | 'rubberBand';
 
@@ -35,7 +35,7 @@ export interface AppearanceSettings {
   motionLevel: MotionLevel;
   /** 动画速度两档：efficient 现行时长（默认）/ comfortable 整体放慢一档 */
   motionSpeed: MotionSpeed;
-  /** 过滚动效果三选一（仅动画默认/全部档显示）：stretch / off（默认）/ rubberBand */
+  /** 过滚动效果三选一（仅动画默认/全部档显示）：stretch / rubberBand（默认）/ off */
   overscrollEffect: OverscrollLevel;
   backgroundType: 'none' | 'image' | 'color';
   backgroundUrl?: string;
@@ -49,8 +49,9 @@ export interface AppearanceSettings {
   filesPerRow: number;
   /** 文件页卡片视图每行卡片数（手机 2–5，默认 3）；与桌面值分开记忆 */
   filesPerRowMobile: number;
-  rightClickAction: 'properties' | 'menu';
-  rightClickMultiSelect: boolean;
+  /** 右键单击行为三档：menu = 打开上下文菜单（默认）/ properties = 打开属性面板 /
+   *  multiselect = 右键多选文件（进入多选模式并选中该文件，不弹菜单/面板） */
+  rightClickAction: 'menu' | 'properties' | 'multiselect';
   /** 图片/视频预览尺寸模式：fit=适应窗口（默认）/ original=按原始像素显示（可滚动） */
   previewSizeMode: 'fit' | 'original';
   /** 是否启用文件夹预览格的图片/视频缩略加载（默认关闭=只显示图标，节约流量） */
@@ -63,15 +64,14 @@ const DEFAULT: AppearanceSettings = {
   blurLevel: 'default',
   motionLevel: 'all',
   motionSpeed: 'efficient',
-  overscrollEffect: 'off',
+  overscrollEffect: 'rubberBand',
   backgroundType: 'none',
   fileIcons: 'iconify',
   folderPreview: 'icon',
   usageStyle: 'progress',
   filesPerRow: 6,
   filesPerRowMobile: 3,
-  rightClickAction: 'properties',
-  rightClickMultiSelect: false,
+  rightClickAction: 'menu',
   previewSizeMode: 'fit',
   mediaPreviewsEnabled: false,
 };
@@ -81,10 +81,16 @@ function load(): AppearanceSettings {
     const raw = localStorage.getItem('picumet:appearance');
     if (!raw) return DEFAULT;
     // 布尔模糊开关字段兼容存储：false → off，true/unset → default
-    const legacy = JSON.parse(raw) as Partial<AppearanceSettings> & { enableBlur?: boolean };
-    const { enableBlur: _legacy, ...rest } = legacy;
+    // 右键多选旧布尔开关迁移：显式开启过的用户映射到新第三档 multiselect（右键多选文件），
+    // 未开启/未设置过的用户保持既有 rightClickAction（未设置 = 新默认 menu）
+    const legacy = JSON.parse(raw) as Partial<AppearanceSettings> & { enableBlur?: boolean; rightClickMultiSelect?: boolean };
+    const { enableBlur: _legacy, rightClickMultiSelect: legacyMultiSelect, ...rest } = legacy;
     const blurLevel = rest.blurLevel ?? (_legacy === false ? 'off' : 'default');
-    return { ...DEFAULT, ...rest, blurLevel };
+    const rightClickAction =
+      legacyMultiSelect === true && rest.rightClickAction !== 'multiselect'
+        ? 'multiselect'
+        : (rest.rightClickAction ?? DEFAULT.rightClickAction);
+    return { ...DEFAULT, ...rest, blurLevel, rightClickAction };
   } catch {
     return DEFAULT;
   }
@@ -184,7 +190,7 @@ function applyTheme(s: AppearanceSettings) {
   root.setAttribute('data-motion', s.motionLevel === 'all' ? 'all' : s.motionLevel);
 
   // 过滚动效果：落在 <html data-overscroll>，lib/overscroll.ts 的事件引擎按该值分派
-  // （stretch = Android 12 拉伸 / rubberBand = iOS 橡皮筋 / off = 不拦截），off 为缺省
+  // （stretch = Android 12 拉伸 / rubberBand = iOS 橡皮筋 / off = 不拦截），rubberBand 为缺省
   root.setAttribute('data-overscroll', s.overscrollEffect);
 
   // 动画速度两档：落在 <html data-motion-speed>，CSS 侧只在 comfortable 下覆写时长 token

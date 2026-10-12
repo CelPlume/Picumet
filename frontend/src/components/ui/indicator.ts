@@ -30,7 +30,10 @@ export function useIndicator(
     const list = ref.current;
     if (!list) return;
     const measure = () => {
-      const el = list.querySelector<HTMLElement>('[data-active="true"]');
+      const activeNodes = list.querySelectorAll<HTMLElement>('[data-active="true"]');
+      const el =
+        (activeNodes.length > 0 ? activeNodes[activeNodes.length - 1] : null) ||
+        Array.from(list.querySelectorAll<HTMLElement>('[data-ancestor="true"]')).pop();
       if (!el) return;
       const next =
         axis === 'x'
@@ -63,4 +66,4 @@ export function useIndicator(
     blur 随三档门控（.no-blur 关停）。inset-x-0 与 hover 高亮同宽（避免激活/悬停宽度不一致）。
     navbar 用实底凸起样式；Tabs 指示器用同色系 primary/10 半透明 tint（随四档玻璃透出）。*/
 export const INDICATOR_CLASS =
-  'glass-control pointer-events-none absolute inset-x-0 z-0 rounded-md bg-primary/10 transition-[top,height] [transition-duration:var(--duration-base)] ease-out';
+  'glass-control pointer-events-none absolute inset-x-0 z-0 rounded-md bg-primary/10 dark:bg-primary/5 transition-[top,height] [transition-duration:var(--duration-base)] ease-out';

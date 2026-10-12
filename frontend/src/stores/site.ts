@@ -24,6 +24,11 @@ export interface SiteSettings {
   umami?: UmamiConfig | null;
   /** 第三方登录（SSO/OIDC）：总开关 + 启用的来源（仅 id/kind/name），登录页据此渲染按钮 */
   sso?: SsoPublicConfig;
+  uploadUrl?: string;
+  returnUrl?: string;
+  signEnabled?: boolean;
+  signDefault?: boolean;
+  signExpiresIn?: number;
 }
 
 interface SiteState extends SiteSettings {

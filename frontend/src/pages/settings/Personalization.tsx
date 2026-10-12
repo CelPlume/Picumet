@@ -13,7 +13,13 @@ import {
   Image as ImageIcon,
   Ticket,
   Copy,
+  KeyRound,
+  Check,
+  Download,
+  Eye,
+  Plus,
 } from 'lucide-react';
+import QRCode from 'qrcode';
 import {
   Card,
   CardContent,
@@ -25,6 +31,7 @@ import {
   Button,
   Badge,
   Switch,
+  Dialog,
 } from '@/components/ui/core';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { SortableHeader, sortByKey, type SortOrder } from '@/components/ui/sortable-header';
@@ -205,12 +212,142 @@ export default function PersonalizationPage() {
     }
   };
 
-  const copyInviteCode = async (code: string) => {
+  const copyInviteLink = async (code: string) => {
+    try {
+      const origin = site.uploadUrl || site.returnUrl || window.location.origin;
+      const link = `${origin.replace(/\/+$/, '')}/register?invite=${encodeURIComponent(code)}`;
+      await navigator.clipboard.writeText(link);
+      toast('success', t('settings.invites.linkCopied'));
+    } catch {
+      toast('error', t('common.copyFailed'));
+    }
+  };
+
+  const copyBareCode = async (code: string) => {
     try {
       await navigator.clipboard.writeText(code);
-      toast('success', t('settings.invites.copied'));
+      toast('success', t('settings.invites.codeCopied'));
     } catch {
-      toast('error', t('settings.invites.loadFailed'));
+      toast('error', t('common.copyFailed'));
+    }
+  };
+  // 两步验证（2FA / TOTP）
+  const [totpStatus, setTotpStatus] = useState<{ enabled: boolean; remainingBackupCodes: number } | null>(null);
+  const [showTotpSetup, setShowTotpSetup] = useState(false);
+  const [totpSetupData, setTotpSetupData] = useState<{ uri: string; secret: string; qrUrl: string } | null>(null);
+  const [setupCode, setSetupCode] = useState('');
+  const [enablingTotp, setEnablingTotp] = useState(false);
+  const [newBackupCodes, setNewBackupCodes] = useState<string[] | null>(null);
+  const [copiedCodes, setCopiedCodes] = useState(false);
+  const [showTotpDisable, setShowTotpDisable] = useState(false);
+  const [disablePassword, setDisablePassword] = useState('');
+  const [disableCode, setDisableCode] = useState('');
+  const [disablingTotp, setDisablingTotp] = useState(false);
+  const [showRegenBackup, setShowRegenBackup] = useState(false);
+  const [showBackupList, setShowBackupList] = useState(false);
+  const [backupList, setBackupList] = useState<string[] | null>(null);
+  const [backupListLoading, setBackupListLoading] = useState(false);
+  const [regenPassword, setRegenPassword] = useState('');
+  const [regenCode, setRegenCode] = useState('');
+  const [regeneratingBackup, setRegeneratingBackup] = useState(false);
+
+  const loadTotpStatus = async () => {
+    try {
+      const res = await apiFetch<{ enabled: boolean; remainingBackupCodes: number }>('/api/users/2fa/status');
+      setTotpStatus(res.data);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    void loadTotpStatus();
+  }, []);
+
+  const startTotpSetup = async () => {
+    try {
+      const res = await apiFetch<{ uri: string; secret: string }>('/api/users/2fa/setup', { method: 'POST' });
+      const qrUrl = await QRCode.toDataURL(res.data.uri, { width: 200, margin: 2 });
+      setTotpSetupData({ uri: res.data.uri, secret: res.data.secret, qrUrl });
+      setSetupCode('');
+      setNewBackupCodes(null);
+      setCopiedCodes(false);
+      setShowTotpSetup(true);
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('common.error'));
+    }
+  };
+
+  const confirmEnableTotp = async () => {
+    if (setupCode.length !== 6) return toast('error', t('settings.twoFactor.codeInvalid'));
+    setEnablingTotp(true);
+    try {
+      const res = await apiFetch<{ backupCodes: string[] }>('/api/users/2fa/enable', {
+        method: 'POST',
+        body: { code: setupCode },
+      });
+      setNewBackupCodes(res.data.backupCodes);
+      toast('success', t('settings.twoFactor.enabled'));
+      await loadTotpStatus();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('common.error'));
+    } finally {
+      setEnablingTotp(false);
+    }
+  };
+
+  const confirmDisableTotp = async () => {
+    if (!disablePassword) return toast('error', t('settings.twoFactor.currentPassword'));
+    setDisablingTotp(true);
+    try {
+      await apiFetch('/api/users/2fa/disable', {
+        method: 'POST',
+        body: { password: disablePassword, code: disableCode || undefined },
+      });
+      toast('success', t('settings.twoFactor.disabled'));
+      setShowTotpDisable(false);
+      setDisablePassword('');
+      setDisableCode('');
+      await loadTotpStatus();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('common.error'));
+    } finally {
+      setDisablingTotp(false);
+    }
+  };
+
+  const loadBackupList = async () => {
+    setBackupListLoading(true);
+    try {
+      const res = await apiFetch<{ codes: string[] }>('/api/users/2fa/backup-codes');
+      setBackupList(res.data.codes ?? []);
+      await loadTotpStatus();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('common.error'));
+      setBackupList([]);
+    } finally {
+      setBackupListLoading(false);
+    }
+  };
+
+  const confirmRegenBackupCodes = async () => {
+    if (!regenPassword || !regenCode) return toast('error', t('settings.twoFactor.codeInvalid'));
+    setRegeneratingBackup(true);
+    try {
+      const res = await apiFetch<{ backupCodes: string[] }>('/api/users/2fa/backup-codes/regenerate', {
+        method: 'POST',
+        body: { password: regenPassword, code: regenCode },
+      });
+      setNewBackupCodes(res.data.backupCodes);
+      setShowRegenBackup(false);
+      setShowTotpSetup(true);
+      setRegenPassword('');
+      setRegenCode('');
+      await loadTotpStatus();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('common.error'));
+    } finally {
+      setRegeneratingBackup(false);
     }
   };
 
@@ -389,9 +526,10 @@ export default function PersonalizationPage() {
   const q = data.quota;
   const showInvites = site.loaded && canGenerateInvites && !invitesForbidden;
   const inviteList = invites ?? [];
-  // 邀请码卡插在「修改密码」之后（左列第 4 张）；隐藏时右列两卡回落原序号
-  const previewIdx = showInvites ? 4 : 3;
-  const themeIdx = showInvites ? 5 : 4;
+  // 两步验证插在「修改密码」之后（左列第 4 张，序号 3）；邀请码在「两步验证」之后（左列第 5 张，序号 4）
+  const inviteIdx = 4;
+  const previewIdx = showInvites ? 5 : 4;
+  const themeIdx = showInvites ? 6 : 5;
 
   return (
     <div className="grid max-w-7xl items-start gap-6 lg:grid-cols-2">
@@ -538,16 +676,75 @@ export default function PersonalizationPage() {
           </CardContent>
         </Card>
 
+        {/* 两步验证（2FA / TOTP） */}
+        <Card className="reveal" style={revealDelay(3)}>
+          <CardHeader className="reveal-row" style={innerDelay(3, 0)}>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-primary" /> {t('settings.twoFactor.title')}
+              </CardTitle>
+              {totpStatus && (
+                <Badge variant={totpStatus.enabled ? 'default' : 'secondary'}>
+                  {totpStatus.enabled ? t('settings.twoFactor.enabled') : t('settings.twoFactor.disabled')}
+                </Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="reveal-row text-xs text-muted-foreground" style={innerDelay(3, 1)}>
+              {t('settings.twoFactor.desc')}
+            </p>
+            {totpStatus?.enabled ? (
+              <div className="reveal-row space-y-3" style={innerDelay(3, 2)}>
+                {/* 剩余数量 + 查看：无边框，分隔线过渡（卡中卡原则） */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      {t('settings.twoFactor.backupCodesRemaining', { count: totpStatus.remainingBackupCodes })}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => {
+                        setShowBackupList(true);
+                        void loadBackupList();
+                      }}
+                    >
+                      <Eye className="h-3.5 w-3.5" /> {t('settings.twoFactor.viewBackupCodes')}
+                    </Button>
+                  </div>
+                  <div className="flex items-center justify-between border-t pt-2.5">
+                    <span className="text-xs text-muted-foreground">{t('settings.twoFactor.regenerateBackupCodes')}</span>
+                    <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setShowRegenBackup(true)}>
+                      <Plus className="h-3.5 w-3.5" /> {t('common.add')}
+                    </Button>
+                  </div>
+                </div>
+                <div>
+                  <Button variant="outline" size="sm" className="h-8 w-full text-destructive hover:bg-destructive/10" onClick={() => setShowTotpDisable(true)}>
+                    {t('settings.twoFactor.disable')}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="reveal-row" style={innerDelay(3, 2)}>
+                <Button onClick={startTotpSetup}>{t('settings.twoFactor.enable')}</Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {showInvites && (
-          <Card className="reveal" style={revealDelay(3)}>
-            <CardHeader className="reveal-row" style={innerDelay(3, 0)}>
+          <Card className="reveal" style={revealDelay(inviteIdx)}>
+            <CardHeader className="reveal-row" style={innerDelay(inviteIdx, 0)}>
               <CardTitle className="flex items-center gap-2">
                 <Ticket className="h-4 w-4 text-primary" /> {t('settings.invites.title')}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <Tabs value={inviteTab} onValueChange={(v) => setInviteTab(v as 'codes' | 'users')}>
-                <div className="reveal-row" style={innerDelay(3, 1)}>
+                <div className="reveal-row" style={innerDelay(inviteIdx, 1)}>
                   <TabsList className="grid w-full grid-cols-2">
                     <TabsTrigger value="codes">{t('settings.invites.tabCodes')}</TabsTrigger>
                     <TabsTrigger value="users">{t('settings.invites.tabUsers')}</TabsTrigger>
@@ -606,13 +803,20 @@ export default function PersonalizationPage() {
 
                             {/* 中间列：邀请码（小尺寸药丸）+ 复制按钮 */}
                             <div className="flex items-center gap-1.5">
-                              <code className="rounded bg-muted/50 px-1.5 py-0.5 font-mono text-xs tracking-wider text-foreground">{ic.code}</code>
+                              <code
+                                className="cursor-pointer rounded bg-muted/50 px-1.5 py-0.5 font-mono text-xs tracking-wider text-foreground hover:bg-muted transition-colors"
+                                onClick={() => copyBareCode(ic.code)}
+                                title={t('settings.invites.copyCodeTitle')}
+                              >
+                                {ic.code}
+                              </code>
                               <Button
                                 variant="ghost"
                                 size="sm"
                                 className="h-6 w-6 p-0 shrink-0 text-muted-foreground hover:text-foreground"
-                                onClick={() => copyInviteCode(ic.code)}
-                                aria-label={t('common.copy')}
+                                onClick={() => copyInviteLink(ic.code)}
+                                title={t('settings.invites.copyLinkTitle')}
+                                aria-label={t('settings.invites.copyLinkTitle')}
                               >
                                 <Copy className="h-3 w-3" />
                               </Button>
@@ -728,23 +932,17 @@ export default function PersonalizationPage() {
               <Label>{t('settings.appearance.rightClickAction')}</Label>
               <RadioGroup
                 value={theme.rightClickAction}
-                onChange={(v) => theme.set({ rightClickAction: v as 'properties' | 'menu' })}
-                className="reveal-row grid-cols-2"
+                onChange={(v) => theme.set({ rightClickAction: v as 'menu' | 'properties' | 'multiselect' })}
+                className="reveal-row grid-cols-1"
                 style={innerDelay(previewIdx, 2)}
                 options={[
-                  { value: 'properties', label: t('settings.appearance.rightClickProperties'), description: t('settings.appearance.rightClickPropertiesDesc') },
                   { value: 'menu', label: t('settings.appearance.rightClickMenu'), description: t('settings.appearance.rightClickMenuDesc') },
+                  { value: 'properties', label: t('settings.appearance.rightClickProperties'), description: t('settings.appearance.rightClickPropertiesDesc') },
+                  { value: 'multiselect', label: t('settings.appearance.rightClickMultiselect'), description: t('settings.appearance.rightClickMultiselectDesc') },
                 ]}
               />
             </div>
             <div className="reveal-row flex items-center justify-between rounded-lg border px-3 py-2.5" style={innerDelay(previewIdx, 3)}>
-              <div>
-                <p className="text-sm font-medium">{t('settings.appearance.rightClickMultiSelect')}</p>
-                <p className="text-xs text-muted-foreground">{t('settings.appearance.rightClickMultiSelectDesc')}</p>
-              </div>
-              <Switch checked={theme.rightClickMultiSelect} onChange={(v) => theme.set({ rightClickMultiSelect: v })} />
-            </div>
-            <div className="reveal-row flex items-center justify-between rounded-lg border px-3 py-2.5" style={innerDelay(previewIdx, 4)}>
               <div>
                 <p className="text-sm font-medium">{t('settings.appearance.mediaPreviews')}</p>
                 <p className="text-xs text-muted-foreground">{t('settings.appearance.mediaPreviewsDesc')}</p>
@@ -966,6 +1164,312 @@ export default function PersonalizationPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 2FA 启用向导 / 备用码展示弹窗 */}
+      <Dialog
+        open={showTotpSetup}
+        onClose={() => {
+          setShowTotpSetup(false);
+          setTotpSetupData(null);
+          setNewBackupCodes(null);
+        }}
+        title={newBackupCodes ? t('settings.twoFactor.backupCodesTitle') : t('settings.twoFactor.setupTitle')}
+      >
+        {newBackupCodes ? (
+          <div className="space-y-4">
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {t('settings.twoFactor.backupCodesWarning')}
+            </p>
+            <div className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/40 p-3 font-mono text-sm tracking-wider text-center">
+              {newBackupCodes.map((code) => (
+                <div key={code} className="rounded bg-background/80 py-1 border shadow-xs select-all">
+                  {code}
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-between gap-2 pt-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(newBackupCodes.join('\n'));
+                    setCopiedCodes(true);
+                    toast('success', t('common.copied'));
+                  }}
+                >
+                  {copiedCodes ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {t('settings.apiKeys.copyAll')}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const lines = [
+                      `${t('settings.twoFactor.title')} - ${t('settings.twoFactor.backupCodesTitle')}`,
+                      `${t('login.username')}: ${data.profile.username}`,
+                      `${t('settings.twoFactor.backupCodesRemaining', { count: newBackupCodes.length })}`,
+                      '',
+                      ...newBackupCodes,
+                    ];
+                    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${data.profile.username}_backup_code.txt`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    toast('success', t('settings.twoFactor.backupCodesDownloaded'));
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" /> {t('settings.twoFactor.downloadBackupCodes')}
+                </Button>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setShowTotpSetup(false);
+                  setTotpSetupData(null);
+                  setNewBackupCodes(null);
+                }}
+              >
+                {t('settings.twoFactor.savedBackupCodes')}
+              </Button>
+            </div>
+          </div>
+        ) : totpSetupData ? (
+          <div className="space-y-4">
+            <div className="text-xs text-muted-foreground">
+              {t('settings.twoFactor.setupStep1')}
+            </div>
+            <div className="flex flex-col items-center justify-center gap-2">
+              {totpSetupData.qrUrl && (
+                <img src={totpSetupData.qrUrl} alt="2FA QR Code" className="h-44 w-44 rounded-lg border bg-white p-2 shadow-xs" />
+              )}
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-mono text-muted-foreground select-all">{totpSetupData.secret}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(totpSetupData.secret);
+                    toast('success', t('common.copied'));
+                  }}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2 border-t pt-3">
+              <Label className="text-xs">{t('settings.twoFactor.setupStep2')}</Label>
+              <div className="flex justify-center py-1">
+                <InputOTP
+                  value={setupCode}
+                  onChange={setSetupCode}
+                  length={6}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowTotpSetup(false);
+                  setTotpSetupData(null);
+                }}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button onClick={confirmEnableTotp} loading={enablingTotp} disabled={setupCode.length !== 6}>
+                {t('settings.twoFactor.confirmAndEnable')}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
+
+      {/* 禁用 2FA 确认弹窗 */}
+      <Dialog
+        open={showTotpDisable}
+        onClose={() => {
+          setShowTotpDisable(false);
+          setDisablePassword('');
+          setDisableCode('');
+        }}
+        title={t('settings.twoFactor.disableTitle')}
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            {t('settings.twoFactor.disableDesc')}
+          </p>
+          <div className="space-y-3">
+            <div>
+              <Label>{t('settings.twoFactor.currentPassword')}</Label>
+              <Input
+                type="password"
+                className="mt-1"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label>{t('settings.twoFactor.currentCodeOrBackup')}</Label>
+              <Input
+                className="mt-1 font-mono"
+                value={disableCode}
+                onChange={(e) => setDisableCode(e.target.value)}
+                placeholder="000000 / abcdef12"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowTotpDisable(false);
+                setDisablePassword('');
+                setDisableCode('');
+              }}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button variant="destructive" onClick={confirmDisableTotp} loading={disablingTotp} disabled={!disablePassword.trim()}>
+              {t('settings.twoFactor.disable')}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* 查看剩余备用码（服务端密文回读，对标 Google） */}
+      <Dialog
+        open={showBackupList}
+        onClose={() => setShowBackupList(false)}
+        title={t('settings.twoFactor.viewBackupCodes')}
+        footer={<Button onClick={() => setShowBackupList(false)}>{t('common.close')}</Button>}
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">{t('settings.twoFactor.backupCodesWarning')}</p>
+          {backupListLoading ? (
+            <p className="py-3 text-center text-xs text-muted-foreground">{t('common.loading')}</p>
+          ) : backupList && backupList.length > 0 ? (
+            <div className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/40 p-3 font-mono text-sm tracking-wider text-center">
+              {backupList.map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(code);
+                    toast('success', t('common.copied'));
+                  }}
+                  title={t('common.copy')}
+                  className="cursor-pointer select-all rounded border bg-background/80 py-1 shadow-xs transition-colors hover:bg-accent"
+                >
+                  {code}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="py-3 text-center text-xs text-muted-foreground">
+              {t('settings.twoFactor.noBackupCodes')}
+            </p>
+          )}
+          <div className="flex items-center gap-2 border-t pt-3">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              disabled={!backupList || backupList.length === 0}
+              onClick={() => {
+                if (!backupList) return;
+                void navigator.clipboard.writeText(backupList.join('\n'));
+                toast('success', t('common.copied'));
+              }}
+            >
+              <Copy className="h-3.5 w-3.5" /> {t('settings.apiKeys.copyAll')}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              disabled={!backupList || backupList.length === 0}
+              onClick={() => {
+                if (!backupList) return;
+                const lines = [
+                  `${t('settings.twoFactor.title')} - ${t('settings.twoFactor.backupCodesTitle')}`,
+                  `${t('login.username')}: ${data.profile.username}`,
+                  '',
+                  ...backupList,
+                ];
+                const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${data.profile.username}_backup_code.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+                toast('success', t('settings.twoFactor.backupCodesDownloaded'));
+              }}
+            >
+              <Download className="h-3.5 w-3.5" /> {t('settings.twoFactor.downloadBackupCodes')}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* 重新生成备用码弹窗 */}
+      <Dialog
+        open={showRegenBackup}
+        onClose={() => {
+          setShowRegenBackup(false);
+          setShowBackupList(false);
+          setRegenPassword('');
+          setRegenCode('');
+        }}
+        title={t('settings.twoFactor.regenerateBackupCodes')}
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            {t('settings.twoFactor.regenerateBackupCodesDesc')}
+          </p>
+          <div className="space-y-3">
+            <div>
+              <Label>{t('settings.twoFactor.currentPassword')}</Label>
+              <Input
+                type="password"
+                className="mt-1"
+                value={regenPassword}
+                onChange={(e) => setRegenPassword(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label>{t('settings.twoFactor.currentTotpCode')}</Label>
+              <div className="mt-2 flex justify-center">
+                <InputOTP
+                  value={regenCode}
+                  onChange={(v) => setRegenCode(v)}
+                  length={6}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowRegenBackup(false);
+                setRegenPassword('');
+                setRegenCode('');
+              }}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button onClick={confirmRegenBackupCodes} loading={regeneratingBackup} disabled={!regenPassword.trim() || !regenCode.trim()}>
+              {t('settings.twoFactor.regenerateBackupCodes')}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }
