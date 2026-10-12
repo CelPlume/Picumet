@@ -1,9 +1,9 @@
 // 管理员路由：仪表板、用户管理、角色、分享、文件、日志、系统设置、公告
 import { Hono } from 'hono';
-import type { AppBindings } from '../../shared/types';
+import type { AppBindings, Env } from '../../shared/types';
 import {
   UserRepo, QuotaRepo, ShareRepo, LogRepo, SettingsRepo, AnnouncementRepo,
-  DashboardRepo, FileRepo, MountRepo, ReconciliationRepo, Db, trendBucketCount,
+  DashboardRepo, FileRepo, MountRepo, ReconciliationRepo, Db, trendBucketCount, IpBanRepo,
 } from '../../db';
 import type { FileListItem, Share } from '@shared/types';
 import { getDb } from '../../middleware/auth';
@@ -12,12 +12,14 @@ import { ApiError } from '../../shared/errors';
 import { toFileListItem } from '../../db/repos/files';
 import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
 import { parseJson } from '../../db';
-import { UserUpdateSchema, SettingsSchema, AnnouncementSchema, RoleNameSchema, RoleDefaultsSchema, FileBanSchema, TrendsQuerySchema } from './schemas';
-import { sendMail, type SmtpConfig, resolveSmtpConfig } from '../../utils/smtp';
+import { UserUpdateSchema, SettingsSchema, AnnouncementSchema, RoleNameSchema, RoleDefaultsSchema, FileBanSchema, IpBanCreateSchema, TrendsQuerySchema } from './schemas';
+import { sendMail, type SmtpConfig, resolveSmtpConfig, parseEmailAddress } from '../../utils/smtp';
+import { renderTestMail, type MailBrand } from '../../utils/email-template';
 import { requestIp } from '../../utils/ip';
 import { encryptSecret, hashPassword } from '../../utils/crypto';
 import { subtreeMatch } from '../../utils/path';
 import { invalidateAuditPolicyCache } from '../../db';
+import { invalidateAuthRateLimitCache } from '../../middleware/rate-limit';
 import { loadRoutePrefixes } from '../storage/direct-links';
 import { UMAMI_SETTINGS_MAP, isUmamiWebsiteId, validateUmamiUrl } from '../../utils/umami';
 import { AdminUpdateShareSchema } from '../shares/schemas';
@@ -145,6 +147,10 @@ adminRoutes.put('/users/:id', async (c) => {
   const fields: Record<string, unknown> = {};
   if (rest.role !== undefined) fields.role = rest.role;
   if (rest.status !== undefined) fields.status = rest.status;
+  // 封禁原因（注册限流强化）：随 status='banned' 落库，解封时清除
+  const banReason = rest.banReason?.trim() ?? '';
+  if (banReason) fields.ban_reason = banReason;
+  if (rest.status !== undefined && rest.status !== 'banned') fields.ban_reason = null;
   if (rest.defaultPath !== undefined) {
     if (!rest.defaultPath.startsWith('/')) throw ApiError.badRequest('默认路径必须以 / 开头');
     fields.default_path = rest.defaultPath;
@@ -160,6 +166,17 @@ adminRoutes.put('/users/:id', async (c) => {
   if (Object.keys(fields).length) {
     await UserRepo.updateUser(db, id, fields);
     if (disableChange || newPassword) await UserRepo.bumpSessionVersion(db, id);
+    // 封禁/解封属敏感管理操作：写审计（记操作者、对象用户、目标状态与原因，不含密码）
+    if (rest.status !== undefined) {
+      await LogRepo.create(db, {
+        userId: c.get('userId') as string,
+        action: 'admin_user_status',
+        path: `/api/admin/users/${id}`,
+        ipAddress: requestIp(c.req.raw),
+        userAgent: c.req.header('user-agent'),
+        metadata: JSON.stringify({ status: rest.status, reason: banReason || undefined }),
+      });
+    }
   }
   if (newPassword) {
     // 管理员代改凭据属敏感操作：写审计（记操作者与对象用户，不记密码本身）
@@ -192,6 +209,51 @@ adminRoutes.delete('/users/:id', async (c) => {
     await UserRepo.deleteUserTx(tx, id);
   });
   return ok(c, null);
+});
+
+// ============ IP 封禁（注册限流强化） ============
+
+/** 管理端 IP 封禁列表视图：不含 created_by 内部 id 语义（保留供追溯展示） */
+adminRoutes.get('/ip-bans', async (c) => {
+  const db = getDb(c);
+  const bans = await IpBanRepo.list(db);
+  return ok(c, { bans });
+});
+
+adminRoutes.post('/ip-bans', async (c) => {
+  const db = getDb(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = IpBanCreateSchema.safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? 'IP 封禁参数无效');
+  const ban = await IpBanRepo.add(db, c.env.KV as KVNamespace, {
+    ip: parsed.data.ip,
+    reason: parsed.data.reason,
+    createdBy: c.get('userId') as string,
+    expiresAt: parsed.data.expiresAt ?? null,
+  });
+  await LogRepo.create(db, {
+    userId: c.get('userId') as string,
+    action: 'admin_ip_ban',
+    path: '/api/admin/ip-bans',
+    ipAddress: requestIp(c.req.raw),
+    userAgent: c.req.header('user-agent'),
+    metadata: JSON.stringify({ ip: parsed.data.ip, reason: parsed.data.reason ?? null, expiresAt: parsed.data.expiresAt ?? null }),
+  });
+  return ok(c, { ban }, undefined, 201);
+});
+
+adminRoutes.delete('/ip-bans/:id', async (c) => {
+  const db = getDb(c);
+  const id = c.req.param('id');
+  await IpBanRepo.remove(db, c.env.KV as KVNamespace, id);
+  await LogRepo.create(db, {
+    userId: c.get('userId') as string,
+    action: 'admin_ip_unban',
+    path: `/api/admin/ip-bans/${id}`,
+    ipAddress: requestIp(c.req.raw),
+    userAgent: c.req.header('user-agent'),
+  });
+  return ok(c, { message: '已解除封禁' });
 });
 
 // ============ 全局分享 ============
@@ -554,7 +616,8 @@ adminRoutes.get('/logs/archives/:id/download', async (c) => {
 adminRoutes.get('/settings', async (c) => {
   const db = getDb(c);
   const raw = await SettingsRepo.getAll(db);
-  const prefixes = await loadRoutePrefixes(db);
+  const env = c.env as Env;
+  const prefixes = await loadRoutePrefixes(db, env);
   const get = (key: string) => {
     const v = raw[key];
     if (v === undefined || v === 'null') return undefined;
@@ -569,6 +632,13 @@ adminRoutes.get('/settings', async (c) => {
     siteHeaderTitle: get('site_header_title'),
     siteLogo: get('site_logo'),
     siteFavicon: get('site_favicon'),
+    uploadUrl: (get('upload_url') || env.UPLOAD_URL || prefixes.uploadUrl) ?? '',
+    returnUrl: (get('return_url') || env.RETURN_URL || prefixes.returnUrl) ?? '',
+    appBaseUrl: (get('app_base_url') || env.APP_BASE_URL) ?? '',
+    allowedOrigins: (get('allowed_origins') || env.ALLOWED_ORIGINS) ?? '',
+    signEnabled: get('sign_enabled') !== undefined ? Boolean(get('sign_enabled')) : true,
+    signDefault: get('sign_default') !== undefined ? Boolean(get('sign_default')) : true,
+    signExpiresIn: Number(get('sign_expires_in') ?? 0),
     allowRegistration: get('allow_registration') ?? true,
     allowGuestAccess: get('allow_guest_access') ?? false,
     requireEmailVerification: get('require_email_verification') ?? false,
@@ -579,16 +649,17 @@ adminRoutes.get('/settings', async (c) => {
     ssoEnabled: get('sso_enabled') ?? false,
     rateLimitEnabled: get('rate_limit_enabled') ?? true,
     rateLimitRequestsPerMinute: Number(get('rate_limit_requests_per_minute') ?? 50),
+    authRateLimitPerMinute: Number(get('auth_rate_limit_per_minute') ?? 2),
     maxConcurrentTransfers: Number(get('max_concurrent_transfers') ?? 4),
     rateLimitDownloadsPerMinute: Number(get('rate_limit_downloads_per_minute') ?? 120),
-    smtpHost: get('smtp_host') ?? '',
-    smtpPort: Number(get('smtp_port') ?? 587),
-    smtpSecure: get('smtp_secure') ?? true,
-    smtpUser: get('smtp_user') ?? '',
-    smtpPassword: get('smtp_password') ? '******' : '',
-    smtpFromName: get('smtp_from_name') ?? 'Picumet',
-    smtpFromEmail: get('smtp_from_email') ?? '',
-    emailEnabled: get('email_enabled') ?? false,
+    smtpHost: (get('smtp_host') || env.SMTP_HOST) ?? '',
+    smtpPort: Number(get('smtp_port') ?? env.SMTP_PORT ?? 587),
+    smtpSecure: get('smtp_secure') !== undefined ? Boolean(get('smtp_secure')) : (env.SMTP_SECURE !== undefined ? env.SMTP_SECURE !== 'false' : true),
+    smtpUser: (get('smtp_user') || env.SMTP_USER) ?? '',
+    smtpPassword: (get('smtp_password') || env.SMTP_PASS) ? '******' : '',
+    smtpFromName: (get('smtp_from_name') as string | undefined) || env.SMTP_FROM_NAME || parseEmailAddress(env.SMTP_FROM).name || 'Picumet',
+    smtpFromEmail: parseEmailAddress((get('smtp_from_email') as string | undefined) || env.SMTP_FROM).email,
+    emailEnabled: get('email_enabled') !== undefined ? Boolean(get('email_enabled')) : Boolean(env.SMTP_HOST || get('smtp_host')),
     directPrefix: prefixes.directPrefix,
     rootTarget: prefixes.rootTarget,
     auditLogLevel: get('audit_log_level') ?? 'all',
@@ -647,6 +718,13 @@ adminRoutes.patch('/settings', async (c) => {
     siteHeaderTitle: 'site_header_title',
     siteLogo: 'site_logo',
     siteFavicon: 'site_favicon',
+    uploadUrl: 'upload_url',
+    returnUrl: 'return_url',
+    appBaseUrl: 'app_base_url',
+    allowedOrigins: 'allowed_origins',
+    signEnabled: 'sign_enabled',
+    signDefault: 'sign_default',
+    signExpiresIn: 'sign_expires_in',
     allowRegistration: 'allow_registration',
     allowGuestAccess: 'allow_guest_access',
     requireEmailVerification: 'require_email_verification',
@@ -657,6 +735,7 @@ adminRoutes.patch('/settings', async (c) => {
     ssoEnabled: 'sso_enabled',
     rateLimitEnabled: 'rate_limit_enabled',
     rateLimitRequestsPerMinute: 'rate_limit_requests_per_minute',
+    authRateLimitPerMinute: 'auth_rate_limit_per_minute',
     maxConcurrentTransfers: 'max_concurrent_transfers',
     rateLimitDownloadsPerMinute: 'rate_limit_downloads_per_minute',
     smtpHost: 'smtp_host',
@@ -695,6 +774,10 @@ adminRoutes.patch('/settings', async (c) => {
   if (savedKeys.includes('audit_log_level') || savedKeys.includes('audit_log_groups')) {
     invalidateAuditPolicyCache();
   }
+  // 认证限流阈值保存后立即失效进程内缓存（同审计策略模式）
+  if (savedKeys.includes('auth_rate_limit_per_minute')) {
+    invalidateAuthRateLimitCache();
+  }
   // Umami 访问统计 / 第三方登录总开关：安全敏感设置变更写审计日志（记键不记值；
   // 二者都直接改变对外暴露的认证/脚本面，改动必须可追溯）
   const umamiDbKeys: string[] = Object.values(UMAMI_SETTINGS_MAP);
@@ -713,6 +796,24 @@ adminRoutes.patch('/settings', async (c) => {
 });
 
 // ============ SMTP 测试邮件 ============
+// 邮件品牌（与站点 UI 同源）：站点标题 / Logo / 强调色
+async function loadMailBrand(db: Db): Promise<MailBrand> {
+  const raw = await SettingsRepo.getAll(db);
+  const read = (key: string): string | undefined => {
+    const v = raw[key];
+    if (v === undefined || v === null || v === 'null') return undefined;
+    const parsed = parseJson<unknown>(v, v);
+    return typeof parsed === 'string' ? parsed : undefined;
+  };
+  return {
+    siteTitle: read('site_title') || 'Picumet',
+    siteLogo: read('site_logo'),
+    siteUrl: read('return_url') || read('upload_url') || read('app_base_url'),
+    // 强调色存在系统设置（personalization 的 accentColor）时与站内一致
+    primary: read('accent_color'),
+  };
+}
+
 adminRoutes.post('/settings/test-email', async (c) => {
   const db = getDb(c);
   const body = await c.req.json().catch(() => null);
@@ -731,8 +832,9 @@ adminRoutes.post('/settings/test-email', async (c) => {
   const config = await resolveSmtpConfig(raw, c.env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
   if (!config?.host) throw ApiError.badRequest('邮件服务未配置');
   if (!config.from) throw ApiError.badRequest('发件邮箱未配置');
+  const brand = await loadMailBrand(db);
   try {
-    await sendMail(config, parsed.data.to, 'Picumet 测试邮件', '<p>这是一封测试邮件</p>');
+    await sendMail(config, parsed.data.to, `${brand.siteTitle} 邮件服务测试`, renderTestMail(parsed.data.to, brand));
   } catch (err) {
     // 上游 SMTP 异常原文只进服务端日志，客户端拿稳定文案
     console.error('[admin] test mail send failed', err);

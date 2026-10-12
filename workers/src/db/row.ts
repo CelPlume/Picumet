@@ -53,6 +53,7 @@ export function mapUser(row: Row): User {
     locale: str(row.locale) ?? 'zh-CN',
     theme: str(row.theme) ?? 'system',
     status: (str(row.status) ?? 'active') as User['status'],
+    totpEnabled: b(row.totp_enabled),
     createdAt: num(row.created_at),
     updatedAt: num(row.updated_at),
     lastLoginAt: row.last_login_at ? num(row.last_login_at) : undefined,

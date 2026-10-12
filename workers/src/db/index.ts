@@ -1,7 +1,14 @@
 // 数据库层统一出口
 export { Db, type Tx, type Row, type RunResult } from './db';
 export { UserRepo, QuotaRepo, type UserListRow } from './repos/users';
+export { IpBanRepo, type IpBan } from './repos/ip-bans';
+export { TotpBackupRepo, type TotpBackupCode } from './repos/totp-backup';
 export { InviteRepo, type InviteCode, type InvitedUserRow } from './repos/invites';
+export {
+  PendingRegistrationRepo,
+  type PendingRegistration,
+  type CreatePendingInput,
+} from './repos/pending-registrations';
 export {
   SsoProviderRepo,
   SsoIdentityRepo,
