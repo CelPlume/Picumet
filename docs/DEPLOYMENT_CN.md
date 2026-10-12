@@ -85,19 +85,27 @@ wrangler login
 
 加不了的只有「为另一个桶再建一个原生绑定」——这是 Cloudflare Workers 的平台约束(绑定在部署期写死),不是缺陷;且 `bucket_name` 只写桶名,按 `account_id` 名下的资源解析,**只能绑部署账号自己的桶**,跨账号的桶一律走 S3 协议路径(在对方账号创建 R2 API 令牌)。S3 协议路径功能等价(分片上传/区间读/批量删除均支持)。注意:绑定模式 provider 实际读写固定落在 `R2` 绑定指向的桶,provider 行内的 bucket 字段只作展示、不会切换桶。
 
-### 单 Worker 全栈部署（前端静态资源 + API 同域）
+### 两种部署方式：Workers 合一 / Pages 分离
 
-前端代码按同源调用 `/api/*`（`apiFetch` 全部相对路径），前端与 API **必须同域**。除「Pages + 反向代理」外，推荐把前端 dist 直接挂到 Worker 的 `[assets]`（本次部署实测配方）：
+前端代码按同源调用 `/api/*`（`apiFetch` 全部相对路径），前端与 API **必须同域**。两条路都满足，二选一：
 
-```toml
-[assets]
-directory = "../frontend/dist"
-not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
-```
+| | 方式 A：Workers 合一 | 方式 B：Pages 分离（推荐，当前生产采用） |
+| :--- | :--- | :--- |
+| 形态 | 前端 dist 挂在 Worker 的 `[assets]`，单 Worker 单域名 | 前端在 Pages 项目，`/api/*` 经 Pages Functions **Service Binding** 内网反代到 Worker |
+| 域名 | `https://<worker 名>.<子域>.workers.dev` | `https://<项目名>.pages.dev`（可加自定义域名） |
+| API 暴露面 | workers.dev 即 API 地址，公开可达 | `workers_dev = false`，Worker 无公网入口，后端地址不泄漏 |
+| 部署单元 | 1 个（Worker） | 2 个（Pages + Worker） |
+| 适合 | 个人 / 小站点，最简部署 | 隐藏后端地址；前端配自定义域名时与 Worker 账号解耦 |
 
-- `run_worker_first = ["/api/*"]` 必须配置：缺省时未命中静态资源的路径（如 `/files`）会进入 Worker 返回 404，SPA 回退失效。
-- 静态资源请求不计入 Workers 请求配额，`/` 与 `/assets/*` 由 assets 层直接服务；部署前先构建前端（`cd frontend && bun run build`），`directory` 相对配置文件所在目录解析。
+**方式 A（合一）**：保留 `deploy/wrangler.production.toml.example` 里的 `[assets]` 注释块（取消注释），`workers_dev = true`，`APP_BASE_URL`/`ALLOWED_ORIGINS` 填 workers.dev 地址，部署前先 `cd frontend && bun run build`。`run_worker_first = ["/api/*"]` 必须保留：缺省时未命中静态资源的路径（如 `/files`）会进入 Worker 返回 404，SPA 回退失效。
+
+**方式 B（分离）**：
+
+1. Worker 侧：`workers_dev = false`、**不挂** `[assets]`（先部署 Pages 再翻转 Worker，避免断档）。
+2. 前端侧配置已在仓库：`frontend/wrangler.toml`（Pages 项目 + `[[services]]` Service Binding `API` → Worker）与 `frontend/functions/api/[[path]].ts`（`/api/*` 原样透传）。
+3. 部署：首次 `wrangler pages project create picumet --production-branch=main`，之后 `cd frontend && bun run build && wrangler pages deploy`（dist 与 functions 一同上传）。Pages 配置不支持 `account_id` 键，多账号身份用 `CLOUDFLARE_ACCOUNT_ID` 环境变量钉账号。
+4. `APP_BASE_URL`/`ALLOWED_ORIGINS` 指向 Pages 域名（邮件里的验证/找回链接由它拼出）。
+5. 自定义域名（zone 在本账号时）加在 **Pages 项目**上；跨账号 CNAME 指向 workers.dev 会被平台拒绝（`1014 CNAME Cross-User Banned`）。
 
 ### 初始账号:seed 自动创建,无需手工建号
 

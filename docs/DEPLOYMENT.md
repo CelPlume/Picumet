@@ -85,19 +85,27 @@ Keep `[[r2_buckets]] binding = "R2"` in `wrangler.toml`: the binding is a deploy
 
 The only thing that is impossible is creating a second native binding for another bucket — a Cloudflare Workers platform constraint (bindings are fixed at deploy time), not a defect. Also, `bucket_name` is just a name: Wrangler resolves it against the resources of the `account_id`, so the binding can only point at a bucket in the deploying account — buckets in other accounts must take the S3-protocol path (create an R2 API token in that other account). The S3-protocol path is functionally equivalent (multipart, range reads, and batch deletes are all supported). Note: a binding-mode provider always reads and writes the bucket the `R2` binding points to; the bucket field on the provider row is display-only and does not switch buckets.
 
-### Single-Worker full-stack deployment (static assets + API on one origin)
+### Two deployment modes: combined on Workers / separated with Pages
 
-The frontend calls `/api/*` same-origin (`apiFetch` uses relative paths throughout), so frontend and API **must share one origin**. Besides "Pages + reverse proxy", the recommended setup is to attach the frontend dist directly to the Worker's `[assets]` (the recipe this deployment was verified with):
+The frontend calls `/api/*` same-origin (`apiFetch` uses relative paths throughout), so frontend and API **must share one origin**. Both modes below satisfy that — pick one:
 
-```toml
-[assets]
-directory = "../frontend/dist"
-not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
-```
+| | Mode A: combined on Workers | Mode B: separated with Pages (recommended, current production) |
+| :--- | :--- | :--- |
+| Shape | Frontend dist attached to the Worker's `[assets]`; one Worker, one domain | Frontend on a Pages project; `/api/*` reverse-proxied to the Worker over a Pages Functions **Service Binding** (private network) |
+| Domain | `https://<worker name>.<subdomain>.workers.dev` | `https://<project>.pages.dev` (custom domain attachable) |
+| API exposure | The workers.dev URL IS the public API address | `workers_dev = false`; the Worker has no public entry point and the backend address never leaks |
+| Deploy units | 1 (Worker) | 2 (Pages + Worker) |
+| Fits | Personal / small sites, simplest deployment | Hiding the backend; attaching a custom frontend domain decoupled from the Worker account |
 
-- `run_worker_first = ["/api/*"]` is required: without it, paths that miss static assets (such as `/files`) enter the Worker and 404, breaking the SPA fallback.
-- Static asset requests do not count against the Workers request quota; `/` and `/assets/*` are served by the assets layer. Build the frontend first (`cd frontend && bun run build`); `directory` resolves relative to the config file's directory.
+**Mode A (combined)**: uncomment the `[assets]` block in `deploy/wrangler.production.toml.example`, set `workers_dev = true`, point `APP_BASE_URL`/`ALLOWED_ORIGINS` at the workers.dev address, and build the frontend first (`cd frontend && bun run build`). Keep `run_worker_first = ["/api/*"]`: without it, paths that miss static assets (such as `/files`) enter the Worker and 404, breaking the SPA fallback.
+
+**Mode B (separated)**:
+
+1. Worker side: `workers_dev = false` and **no** `[assets]` (deploy Pages first, then flip the Worker, to avoid downtime).
+2. Frontend-side config ships in the repo: `frontend/wrangler.toml` (Pages project + `[[services]]` Service Binding `API` → Worker) and `frontend/functions/api/[[path]].ts` (passes `/api/*` through untouched).
+3. Deploy: first `wrangler pages project create picumet --production-branch=main`, then `cd frontend && bun run build && wrangler pages deploy` (uploads dist together with functions). The Pages config does not support an `account_id` key — pin the account with the `CLOUDFLARE_ACCOUNT_ID` env var when your identity has multiple accounts.
+4. Point `APP_BASE_URL`/`ALLOWED_ORIGINS` at the Pages domain (email verification/reset links are built from it).
+5. Custom domains (when the zone is in this account) attach to the **Pages project**; cross-account CNAMEs pointing at workers.dev are rejected by the platform (`1014 CNAME Cross-User Banned`).
 
 ### Initial accounts: created automatically by the seed
 

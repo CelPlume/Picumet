@@ -1,12 +1,23 @@
 # 生产环境 Workers 配置模板。复制为 deploy/wrangler.production.toml 并替换占位符；
-# 部署步骤、变量语义、R2 绑定与初始账号说明见 docs/DEPLOYMENT_CN.md「deploy/ 部署配置目录」。
+# 两种部署方式（A：Workers 合一 / B：Pages 分离）的选择与完整步骤
+# 见 docs/DEPLOYMENT_CN.md「deploy/ 部署配置目录 → 两种部署方式」。
 # 密钥不在这里，见 deploy/secrets.env.example。
+#
+# —— 两种方式的开关 ————————————————————————————
+# 方式 A（Workers 合一，单域名）：保留下方 [assets] 注释块（取消注释），并把 workers_dev 改为 true；
+#   APP_BASE_URL / ALLOWED_ORIGINS 填 https://<worker 名>.<子域>.workers.dev。
+# 方式 B（Pages 分离，API 隐身）：保持 workers_dev = false、[assets] 注释块不动，
+#   APP_BASE_URL / ALLOWED_ORIGINS 填 Pages 域名（如 https://picumet.pages.dev），
+#   并按 frontend/wrangler.toml 部署 Pages（functions/api 经 Service Binding 反代 /api/*）。
 
 name = "picumet-api"
 main = "../workers/src/index.ts"
 compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 account_id = "替换为你的 Cloudflare 账号 ID"
+
+# 方式 B（默认，API 隐身）。方式 A 请改为 true（保留 workers.dev 公网域名）。
+workers_dev = false
 
 # @aws-sdk/xml-builder 必须整包替换为 vendored 纯 JS shim（workerd 无 DOMParser，S3 的 XML 响应解析会全部失败），
 # 原因与路径解析规则见部署文档
@@ -24,6 +35,13 @@ ALLOWED_ORIGINS = "https://yourdomain.com"
 # routes = [
 #   { pattern = "api.yourdomain.com/*", zone_name = "yourdomain.com" }
 # ]
+
+# —— 方式 A（Workers 合一）专用：取消注释即把前端挂进 Worker ——
+# 方式 B（Pages 分离）保持注释状态（前端在 Pages 项目，勿挂这里）。
+# [assets]
+# directory = "../frontend/dist"
+# not_found_handling = "single-page-application"
+# run_worker_first = ["/api/*"]  # 必须：否则 /files 等未命中路径进 Worker 404，SPA 回退失效
 
 [[d1_databases]]
 binding = "DB"
