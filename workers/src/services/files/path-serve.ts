@@ -19,6 +19,37 @@ import { assertNotBanned } from './ban';
 export const pathPublicRoutes = new Hono<AppBindings>();
 
 /**
+ * 扫描器噪声路径：`.env*` / `.git/*` / `.aws/*` / `*.bak` 等。
+ *
+ * 背景：公网扫描器会持续探测 `/.env`、`/.git/config`、`/config.php.bak`、`/.aws/credentials`。
+ * path-serve 是 catch-all，这些请求原本全部落进 `loadRoutePrefixes` → `findMountForPath`
+ * → `getFileAtPath` 的 **3 次 D1 查询**后才 404——扫描器量级下这既是纯粹的 D1 浪费，
+ * 也会把正常直链的响应排队拖慢（表现为偶发 ERR_TIMED_OUT）。
+ *
+ * 这里的文件名规则本身就被上传校验挡住（`isValidFileName` 禁止以 `.` 开头、禁止 `:` 等），
+ * 所以这些路径**永远不可能是合法文件**，直接在查库前拒绝，零 D1 开销。
+ */
+const SCANNER_SEGMENTS = new Set([
+  '.git', '.svn', '.hg', '.env', '.aws', '.ssh', '.docker', '.vscode', '.idea',
+  'wp-admin', 'wp-content', 'wp-login.php', 'phpmyadmin', 'adminer',
+]);
+const SCANNER_FILE_RE = /^(\.env|\.git|\.svn|\.hg|\.aws|\.ssh|\.docker|web\.config|appsettings|composer\.(json|lock)|package(-lock)?\.json|yarn\.lock|docker-compose|makefile|id_rsa|authorized_keys|\.htaccess|\.htpasswd|wp-config|configuration)\./i;
+const SCANNER_SUFFIX_RE = /\.(bak|old|orig|save|swp|swo|dist|example|sample|tmp|temp|log|ini|sql|db|sqlite|key|pem|crt|p12|pfx|conf|config)$/i;
+
+/** 路径是否命中扫描器噪声（任一段命中即拒） */
+function isScannerNoise(path: string): boolean {
+  const segs = path.split('/').filter(Boolean);
+  for (const seg of segs) {
+    if (SCANNER_SEGMENTS.has(seg.toLowerCase())) return true;
+    // 以点开头的隐藏文件（.env / .gitignore / .npmrc）
+    if (seg.startsWith('.')) return true;
+    if (SCANNER_FILE_RE.test(seg)) return true;
+    if (SCANNER_SUFFIX_RE.test(seg)) return true;
+  }
+  return false;
+}
+
+/**
  * path-serve 排除清单：保留路由命名空间与非法路径一律不当作虚拟路径直服（§ ROUTING_CN §1.6）。
  * 在剥离 directPrefix 之后判定，所以 `/d/api/x` 与 `/api/x` 同样被拒。
  */
@@ -29,7 +60,8 @@ function isExcludedFromDirectServe(path: string): boolean {
     path.startsWith('/webdav') ||
     path.startsWith('/s3') ||
     path.startsWith('/openlist') ||
-    path.split('/').includes('..')
+    path.split('/').includes('..') ||
+    isScannerNoise(path)
   );
 }
 
@@ -55,6 +87,12 @@ pathPublicRoutes.get('*', async (c) => {
   let mounted = false;
   try {
     const db = getDb(c);
+    // 扫描器噪声（.env / .git / *.bak …）在任何 D1 查询之前直接 404：
+    // 这些路径不可能是合法文件（上传侧 isValidFileName 已禁），零查库成本，
+    // 避免公网扫描流量把正常直链的 D1 配额与延迟吃满。
+    if (isScannerNoise(safeDecodePath(c.req.path))) {
+      throw new ApiError(404, 'NOT_FOUND', '未找到');
+    }
     const prefixes = await loadRoutePrefixes(db);
     const virtualPath = resolveDirectVirtualPath(safeDecodePath(c.req.path), prefixes.directPrefix);
     if (virtualPath === null) {
@@ -100,6 +138,11 @@ pathPublicRoutes.get('*', async (c) => {
       if (!allowed) throw new ApiError(403, 'FORBIDDEN', '无权访问');
     }
 
+    const isMedia = Boolean(file.mimeType?.startsWith('image/') || file.mimeType?.startsWith('video/'));
+    const cacheControl = (signOk || publicCdnReadable || file.visibility === 'public')
+      ? (isMedia ? 'public, max-age=604800, s-maxage=2592000, stale-while-revalidate=86400' : 'public, max-age=86400, s-maxage=604800')
+      : 'private, max-age=300';
+
     return await serveFileObject({
       db,
       env: c.env as Env,
@@ -109,6 +152,7 @@ pathPublicRoutes.get('*', async (c) => {
       mimeType: file.mimeType,
       rangeHeader: c.req.header('range'),
       totalSize: file.size,
+      cacheControl,
       // §31/§28 读回退补判：直链内容出口按 download 动作、以访问主体角色逐候选重判（匿名 = guest）
       principalRole: (c.get('userRole') as string) ?? 'guest',
       action: 'download',
