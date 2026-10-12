@@ -1,10 +1,11 @@
 // 定时任务：过期配额释放、移动源对象清理、过期分享标记
-import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo, ReconciliationRepo, ReservationRepo } from '../db';
+import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo, ReconciliationRepo, ReservationRepo, PendingRegistrationRepo } from '../db';
 import { getProvider } from './storage/providers';
 import { ensureAllMountFolders } from './storage/mount-folders';
 import { archiveAuditLogs } from './audit/archive';
 import { isPathWithinBoundary } from '../utils/path';
 import type { Env } from '../shared/types';
+import { kvStoreFor } from '../utils/kv-store';
 
 /** 释放过期上传会话的配额预留（用户 / 挂载点 / 池成员三层） */
 export async function releaseExpiredReservations(env: Env): Promise<number> {
@@ -152,7 +153,7 @@ export async function reconcileQuotas(env: Env): Promise<number> {
 
   // 用户层：单条 GROUP BY 聚合 + 配额行一次查出，内存比对后仅 UPDATE 漂移行
   const userAggRows = await db.all(
-    `SELECT owner_id, COALESCE(SUM(size), 0) AS s, COUNT(*) AS c FROM file_metadata GROUP BY owner_id`
+    `SELECT owner_id, COALESCE(SUM(size), 0) AS s, COUNT(*) AS c FROM file_metadata WHERE type = 'file' GROUP BY owner_id`
   );
   const aggByOwner: Record<string, { storage: number; files: number }> = {};
   for (const r of userAggRows) {
@@ -364,16 +365,40 @@ export async function cleanupMultipartAborts(env: Env): Promise<number> {
   return cleaned;
 }
 
+/** 回收过期的待验证注册（迁移 0016）：用户从未点验证链接时，pending 行会一直挂着，
+ *  导致该用户名/邮箱在 pending 期被误判为「已被占用」。24 小时后自动释放。 */
+export async function purgePendingRegistrations(env: Env): Promise<number> {
+  const db = Db.fromAny(env.DB);
+  try {
+    return await PendingRegistrationRepo.purgeExpired(db);
+  } catch {
+    return 0;
+  }
+}
+
+/** 回收过期回退行（迁移 0017）：KV 配额耗尽期间落到 D1 的会话/加速数据到点必须清理，
+ * 否则 kv_fallback 无限增长。返回回收条数。 */
+export async function purgeKvFallback(env: Env): Promise<number> {
+  try {
+    const store = kvStoreFor(env, 'scheduled');
+    return await store.purgeExpired();
+  } catch {
+    return 0;
+  }
+}
+
 /** 全部定时任务 */
 export async function runScheduledTasks(env: Env): Promise<Record<string, number>> {
   // 子树孤儿自愈先行：先把跨挂载点移动遗留的子树孤儿 mount_id 归位，
   // 随后 reconcileQuotas 的挂载容量对账才能按正确归属把容量跟着搬过去
   const moveOrphansRepaired = await repairMovedFolderOrphans(env);
-  const [released, cleaned, expired, reconciled] = await Promise.all([
+  const [released, cleaned, expired, reconciled, pendingPurged, kvFallbackPurged] = await Promise.all([
     releaseExpiredReservations(env),
     cleanupOldObjects(env),
     expireDueShares(env),
     reconcileQuotas(env),
+    purgePendingRegistrations(env),
+    purgeKvFallback(env),
   ]);
   // §F：内容对象回收与索引对账（依赖上面的配额/落桶回填完成后再跑）
   const blobsFixed = await reconcileBlobs(env);
@@ -386,5 +411,5 @@ export async function runScheduledTasks(env: Env): Promise<Record<string, number
   const mountFolders = await ensureAllMountFolders(Db.fromAny(env.DB));
   // 审计日志冷归档（未配置 AUDIT_BUCKET 或保留期 <= 0 时整体跳过，绝不先删后归档）
   const auditArchived = await archiveAuditLogs(env);
-  return { released, cleaned, expired, reconciled, moveOrphansRepaired, blobsFixed, blobGc, userDeletedObjects, multipartAborts, mountFolders, auditArchived };
+  return { released, cleaned, expired, reconciled, pendingPurged, kvFallbackPurged, moveOrphansRepaired, blobsFixed, blobGc, userDeletedObjects, multipartAborts, mountFolders, auditArchived };
 }
