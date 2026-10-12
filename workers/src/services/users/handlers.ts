@@ -9,8 +9,11 @@ import { ApiError } from '../../shared/errors';
 import { verifyPassword, hashPassword, uuid, randomDigits } from '../../utils/crypto';
 import { sendMail, resolveSmtpConfig } from '../../utils/smtp';
 import { ProfileSchema, PasswordSchema as ChangePasswordSchema, SendOtpSchema, VerifyOtpSchema, DismissAnnouncementSchema } from './schemas';
+import { totpRoutes } from './totp';
+import { renderPasswordCodeMail, renderEmailCodeMail, mailBrandFrom, type MailBrand } from '../../utils/email-template';
 
 export const userRoutes = new Hono<AppBindings>();
+userRoutes.route('/2fa', totpRoutes);
 
 userRoutes.get('/me/settings', async (c) => {
   const db = getDb(c);
@@ -181,13 +184,14 @@ userRoutes.post('/me/password/send-code', async (c) => {
   if (!mail.enabled) throw ApiError.badRequest('邮件服务未启用，请联系管理员');
 
   const code = await issuePasswordCode(db, userId, user.email);
+  const mailBrand = mailBrandFrom(mail);
   try {
     await sendSettingMail(
       mail,
       c.env,
       user.email,
-      'Picumet 修改密码验证码',
-      `<p>您的修改密码验证码是：<strong>${code}</strong></p><p>验证码 5 分钟内有效，请勿泄露给他人。</p>`
+      `${mailBrand.siteTitle} 修改密码验证码`,
+      renderPasswordCodeMail(code, mailBrand, user.username)
     );
   } catch {
     // 发信失败：清理验证码，避免残留
@@ -227,13 +231,14 @@ userRoutes.post('/me/email/send-otp', async (c) => {
     [uuid(), userId, email, code, expiresAt, now]
   );
 
+  const mailBrand = mailBrandFrom(mail);
   try {
     await sendSettingMail(
       mail,
       c.env,
       email,
-      'Picumet 邮箱验证码',
-      `<p>您的邮箱验证码是：<strong>${code}</strong></p><p>验证码 5 分钟内有效，请勿泄露给他人。</p>`
+      `${mailBrand.siteTitle} 邮箱验证码`,
+      renderEmailCodeMail(code, mailBrand, '确认新邮箱')
     );
   } catch {
     // 发信失败：清理 token，避免残留

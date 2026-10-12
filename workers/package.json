@@ -20,6 +20,7 @@
     "bcryptjs": "^2.4.3",
     "hono": "^4.6.14",
     "jose": "^5.9.6",
+    "otpauth": "^9.5.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {
