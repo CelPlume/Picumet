@@ -16,6 +16,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 import { formatBytes, formatDate } from '@/lib/utils';
 import type { Permission, Quota, User } from '@shared/types';
+import { CapacityInput, bytesToValueAndUnit, valueAndUnitToBytes, type CapacityUnit } from '@/components/ui/capacity-input';
 
 interface UserRow extends User {
   quota: Quota | null;
@@ -74,7 +75,9 @@ function RoleDefaultsForm({
     data.permissions ?? FALLBACK_PERMISSIONS[data.role] ?? DEFAULT_PERMISSIONS
   );
   const [path, setPath] = useState(data.defaultPath || '/');
-  const [maxStorageS, setMaxStorageS] = useState(String(data.maxStorage / GB));
+  const initCap = bytesToValueAndUnit(data.maxStorage);
+  const [maxStorageVal, setMaxStorageVal] = useState(initCap.value);
+  const [maxStorageUnit, setMaxStorageUnit] = useState<CapacityUnit>(initCap.unit);
   const [maxFilesS, setMaxFilesS] = useState(String(data.maxFiles));
   const [saving, setSaving] = useState(false);
 
@@ -85,7 +88,7 @@ function RoleDefaultsForm({
         method: 'PUT',
         body: {
           defaultPath: path,
-          maxStorage: Number(maxStorageS) * GB,
+          maxStorage: valueAndUnitToBytes(maxStorageVal, maxStorageUnit) ?? 0,
           maxFiles: Number(maxFilesS),
           alias: alias.trim() || null,
           defaultStatus,
@@ -146,6 +149,7 @@ function RoleDefaultsForm({
             { id: 'can_share', label: t('admin.users.canShare') },
             { id: 'can_publish', label: t('admin.users.canPublish') },
             { id: 'can_grant', label: t('admin.users.canGrant') },
+            { id: 'can_browse_all', label: t('admin.users.canBrowseAll') },
           ].map((cap) => (
             <CheckboxWithLabel
               key={cap.id}
@@ -164,8 +168,14 @@ function RoleDefaultsForm({
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
-          <Label>{t('admin.maxStorage')} (GB)</Label>
-          <Input type="number" className="mt-1" value={maxStorageS} onChange={(e) => setMaxStorageS(e.target.value)} />
+          <Label>{t('admin.maxStorage')}</Label>
+          <CapacityInput
+            className="mt-1"
+            value={maxStorageVal}
+            unit={maxStorageUnit}
+            onValueChange={setMaxStorageVal}
+            onUnitChange={setMaxStorageUnit}
+          />
         </div>
         <div>
           <Label>{t('admin.maxFiles')}</Label>
@@ -213,7 +223,8 @@ export default function AdminUsers() {
   const [userPerms, setUserPerms] = useState<Permission[]>([]);
   const [confirmDelete, setConfirmDelete] = useState<UserRow | null>(null);
   const [path, setPath] = useState('/');
-  const [maxStorageS, setMaxStorageS] = useState('10');
+  const [maxStorageVal, setMaxStorageVal] = useState('10');
+  const [maxStorageUnit, setMaxStorageUnit] = useState<CapacityUnit>('GiB');
   const [maxFilesS, setMaxFilesS] = useState('10000');
   // 管理员改密（找回密码 / 强制重置）：空 = 不改；非空则后端哈希落库并使该用户既有会话失效
   const [newPassword, setNewPassword] = useState('');
@@ -258,7 +269,7 @@ export default function AdminUsers() {
           status,
           capabilities,
           defaultPath: path,
-          maxStorage: Number(maxStorageS) * GB,
+          maxStorage: valueAndUnitToBytes(maxStorageVal, maxStorageUnit) ?? 0,
           maxFiles: Number(maxFilesS),
           // 单独设置 = 提交矩阵；关闭 = null（清除个别设置，跟随角色默认）
           permissions: overridePerms ? userPerms : null,
@@ -294,7 +305,9 @@ export default function AdminUsers() {
     setOverridePerms(Array.isArray(u.permissions));
     setUserPerms(Array.isArray(u.permissions) ? u.permissions : [...PERMISSION_OPTIONS]);
     setPath(u.defaultPath || '/');
-    setMaxStorageS(String((u.quota?.maxStorage ?? 10 * GB) / GB));
+    const cap = bytesToValueAndUnit(u.quota?.maxStorage ?? 10 * GB);
+    setMaxStorageVal(cap.value);
+    setMaxStorageUnit(cap.unit);
     setMaxFilesS(String(u.quota?.maxFiles ?? 10000));
   };
 
@@ -492,6 +505,7 @@ export default function AdminUsers() {
                 { id: 'can_share', label: t('admin.users.canShare') },
                 { id: 'can_publish', label: t('admin.users.canPublish') },
                 { id: 'can_grant', label: t('admin.users.canGrant') },
+                { id: 'can_browse_all', label: t('admin.users.canBrowseAll') },
               ].map((cap) => (
                 <CheckboxWithLabel
                   key={cap.id}
@@ -533,8 +547,14 @@ export default function AdminUsers() {
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Label>{t('admin.maxStorage')} (GB)</Label>
-              <Input type="number" className="mt-1" value={maxStorageS} onChange={(e) => setMaxStorageS(e.target.value)} />
+              <Label>{t('admin.maxStorage')}</Label>
+              <CapacityInput
+                className="mt-1"
+                value={maxStorageVal}
+                unit={maxStorageUnit}
+                onValueChange={setMaxStorageVal}
+                onUnitChange={setMaxStorageUnit}
+              />
             </div>
             <div>
               <Label>{t('admin.maxFiles')}</Label>
@@ -614,7 +634,7 @@ export default function AdminUsers() {
                         'relative z-[1] w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors',
                         activeRole === r.role
                           ? 'font-medium text-primary'
-                          : 'text-muted-foreground hover:bg-primary/10 hover:text-primary'
+                          : 'text-muted-foreground hover:bg-primary/10 dark:hover:bg-primary/5 hover:text-primary'
                       )}
                     >
                       <span className="block truncate">{`${r.alias || r.role} · ${t('admin.roles.members', { count: r.members })}`}</span>

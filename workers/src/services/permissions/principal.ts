@@ -1,12 +1,24 @@
 // 路由辅助：构造 Principal、加载规则、统一权限校验
 import type { Context } from 'hono';
-import type { Principal, Mount, Permission, Conditions, PathRule, Visibility, GuestVisibility } from '@shared/types';
+import type { Principal, Mount, Permission, Conditions, PathRule, Visibility, GuestVisibility, Role } from '@shared/types';
 import { getDb } from '../../middleware/auth';
 import { loadPrincipalRules, checkPermission, bucketMatrixDecision, DEFAULT_ROLE_PERMISSIONS, type PermissionResult } from './check';
 import { RoleDefaultsRepo } from '../../db/repos/role-defaults';
+import type { Db } from '../../db';
 import { MountRolePermissionsRepo } from '../../db/repos/mount-role-permissions';
 import { MountProviderRolePermissionsRepo } from '../../db/repos/mount-provider-role-permissions';
 import { ApiError } from '../../shared/errors';
+
+/**
+ * 能力位解析：用户个别设置（users.capabilities）优先；NULL/缺省 = 跟随角色默认
+ * （role_defaults.capabilities）。与 permissions 的回退口径一致——管理员在
+ * 「默认用户设置」里勾的能力位对该角色全部用户生效，除非用户被单独设置过。
+ */
+async function resolveCapabilities(db: Db, user: { role: Role; capabilities?: string[] }): Promise<string[]> {
+  if (Array.isArray(user.capabilities)) return user.capabilities;
+  const defaults = await RoleDefaultsRepo.capabilitiesOf(db, user.role);
+  return Array.isArray(defaults) ? defaults : [];
+}
 
 export async function getPrincipal(c: Context): Promise<Principal> {
   const db = getDb(c);
@@ -20,7 +32,7 @@ export async function getPrincipal(c: Context): Promise<Principal> {
       apiKeyId: apiKey.keyId,
       defaultPath: user.defaultPath,
       allowedPermissions: apiKey.permissions as Permission[],
-      capabilities: user.capabilities,
+      capabilities: await resolveCapabilities(db, user),
       // 网关密钥沿用其用户个别设置/角色默认权限（§4.4 第 8 步）
       defaultPermissions: user.permissions ?? (await RoleDefaultsRepo.permissionsOf(db, user.role)),
     };

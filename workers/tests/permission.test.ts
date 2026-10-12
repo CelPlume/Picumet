@@ -254,6 +254,23 @@ describe('用户根路径限制', () => {
     const u = userPrincipal({ id: 'alice', defaultPath: '/users/alice' });
     expect(checkPermission(u, mount, '/users/alice2/file.txt', 'read', [])).toBe('deny');
   });
+  // can_browse_all（浏览全站）：defaultPath 只作为文件页落点，不再作为读边界；
+  // 路径规则照常生效（越权写仍被拒），API 密钥主体不享受该能力位
+  it('can_browse_all 能力位解除 defaultPath 读边界', () => {
+    const u = userPrincipal({ id: 'user123', defaultPath: '/users/user123', capabilities: ['can_browse_all'] });
+    expect(checkPermission(u, mount, '/private/data.pdf', 'read', [])).toBe('allow');
+    expect(checkPermission(u, mount, '/users/alice2/file.txt', 'read', [])).toBe('allow');
+  });
+  it('can_browse_all 不解除路径规则与写边界', () => {
+    const u = userPrincipal({ id: 'user123', defaultPath: '/users/user123', capabilities: ['can_browse_all'] });
+    // 路径规则显式 deny 仍然优先
+    const denyRule = rule({ pathPattern: '/private/**', effect: 'deny' });
+    expect(checkPermission(u, mount, '/private/data.pdf', 'read', [denyRule])).toBe('deny');
+  });
+  it('API 密钥主体不受 can_browse_all 影响（能力位仅用户 principal）', () => {
+    const k: Principal = { type: 'apiKey', id: 'k1', role: 'user', defaultPath: '/users/user123', capabilities: ['can_browse_all'] };
+    expect(checkPermission(k, mount, '/private/data.pdf', 'read', [])).toBe('deny');
+  });
 });
 
 describe('挂载边界检查', () => {

@@ -146,6 +146,12 @@ export const RoleDefaultsRepo = {
   },
 
   /** 角色默认权限（role_defaults.permissions）；未登记/NULL/缺列 → 兜底常量（未登记角色按 user 语义） */
+  /** 角色默认能力位（mapRoleDefault 同一兜底口径：脏值/缺行 → 空集） */
+  async capabilitiesOf(db: Db, role: Role): Promise<string[]> {
+    const row = await db.first('SELECT * FROM role_defaults WHERE role = ?', [role]);
+    return row ? mapRoleDefault(row).capabilities : [];
+  },
+
   async permissionsOf(db: Db, role: Role): Promise<Permission[]> {
     // SELECT *：存量库若整列缺失也不报错，交由 parseRolePermissions 走兜底
     const row = await db.first('SELECT * FROM role_defaults WHERE role = ?', [role]);

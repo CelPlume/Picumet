@@ -37,6 +37,10 @@ export interface Env {
   SMTP_USER?: string;
   SMTP_PASS?: string;
   SMTP_FROM?: string;
+  SMTP_FROM_NAME?: string;
+  SMTP_SECURE?: string;
+  UPLOAD_URL?: string;
+  RETURN_URL?: string;
   /** 初始管理员用户名（默认 admin；生产环境凭据由外部注入） */
   ADMIN_USERNAME?: string;
   /** 初始管理员密码：生产必填（强密码），开发可选（默认 admin123456） */
@@ -114,4 +118,6 @@ export interface FreeModeSession {
   createdAt: number;
   expiresAt: number;
   ip: string;
+  csrfToken?: string;
+  sid?: string;
 }

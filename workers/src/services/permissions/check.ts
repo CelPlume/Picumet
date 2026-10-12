@@ -71,10 +71,16 @@ export function checkPermission(
   // 写入类操作永不豁免；deny 规则仍在本步之后的规则排序中正常压制（admin/user origin > system）。
   // LAB F-10：显式指向本主体的 user/admin origin allow 规则同样豁免边界——「给某个用户单独授权」
   // 必须可用（保守起见：带密码/IP 条件的规则不参与豁免，这类规则在步骤 5/6 里正常判定）。
+  //
+  // 能力位 can_browse_all（浏览全站）：持有者不再受 defaultPath 根边界约束——
+  // defaultPath 只作为文件页落点，路径规则 / 可见性 / 封禁等其余判定全部照常生效。
+  // 能力解析：用户个别设置（users.capabilities）优先；NULL = 跟随角色默认
+  // （role_defaults.capabilities，与 permissions 的回退口径一致）。
   const visibilityAllowsRead =
     (visibility === 'users' || visibility === 'public') &&
     (action === 'read' || action === 'download');
-  if (principal.type === 'user' && principal.defaultPath !== '/' && !visibilityAllowsRead) {
+  const hasBrowseAll = principal.capabilities?.includes('can_browse_all') === true;
+  if (principal.type === 'user' && principal.defaultPath !== '/' && !visibilityAllowsRead && !hasBrowseAll) {
     const userRoot = normalizePath(principal.defaultPath);
     if (!isPathWithinBoundary(path, userRoot)) {
       const explicitAllow = allRules.some(
@@ -170,7 +176,19 @@ export function checkPermission(
   // share 不在权限矩阵内（分享开关是能力位 can_share，§4.4 防线 5）。LAB F-09：默认路径内**不再无条件
   // 放行 share**——非属主对他人文件的分享由 defaultPermissions 判定（矩阵无 share → deny），
   // 属主仍由第 7 步属主回退放行。
-  if (principal.type === 'user' && isPathWithinBoundary(path, principal.defaultPath)) {
+  // can_browse_all 持有者的矩阵兜底扩展到全站（defaultPath 只作为文件页落点；路径规则/可见性
+  // 已在第 5/6 步照常判定，此处只是把「无显式规则时的角色默认权限」从默认路径内放宽到全站）。
+  // 网关密钥（apiKey 主体）沿用其属主的 defaultPath/defaultPermissions（principal.ts 装载），
+  // 再叠加第 4 步的密钥权限交集与各网关入口的 assertKeyScope（uploadPath）——UI 创建的密钥
+  // 无需管理员手工建路径规则即可在属主空间内工作（与兼容上传/WebDAV/S3 各入口同语义）。
+  const browseAll = principal.type === 'user' && principal.capabilities?.includes('can_browse_all') === true;
+  const ownerFallback =
+    principal.type === 'user' ||
+    (principal.type === 'apiKey' && (principal.defaultPermissions?.length ?? 0) > 0);
+  if (
+    ownerFallback &&
+    (browseAll || isPathWithinBoundary(path, principal.defaultPath))
+  ) {
     const defaultPerms =
       principal.defaultPermissions ?? DEFAULT_ROLE_PERMISSIONS[principal.role] ?? DEFAULT_ROLE_PERMISSIONS.user;
     if (defaultPerms.includes(action)) {

@@ -15,6 +15,7 @@ import {
   validateUmamiDomains,
   validateUmamiUrl,
 } from "../../utils/umami";
+import { parseEmailAddress } from "../../utils/smtp";
 
 // 角色名：小写字母开头，仅小写字母、数字、-、_（最长 32）
 export const RoleNameSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);
@@ -30,12 +31,12 @@ export const UserPermissionsSchema = RolePermissionsSchema.nullable();
 // 角色默认设置（保存后立即覆盖该角色下全部用户：default_path / capabilities / permissions）
 export const RoleDefaultsSchema = z.object({
   defaultPath: z.string().regex(/^\//),
-  maxStorage: z.number().int().positive(),
-  maxFiles: z.number().int().positive(),
+  maxStorage: z.number().min(0).transform((v) => Math.round(v)),
+  maxFiles: z.number().int().min(0),
   alias: z.string().max(32).nullable().optional(),
   defaultStatus: z.enum(["active", "disabled"]).optional(),
   capabilities: z
-    .array(z.enum(["can_share", "can_publish", "can_grant"]))
+    .array(z.enum(["can_share", "can_publish", "can_grant", "can_browse_all"]))
     .optional(),
   permissions: RolePermissionsSchema.optional(),
 });
@@ -44,12 +45,14 @@ export const RoleDefaultsSchema = z.object({
 export const UserUpdateSchema = z.object({
   role: RoleNameSchema.optional(),
   status: z.enum(["active", "disabled", "banned"]).optional(),
+  // 封禁原因：随 status='banned' 落库 users.ban_reason（管理端可见、审计带出）
+  banReason: z.string().max(500).optional(),
   defaultPath: z.string().min(1).optional(),
-  maxStorage: z.number().int().min(0).optional(),
+  maxStorage: z.number().min(0).transform((v) => Math.round(v)).optional(),
   maxFiles: z.number().int().min(0).optional(),
   // 能力位（docs/ARCHITECTURE_CN.md「权限服务」）：can_publish / can_share / can_grant
   capabilities: z
-    .array(z.enum(["can_publish", "can_share", "can_grant"]))
+    .array(z.enum(["can_publish", "can_share", "can_grant", "can_browse_all"]))
     .optional(),
   // 用户个别默认权限（矩阵 5 项）：null = 清除个别设置、跟随角色默认
   permissions: UserPermissionsSchema.optional(),
@@ -111,6 +114,8 @@ export const SettingsSchema = z
     ssoEnabled: z.boolean().optional(),
     rateLimitEnabled: z.boolean().optional(),
     rateLimitRequestsPerMinute: z.number().int().min(1).max(10000).optional(),
+    // 认证接口限流阈值（次/分钟/IP；0 = 关闭该档）
+    authRateLimitPerMinute: z.number().int().min(0).max(10000).optional(),
     maxConcurrentTransfers: z.number().int().min(0).max(1000).optional(),
     rateLimitDownloadsPerMinute: z.number().int().min(0).max(100000).optional(),
     smtpHost: z.string().max(300).optional(),
@@ -120,7 +125,14 @@ export const SettingsSchema = z
     smtpPassword: z.string().nullable().optional(),
     smtpFromName: z.string().max(200).optional(),
     // '' = 清空发件地址（前端整表单 PATCH，未配置的 GET 值就是 ''，不能被 .email() 拒成 400）
-    smtpFromEmail: z.string().email().or(z.literal("")).nullable().optional(),
+    smtpFromEmail: z
+      .string()
+      .transform((v) => parseEmailAddress(v).email)
+      .refine((v) => v === "" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), {
+        message: "发件人邮箱格式无效",
+      })
+      .nullable()
+      .optional(),
     emailEnabled: z.boolean().optional(),
     // 路由前缀：公开直链前缀（'' = 站点根）/ 根路径语义
     directPrefix: DirectPrefixSchema.optional(),
@@ -131,6 +143,14 @@ export const SettingsSchema = z
         }),
       })
       .optional(),
+    // 自定义上传 URL（外部工具连接地址；S3 endpoint 等以它为准）；''/null = 用 APP_BASE_URL
+    uploadUrl: z.string().max(500).nullable().optional(),
+    returnUrl: z.string().max(500).nullable().optional(),
+    appBaseUrl: z.string().max(500).nullable().optional(),
+    allowedOrigins: z.string().max(1000).nullable().optional(),
+    signEnabled: z.boolean().optional(),
+    signDefault: z.boolean().optional(),
+    signExpiresIn: z.number().int().min(0).optional(),
     // 站点标识资源在写入层即做 SSRF 校验（与取件层 site-asset 的 validateEndpoint 同源），
     // 私网/非标端口/内嵌凭据的地址直接 400，配错在保存时即暴露。'' 与 null = 清空。
     siteLogo: z
@@ -211,6 +231,16 @@ export const AnnouncementSchema = z.object({
 // 文件封禁：PUT /api/admin/files/:id/ban —— true = 封禁、false = 解封
 export const FileBanSchema = z.object({ banned: z.boolean() });
 
+// IP 封禁：POST /api/admin/ip-bans —— ip 必填；reason 可选；expiresAt 缺省 = 永久
+export const IpBanCreateSchema = z.object({
+  ip: z.string().min(1).max(64),
+  reason: z.string().max(500).optional(),
+  /** 毫秒时间戳；缺省/undefined = 永久封禁 */
+  expiresAt: z.number().int().positive().optional(),
+});
+
+// 删除 IP 封禁：DELETE /api/admin/ip-bans/:id（id 由路径参数承载，无 body schema）
+
 // 趋势查询（GET /api/admin/dashboard/trends）：metric/granularity 枚举 + 可选毫秒时间戳。
 // 空串（?from=）视同未给；跨字段约束（from < to）与桶数上限在 handler 判定。
 const msParam = z.preprocess(
@@ -233,3 +263,4 @@ export type RoleDefaultsRequest = z.infer<typeof RoleDefaultsSchema>;
 export type SettingsRequest = z.infer<typeof SettingsSchema>;
 export type AnnouncementRequest = z.infer<typeof AnnouncementSchema>;
 export type FileBanRequest = z.infer<typeof FileBanSchema>;
+export type IpBanCreateRequest = z.infer<typeof IpBanCreateSchema>;

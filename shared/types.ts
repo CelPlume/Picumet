@@ -24,6 +24,8 @@ export const CAPABILITIES = {
   publish: 'can_publish',
   share: 'can_share',
   grant: 'can_grant',
+  /** 浏览全站：defaultPath 只作为文件页落点，引擎第 3/9 步不再以它为读边界（仍受路径规则 / 可见性 / 封禁约束） */
+  browseAll: 'can_browse_all',
 } as const;
 
 export type CapabilityName = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
@@ -40,6 +42,7 @@ export interface User {
   locale: string;
   theme: string;
   status: 'active' | 'disabled' | 'banned';
+  totpEnabled: boolean;
   createdAt: number;
   updatedAt: number;
   lastLoginAt?: number;
@@ -47,7 +50,7 @@ export interface User {
   passwordHash?: string;
   /** 会话版本：登出/改密/禁用时递增，使旧 JWT 立即失效 */
   sessionVersion: number;
-  /** 能力位 JSON（can_publish/can_share/can_grant）；NULL = 空集 */
+  /** 能力位 JSON（can_publish/can_share/can_grant/can_browse_all）；NULL = 空集 */
   capabilities?: string[];
   /**
    * 用户个别默认权限（users.permissions）：
