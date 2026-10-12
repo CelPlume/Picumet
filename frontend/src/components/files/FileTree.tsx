@@ -29,7 +29,8 @@ function TreeNode({
   // 展开时才查询子文件夹（懒加载）
   const { data } = useFilesQuery(path, { enabled: isOpen });
   const folders = (data?.items ?? []).filter((i) => i.type === 'folder');
-  const active = currentPath === path || (path !== '/' && currentPath.startsWith(path + '/'));
+  const isCurrent = currentPath === path;
+  const isAncestor = !isCurrent && path !== '/' && currentPath.startsWith(path + '/');
 
   return (
     <div>
@@ -38,10 +39,15 @@ function TreeNode({
           if (!root) toggle(path);
           onNavigate(path);
         }}
-        data-active={active ? 'true' : 'false'}
+        data-active={isCurrent ? 'true' : 'false'}
+        data-ancestor={isAncestor ? 'true' : undefined}
         className={cn(
           'relative flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-sm transition-colors',
-          active ? 'font-medium text-primary' : 'text-muted-foreground hover:bg-primary/10'
+          isCurrent
+            ? 'font-medium text-primary'
+            : isAncestor
+              ? 'text-primary/80 font-medium hover:bg-primary/10 dark:hover:bg-primary/5'
+              : 'text-muted-foreground hover:bg-primary/10 dark:hover:bg-primary/5'
         )}
         style={{ paddingLeft: 8 + depth * 16 }}
         aria-label={name}

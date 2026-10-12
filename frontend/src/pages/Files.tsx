@@ -11,6 +11,7 @@ import {
 import { FileGridSkeleton, FileListSkeleton } from '@/components/ui/skeleton';
 import { useLassoSelect } from '@/components/files/lasso';
 import { useTheme } from '@/stores/theme';
+import { useSite } from '@/stores/site';
 import { FileTree } from '@/components/files/FileTree';
 import { Button, Input, EmptyState, Dialog, ConfirmDialog, Spinner, Switch, SEARCH_INPUT_GLASS } from '@/components/ui/core';
 import { AppShell } from '@/components/layout/AppShell';
@@ -33,6 +34,7 @@ import { trackUmami } from '@/lib/umami';
 import { revealDelay } from '@/components/ui/reveal';
 import { useMinLoading } from '@/hooks/useMinLoading';
 import type { FileListItem } from '@shared/types';
+import { useAuth } from '@/stores/auth';
 
 // 排序字段选项；升序/降序在同一下拉内切换
 const SORT_FIELDS = [
@@ -54,8 +56,10 @@ function CopyLinksDialog({
   copyLinks: CopyLinksMutator;
 }) {
   const { t } = useTranslation();
+  const site = useSite();
+  const defaultSigned = site.signDefault ?? true;
   const [format, setFormat] = useState<'direct' | 'html' | 'markdown'>('direct');
-  const [signed, setSigned] = useState(false);
+  const [signed, setSigned] = useState(defaultSigned);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -63,11 +67,11 @@ function CopyLinksDialog({
   useEffect(() => {
     if (open) {
       setFormat('direct');
-      setSigned(false);
+      setSigned(defaultSigned);
       setCopied(false);
       setLoading(false);
     }
-  }, [open]);
+  }, [open, defaultSigned]);
 
   const doCopy = async () => {
     setLoading(true);
@@ -94,10 +98,11 @@ function CopyLinksDialog({
     }
   };
 
+  const isVideoFile = files.some((f) => isVideo(f.name));
   const formatOptions = [
     { value: 'direct' as const, label: t('files.copyDirect'), desc: t('files.copyDirectDesc') },
-    { value: 'html' as const, label: t('files.copyHtmlCode'), desc: '<img src="...">' },
-    { value: 'markdown' as const, label: t('files.copyMarkdownCode'), desc: '![name](url)' },
+    { value: 'html' as const, label: t('files.copyHtmlCode'), desc: isVideoFile ? '<video src="..." controls>' : '<img src="...">' },
+    { value: 'markdown' as const, label: t('files.copyMarkdownCode'), desc: isVideoFile ? '<video src="..." controls>' : '![name](url)' },
   ];
 
   return (
@@ -277,12 +282,19 @@ export default function Files() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  const user = useAuth((st) => st.user);
   const routePath = useMemo(() => {
     const rest = location.pathname.replace(/^\/files\/?/, '');
     return normalizeVirtualPath('/' + rest);
   }, [location.pathname]);
 
-  const [path, setPath] = useState(routePath);
+  // 落点：URL 显式路径优先；`/files`（未指定）时落到当前用户的 defaultPath ——
+  // 权限引擎第 3 步会把 defaultPath 之外的读取判 403，落 `/` 对受限用户就是整页 403。
+  // admin / defaultPath='/' 的用户不受影响（仍是根目录）。
+  const [path, setPath] = useState(() =>
+    routePath === '/' && user?.defaultPath && user.defaultPath !== '/' ? user.defaultPath : routePath
+  );
+
   const [view, setView] = useState<ViewMode>(() => (localStorage.getItem('picumet:view') as ViewMode) || 'grid');
   // 卡片视图每行卡片数（手机 2–5 默认 3 / 桌面 4–8 默认 6，分别记忆）
   const filesPerRow = useTheme((st) => st.filesPerRow);
@@ -431,7 +443,16 @@ export default function Files() {
     ? Math.min(4, Math.max(2, filesPerRowMobile))
     : Math.min(8, Math.max(4, filesPerRow));
 
-  useEffect(() => setPath(routePath), [routePath]);
+  // 路由 → 状态同步（唯一事实源）：/files 未显式指定路径时落到当前用户 defaultPath ——
+  // 权限引擎第 3 步会把 defaultPath 之外的读取判 403，受限用户落 `/` 就是整页 403。
+  // admin 与 defaultPath='/' 的用户不受影响（仍是根目录）。
+  useEffect(() => {
+    if (routePath === '/' && user?.defaultPath && user.defaultPath !== '/') {
+      setPath(user.defaultPath);
+      return;
+    }
+    setPath(routePath);
+  }, [routePath, user?.defaultPath]);
   // 换目录、改搜索词或排序后回到第一页（否则可能停在超出范围的页码上）
   useEffect(() => setPage(1), [routePath, search, sort, order, pageSize]);
   useEffect(() => localStorage.setItem('picumet:view', view), [view]);
@@ -598,21 +619,26 @@ export default function Files() {
   const contextMenu = (e: React.MouseEvent, f: FileListItem) => {
     e.preventDefault();
     e.stopPropagation();
+    const action = useTheme.getState().rightClickAction;
+    // 第三档「右键多选文件」：进入多选模式并选中该文件（已选中则保持，不因右键取消），
+    // 不弹菜单/面板；批量操作走底部批量栏
+    if (action === 'multiselect') {
+      if (isVirtualRootItem(f)) return;
+      setMultiSelect(true);
+      if (!selected.has(f.id)) setSelected((prev) => new Set(prev).add(f.id));
+      return;
+    }
     // 虚拟根目录项（vroot:）不可操作：强制走菜单（菜单内仅剩导航项），不直接打开属性面板
     if (isVirtualRootItem(f)) {
       setMenuPos({ x: e.clientX, y: e.clientY, file: f });
       return;
     }
-    // 右键多选（可开关）：开启时未选中项累积加入；关闭时仅选中该项
+    // menu = 打开上下文菜单（默认档）；properties = 打开属性面板。
+    // 封禁文件强制走菜单（菜单内仅剩删除），避免右键直接打开含写操作的属性面板
     if (!selected.has(f.id)) {
-      if (useTheme.getState().rightClickMultiSelect) {
-        setSelected((prev) => new Set(prev).add(f.id));
-      } else {
-        setSelected(new Set([f.id]));
-      }
+      setSelected(new Set([f.id]));
     }
-    if (f.banned || useTheme.getState().rightClickAction === 'menu') {
-      // 封禁文件强制走菜单（菜单内仅剩删除），避免右键直接打开含写操作的属性面板
+    if (f.banned || action === 'menu') {
       setMenuPos({ x: e.clientX, y: e.clientY, file: f });
     } else {
       setPropsFile(f);
