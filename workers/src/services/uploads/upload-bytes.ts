@@ -32,9 +32,6 @@ export async function uploadBytes(
   if (!isValidFileName(fileName)) throw ApiError.badRequest('文件名包含非法字符');
   validateFileType(fileName, mimeType);
 
-  // 密钥上传根（规范化），最终目标必须落在其边界内
-  const uploadRoot = normalizePath(uploadPathTemplate || '/uploads');
-
   // 渲染路径模板
   const extMatch = fileName.match(/\.[^.]+$/)?.[0] ?? '';
   const vars = buildTemplateVars({
@@ -44,6 +41,8 @@ export async function uploadBytes(
     username: c.get('user')?.username ?? 'anonymous',
   });
   const rendered = normalizePath(renderPathTemplate(uploadPathTemplate || '/uploads', vars));
+  // 密钥上传根（模板按当前时间展开后），最终目标必须落在其边界内
+  const uploadRoot = rendered;
   // customPath：绝对路径按字面处理；相对路径（如嵌套文件名拆出的 '2024/06'）基于模板渲染结果解析
   const targetPath = customPath
     ? normalizePath(customPath.startsWith('/')

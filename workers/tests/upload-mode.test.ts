@@ -288,3 +288,75 @@ describe('挂载点写入口模式（§28）', () => {
     expect(okMove.status).toBe(200);
   });
 });
+
+// ============ admin 不受 user_space 约束（§28 修正：管理员在一切规则之上） ============
+
+describe('user_space：admin 豁免', () => {
+  it('admin 在 user_space 挂载点上可写任意目录（含挂载根）', async () => {
+    await setMode('user_space');
+    // admin 登录拿会话
+    // 种子 admin 的密码不固定，直接把一个新注册用户提权为 admin，测试不依赖种子凭证
+    const { authCookie: cookie } = await registerAndLogin(ctx, 'adminprobe');
+    await Db.fromSqlite(ctx.db).run(`UPDATE users SET role = 'admin' WHERE username = 'adminprobe'`);
+    // 重新登录以拿到带 admin 角色的会话（角色变更后旧会话失效，必须换新 Cookie）
+    const adminLogin = await request(ctx, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'adminprobe', password: 'password123' },
+    });
+    expect(adminLogin.status).toBe(200);
+    const freshToken = (adminLogin.headers.get('set-cookie') ?? '').match(/auth_token=([^;]+)/);
+    const freshCookie = freshToken ? `auth_token=${freshToken[1]}` : cookie;
+    const csrf = await getCsrf(ctx, freshCookie);
+
+    // 1) 在挂载点 /public 下建目录（user_space 下普通用户会被限到自己空间）
+    const mk = await request(ctx, '/api/files/folder', {
+      method: 'POST',
+      cookie: freshCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { path: '/public', name: 'admin-made' },
+    });
+    expect(mk.status).toBe(201);
+
+    // 2) admin 会话直传文件到 /public 根（网页上传通道 = upload-session 三步流）
+    const bytes = new TextEncoder().encode('admin-content');
+    const csrf2 = await getCsrf(ctx, freshCookie);
+    const initRes = await request(ctx, '/api/files/upload-session', {
+      method: 'POST',
+      cookie: freshCookie,
+      headers: { 'X-CSRF-Token': csrf2 },
+      body: { path: '/public', fileName: 'admin-file.txt', fileSize: bytes.byteLength, mimeType: 'text/plain' },
+    });
+    // 会话初始化既有契约 201（新建）/ 200（复用既有会话），两者都算成功
+    expect([200, 201]).toContain(initRes.status);
+    const init = (await json(initRes)).data as { sessionId: string };
+    const rawRes = await request(ctx, `/api/files/upload/raw/${init.sessionId}`, {
+      method: 'PUT',
+      cookie: freshCookie,
+      headers: { 'Content-Type': 'text/plain', 'X-CSRF-Token': csrf2 },
+      body: 'admin-content',
+    });
+    // raw 分片上传既有契约返回 201（新对象）或 200（覆盖），两者都算成功
+    expect([200, 201]).toContain(rawRes.status);
+    const completeRes = await request(ctx, '/api/files/upload-complete', {
+      method: 'POST',
+      cookie: freshCookie,
+      headers: { 'X-CSRF-Token': csrf2 },
+      body: { sessionId: init.sessionId, etag: 'etag' },
+    });
+    // 完成既有契约 201（新建文件）/ 200（覆盖既有），两者都算成功
+    expect([200, 201]).toContain(completeRes.status);
+  });
+
+  it('普通用户在 user_space 下仍被约束在自己空间（豁免只给 admin）', async () => {
+    await setMode('user_space');
+    const { authCookie } = await registerAndLogin(ctx, 'plainuser');
+    const csrf = await getCsrf(ctx, authCookie);
+    const mk = await request(ctx, '/api/files/folder', {
+      method: 'POST',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { path: '/public', name: 'should-fail' },
+    });
+    expect(mk.status).toBe(403);
+  });
+});

@@ -24,7 +24,7 @@ import { assertNotBanned } from '../files/ban';
 import { serveObject } from '../storage/serve';
 import { uploadBytes } from '../uploads/upload-bytes';
 import { resolveVirtualListing } from '../storage/root-view';
-import { normalizePath, isPathWithinBoundary } from '../../utils/path';
+import { normalizePath, isPathWithinBoundary, renderUploadRoot } from '../../utils/path';
 import { signPath, verifyPathSign } from '../../utils/crypto';
 import { decideAccessMode } from '../shares/tokens';
 import { ApiError } from '../../shared/errors';
@@ -45,7 +45,7 @@ function pctDecode(s: string): string {
 
 /** 密钥上传根与目标路径的可达性（目录允许祖先，对象要求精确边界内） */
 function assertScope(apiKey: { uploadPath: string }, virtualPath: string, exact: boolean): string | null {
-  const uploadRoot = normalizePath(apiKey.uploadPath || '/');
+  const uploadRoot = renderUploadRoot(apiKey.uploadPath);
   if (isPathWithinBoundary(virtualPath, uploadRoot)) return null;
   if (!exact && isPathWithinBoundary(uploadRoot, virtualPath)) return null;
   return '目标超出密钥上传根目录';

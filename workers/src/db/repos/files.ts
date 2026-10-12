@@ -32,6 +32,8 @@ export interface FileInsert {
   blobHash?: string | null;
   /** 显式 id（§H 挂载点目录行用确定性 id，便于诊断与清理；缺省自动生成） */
   id?: string;
+  /** §C 游客可见性（新建行继承最近祖先的非 NULL 设置；NULL = 不额外开放游客） */
+  guestVisibility?: string | null;
 }
 
 export const FileRepo = {
@@ -41,11 +43,11 @@ export const FileRepo = {
     await db.run(
       `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, mime_type, size, etag, checksum_md5,
         custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, provider_id,
-        physical_key, blob_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        physical_key, blob_hash, guest_visibility, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, f.mountId, f.objectKey, f.path, f.name, f.type, f.mimeType ?? null, f.size ?? 0, f.etag ?? null, f.checksumMd5 ?? null,
         f.customTitle ?? null, f.customColor ?? null, f.coverUrl ?? null, f.iconEmoji ?? null, f.accessPassword ?? null,
-        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, now, now]
+        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, f.guestVisibility ?? null, now, now]
     );
     return (await this.getFileById(db, id)) as FileMetadata;
   },
@@ -55,11 +57,11 @@ export const FileRepo = {
     await db.query(
       `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, mime_type, size, etag, checksum_md5,
         custom_title, custom_color, cover_url, icon_emoji, access_password, manual_position, metadata, owner_id, provider_id,
-        physical_key, blob_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        physical_key, blob_hash, guest_visibility, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [f.id, f.mountId, f.objectKey, f.path, f.name, f.type, f.mimeType ?? null, f.size ?? 0, f.etag ?? null, f.checksumMd5 ?? null,
         f.customTitle ?? null, f.customColor ?? null, f.coverUrl ?? null, f.iconEmoji ?? null, f.accessPassword ?? null,
-        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, now, now]
+        f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, f.guestVisibility ?? null, now, now]
     );
   },
   async updateFileTx(db: Db | Tx, id: string, fields: Record<string, unknown>): Promise<void> {

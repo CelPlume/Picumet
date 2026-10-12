@@ -23,8 +23,9 @@ import { deleteFileInternal } from '../files/remove';
 import { ensureFolders, upsertFileObject } from '../files/write';
 import { serveObject } from '../storage/serve';
 import type { StorageProviderInterface } from '../storage/types';
-import { ApiError } from '../../shared/errors';
-import { normalizePath, isValidFileName, isPathWithinBoundary } from '../../utils/path';
+import { ApiError, isApiError } from '../../shared/errors';
+import { errorHandler } from '../../middleware/global';
+import { normalizePath, isValidFileName, isPathWithinBoundary, renderUploadRoot } from '../../utils/path';
 import { assertWritable, assertFolderCreateAllowed } from '../files/upload-mode';
 
 export const webdavRoutes = new Hono<AppBindings>();
@@ -37,13 +38,20 @@ webdavRoutes.use('*', async (c, next) => {
   await next();
 });
 
+webdavRoutes.onError(async (err, c) => {
+  if (isApiError(err) && err.statusCode === 401) {
+    c.header('WWW-Authenticate', 'Basic realm="Picumet WebDAV"');
+  }
+  return errorHandler(err, c);
+});
+
 function davPath(p: string): string {
   return normalizePath(p);
 }
 
 /** WebDAV 写目标必须位于密钥配置的上传根目录内 */
 function assertWithinUploadRoot(apiKey: { uploadPath: string }, targetPath: string): void {
-  const root = normalizePath(apiKey.uploadPath || '/');
+  const root = renderUploadRoot(apiKey.uploadPath);
   if (!isPathWithinBoundary(targetPath, root)) {
     throw new ApiError(403, 'FORBIDDEN', '目标路径超出密钥上传根目录');
   }

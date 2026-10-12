@@ -161,6 +161,15 @@ export function renderPathTemplate(template: string, vars: Record<string, string
   return out;
 }
 
+/**
+ * 密钥上传根的模板渲染：uploadPath 允许携带 {year}/{month} 等时间变量（对话框默认
+ * `/uploads/{year}/{month}/`），各通道（compat/WebDAV/S3/AList）做作用域判定时必须
+ * 先按当前时间展开，否则「渲染后的目标路径 vs 未渲染的模板根」永不匹配（全部 403）。
+ */
+export function renderUploadRoot(uploadPath: string | undefined, now?: Date): string {
+  return normalizePath(renderPathTemplate(uploadPath || '/', buildTemplateVars({ uuid: '', now })));
+}
+
 export function buildTemplateVars(opts: {
   now?: Date;
   uuid: string;

@@ -1,9 +1,10 @@
 // 文件路由 A：列表、文件夹、详情、元数据更新、密码验证、下载链接
 import { Hono } from 'hono';
+import { z } from 'zod';
 import type { AppBindings } from '../../shared/types';
 import type { FileMetadata, Mount } from '@shared/types';
 import type { FileListItem } from '@shared/types';
-import { FileRepo, MountRepo, ProviderRepo, LogRepo, BlobRepo } from '../../db';
+import { FileRepo, MountRepo, ProviderRepo, LogRepo, BlobRepo, SettingsRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, can, getPrincipal } from '../permissions/principal';
 import { isPasswordExempt, checkPermission } from '../permissions/check';
@@ -23,7 +24,7 @@ import {
   validateFileType,
   subtreeMatch,
 } from '../../utils/path';
-import { hashPassword, verifyPassword } from '../../utils/crypto';
+import { hashPassword, verifyPassword, signPath } from '../../utils/crypto';
 import { clientIp, requestIp } from '../../utils/ip';
 import { toFileListItem } from '../../db/repos/files';
 import { assertNotBanned } from './ban';
@@ -307,6 +308,50 @@ filesRoutes.post('/folder', async (c) => {
   return ok(c, { file: toFileListItem(folder) }, undefined, 201);
 });
 
+// ============ 文件搜索（标准索引查询接口，严格按调用者权限过滤） ============
+filesRoutes.post('/search', async (c) => {
+  const db = getDb(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = z
+    .object({
+      query: z.string().min(1).max(255),
+      parent: z.string().optional(),
+      scope: z.enum(['all', 'files', 'folders']).optional().default('all'),
+      page: z.number().int().min(1).optional().default(1),
+      limit: z.number().int().min(1).max(200).optional().default(50),
+    })
+    .safeParse(body ?? {});
+  if (!parsed.success) throw ApiError.badRequest('搜索参数无效');
+  const { query, parent, scope, page, limit } = parsed.data;
+  const mounts = await MountRepo.allMounts(db);
+  // 跨挂载全库搜索（SQL 层已过滤封禁项），再按调用者角色/可见性/矩阵逐条复核
+  const res = await FileRepo.searchFiles(db, { query, page, limit, banned: false });
+  const items: FileListItem[] = [];
+  for (const row of res.rows) {
+    if (scope === 'files' && row.type !== 'file') continue;
+    if (scope === 'folders' && row.type !== 'folder') continue;
+    if (parent && parent !== '/' && !row.path.startsWith(parent)) continue;
+    const mount = mounts.find((m) => m.id === row.mountId);
+    if (!mount) continue;
+    const permPath =
+      row.type === 'folder' ? row.path : row.path === '/' ? `/${row.name}` : `${row.path}/${row.name}`;
+    const allowed = await can(
+      c,
+      mount,
+      permPath,
+      'read',
+      row.ownerId,
+      undefined,
+      row.visibility,
+      row.guestVisibility,
+      row.providerId ?? undefined
+    );
+    if (!allowed) continue;
+    items.push(toFileListItem(row));
+  }
+  return ok(c, { items, total: items.length });
+});
+
 // 文件域权限检查路径：文件行 path=父目录，但规则粒度需要文件全路径
 // （pattern=父目录的规则经 pathMatches 继承仍匹配；pattern=文件自身的规则获得精确粒度）
 function filePermPath(f: { path: string; name: string; type: 'file' | 'folder' }): string {
@@ -455,10 +500,21 @@ filesRoutes.put('/:id', async (c) => {
     await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
     fields.access_password = accessPassword ? hashPassword(accessPassword) : null;
   }
-  // §C 文件级游客可见性：'inherit'（或未传）= NULL（不额外开放）；显式值直接落库
+  // §C 文件级游客可见性：'inherit'（或未传）= NULL（不额外开放）；显式值直接落库。
+  // folder 级联：与可见性级联同形（范围 + substr 谓词），子树统一收敛到同一游客语义——
+  // 否则「文件夹允许游客下载」对已存在的子项不生效，只能逐个手点。
   if (guestVisibility !== undefined) {
     await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
-    fields.guest_visibility = guestVisibility === 'inherit' ? null : guestVisibility;
+    const resolvedGuest = guestVisibility === 'inherit' ? null : guestVisibility;
+    fields.guest_visibility = resolvedGuest;
+    if (file.type === 'folder') {
+      const subGuest = subtreeMatch('path', file.path);
+      await db.run(
+        `UPDATE file_metadata SET guest_visibility = ?, updated_at = ?
+         WHERE mount_id = ? AND ${subGuest.sql}`,
+        [resolvedGuest, Date.now(), mount.id, ...subGuest.params]
+      );
+    }
   }
   if (Object.keys(fields).length > 0) {
     await requirePermission(c, mount, filePermPath(file), 'update', file.ownerId, undefined, undefined, undefined, file.providerId ?? undefined);
@@ -564,9 +620,17 @@ filesRoutes.get('/:id/copy-links', async (c) => {
 
   // 公开直链：{origin}{directPrefix}{虚拟路径}（文件 path 已含挂载点前缀，如 /drive/text/x.txt）
   // directPrefix='' 时与历史形状一致；签名/网关两条分支的 URL 由 provider 或网关生成，不使用该前缀
-  const baseOrigin = c.env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
+  const routePrefs = await loadRoutePrefixes(db);
+  const baseOrigin = routePrefs.returnUrl || c.env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
   const fullVirtualPath = file.path === '/' ? `/${file.name}` : `${file.path}/${file.name}`;
-  const publicUrl = directUrl(baseOrigin, (await loadRoutePrefixes(db)).directPrefix, fullVirtualPath);
+  const isVid = Boolean(file.mimeType?.startsWith('video/')) || /\.(mp4|webm|mkv|mov|avi|wmv|flv)$/i.test(file.name);
+  const isImg = Boolean(file.mimeType?.startsWith('image/')) || /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(file.name);
+  const rawSignExp = await SettingsRepo.get(db, 'sign_expires_in');
+  const defaultTtl = rawSignExp ? Number(rawSignExp) : 0;
+  const shouldSign = signed || defaultTtl > 0 || isVid || isImg;
+  const expiresAt = defaultTtl > 0 ? Date.now() + defaultTtl * 1000 : (signed && expiresIn ? Date.now() + expiresIn * 1000 : 0);
+  const sign = shouldSign ? await signPath(fullVirtualPath, (c.env as Env).ENCRYPTION_KEY, expiresAt) : undefined;
+  const publicUrl = directUrl(baseOrigin, routePrefs.directPrefix, fullVirtualPath, sign);
 
   let baseUrl: string;
   if (signed) {
@@ -578,9 +642,13 @@ filesRoutes.get('/:id/copy-links', async (c) => {
   }
 
   const direct = baseUrl;
-  const html = `<img src="${direct}" alt="${escapeHtml(file.name)}">`;
-  const markdown = `![${escapeMd(file.name)}](${direct})`;
-  const bbcode = `[img]${direct}[/img]`;
+  const html = isVid
+    ? `<video src="${direct}" controls style="max-width: 100%"></video>`
+    : `<img src="${direct}" alt="${escapeHtml(file.name)}">`;
+  const markdown = isVid
+    ? `<video src="${direct}" controls></video>`
+    : `![${escapeMd(file.name)}](${direct})`;
+  const bbcode = isVid ? `[video]${direct}[/video]` : `[img]${direct}[/img]`;
 
   void db;
   return ok(c, {

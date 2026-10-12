@@ -17,21 +17,34 @@ import { ApiError } from '../../shared/errors';
 import { basename, isPathWithinBoundary, normalizePath } from '../../utils/path';
 
 /**
- * 用户空间根：`<mountPath>/<用户名>`。
+ * 用户空间根（每个用户一个独立文件夹）：
+ *   1. 用户 `default_path` 非 `/` 且落在本挂载点边界内 → `<defaultPath>/<username>`。
+ *      defaultPath 是「该用户的家所在区域」（如角色默认 `/public`），用户空间是其下
+ *      以用户名命名的独立子目录（`/public/<username>`）——不同用户互不可写对方目录。
+ *      特例：defaultPath 的末段已经是用户名（管理员把某用户的家指到个人目录，
+ *      如 `/users/alice`）→ 直接用 defaultPath，避免拼出 `/users/alice/alice`。
+ *   2. defaultPath 为 `/`、未设置、或不在本挂载点边界内（如 defaultPath 指向另一挂载点）
+ *      → 回落 `<mountPath>/<username>`（用户名唯一，跨用户零冲突）。
  *
- * 用户名在 users.username 上唯一，故跨用户零冲突（不存在两人映射到同一目录的情形）；
  * 用户改名后其旧目录留在原处不迁移、也不被新用户名接管（改名迁移不在 §28 范围内）。
- * 挂载点为根 `/` 时拼接结果为 `/<用户名>`（`normalizePath` 保证不留双斜杠）。
  */
 export async function resolveUserSpaceRoot(db: Db, mount: Mount, ownerId: string): Promise<string> {
   const user = await UserRepo.getUserById(db, ownerId);
   if (!user) throw new ApiError(404, 'NOT_FOUND', '用户不存在');
   const mountPath = normalizePath(mount.mountPath);
-  return mountPath === '/' ? `/${user.username}` : `${mountPath}/${user.username}`;
+  const fallback = mountPath === '/' ? `/${user.username}` : `${mountPath}/${user.username}`;
+  const home = user.defaultPath ? normalizePath(user.defaultPath) : '/';
+  if (home !== '/' && isPathWithinBoundary(home, mountPath)) {
+    return home.split('/').filter(Boolean).pop() === user.username ? home : `${home}/${user.username}`;
+  }
+  return fallback;
 }
 
 /**
  * 写路径入口校验（对象写入 / 移动目标 / 新建文件夹共用）：
+ * - **admin 恒放行**：与权限引擎的「admin 一切规则之上」同源——user_space 是
+ *   「普通用户写入隔离」的挂载点策略，不是给管理员上的枷锁。管理员要能跨目录
+ *   整理文件、在网页建目录，否则管理端连「帮用户挪个文件」都做不到。
  * - free：直接放行；
  * - user_space：`targetPath` 必须落在调用者的用户空间内（路径段边界判定，
  *   `/public/alice2` 不会被 `/public/alice` 误放行）；
@@ -39,6 +52,9 @@ export async function resolveUserSpaceRoot(db: Db, mount: Mount, ownerId: string
  */
 export async function assertWritable(db: Db, mount: Mount, ownerId: string, targetPath: string): Promise<void> {
   if (mount.uploadMode !== 'user_space') return;
+  const user = await UserRepo.getUserById(db, ownerId);
+  if (!user) throw new ApiError(404, 'NOT_FOUND', '用户不存在');
+  if (user.role === 'admin') return;
   const root = await resolveUserSpaceRoot(db, mount, ownerId);
   if (!isPathWithinBoundary(normalizePath(targetPath), root)) {
     throw new ApiError(403, 'FORBIDDEN', `该挂载点仅允许写入 ${basename(root)} 目录`);

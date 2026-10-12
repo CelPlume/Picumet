@@ -70,8 +70,27 @@ export async function ensureFolders(db: Db, mount: Mount, targetPath: string, ow
       type: 'folder',
       size: 0,
       ownerId,
+      guestVisibility: await inheritGuestVisibility(db, mount.id, parent),
     });
   }
+}
+
+/**
+ * §C 游客可见性继承：新建文件/目录行继承**最近祖先目录行**的非 NULL `guest_visibility`
+ * （路径段前缀匹配，参数化 substr 判定免疫 LIKE 转义）。目录属性「游客仅下载/查看+下载」
+ * 因此对自动补齐的子目录与新上传对象生效；无任何祖先设置时返回 NULL（不额外开放游客）。
+ */
+export async function inheritGuestVisibility(db: Db | Tx, mountId: string, parentPath: string): Promise<string | null> {
+  if (!parentPath || parentPath === '/') return null;
+  const row = await db.first(
+    `SELECT guest_visibility FROM file_metadata
+     WHERE mount_id = ? AND type = 'folder' AND guest_visibility IS NOT NULL
+       AND substr(?, 1, length(path)) = path
+       AND (length(?) = length(path) OR substr(?, length(path) + 1, 1) = '/')
+     ORDER BY length(path) DESC LIMIT 1`,
+    [mountId, parentPath, parentPath, parentPath]
+  );
+  return row ? (String(row.guest_visibility) || null) : null;
 }
 
 export interface UpsertFileOpts {
@@ -268,6 +287,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
           id: fileId, mountId: opts.mount.id, objectKey, path: parentPath, name: fileName,
           type: 'file', mimeType, size: finalSize, etag: outcome.etag, ownerId: userId,
           providerId: outcome.providerId, physicalKey: outcome.objectKey, blobHash: outcome.hash,
+          guestVisibility: await inheritGuestVisibility(db, opts.mount.id, parentPath),
         });
         await tx.query(
           `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,
@@ -370,8 +390,8 @@ export async function buildFileAccessUrl(
   const env = c.env as Env;
   const cdn = provider.getPublicUrl(objectKey);
   if (cdn) return cdn;
-  const { directPrefix } = prefixes ?? (await loadRoutePrefixes(getDb(c)));
+  const routePrefs = prefixes ?? (await loadRoutePrefixes(getDb(c)));
   const sign = await signPath(targetPath, env.ENCRYPTION_KEY, expiresAt);
-  const origin = env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
-  return directUrl(origin, directPrefix, targetPath, sign);
+  const origin = routePrefs.returnUrl || env.APP_BASE_URL || `${c.req.url.split('/').slice(0, 3).join('/')}`;
+  return directUrl(origin, routePrefs.directPrefix, targetPath, sign);
 }
