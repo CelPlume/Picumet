@@ -18,8 +18,10 @@ import { rateLimitsEnforced } from './rate-limit';
 
 /** 默认允许的同时传输数（0 = 不限） */
 const DEFAULT_MAX_CONCURRENT = 4;
-/** 槽位视为泄漏的时限：超过则不计入并发（也意味着长时间流式下载不会永久占位） */
-const TRANSFER_STALE_MS = 30 * 60_000;
+/** 槽位心跳间隔：在途请求每 15s 刷新一次槽位时间戳 */
+const SLOT_HEARTBEAT_MS = 15_000;
+/** 槽位陈旧阈值：心跳停跳（进程被杀 / 客户端中断导致 workerd 取消调用、finally 不执行）超过该时限即视为泄漏 */
+const TRANSFER_STALE_MS = 60_000;
 /** 清理泄漏槽位的触发间隔（每 N 次请求清一次，尽力而为） */
 const CLEANUP_EVERY = 200;
 
@@ -44,6 +46,7 @@ export const transferConcurrencyMiddleware = createMiddleware(async (c, next) =>
   }
   const db = getDb(c);
   let token: string | null = null;
+  let heartbeatStopped = false;
   try {
     const raw = await SettingsRepo.get(db, 'max_concurrent_transfers');
     const limit = raw === null || raw === undefined ? DEFAULT_MAX_CONCURRENT : Number(raw);
@@ -64,12 +67,35 @@ export const transferConcurrencyMiddleware = createMiddleware(async (c, next) =>
       return fail(c, new ApiError(429, 'CONCURRENCY_LIMIT_EXCEEDED', `同时进行的传输已达上限（${limit}），请等待当前任务完成`));
     }
     token = uuid();
+    // created_at 语义 = 槽位最近一次心跳时间：INSERT 写入初值，在途期间由 waitUntil 心跳刷新。
     await db.run(`INSERT INTO transfer_slots (token, scope, scope_id, created_at) VALUES (?, ?, ?, ?)`, [
       token,
       scope,
       scopeId,
       Date.now(),
     ]);
+
+    // 心跳：客户端中断时 workerd 会取消调用、finally 的释放 DELETE 不执行（槽位只增不减，
+    // 2026-10-11 批量导入实测两次 429 卡死）。心跳随调用取消而停跳 → 槽位 60s 后按泄漏处理。
+    try {
+      c.executionCtx.waitUntil(
+        (async () => {
+          while (!heartbeatStopped) {
+            const { promise, resolve } = Promise.withResolvers<void>();
+            setTimeout(resolve, SLOT_HEARTBEAT_MS);
+            await promise;
+            if (heartbeatStopped) break;
+            try {
+              await db.run(`UPDATE transfer_slots SET created_at = ? WHERE token = ?`, [Date.now(), token]);
+            } catch {
+              // 心跳失败不致命：连续缺跳超过 TRANSFER_STALE_MS 后按泄漏处理
+            }
+          }
+        })(),
+      );
+    } catch {
+      // 无 ExecutionContext（测试环境 app.request）时跳过心跳：正常完成路径仍由 finally 释放
+    }
   } catch {
     // 计数存储异常时不阻断传输（并发限制是资源保护，不是权限闸门）
     token = null;
@@ -79,6 +105,7 @@ export const transferConcurrencyMiddleware = createMiddleware(async (c, next) =>
     await next();
   } finally {
     if (token) {
+      heartbeatStopped = true;
       try {
         await db.run(`DELETE FROM transfer_slots WHERE token = ?`, [token]);
       } catch {

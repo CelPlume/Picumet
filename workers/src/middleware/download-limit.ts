@@ -9,7 +9,7 @@ import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
 import { getDb } from './auth';
 import { clientIp } from '../utils/ip';
-import { rateLimitsEnforced } from './rate-limit';
+import { rateLimitsEnforced, checkLimit } from './rate-limit';
 
 /** 默认每分钟下载次数（0 = 不限） */
 export const DEFAULT_DOWNLOAD_LIMIT_PER_MINUTE = 120;
@@ -53,15 +53,10 @@ export const downloadRateLimitMiddleware = createMiddleware(async (c, next) => {
     if (Number.isFinite(limit) && limit > 0) {
       const userId = c.get('userId') as string | undefined;
       const owner = userId ? `user:${userId}` : `ip:${clientIp(c.req.raw)}`;
-      const now = Date.now();
-      const windowStart = now - (now % 60_000);
-      const key = `dl:${owner}:${windowStart}`;
-      const kv = c.env.KV as KVNamespace;
-      const current = Number((await kv.get(key)) ?? '0');
-      if (current >= limit) {
+      const ok = await checkLimit(c.env, `dl:${owner}`, limit, 60_000);
+      if (!ok) {
         return fail(c, new ApiError(429, 'RATE_LIMIT_EXCEEDED', `下载次数已达上限（${limit} 次/分钟），请稍后再试`));
       }
-      await kv.put(key, String(current + 1), { expirationTtl: 60 });
     }
   } catch {
     // 计数存储异常不阻断下载

@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp } from '../src/index';
 import { ensureSeed } from '../src/seed';
+import { resetMemoryLimits } from '../src/middleware/rate-limit';
 import type { Env } from '../src/shared/types';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -224,6 +225,7 @@ export interface TestContext {
 }
 
 export function createTestContext(): TestContext {
+  resetMemoryLimits();
   const db = new DatabaseSyncCtor(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   for (const sql of MIGRATIONS) db.exec(sql);
