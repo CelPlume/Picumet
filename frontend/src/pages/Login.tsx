@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useEffect } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Button, Input, Label, Dialog } from '@/components/ui/core';
+import { InputOTP } from '@/components/ui/input-otp';
 import { useAuth } from '@/stores/auth';
 import { useSite } from '@/stores/site';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -27,7 +28,9 @@ export default function Login() {
   const [showReset, setShowReset] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetSending, setResetSending] = useState(false);
-
+  const [showTotpStep, setShowTotpStep] = useState(false);
+  const [totpCode, setTotpCode] = useState('');
+  const [useBackupCode, setUseBackupCode] = useState(false);
   const redirect = params.get('redirect') || '/files';
   // 已持有有效会话（JWT Cookie）：登录页直接跳转，无需重复输密码
   const authUser = useAuth((s) => s.user);
@@ -39,6 +42,14 @@ export default function Login() {
   useEffect(() => {
     if (params.get('registered') === '1') {
       toast('success', t('login.registered'));
+    }
+    // 迁移 0016：注册走了「待验证」分支 —— 账号尚未创建，必须先点邮件里的激活链接。
+    // 用长驻 toast（不自动消失）+ 邮箱回显，避免用户直接去登录而困惑。
+    if (params.get('checkEmail') === '1') {
+      const emailed = params.get('email');
+      // duration 用大而有限的值（setTimeout 对 Infinity 会立即触发）；
+      // 10 分钟足够用户切去邮箱点链接，期间 toast 不被自动吞掉。
+      toast('info', emailed ? t('login.checkEmail', { email: emailed }) : t('login.checkEmailNoAddr'), { duration: 10 * 60_000 });
     }
     if (params.get('resetDone') === '1') {
       toast('success', t('login.resetDone'));
@@ -53,13 +64,28 @@ export default function Login() {
     setError('');
     setLoading(true);
     try {
-      await apiFetch<unknown>('/api/auth/login', { method: 'POST', body: { username: identifier.trim(), password } });
+      await apiFetch<unknown>('/api/auth/login', {
+        method: 'POST',
+        // 登录为未认证端点，取 CSRF 令牌必 401 —— 显式跳过，多余往返也是 2FA 第二步卡 loading 的诱因之一
+        skipCsrf: true,
+        body: {
+          username: identifier.trim(),
+          password,
+          totpCode: showTotpStep ? totpCode.trim() : undefined,
+        },
+      });
       const me = await apiFetch<{ user: User; quota: Quota }>('/api/auth/me');
       useAuth.getState().setAuth(me.data.user, me.data.quota);
       navigate(redirect, { replace: true });
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'TOTP_REQUIRED') {
+        // 进入第二步：必须在此复位 loading，否则按钮永久转圈（第二步的 finally 不覆盖此分支）
+        setLoading(false);
+        setShowTotpStep(true);
+        setError('');
+        return;
+      }
       setError(err instanceof ApiError ? err.message : t('err.network'));
-    } finally {
       setLoading(false);
     }
   };
@@ -104,36 +130,108 @@ export default function Login() {
             <p className="mt-1 text-pretty text-center text-sm text-muted-foreground">{t('login.subtitle')}</p>
           </div>
 
-          <form
-            className="space-y-4"
-            onSubmit={(e) => {
-              e.preventDefault();
-              submit();
-            }}
-          >
-            <div>
-              <Label className="text-sm font-medium text-foreground">{t('login.identifier')}</Label>
-              <Input
-                className="mt-2"
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                placeholder={t('login.identifierPlaceholder')}
-                autoComplete="username"
-                autoFocus
-              />
-            </div>
-            <div>
-              <Label className="text-sm font-medium text-foreground">{t('login.password')}</Label>
-              <Input className="mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
-            </div>
+          {showTotpStep ? (
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submit();
+              }}
+            >
+              <div className="space-y-1 text-center">
+                <h4 className="text-base font-semibold text-foreground">{t('auth.totpTitle')}</h4>
+                <p className="text-xs text-muted-foreground">{useBackupCode ? t('auth.backupCodeDesc') : t('auth.totpDesc')}</p>
+              </div>
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
+              {!useBackupCode ? (
+                <div className="flex justify-center py-2">
+                  <InputOTP
+                    value={totpCode}
+                    onChange={(v) => { setTotpCode(v); setError(''); }}
+                    length={6}
+                  />
+                </div>
+              ) : (
+                <div>
+                  <Label className="text-sm font-medium text-foreground">{t('auth.backupCode')}</Label>
+                  <Input
+                    className="mt-2 font-mono text-center tracking-wider"
+                    value={totpCode}
+                    onChange={(e) => { setTotpCode(e.target.value); setError(''); }}
+                    placeholder="abcdef12"
+                    autoFocus
+                  />
+                </div>
+              )}
 
-            <Button className="mt-4 w-full py-2 font-medium" size="lg" type="submit" loading={loading}>
-              {t('common.login')}
-            </Button>
-          </form>
+              {error && <p className="text-sm text-destructive text-center">{error}</p>}
 
+              <Button
+                className="mt-4 w-full py-2 font-medium"
+                size="lg"
+                type="submit"
+                loading={loading}
+                disabled={loading || (useBackupCode ? totpCode.trim().length < 8 : totpCode.trim().length < 6)}
+              >
+                {t('auth.verifyAndLogin')}
+              </Button>
+
+              <div className="flex items-center justify-between pt-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUseBackupCode(!useBackupCode);
+                    setTotpCode('');
+                    setError('');
+                  }}
+                  className="text-primary hover:underline"
+                >
+                  {useBackupCode ? t('auth.useTotpCode') : t('auth.useBackupCode')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTotpStep(false);
+                    setTotpCode('');
+                    setError('');
+                  }}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  {t('auth.backToPassword')}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submit();
+              }}
+            >
+              <div>
+                <Label className="text-sm font-medium text-foreground">{t('login.identifier')}</Label>
+                <Input
+                  className="mt-2"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  placeholder={t('login.identifierPlaceholder')}
+                  autoComplete="username"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-foreground">{t('login.password')}</Label>
+                <Input className="mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+              </div>
+
+              {error && <p className="text-sm text-destructive">{error}</p>}
+
+              <Button className="mt-4 w-full py-2 font-medium" size="lg" type="submit" loading={loading}>
+                {t('common.login')}
+              </Button>
+            </form>
+          )}
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
               <div className="w-full border-t border-border" />

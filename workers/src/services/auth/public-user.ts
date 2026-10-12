@@ -8,6 +8,7 @@ export type PublicUser = {
   email: string;
   emailVerified: boolean;
   role: string;
+  totpEnabled: boolean;
   displayName?: string;
   avatarUrl?: string;
   defaultPath: string;
@@ -24,6 +25,7 @@ export function toPublicUser(user: User): PublicUser {
     email: user.email,
     emailVerified: user.emailVerified,
     role: user.role,
+    totpEnabled: user.totpEnabled ?? false,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
     defaultPath: user.defaultPath,

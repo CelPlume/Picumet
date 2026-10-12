@@ -72,7 +72,8 @@ describe('Register 页面', () => {
   });
 
   it('提交时调用 /api/auth/register 并跳转到登录页', async () => {
-    apiFetch.mockResolvedValueOnce({ user: { id: 'u1' }, message: '注册成功' });
+    // apiFetch 返回 { success, data } 信封；注册未开启邮箱验证时 data 无 pending 字段
+    apiFetch.mockResolvedValueOnce({ success: true, data: { user: { id: 'u1' }, message: '注册成功' } });
     render(
       <MemoryRouter>
         <Register />

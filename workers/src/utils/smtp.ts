@@ -256,14 +256,33 @@ export async function resolveSmtpConfig(
       return null;
     }
   }
-  const secureRaw = get('smtp_secure') ?? env.SMTP_SECURE;
+  // 迁移 0001 的 SMTP 种子值为占位（host="" / port="587" / user="" 等），属「未配置」而非真实设置：
+  // 端口与 TLS 一旦非占位就该信任 DB（管理员在系统设置里显式改过），
+  // 否则配置文件注入的 SMTP_PORT / SMTP_SECURE 会被种子值静默覆盖（yeah.net 只支持 465 隐式 TLS，
+  // 被种子 587 覆盖后必然连不上）。其余字段（host/user/pass/from）保持 DB 优先、空则回退 env。
+  const portRaw = get('smtp_port');
+  const port = Number(portRaw && portRaw !== '587' ? portRaw : env.SMTP_PORT ?? 587);
+  const secureRaw = get('smtp_secure');
   return {
     host,
-    port: Number(get('smtp_port') ?? env.SMTP_PORT ?? 587),
+    port,
     user: get('smtp_user') || env.SMTP_USER || '',
     pass,
     from: get('smtp_from_email') || env.SMTP_FROM || '',
     // 布尔设置按字符串落库（'true'/'false'）；未配置 = auto（undefined）
     secure: secureRaw == null || secureRaw === '' ? undefined : secureRaw !== 'false',
   };
+}
+
+/** 解析邮件发件人地址：支持 "Name <email@example.com>" 与裸 "email@example.com" */
+export function parseEmailAddress(raw: string | undefined): { name?: string; email: string } {
+  if (!raw) return { email: '' };
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^(?:(.*)<)?([^<>@\s]+@[^<>@\s]+)>?$/);
+  if (match) {
+    const name = match[1]?.trim().replace(/^["']|["']$/g, '');
+    const email = match[2]?.trim() ?? '';
+    return { name: name || undefined, email };
+  }
+  return { email: trimmed };
 }

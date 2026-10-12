@@ -1,6 +1,6 @@
 // 注册页（独立路由 /register）
 import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import { Button, Input, Label } from '@/components/ui/core';
@@ -17,10 +17,14 @@ export default function Register() {
   const { t } = useTranslation();
   const site = useSite();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [inviteCode, setInviteCode] = useState('');
+  const [inviteCode, setInviteCode] = useState(() => {
+    const raw = searchParams.get('invite') || '';
+    return raw.replace(/[^0-9A-Z]/gi, '').toUpperCase().slice(0, 6);
+  });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [emailCode, setEmailCode] = useState('');
@@ -57,10 +61,18 @@ export default function Register() {
     setError('');
     setLoading(true);
     try {
-      const res = await apiFetch<{ user: User; message: string }>('/api/auth/register', {
+      const res = await apiFetch<
+        { user: User; message: string } | { pending: true; email: string; message: string }
+      >('/api/auth/register', {
         method: 'POST',
         body: { username, password, email, emailCode: emailCode || undefined, inviteCode: inviteCode.trim() || undefined },
       });
+      // 迁移 0016：站点要求邮箱验证时，注册**不建号**，等用户点邮件链接才落库。
+      // 此时跳登录页会让用户「登录不上」而困惑 —— 明确告知去收激活邮件。
+      if ('pending' in res.data && res.data.pending) {
+        navigate(`/login?checkEmail=1&email=${encodeURIComponent(res.data.email)}`);
+        return res;
+      }
       navigate(`/login?registered=1`);
       return res;
     } catch (err) {

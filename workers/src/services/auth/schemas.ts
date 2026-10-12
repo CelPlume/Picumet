@@ -24,6 +24,7 @@ export const LoginSchema = z.object({
   // （收敛见 UserRepo.findByLoginIdentifier；含 @ 视为邮箱并补小写匹配）
   username: z.string().min(1),
   password: z.string().min(1),
+  totpCode: z.string().max(32).optional(),
 });
 
 // 密码找回/重置 body 统一 Zod 校验

@@ -43,6 +43,30 @@ export const UserRepo = {
     });
     return (await this.getUserById(db, id)) as User;
   },
+  /**
+   * 建号并**直接标记邮箱已验证**（待验证注册核销用，迁移 0016）：
+   * 与 createUser 同事务语义（用户行 + 配额行），差别只在 email_verified 初值为 1——
+   * 走验证链接才建号的路径已经完成邮箱验证，写 0 会让登录侧二次要求验证而死循环。
+   */
+  async createVerifiedUser(
+    db: Db,
+    u: { username: string; email: string; passwordHash: string; role?: Role; defaultPath?: string; invitedByCodeId?: string | null }
+  ): Promise<User> {
+    const now = Date.now();
+    const id = uuid();
+    const role = u.role ?? 'user';
+    const defaultPath = u.defaultPath ?? (await RoleDefaultsRepo.defaultPathOf(db, role));
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO users (id, username, email, email_verified, password_hash, role, default_path, invited_by_code_id, created_at, updated_at)
+         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+        [id, u.username, u.email, u.passwordHash, role, defaultPath, u.invitedByCodeId ?? null, now, now]
+      );
+      await tx.query(`INSERT INTO user_quotas (user_id, max_storage, updated_at) VALUES (?, ?, ?)`, [id, UserRepo.DEFAULT_MAX_STORAGE, now]);
+    });
+    return (await this.getUserById(db, id)) as User;
+  },
+
   async getUserById(db: Db, id: string): Promise<User | null> {
     const row = await db.first('SELECT * FROM users WHERE id = ?', [id]);
     return row ? mapUser(row) : null;
@@ -148,6 +172,36 @@ export const UserRepo = {
     const row = await db.first(`SELECT COUNT(*) AS c FROM users`);
     const activeRow = await db.first(`SELECT COUNT(*) AS c FROM users WHERE status = 'active'`);
     return { total: num(row?.c), active: num(activeRow?.c) };
+  },
+  async getTotpSecret(db: Db, userId: string): Promise<{ secretEnc: string | null; enabled: boolean; lastUsedCounter: number } | null> {
+    const row = await db.first(
+      'SELECT totp_secret_enc, totp_enabled, totp_last_used_counter FROM users WHERE id = ?',
+      [userId]
+    );
+    if (!row) return null;
+    return {
+      secretEnc: str(row.totp_secret_enc) ?? null,
+      enabled: row.totp_enabled === 1 || row.totp_enabled === true,
+      lastUsedCounter: num(row.totp_last_used_counter),
+    };
+  },
+  async setTotpSecret(db: Db, userId: string, secretEnc: string): Promise<void> {
+    await db.run('UPDATE users SET totp_secret_enc = ?, updated_at = ? WHERE id = ?', [secretEnc, Date.now(), userId]);
+  },
+  async enableTotp(db: Db, userId: string, lastUsedCounter: number): Promise<void> {
+    await db.run(
+      'UPDATE users SET totp_enabled = 1, totp_last_used_counter = ?, updated_at = ? WHERE id = ?',
+      [lastUsedCounter, Date.now(), userId]
+    );
+  },
+  async disableTotp(db: Db, userId: string): Promise<void> {
+    await db.run(
+      'UPDATE users SET totp_enabled = 0, totp_secret_enc = NULL, totp_last_used_counter = 0, updated_at = ? WHERE id = ?',
+      [Date.now(), userId]
+    );
+  },
+  async updateTotpCounter(db: Db, userId: string, counter: number): Promise<void> {
+    await db.run('UPDATE users SET totp_last_used_counter = ?, updated_at = ? WHERE id = ?', [counter, Date.now(), userId]);
   },
 };
 
