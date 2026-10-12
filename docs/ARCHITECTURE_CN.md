@@ -169,7 +169,7 @@ services/permissions/
 
 1. 管理员特权。
 2. 挂载边界检查。
-3. 用户根路径限制。对 `users` / `public` 可见性文件的 `read` / `download` 豁免 `defaultPath` 边界；写入类操作永不豁免。
+3. 用户根路径限制。对 `users` / `public` 可见性文件的 `read` / `download` 豁免 `defaultPath` 边界；写入类操作永不豁免。能力位 **`can_browse_all`（浏览全站）** 豁免该边界：defaultPath 只作为文件页落点，第 9 步的角色默认矩阵兜底同步扩展到全站；路径规则（第 5 步）、可见性、封禁等其余判定照常生效。能力解析与 permissions 同口径——用户个别 `users.capabilities` 优先，NULL 跟随 `role_defaults.capabilities`（`principal.ts` 的 `resolveCapabilities`）；API 密钥主体不享受该能力位。
 4. API 密钥权限范围，取密钥权限与规则权限的交集。
 5. 路径规则。可见性合成规则（`users` / `public` 的读和下载）与存量规则走同一条排序管线；来源（origin）优先级 `admin` > `user` > `system`，同来源内再按主体特异度、路径特异度、显式优先级、effect 排序。
 6. 文件所有者权限回退。
@@ -188,7 +188,7 @@ services/permissions/
 
 **新用户默认姿态（PERM-01）**：新用户的 `defaultPath` 取值顺序为「显式入参 → `role_defaults.default_path` → `'/'`」（`UserRepo.createUser`），所有创建路径（注册、自由模式、种子）共用同一来源——管理端改角色默认路径后对**之后新建**的用户生效；「保存角色默认」仍会批量覆盖存量成员。该值**原样写入**，`default_path` 不是 `<username>` 模板（管理端表单里的占位文案只是示例）。内置种子保持 `'/'`，即默认姿态是**共享命名空间**：每个注册用户都持有整份角色词表，用户之间没有任何隔离。需要隔离的部署应把角色默认路径改为按用户的目录前缀（例如 `/users`）并收紧角色矩阵。注意隔离的边界：在自己根路径之外，第 3 步会对所有**写入**硬拦（先于规则层与属主回退），而 `users`/`public` 文件仍可经可见性豁免被 `read`/`download`——隔离限制的是写入面，不是共享读取面。
 
-**游客可见性（文件级）**：`file_metadata.guest_visibility` 为 `NULL` / `none` / `download` / `view`，未设置时跟随角色默认——即**游客默认只能下载**。判定时由 `syntheticGuestRule` 把文件的游客可见性合成一条 allow 规则并入候选集：`download` 放行下载，`view` 放行查看（列表/预览）与下载，`none` 不放行任何操作。文件属性面板的「用户权限默认设置」是它的唯一配置入口。
+**游客可见性（文件级）**：`file_metadata.guest_visibility` 为 `NULL` / `none` / `download` / `view`。`NULL` = **不额外开放游客**（匿名主体保持第 6.5 步硬拒绝与默认拒绝，见 PERM-09——不实现「NULL 跟随角色默认放行」，否则 guest_access 开启后 private 文件也会被合成规则放行）。`download` 放行下载、`view` 放行查看（列表/预览）与下载、`none` 显式不放行——判定时由 `syntheticGuestRule` 合成规则并入候选集（先于第 6.5 步）。**设置入口与传播**：文件属性面板「游客访问」；对文件夹设置会**级联子树**（与可见性级联同形），且**新建文件/目录行自动继承最近祖先的非 NULL 设置**（`inheritGuestVisibility`，上传自愈的中间目录同样继承）——「文件夹允许游客下载」因此对网关新上传对象生效。
 
 **密码保护（文件级）**：密码保护只有文件级。带密码的文件在所有内容出口返回 `403 PASSWORD_REQUIRED`，直到其访问密码经 `POST /api/files/{id}/verify-password` 验证——该端点要求对文件具备 `download` 权限（与获取下载链接同一道闸门），校验通过后签发带 `passwordVerified` 标记的网关令牌。规则条件字段（`requirePassword`、`passwordHash`、IP 条件）已不再接受创建入参；引擎对仍带条件的存量规则保持 fail-closed——这类规则一律拒绝请求，唯一显式传入 conditions 的生产调用方是文件密码验证流程（传入真实客户端 IP 与 `passwordVerified: true`）。
 
@@ -305,7 +305,7 @@ services/storage/
 
 > 踩坑记录：该行最初把 `path` 写成了**父目录**，而 folder 行的约定是 `path = 自身全路径`——文件树据此把挂载点目录当成根节点、反复展开同一层，导致进入 `/files` 卡死。已修正，并由迁移第 20 段修复存量行（`UPDATE ... SET path = substr(object_key, 8) WHERE type='folder' AND object_key LIKE 'folder:/%' AND path <> substr(object_key, 8)`），回归由 `mount-folders.test.ts` 覆盖。
 
-**写入口模式与默认角色矩阵（§28）**：挂载点新增两项面向「公共上传区」的能力。`mounts.upload_mode` 约束写路径：`free`（默认，现状）、`user_space`（写路径强制落在 `<mountPath>/<用户名>`，该目录首次使用自动创建；用户名唯一故跨用户零冲突，用户改名后旧目录留在原处）、`flat`（挂载点内禁止新建文件夹，平铺上传；同名占用仍走既有 409「目标路径已被其他用户占用」，命名唯一性由 `object_key`（挂载内相对路径）保证，内容哈希只对物理对象去重）。`mount_role_permissions` 是挂载点 × 角色的默认权限矩阵（`role` ∈ admin/user/guest，动作词表 read/write/update/delete/download）：判定插在「文件所有者回退」之后、「角色默认权限」之前，条目存在即**封闭集合**（未列出即拒），无条目回落角色默认权限，`share` 不参与矩阵（分享是能力位 can_share），显式 `path_rules`（任何 origin）恒优先。约束统一落在 `files/write.ts` 的写入前置校验上，所以 `/api/upload`、兼容上传、WebDAV PUT/MKCOL、S3 网关、AList 的行为一致。
+**写入口模式与默认角色矩阵（§28）**：挂载点新增两项面向「公共上传区」的能力。`mounts.upload_mode` 约束写路径：`free`（默认，现状）、`user_space`（写路径强制落在**用户空间目录**：`defaultPath` 非 `/` 且在挂载边界内时为 `<defaultPath>/<username>`（defaultPath 末段已是用户名则直接用，避免 `/users/alice/alice`），否则 `<mountPath>/<username>`；该目录首次使用自动创建；用户名唯一故跨用户零冲突，用户改名后旧目录留在原处）、`flat`（挂载点内禁止新建文件夹，平铺上传；同名占用仍走既有 409「目标路径已被其他用户占用」，命名唯一性由 `object_key`（挂载内相对路径）保证，内容哈希只对物理对象去重）。`mount_role_permissions` 是挂载点 × 角色的默认权限矩阵（`role` ∈ admin/user/guest，动作词表 read/write/update/delete/download）：判定插在「文件所有者回退」之后、「角色默认权限」之前，条目存在即**封闭集合**（未列出即拒），无条目回落角色默认权限，`share` 不参与矩阵（分享是能力位 can_share），显式 `path_rules`（任何 origin）恒优先。约束统一落在 `files/write.ts` 的写入前置校验上，所以 `/api/upload`、兼容上传、WebDAV PUT/MKCOL、S3 网关、AList 的行为一致。
 
 **拼好桶放置策略（§29）**：写路径选桶（`mounts.pool_strategy`）扩到五档：`least_used`（已用最小，评分 `(已用+1)/权重`）、`round_robin`、`hash`（**目录粘性**——对父目录路径哈希，同目录文件落同一桶，按前缀列举/定位连续；成员集不变则落桶确定）、`free_weighted`（`(成员容量−已用)×权重` 最大者；`mount_providers.capacity_bytes` 留空 = 不限且优先于任何有限余量；**全部成员满 → 413**，fail closed 不静默超容量写）、`ordered`（按 `mount_providers.sort_order` 升序取第一个未满成员，未配容量即不限 → 永远选它）。`weight` 与 `sort_order` 分工明确：前者是 `least_used`/`free_weighted` 的加权系数，后者是 `ordered` 的队列次序。五档都只影响新写入——读/删按 `file_metadata.provider_id` 定位，存量文件不迁移。管理端在挂载点表单里选择策略，并可为每个池成员配容量上限与上传顺序。
 
