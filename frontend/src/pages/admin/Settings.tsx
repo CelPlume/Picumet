@@ -1,9 +1,11 @@
 // 管理员：系统设置 + 公告
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Save, Plus, Trash2, Mail, Send, Globe, ShieldCheck, Megaphone, UserPlus, BarChart3, ScrollText, KeyRound } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Switch, Badge } from '@/components/ui/core';
+import { Save, Plus, Trash2, Mail, Send, Globe, ShieldCheck, ShieldBan, Megaphone, UserPlus, BarChart3, ScrollText, KeyRound, Database, GitCompare, Copy, Check, ChevronDown } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, Input, Label, Button, Switch, Badge, Dialog, ConfirmDialog } from '@/components/ui/core';
 import { SsoProvidersDialog } from './SsoProvidersDialog';
+import { Dropdown, DROPDOWN_ITEM_CLASS } from '@/components/ui/dropdown';
+import { cn } from '@/lib/utils';
 import { useMinLoading } from '@/hooks/useMinLoading';
 import { revealDelay, innerDelay } from '@/components/ui/reveal';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -32,10 +34,18 @@ interface Settings {
   ssoEnabled: boolean;
   rateLimitEnabled: boolean;
   rateLimitRequestsPerMinute: number;
+  authRateLimitPerMinute: number;
   maxConcurrentTransfers: number;
   rateLimitDownloadsPerMinute: number;
   directPrefix: string;
   rootTarget: 'landing' | 'files' | 'direct';
+  uploadUrl?: string;
+  returnUrl?: string;
+  appBaseUrl?: string;
+  allowedOrigins?: string;
+  signEnabled?: boolean;
+  signDefault?: boolean;
+  signExpiresIn?: number;
   smtpHost: string;
   smtpPort: number;
   smtpSecure: boolean;
@@ -57,6 +67,28 @@ interface Settings {
   umamiPerformance: boolean;
   umamiExcludeSearch: boolean;
   umamiDoNotTrack: boolean;
+}
+interface IpBan {
+  id: string;
+  ip: string;
+  reason?: string | null;
+  createdBy: string;
+  createdAt: number;
+  expiresAt?: number | null;
+}
+interface IndexPending {
+  jobId: string;
+  type: 'standard' | 'advanced';
+  startedAt: number;
+  completedAt: number;
+  stats: { added: number; removed: number; modified: number; unchanged: number; total: number };
+  diffSnippet: string;
+}
+interface IndexStatus {
+  running: boolean;
+  lastRunAt: number | null;
+  fileCount: number;
+  pending: IndexPending | null;
 }
 
 /** 卡内行骨架：卡片壳（玻璃纹理）常驻，数据到位前仅在卡内绘制行骨架 —— 骨架长在玻璃卡里 */
@@ -94,7 +126,19 @@ export default function AdminSettings() {
   const [testSending, setTestSending] = useState(false);
   /** 「OIDC 设置」弹窗（第三方登录来源 CRUD） */
   const [ssoDialogOpen, setSsoDialogOpen] = useState(false);
-
+  const [ipBans, setIpBans] = useState<IpBan[]>([]);
+  const [newIp, setNewIp] = useState('');
+  const [newIpReason, setNewIpReason] = useState('');
+  const [deletingBanId, setDeletingBanId] = useState<string | null>(null);
+  const [showIpBans, setShowIpBans] = useState(false);
+  // ===== 文件索引（标准/高级）→ 后台构建 + diff 确认 =====
+  const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
+  const [indexBuilding, setIndexBuilding] = useState(false);
+  const [indexApplying, setIndexApplying] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diffCopied, setDiffCopied] = useState(false);
+  /** 本端触发过构建 → 完成后自动弹窗；否则（离开页面期间完成的）只出按钮 */
+  const indexAutoOpenRef = useRef(false);
   /** 列表里的策略摘要：总是 / 当日 / 每 n 单位 / 至 xx / 发布后 n 单位 */
   const annModeLabel = (a: Announcement): string => {
     const unitLabel = (seconds: number): string =>
@@ -126,10 +170,36 @@ export default function AdminSettings() {
     ]);
     setSettings(sRes.data);
     setAnnouncements(aRes.data.items);
+    await loadIpBans();
   };
 
   useEffect(() => {
     void load();
+  }, []);
+
+  // 文件索引状态轮询：构建中加密轮询；本端触发过的构建完成后自动弹出 diff 弹窗
+  useEffect(() => {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      const st = await loadIndexStatus();
+      if (stopped || !st) return;
+      if (st.running) {
+        // 构建中加密轮询；stopped 守卫让卸载后的残余定时器直接空跑
+        setTimeout(tick, 2000);
+      } else if (st.pending && indexAutoOpenRef.current) {
+        // 仅本端触发过的构建自动弹窗；离开页面期间完成的只出「查看 Diff」按钮
+        indexAutoOpenRef.current = false;
+        setDiffOpen(true);
+      }
+    };
+    void tick();
+    // 空闲心跳：捕获「离开页面期间启动」的后台构建（回到页面后可看到按钮）
+    const heartbeat = setInterval(tick, 8000);
+    return () => {
+      stopped = true;
+      clearInterval(heartbeat);
+    };
   }, []);
 
   const set = (k: string, v: unknown) => setSettings((s) => (s ? { ...s, [k]: v } : s));
@@ -142,6 +212,70 @@ export default function AdminSettings() {
     } catch (err) {
       // 跨字段校验错误（如来源选 Umami 但脚本地址/Website ID 未有效配置）透传后端文案
       toast('error', err instanceof ApiError ? err.message : t('admin.systemSettings.saveFailed'));
+    }
+  };
+
+  // ===== 文件索引 =====
+  const loadIndexStatus = async () => {
+    try {
+      const res = await apiFetch<IndexStatus>('/api/admin/index/status');
+      setIndexStatus(res.data);
+      return res.data;
+    } catch {
+      return null;
+    }
+  };
+
+  const startIndex = async (type: 'standard' | 'advanced') => {
+    setIndexBuilding(true);
+    indexAutoOpenRef.current = true;
+    try {
+      await apiFetch('/api/admin/index/build', { method: 'POST', body: { type } });
+      toast('success', t('admin.indexStarted'));
+      const st = await loadIndexStatus();
+      // 同步路径（极快完成）直接弹窗；异步路径由轮询完成后弹
+      if (st && !st.running && st.pending) setDiffOpen(true);
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('admin.indexFailed'));
+    } finally {
+      setIndexBuilding(false);
+    }
+  };
+
+  const applyIndexDiff = async () => {
+    setIndexApplying(true);
+    try {
+      await apiFetch('/api/admin/index/apply', { method: 'POST' });
+      toast('success', t('admin.indexApplied'));
+      setDiffOpen(false);
+      await loadIndexStatus();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('admin.indexFailed'));
+    } finally {
+      setIndexApplying(false);
+    }
+  };
+
+  const discardIndexDiff = async () => {
+    try {
+      await apiFetch('/api/admin/index/dismiss', { method: 'POST' });
+      toast('success', t('admin.indexDiscarded'));
+      setDiffOpen(false);
+      await loadIndexStatus();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('admin.indexFailed'));
+    }
+  };
+
+  const copyIndexDiff = async () => {
+    const text = indexStatus?.pending?.diffSnippet ?? '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setDiffCopied(true);
+      setTimeout(() => setDiffCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用（权限/非安全上下文）时静默忽略，不阻塞主流程
     }
   };
 
@@ -172,6 +306,43 @@ export default function AdminSettings() {
   const delAnnouncement = async (id: string) => {
     await apiFetch(`/api/admin/announcements/${id}`, { method: 'DELETE' });
     await load();
+  };
+
+  const loadIpBans = async () => {
+    try {
+      const res = await apiFetch<{ bans: IpBan[] }>('/api/admin/ip-bans');
+      setIpBans(res.data.bans ?? []);
+    } catch {
+      // ignore
+    }
+  };
+
+  const addIpBan = async () => {
+    const ip = newIp.trim();
+    if (!ip) return toast('error', t('admin.ipBanRequired'));
+    try {
+      await apiFetch('/api/admin/ip-bans', {
+        method: 'POST',
+        body: { ip, reason: newIpReason.trim() || undefined },
+      });
+      toast('success', t('admin.ipBanAdded'));
+      setNewIp('');
+      setNewIpReason('');
+      await loadIpBans();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('common.error'));
+    }
+  };
+
+  const removeIpBan = async (id: string) => {
+    try {
+      await apiFetch(`/api/admin/ip-bans/${id}`, { method: 'DELETE' });
+      toast('success', t('admin.ipBanRemoved'));
+      setDeletingBanId(null);
+      await loadIpBans();
+    } catch (err) {
+      toast('error', err instanceof ApiError ? err.message : t('common.error'));
+    }
   };
 
   const sendTestEmail = async () => {
@@ -256,7 +427,93 @@ export default function AdminSettings() {
               <p className="mt-1 text-xs text-muted-foreground">{t('admin.rootTargetHint')}</p>
             </div>
           </div>
-          <div className="reveal-row" style={innerDelay(0, 4)}>
+          <div className="reveal-row grid grid-cols-1 gap-3 border-t pt-3" style={innerDelay(0, 4)}>
+            <div>
+              <Label>{t('admin.uploadUrl')}</Label>
+              <Input
+                className="mt-1"
+                value={settings.uploadUrl ?? ''}
+                onChange={(e) => set('uploadUrl', e.target.value)}
+                placeholder="https://cdn.example.com"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.uploadUrlHint')}</p>
+            </div>
+            <div>
+              <Label>{t('admin.returnUrl')}</Label>
+              <Input
+                className="mt-1"
+                value={settings.returnUrl ?? ''}
+                onChange={(e) => set('returnUrl', e.target.value)}
+                placeholder="https://cdn.example.com"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.returnUrlHint')}</p>
+            </div>
+            <div>
+              <Label>{t('admin.appBaseUrl')}</Label>
+              <Input
+                className="mt-1"
+                value={settings.appBaseUrl ?? ''}
+                onChange={(e) => set('appBaseUrl', e.target.value)}
+                placeholder="https://picumet.pages.dev"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.appBaseUrlHint')}</p>
+            </div>
+          </div>
+          {/* 链接签名设置（卡内分区，见卡中卡原则） */}
+          <div className="reveal-row space-y-3 border-t pt-3" style={innerDelay(0, 5)}>
+            <p className="text-sm font-medium">{t('admin.signSettings')}</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>{t('admin.signEnabled')}</Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">{t('admin.signEnabledHint')}</p>
+              </div>
+              <Switch checked={settings.signEnabled ?? true} onChange={(v) => set('signEnabled', v)} />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>{t('admin.signDefault')}</Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">{t('admin.signDefaultHint')}</p>
+              </div>
+              <Switch checked={settings.signDefault ?? true} onChange={(v) => set('signDefault', v)} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>{t('admin.signExpiresPreset')}</Label>
+                <Select
+                  className="mt-1"
+                  value={
+                    [0, 3600, 86400, 604800, 2592000].includes(settings.signExpiresIn ?? 0)
+                      ? String(settings.signExpiresIn ?? 0)
+                      : 'custom'
+                  }
+                  onValueChange={(v) => {
+                    if (v !== 'custom') set('signExpiresIn', Number(v));
+                  }}
+                  options={[
+                    { value: '0', label: t('admin.signExpiresPermanent') },
+                    { value: '3600', label: t('admin.signExpires1h') },
+                    { value: '86400', label: t('admin.signExpires1d') },
+                    { value: '604800', label: t('admin.signExpires7d') },
+                    { value: '2592000', label: t('admin.signExpires30d') },
+                    { value: 'custom', label: t('admin.signExpiresCustom') },
+                  ]}
+                />
+              </div>
+              <div>
+                <Label>{t('admin.signExpiresIn')}</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="mt-1"
+                  value={String(settings.signExpiresIn ?? 0)}
+                  onChange={(e) => set('signExpiresIn', Math.max(0, parseInt(e.target.value, 10) || 0))}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">{t('admin.signExpiresInHint')}</p>
+          </div>
+          <div className="reveal-row" style={innerDelay(0, 6)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
           </div>
             </>
@@ -297,6 +554,18 @@ export default function AdminSettings() {
                 />
               </div>
               <div>
+                <Label>{t('admin.authRateLimitPerMinute')}</Label>
+                <Input
+                  className="mt-1"
+                  type="number"
+                  min={0}
+                  max={10000}
+                  value={String(settings.authRateLimitPerMinute ?? 2)}
+                  onChange={(e) => set('authRateLimitPerMinute', Math.max(0, Number(e.target.value) || 0))}
+                  disabled={!settings.rateLimitEnabled}
+                />
+              </div>
+              <div>
                 <Label>{t('admin.rateLimitDownloadsPerMinute')}</Label>
                 <Input
                   className="mt-1"
@@ -321,17 +590,37 @@ export default function AdminSettings() {
                 />
               </div>
             </div>
+            <div className="border-t pt-3">
+              <Label>{t('admin.allowedOrigins')}</Label>
+              <Input
+                className="mt-1"
+                value={settings.allowedOrigins ?? ''}
+                onChange={(e) => set('allowedOrigins', e.target.value)}
+                placeholder="https://picumet.pages.dev, https://picumet.hxcn.dev"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.allowedOriginsHint')}</p>
+            </div>
             <p className="text-xs text-muted-foreground">
               {t('admin.rateLimitHint', {
                 limit: settings.rateLimitRequestsPerMinute,
                 user: settings.rateLimitRequestsPerMinute * 2,
               })}
             </p>
+            <p className="text-xs text-muted-foreground">{t('admin.authRateLimitHint')}</p>
             <p className="text-xs text-muted-foreground">{t('admin.maxConcurrentTransfersHint')}</p>
             <p className="text-xs text-muted-foreground">{t('admin.rateLimitDownloadsHint')}</p>
           </div>
           <div className="reveal-row" style={innerDelay(1, 2)}>
             <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+          </div>
+
+          {/* IP 封禁管理：独立弹窗（表格样式参考邀请码表，弹窗玻璃面随模糊档位门控） */}
+          <div className="reveal-row border-t pt-3" style={innerDelay(1, 3)}>
+            <Button variant="outline" onClick={() => setShowIpBans(true)}>
+              <ShieldBan className="h-4 w-4" /> {t('admin.ipBans')}
+              {ipBans.length > 0 && <Badge variant="secondary" className="ml-1">{ipBans.length}</Badge>}
+            </Button>
+            <p className="mt-1 text-xs text-muted-foreground">{t('admin.ipBansHint')}</p>
           </div>
             </>
           )}
@@ -767,7 +1056,202 @@ export default function AdminSettings() {
 
       {/* OIDC 设置弹窗：第三方登录来源 CRUD（关闭时不渲染，不影响列布局） */}
       <SsoProvidersDialog open={ssoDialogOpen} onClose={() => setSsoDialogOpen(false)} />
+
+      {/* 文件索引（标准/高级）：后台构建 → diff 确认 → 增量更新（SMTP 卡之后） */}
+      <Card className="reveal" style={revealDelay(7)}>
+        <CardHeader className="reveal-row" style={innerDelay(7, 0)}>
+          <CardTitle className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-primary" /> {t('admin.settingsIndex')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!indexStatus ? (
+            <CardRowsSkeleton rows={2} />
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">{t('admin.settingsIndexHint')}</p>
+              <div className="reveal-row grid grid-cols-2 gap-3" style={innerDelay(7, 1)}>
+                <div>
+                  <Label>{t('admin.indexLastRun')}</Label>
+                  <p className="mt-1 text-sm">
+                    {indexStatus.lastRunAt ? formatDateTime(indexStatus.lastRunAt) : t('admin.indexNeverRun')}
+                  </p>
+                </div>
+                <div>
+                  <Label>{t('admin.indexFileCount')}</Label>
+                  <p className="mt-1 text-sm">{indexStatus.fileCount}</p>
+                </div>
+              </div>
+              <div className="reveal-row flex flex-wrap items-center gap-2" style={innerDelay(7, 2)}>
+                {/* 分裂按钮：左半默认标准索引，右侧箭头下拉选高级索引 */}
+                <div className="flex items-center">
+                  <Button
+                    variant="outline"
+                    className="rounded-r-none"
+                    loading={indexBuilding}
+                    disabled={indexStatus?.running}
+                    onClick={() => void startIndex('standard')}
+                  >
+                    {t('admin.indexStandard')}
+                  </Button>
+                  <Dropdown
+                    align="start"
+                    trigger={
+                      <Button
+                        variant="outline"
+                        className="rounded-l-none border-l-0 px-2"
+                        disabled={indexStatus?.running}
+                        aria-label={t('admin.indexAdvanced')}
+                        title={t('admin.indexAdvanced')}
+                      >
+                        <ChevronDown className="h-4 w-4" />
+                      </Button>
+                    }
+                  >
+                    {(close) => (
+                      <button
+                        type="button"
+                        className={cn(DROPDOWN_ITEM_CLASS)}
+                        onClick={() => {
+                          close();
+                          void startIndex('advanced');
+                        }}
+                      >
+                        {t('admin.indexAdvanced')}
+                      </button>
+                    )}
+                  </Dropdown>
+                </div>
+                {/* 右侧状态位：构建中显示「正在构建」且不可点；有差异时可点查看确认 */}
+                {indexStatus?.running && (
+                  <Button variant="secondary" disabled>
+                    {t('admin.indexBuilding')}
+                  </Button>
+                )}
+                {!indexStatus?.running && indexStatus?.pending && !diffOpen && (
+                  <Button onClick={() => setDiffOpen(true)}>
+                    <GitCompare className="h-4 w-4" /> {t('admin.indexViewDiff')}
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* IP 封禁管理弹窗：封禁列表（IP / 理由 / 创建时间）+ 添加表单；玻璃面随模糊档位门控 */}
+      <Dialog open={showIpBans} onClose={() => setShowIpBans(false)} title={t('admin.ipBans')}>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">{t('admin.ipBansHint')}</p>
+          {ipBans.length > 0 ? (
+            <div className="max-h-64 overflow-y-auto rounded-md border">
+              {/* 表头 + 行：与邀请码表同款（表头分组、行内分隔线，禁卡中卡） */}
+              <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.5fr)_auto] items-center gap-3 bg-muted/30 px-3 py-1.5 text-sm font-medium text-muted-foreground">
+                <span>{t('admin.ipBans')}</span>
+                <span>{t('admin.ipBanReason')}</span>
+                <span>{t('admin.ipBanCreatedAt')}</span>
+              </div>
+              <div className="divide-y">
+                {ipBans.map((ban) => (
+                  <div key={ban.id} className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.5fr)_auto] items-center gap-3 px-3 py-2 text-sm">
+                    <span className="min-w-0 truncate font-mono text-xs font-semibold">{ban.ip}</span>
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">{ban.reason || '-'}</span>
+                    <button
+                      onClick={() => setDeletingBanId(ban.id)}
+                      className="shrink-0 rounded p-1 text-destructive transition-colors hover:bg-destructive/10"
+                      title={t('admin.removeIpBan')}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="py-3 text-center text-xs text-muted-foreground">{t('admin.noIpBans')}</p>
+          )}
+          <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row">
+            <Input
+              className="flex-1"
+              placeholder={t('admin.ipAddressPlaceholder')}
+              value={newIp}
+              onChange={(e) => setNewIp(e.target.value)}
+            />
+            <Input
+              className="flex-1"
+              placeholder={t('admin.ipBanReasonPlaceholder')}
+              value={newIpReason}
+              onChange={(e) => setNewIpReason(e.target.value)}
+            />
+            <Button onClick={addIpBan} variant="outline" className="shrink-0">
+              <Plus className="h-4 w-4" /> {t('admin.addIpBan')}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <ConfirmDialog
+        open={!!deletingBanId}
+        onClose={() => setDeletingBanId(null)}
+        onConfirm={() => deletingBanId && void removeIpBan(deletingBanId)}
+        title={t('admin.removeIpBan')}
+        message={t('admin.removeIpBanConfirm')}
+      />
       </div>
+
+      {/* 索引 diff 弹窗：统计药丸 + 原生 diff 代码块（+ / - / !）+ 确认增量更新 / 放弃 */}
+      <Dialog
+        open={diffOpen && Boolean(indexStatus?.pending)}
+        onClose={() => setDiffOpen(false)}
+        width="max-w-4xl w-[calc(100vw-2rem)]"
+        title={t('admin.indexDiffTitle')}
+      >
+        {indexStatus?.pending && (
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">{t('admin.indexDiffHint')}</p>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">+ {indexStatus.pending.stats.added} {t('admin.indexStatAdded')}</Badge>
+              <Badge variant="outline">- {indexStatus.pending.stats.removed} {t('admin.indexStatRemoved')}</Badge>
+              <Badge variant="outline">! {indexStatus.pending.stats.modified} {t('admin.indexStatModified')}</Badge>
+              <Badge variant="outline">{indexStatus.pending.stats.unchanged} {t('admin.indexStatUnchanged')}</Badge>
+            </div>
+            <div className="glass-surface-popover max-h-[50vh] overflow-auto rounded-lg">
+              <pre className="min-w-max p-3 font-mono text-xs leading-5">
+                {indexStatus.pending.diffSnippet.split('\n').map((line, i) => (
+                  <div
+                    key={i}
+                    className={
+                      line.startsWith('+')
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : line.startsWith('-')
+                          ? 'text-red-600 dark:text-red-400'
+                          : line.startsWith('!')
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : line.startsWith('#')
+                              ? 'text-muted-foreground'
+                              : 'text-foreground/80'
+                    }
+                  >
+                    {line || ' '}
+                  </div>
+                ))}
+              </pre>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" onClick={() => void copyIndexDiff()}>
+                {diffCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}{' '}
+                {diffCopied ? t('admin.indexCopied') : t('admin.indexCopyAll')}
+              </Button>
+              <Button onClick={() => void applyIndexDiff()} loading={indexApplying}>
+                {t('admin.indexApply')}
+              </Button>
+              <Button variant="ghost" onClick={() => void discardIndexDiff()}>
+                {t('admin.indexDiscard')}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }

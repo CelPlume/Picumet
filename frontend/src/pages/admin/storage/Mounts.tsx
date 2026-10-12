@@ -13,6 +13,7 @@ import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { cn, formatBytes } from '@/lib/utils';
+import { CapacityInput, bytesToValueAndUnit, valueAndUnitToBytes, type CapacityUnit } from '@/components/ui/capacity-input';
 import {SortableHeader, sortByKey, type SortOrder} from '@/components/ui/sortable-header';
 
 /** 角色权限矩阵条目（挂载点级 / 桶级同一形状；角色名复用 admin.* 词条） */
@@ -206,12 +207,20 @@ const UPLOAD_MODE_HINT: Record<string, string> = {
   flat: 'Flat',
 };
 
-/** 池成员编辑态：容量上限按 GB 文本「留空 = 不限」，上传顺序按数字文本（缺省空 = 0），
+/** 提供商类型默认容量上限（R2 默认 9.9GiB，Oracle 默认 20GiB，1024 进制） */
+const defaultCapacity = (p: Provider): { value: string; unit: CapacityUnit } => {
+  if (p.type === 'r2') return { value: '9.9', unit: 'GiB' };
+  if (p.type === 'oracle') return { value: '20', unit: 'GiB' };
+  return { value: '', unit: 'GiB' };
+};
+
+/** 池成员编辑态：容量上限文本「留空 = 不限」+ 单位，上传顺序按数字文本（缺省空 = 0），
     桶级矩阵按编辑态（null = 不配置），standby = 备用桶 */
 type PoolMemberDraft = {
   selected: boolean;
   weight: number;
-  capacityGb: string;
+  capacityVal: string;
+  capacityUnit: CapacityUnit;
   sortOrder: string;
   standby: boolean;
   perms: RolePermissions;
@@ -220,7 +229,7 @@ type PoolMemberDraft = {
 };
 type PoolDraft = Record<string, PoolMemberDraft>;
 
-/** 合并单个成员的编辑态（缺省补全为未勾选 / 权重 1 / 不限 / 顺序空 / 非备用 / 不配置矩阵） */
+/** 合并单个成员的编辑态（缺省补全为未勾选 / 权重 1 / 默认容量 / 顺序空 / 非备用 / 不配置矩阵） */
 const withMember = (draft: PoolDraft, id: string, patch: Partial<PoolMemberDraft>): PoolDraft => {
   const current: Partial<PoolMemberDraft> = draft[id];
   return {
@@ -228,7 +237,8 @@ const withMember = (draft: PoolDraft, id: string, patch: Partial<PoolMemberDraft
     [id]: {
       selected: false,
       weight: 1,
-      capacityGb: '',
+      capacityVal: '',
+      capacityUnit: 'GiB',
       sortOrder: '',
       standby: false,
       perms: INHERIT_MATRIX,
@@ -239,17 +249,20 @@ const withMember = (draft: PoolDraft, id: string, patch: Partial<PoolMemberDraft
   };
 };
 
-/** 由挂载点回显数据构造成员编辑态；未出现在池里的 provider 保持未勾选 */
+/** 由挂载点回显数据构造成员编辑态；未出现在池里的 provider 预填默认容量 */
 const buildPoolDraft = (providerList: Provider[], members?: PoolMember[]): PoolDraft => {
   const byId: Record<string, PoolMember> = {};
   for (const m of members ?? []) byId[m.providerId] = m;
   const draft: PoolDraft = {};
   for (const p of providerList) {
     const m = byId[p.id];
+    const defCap = defaultCapacity(p);
+    const cap = m?.capacityBytes != null ? bytesToValueAndUnit(m.capacityBytes) : (m ? { value: '', unit: 'GiB' as CapacityUnit } : defCap);
     draft[p.id] = {
       selected: Boolean(m),
       weight: m?.weight ?? 1,
-      capacityGb: m?.capacityBytes == null ? '' : String(Math.round((m.capacityBytes / 1024 ** 3) * 100) / 100),
+      capacityVal: cap.value,
+      capacityUnit: cap.unit,
       sortOrder: m?.sortOrder == null ? '' : String(m.sortOrder),
       standby: m?.standby ?? false,
       perms: rolePermissionsFromApi(m?.rolePermissions),
@@ -278,37 +291,36 @@ const poolMembersPayload = (providerList: Provider[], draft: PoolDraft) =>
     .filter((p) => draft[p.id]?.selected)
     .map((p) => {
       const m = draft[p.id];
-      const gb = m?.capacityGb.trim() ?? '';
+      const bytes = valueAndUnitToBytes(m?.capacityVal ?? '', m?.capacityUnit ?? 'GiB');
       const perms = rolePermissionsPayload(m?.perms ?? INHERIT_MATRIX);
       return {
         providerId: p.id,
         weight: m?.weight ?? 1,
-        capacityBytes: gb === '' ? null : Math.round(Number(gb) * 1024 ** 3),
+        capacityBytes: bytes,
         sortOrder: m?.sortOrder ? Number(m.sortOrder) : 0,
         standby: Boolean(m?.standby),
         ...(perms.length > 0 || m?.loadedPerms ? { rolePermissions: perms } : {}),
       };
     });
 
-/** GB 保留两位小数（校验提示与求和展示统一口径） */
-const roundGb = (gb: number) => Math.round(gb * 100) / 100;
-
 /** 总容量校验：各桶容量上限之和（仅统计已入池且设了上限的成员）+ 是否超限。
     挂载总上限应 ≤ 各桶容量总和；未设桶上限的桶不参与求和（无成员设上限时该规则不生效）。 */
 const capCheck = (
   providerList: Provider[],
   draft: PoolDraft,
-  maxStorageGb: string | undefined
-): { sum: number; exceeded: boolean } => {
-  let sum = 0;
-  for (const id of poolMemberIds(providerList, draft)) {
-    const raw = (draft[id]?.capacityGb ?? '').trim();
-    const gb = Number(raw);
-    if (raw !== '' && Number.isFinite(gb) && gb > 0) sum += gb;
+  maxStorageVal: string | undefined,
+  maxStorageUnit: CapacityUnit | undefined
+): { sumBytes: number; exceeded: boolean } => {
+  const memberIds = poolMemberIds(providerList, draft);
+  let sumBytes = 0;
+  for (const id of memberIds) {
+    const bytes = valueAndUnitToBytes(draft[id]?.capacityVal ?? '', draft[id]?.capacityUnit ?? 'GiB');
+    if (bytes != null && bytes > 0) sumBytes += bytes;
   }
-  const totalRaw = (maxStorageGb ?? '').trim();
-  const total = Number(totalRaw);
-  return { sum, exceeded: totalRaw !== '' && sum > 0 && Number.isFinite(total) && total > sum };
+  const totalBytes = valueAndUnitToBytes(maxStorageVal ?? '', maxStorageUnit ?? 'GiB');
+  // 单桶场景下挂载点上限与单桶天然对应，不误报超限（提交时自动与单桶对齐）
+  const exceeded = memberIds.length > 1 && totalBytes != null && sumBytes > 0 && totalBytes > sumBytes;
+  return { sumBytes, exceeded };
 };
 
 /** 写入策略下拉 + 当前档位的行为说明（ordered 档补一句去下方设置上传顺序的指引） */
@@ -496,14 +508,15 @@ function MountedBuckets({
                     <Badge variant="warning" className="shrink-0">{t('admin.storageMounts.bucketStandby')}</Badge>
                   )}
                 </span>
-                <Input
-                  type="number"
-                  className="w-28 shrink-0"
-                  onClick={(e) => e.stopPropagation()}
-                  value={value[id]?.capacityGb ?? ''}
-                  onChange={(e) => onChange(withMember(value, id, { capacityGb: e.target.value }))}
-                  placeholder={t('admin.storageMounts.poolMemberCapacityPlaceholder')}
-                />
+                <div className="w-44 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <CapacityInput
+                    value={value[id]?.capacityVal ?? ''}
+                    unit={value[id]?.capacityUnit ?? 'GiB'}
+                    onValueChange={(val) => onChange(withMember(value, id, { capacityVal: val }))}
+                    onUnitChange={(unit) => onChange(withMember(value, id, { capacityUnit: unit }))}
+                    placeholder={t('admin.storageMounts.poolMemberCapacityPlaceholder')}
+                  />
+                </div>
                 <Input
                   type="number"
                   className="w-16 shrink-0"
@@ -600,7 +613,7 @@ function BucketSettings({
               'relative z-[1] w-full rounded-md px-3 py-2 text-left text-sm transition-colors',
               currentId === p.id
                 ? 'font-medium text-primary'
-                : 'text-muted-foreground hover:bg-primary/10 hover:text-primary'
+                : 'text-muted-foreground hover:bg-primary/10 dark:hover:bg-primary/5 hover:text-primary'
             )}
           >
             <span className="block truncate">{p.name}</span>
@@ -629,11 +642,12 @@ function BucketSettings({
 
         <div>
           <Label>{t('admin.storageMounts.poolMemberCapacity')}</Label>
-          <Input
-            type="number"
+          <CapacityInput
             className="mt-1"
-            value={member?.capacityGb ?? ''}
-            onChange={(e) => onChange(withMember(value, currentId, { capacityGb: e.target.value }))}
+            value={member?.capacityVal ?? ''}
+            unit={member?.capacityUnit ?? 'GiB'}
+            onValueChange={(val) => onChange(withMember(value, currentId, { capacityVal: val }))}
+            onUnitChange={(unit) => onChange(withMember(value, currentId, { capacityUnit: unit }))}
             placeholder={t('admin.storageMounts.poolMemberCapacityPlaceholder')}
           />
           <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.bucketHardCapHint')}</p>
@@ -684,8 +698,8 @@ function MountDialogForm({
   const { t } = useTranslation();
   const [activeBucket, setActiveBucket] = useState('');
   const strategy = form.poolStrategy ?? 'least_used';
-  const cap = capCheck(providers, pool, form.maxStorageGb);
-  const uploadMode = form.uploadMode ?? 'free';
+  const cap = capCheck(providers, pool, form.maxStorageVal, form.maxStorageUnit as CapacityUnit);
+  const uploadMode = form.uploadMode ?? 'user_space';
 
   return (
     <Tabs value={tab} onValueChange={onTab} className="flex flex-col gap-3">
@@ -741,20 +755,21 @@ function MountDialogForm({
             </div>
             <div>
               <Label>{t('admin.storageMounts.capacity')}</Label>
-              <Input
-                type="number"
+              <CapacityInput
                 className="mt-1"
-                value={form.maxStorageGb ?? ''}
-                onChange={(e) => onField('maxStorageGb', e.target.value)}
+                value={form.maxStorageVal ?? ''}
+                unit={(form.maxStorageUnit as CapacityUnit) || 'GiB'}
+                onValueChange={(val) => onField('maxStorageVal', val)}
+                onUnitChange={(unit) => onField('maxStorageUnit', unit)}
                 placeholder={t('admin.storageMounts.capacityPlaceholder')}
               />
               <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.capacityHint')}</p>
               <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.bucketTotalCapHint')}</p>
-              {cap.sum > 0 && (
-                <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.bucketCapSum', { sum: roundGb(cap.sum) })}</p>
+              {cap.sumBytes > 0 && (
+                <p className="mt-1 text-xs text-muted-foreground">{t('admin.storageMounts.bucketCapSum', { sum: formatBytes(cap.sumBytes) })}</p>
               )}
               {cap.exceeded && (
-                <p className="mt-1 text-xs text-destructive">{t('admin.storageMounts.totalCapExceedsSum', { sum: roundGb(cap.sum) })}</p>
+                <p className="mt-1 text-xs text-destructive">{t('admin.storageMounts.totalCapExceedsSum', { sum: formatBytes(cap.sumBytes) })}</p>
               )}
             </div>
             <PoolStrategyField value={strategy} onChange={(v) => onField('poolStrategy', v)} />
@@ -819,7 +834,7 @@ export function StorageMounts({ addTick = 0 }: { addTick?: number }) {
       setShowCreate(true);
     }
   }, [addTick]);
-  const [form, setForm] = useState<Record<string, string>>({});
+  const [form, setForm] = useState<Record<string, string>>({ uploadMode: 'user_space' });
   const [editing, setEditing] = useState<MountItem | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [formPool, setFormPool] = useState<PoolDraft>({});
@@ -850,15 +865,28 @@ export function StorageMounts({ addTick = 0 }: { addTick?: number }) {
 
   /** 提交体（新建 / 编辑共用）：挂载总上限、「挂载的桶」（池成员全量替换 + 桶级矩阵）与挂载点级矩阵。
       不下发 providerId（§32 主存储锚点）：后端按池内第一个非备用成员自行派生，UI 只管池成员。 */
-  const mountPayload = (values: Record<string, string>, draft: PoolDraft, matrix: RolePermissions) => ({
-    ...values,
-    priority: Number(values.priority ?? 0),
-    maxStorage: values.maxStorageGb ? Math.round(Number(values.maxStorageGb) * 1024 ** 3) : null,
-    poolStrategy: values.poolStrategy ?? 'least_used',
-    poolMembers: poolMembersPayload(providers, draft),
-    uploadMode: values.uploadMode ?? 'free',
-    rolePermissions: rolePermissionsPayload(matrix),
-  });
+  const mountPayload = (values: Record<string, string>, draft: PoolDraft, matrix: RolePermissions) => {
+    const memberIds = poolMemberIds(providers, draft);
+    const maxStorageBytes = valueAndUnitToBytes(values.maxStorageVal ?? '', (values.maxStorageUnit as CapacityUnit) ?? 'GiB');
+    // 单桶模式下若设置了挂载点总上限，自动将该单桶的上限同步对齐
+    if (memberIds.length === 1 && maxStorageBytes != null) {
+      const singleId = memberIds[0];
+      const memberBytes = valueAndUnitToBytes(draft[singleId]?.capacityVal ?? '', draft[singleId]?.capacityUnit ?? 'GiB');
+      if (memberBytes == null || memberBytes < maxStorageBytes) {
+        draft[singleId].capacityVal = values.maxStorageVal;
+        draft[singleId].capacityUnit = (values.maxStorageUnit as CapacityUnit) ?? 'GiB';
+      }
+    }
+    return {
+      ...values,
+      priority: Number(values.priority ?? 0),
+      maxStorage: maxStorageBytes,
+      poolStrategy: values.poolStrategy ?? 'least_used',
+      poolMembers: poolMembersPayload(providers, draft),
+      uploadMode: values.uploadMode ?? 'free',
+      rolePermissions: rolePermissionsPayload(matrix),
+    };
+  };
 
   /** 提交前守卫：池内没有桶（无锚点）或总上限超各桶容量总和时，回到「存储池」tab 提示，不发请求 */
   const blockedByValidation = (draft: PoolDraft, values: Record<string, string>): boolean => {
@@ -867,10 +895,10 @@ export function StorageMounts({ addTick = 0 }: { addTick?: number }) {
       toast('error', t('admin.storageMounts.poolBucketsRequired'));
       return true;
     }
-    const cap = capCheck(providers, draft, values.maxStorageGb);
+    const cap = capCheck(providers, draft, values.maxStorageVal, values.maxStorageUnit as CapacityUnit);
     if (!cap.exceeded) return false;
     setDialogTab(TAB_POOL);
-    toast('error', t('admin.storageMounts.totalCapExceedsSum', { sum: roundGb(cap.sum) }));
+    toast('error', t('admin.storageMounts.totalCapExceedsSum', { sum: formatBytes(cap.sumBytes) }));
     return true;
   };
 
@@ -883,7 +911,7 @@ export function StorageMounts({ addTick = 0 }: { addTick?: number }) {
       });
       toast('success', t('admin.storageMounts.added'));
       setShowCreate(false);
-      setForm({});
+      setForm({ uploadMode: 'user_space' });
       setFormPool({});
       setFormPerms(emptyRolePermissions());
       await load();
@@ -912,8 +940,14 @@ export function StorageMounts({ addTick = 0 }: { addTick?: number }) {
       sortBy: m.sortBy,
       sortOrder: m.sortOrder,
       priority: String(m.priority),
-      maxStorageGb: m.maxStorage == null ? '' : String(Math.round((m.maxStorage / 1024 ** 3) * 100) / 100),
+      ...(() => {
+        const cap = bytesToValueAndUnit(m.maxStorage);
+        return { maxStorageVal: cap.value, maxStorageUnit: cap.unit };
+      })(),
       poolStrategy: m.poolStrategy,
+      // 回显 DB 真实值：存量挂载点多为 free（NULL 亦视为 free）；
+      // 预填 user_space 会在管理员保存任何设置时把 free 挂载静默改写成 user_space，
+      // 导致「原本可写根目录」的用户全部 403（本次线上事故根因）。
       uploadMode: m.uploadMode ?? 'free',
     });
     setEditPool(buildPoolDraft(providers, m.poolMembers));

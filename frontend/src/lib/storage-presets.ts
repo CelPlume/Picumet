@@ -44,6 +44,13 @@ export const STORAGE_PRESETS: StoragePreset[] = [
     endpointHint: '自行填写，如 http://minio.example.com:9000',
   },
   {
+    id: 'rustfs',
+    label: 'Rustfs',
+    endpoint: '',
+    region: '',
+    endpointHint: '自行填写 Rustfs S3 端点，如 http://127.0.0.1:9000',
+  },
+  {
     id: 'custom',
     label: '自定义',
     endpoint: '',
