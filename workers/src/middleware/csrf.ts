@@ -2,16 +2,15 @@
 import { createMiddleware } from 'hono/factory';
 import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
-import { randomString } from '../utils/crypto';
+import { sha256Hex } from '../utils/crypto';
 
-const CSRF_TTL = 7200; // 2 小时
-
-export async function issueCsrfToken(kv: KVNamespace, userId: string): Promise<string> {
-  const existing = await kv.get(`csrf:${userId}`);
-  if (existing) return existing;
-  const token = randomString(32);
-  await kv.put(`csrf:${userId}`, token, { expirationTtl: CSRF_TTL });
-  return token;
+export async function issueCsrfToken(kv: KVNamespace | unknown, userId: string, encryptionKey = ''): Promise<string> {
+  // 基于 ENCRYPTION_KEY 与 userId 的无状态确定性 Token：零 KV 读写消耗，完全免疫 KV 写配额超限
+  if (encryptionKey) {
+    const raw = await sha256Hex(`csrf:${userId}:${encryptionKey}`);
+    return raw.slice(0, 32);
+  }
+  return (await sha256Hex(`csrf:${userId}`)).slice(0, 32);
 }
 
 export const csrfMiddleware = createMiddleware(async (c, next) => {
@@ -31,9 +30,21 @@ export const csrfMiddleware = createMiddleware(async (c, next) => {
     return;
   }
   const token = c.req.header('x-csrf-token');
-  const stored = await c.env.KV?.get(`csrf:${userId}`);
-  if (!token || !stored || token !== stored) {
-    return fail(c, new ApiError(403, 'INVALID_CSRF', 'CSRF 校验失败，请刷新页面重试'));
+  const encKey = (c.env.ENCRYPTION_KEY as string) ?? '';
+  const expected = await issueCsrfToken(null, userId, encKey);
+  if (token === expected) {
+    await next();
+    return;
   }
-  await next();
+  // 兼容存量已在 KV 中签发的老 token（平滑过渡）
+  try {
+    const stored = await (c.env.KV as KVNamespace)?.get(`csrf:${userId}`);
+    if (stored && token === stored) {
+      await next();
+      return;
+    }
+  } catch {
+    // 忽略 KV 异常
+  }
+  return fail(c, new ApiError(403, 'INVALID_CSRF', 'CSRF 校验失败，请刷新页面重试'));
 });

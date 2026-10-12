@@ -726,7 +726,7 @@ Renames a file or folder and updates its metadata, including the access password
 | `accessPassword` | `string` | No | A new access password, or `null` to remove it. The server stores only a hash. |
 | `visibility` | `string` | No | The visibility: `private`, `users`, or `public`. Requires the update permission. |
 | `manualPosition` | `integer` | No | The manual sort position. Reserved field: the external API contract is stable, but the frontend does not yet ship a sort flow that uses it. |
-| `guestVisibility` | `string` | No | Guest (anonymous visitor) visibility: `inherit` (clears the file-level setting and follows the role default), `none` (guests cannot see it — an explicit deny rule that can also retract public visibility), `download` (download only), `view` (view and download; a directory containing view-level children becomes listable for guests). Requires the update permission; supported on files and folders, and it is the storage field behind "Default user permissions". |
+| `guestVisibility` | `string` | No | Guest (anonymous) visibility: `inherit` (clear this row's setting, fall back to the nearest ancestor), `none` (hidden from guests — explicit deny), `download` (download only), `view` (list/preview plus download). Requires `update` permission; setting it on a folder **cascades to the subtree**, and new file/folder rows inherit the nearest ancestor's non-NULL value. Anonymous access also requires the site-wide guest switch. |
 
 #### Response
 
@@ -3895,9 +3895,13 @@ Implements a subset of the AList v3 REST protocol. In PicList pick "AList" with 
 | `POST /openlist/api/fs/remove` | `{dir, names: [...]}` → delete (same semantics as WebDAV delete) |
 | `GET /openlist/d{encodedPath}?sign=` | Direct-link download; public mounts are anonymous, private mounts require the sign issued by `fs/get` (expired signatures return `403`) |
 
-### S3 compatible gateway (`/s3` prefix)
+### S3 compatible gateway (`/s3` prefix + root-path entry)
 
-A SigV4-verified subset of the S3 REST protocol. Client configuration: endpoint = `https://{domain}/s3`, **path-style addressing (`forcePathStyle=true` / `pathStyleAccess`)**, any region (PicList sends the literal `auto`), `accessKeyId = pk_*`, `secretAccessKey = sk_*`.
+A SigV4-verified subset of the S3 REST protocol. Client configuration (MinIO-style, **recommended**): endpoint = `https://{domain}` (bare hostname — minio-go only accepts `host[:port]`, a path prefix cannot pass SigV4 verification), **path-style addressing (`forcePathStyle=true` / `pathStyleAccess`)**, any region (PicList sends the literal `auto`), `accessKeyId = pk_*`, `secretAccessKey = sk_*`.
+
+**Bucket sub-resources** (minio-go startup handshake; hard dependencies of backends like Alexandrie): `HEAD /{bucket}` = BucketExists (200/404), `GET /{bucket}?location` = LocationConstraint (empty region), `PUT /{bucket}?policy` = SetBucketPolicy (**accepted and ignored** — anonymous reads are implemented by path-serve per file visibility; `GET ?policy` echoes a default public-read policy), `PUT /{bucket}` = MakeBucket (creates the directory row inside the key scope, through §28 assertWritable).
+
+**Dual entry**: requests are discriminated by the presence of a SigV4 signature (`Authorization: AWS4-HMAC-SHA256` header or the `X-Amz-Signature` presign parameter) — signed requests go to the gateway (bucket = first path segment), unsigned requests follow normal routing (SPA / direct links / API). The legacy `https://{domain}/s3` prefix entry is kept for compatibility (existing clients need no migration); bucket/key parsing is identical in both modes.
 
 **Bucket semantics**: bucket = first segment of the virtual path (mount path or the key's upload root, e.g. uploadPath=`/uploads` → bucket=`uploads`); key = the rest. `GET /s3` lists the buckets reachable by the key (top-level directory names).
 

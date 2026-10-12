@@ -726,7 +726,7 @@ curl https://{domain}/api/files/{id} -b cookies.txt
 | `accessPassword` | `string` | 否 | 新的访问密码，传 `null` 可移除。服务端只保存哈希。 |
 | `visibility` | `string` | 否 | 可见性：`private`、`users` 或 `public`，需要 `update` 权限。 |
 | `manualPosition` | `integer` | 否 | 手动排序位置。预留字段：外部 API 契约保持稳定，前端暂无使用它的排序闭环。 |
-| `guestVisibility` | `string` | 否 | 游客（匿名访客）可见性：`inherit`（清除文件级设置，跟随角色默认）、`none`（游客不可见——显式 deny 规则，可收回 public 可见性）、`download`（仅可下载）、`view`（可查看并下载；目录含 view 级子项时匿名可列该目录）。需要 `update` 权限；文件与文件夹均支持，是「用户权限默认设置」的存储字段。 |
+| `guestVisibility` | `string` | 否 | 游客（匿名访客）可见性：`inherit`（清除本行设置，回落到最近祖先的设置）、`none`（游客不可见——显式 deny 规则）、`download`（仅可下载）、`view`（可查看并下载）。需要 `update` 权限；对文件夹设置会**级联子树**，且新建文件/目录行自动继承最近祖先的非 NULL 值。匿名访问还需站点开启「允许访客」。 |
 
 #### 响应
 
@@ -2221,18 +2221,22 @@ curl -X POST https://{domain}/api/users/announcements/{id}/dismiss \
 | :--- | :--- | :--- | :--- |
 | `name` | `string` | 是 | 密钥备注，最多 100 个字符。 |
 | `permissions` | `array` | 是 | `read`、`write`、`delete`，至少一项。 |
-| `protocols` | `array` | 是 | `webdav` 或 `api`，至少一项。 |
-| `uploadPath` | `string` | 否 | 写操作的上传根目录，默认 `/uploads`。会做规范化，包含 `..` 或 `~` 的路径被拒绝。 |
+| `protocols` | `array` | 是 | `webdav`、`api`、`s3`，至少一项。 |
+| `uploadPath` | `string` | 否 | 写操作的上传根目录。省略时：user_space 挂载上的普通用户默认为其**用户空间目录**（`defaultPath` 下的 `<username>` 子目录），其余默认 `/uploads`；管理员不受限。普通用户的 uploadPath 不允许越出用户空间（越界 `400`）。会做规范化，包含 `..` 或 `~` 的路径被拒绝。 |
 | `allowedIps` | `array` | 否 | IP 白名单，其他 IP 发来的请求会被拒绝。 |
 | `expiresIn` | `integer` | 否 | 有效期，单位秒，至少 60。 |
 
-> `uploadPath` 同时是上传路径模板，支持 10 个变量：`{year}` `{month}` `{day}` `{hour}` `{minute}` `{uuid}` `{hash}` `{ext}` `{mime}` `{username}`。渲染为字面替换，未匹配到的变量替换为空串；兼容上传 / Lsky V2 / AList 的 `path` 字段走同一模板。
+> `uploadPath` 同时是上传路径模板，支持 10 个变量：`{year}` `{month}` `{day}` `{hour}` `{minute}` `{uuid}` `{hash}` `{ext}` `{mime}` `{username}`。渲染为字面替换，未匹配到的变量替换为空串；兼容上传 / Lsky V2 / AList 的 `path` 字段走同一模板。**所有通道（compat/WebDAV/S3/AList）的作用域判定都会先按当前时间展开模板**，渲染后的目标必须落在渲染后的上传根内。
+
+> **网关密钥授权模型**：密钥写/读/删按「属主角色默认权限（引擎第 9 步，defaultPath 内）∩ 密钥 permissions ∩ 密钥 uploadPath 作用域」判定，UI 创建的密钥无需管理员手工建路径规则；user_space 挂载上的写入仍强制落在用户空间目录（`assertWritable`）。
 
 #### 响应
 
 返回密钥和开箱即用的客户端配置，状态码 `201`。
 
 > `key.id` 是数据库行 id，与 `GET /api/keys` 列表、`DELETE /api/keys/{id}` 同源；`key.keyId`（`pk_…`）是网关标识（WebDAV 用户名 / S3 AccessKeyId）。`DELETE /api/keys/{id}` 兼容传入 `pk_…` keyId（历史客户端把 keyId 当 id 返回）。
+>
+> `configs` 各协议均给出**完整上传路径**：`bearer.pathHint` / `openlist.pathHint` = 默认上传目录（客户端在「保存路径」里填这里，`{year}/{month}` 由客户端追加）；`webdav.webpathHint` = WebDAV 上传目录；`s3.bucketHint` = 桶（虚拟路径首段）+ `s3.keyPrefixHint` = 对象 key 前缀（完整虚拟路径 = `/{bucket}/{keyPrefix}{key}`）。
 
 ```json
 {
@@ -2253,12 +2257,28 @@ curl -X POST https://{domain}/api/users/announcements/{id}/dismiss \
     "configs": {
       "bearer": {
         "url": "https://{domain}",
-        "header": "Authorization: Bearer pk_abcdef123456.sk_xyz789"
+        "header": "Authorization: Bearer pk_abcdef123456.sk_xyz789",
+        "pathHint": "/uploads/"
       },
       "webdav": {
         "url": "https://{domain}/webdav",
         "username": "pk_abcdef123456",
-        "password": "sk_xyz789"
+        "password": "sk_xyz789",
+        "webpathHint": "/uploads/"
+      },
+      "s3": {
+        "endpoint": "https://{domain}",
+        "region": "auto",
+        "accessKeyId": "pk_abcdef123456",
+        "secretAccessKey": "sk_xyz789",
+        "bucketHint": "uploads",
+        "keyPrefixHint": "",
+        "pathStyle": true
+      },
+      "openlist": {
+        "url": "https://{domain}/openlist",
+        "token": "pk_abcdef123456.sk_xyz789",
+        "pathHint": "/uploads/"
       }
     }
   },
@@ -3890,9 +3910,13 @@ curl "https://{domain}/drive/photos/photo.jpg" -o photo.jpg
 | `POST /openlist/api/fs/remove` | `{dir, names: [...]}` → 删除（复用 WebDAV 删除语义） |
 | `GET /openlist/d{encodedPath}?sign=` | 直链下载；公开挂载匿名，私有挂载凭 `fs/get` 下发的 sign（过期签名返回 `403`） |
 
-### S3 兼容网关（`/s3` 前缀）
+### S3 兼容网关（`/s3` 前缀 + 根路径入口）
 
-SigV4 验签的 S3 REST 子集。客户端配置：endpoint = `https://{domain}/s3`、**路径式寻址（`forcePathStyle=true` / `pathStyleAccess`）**、region 任意（PicList 用字面量 `auto`）、`accessKeyId = pk_*`、`secretAccessKey = sk_*`。
+SigV4 验签的 S3 REST 子集。客户端配置（MinIO 式，**推荐**）：endpoint = `https://{domain}`（裸域名，minio-go 只接受 `host[:port]`，路径前缀无法通过 SigV4 验签）、**路径式寻址（`forcePathStyle=true` / `pathStyleAccess`）**、region 任意（PicList 用字面量 `auto`）、`accessKeyId = pk_*`、`secretAccessKey = sk_*`。
+
+**双入口**：以「请求是否携带 SigV4 签名」判别（`Authorization: AWS4-HMAC-SHA256` 头或 `X-Amz-Signature` 预签名参数）——签名请求进网关（bucket = 路径首段），未签名请求走常规路由（SPA/直链/API）。旧 `https://{domain}/s3` 前缀入口保留兼容（存量客户端无需迁移），bucket/key 解析两种模式同语义。
+
+**桶级子资源**（minio-go 客户端启动握手，Alexandrie 等后端硬依赖）：`HEAD /{bucket}` = BucketExists（200/404）、`GET /{bucket}?location` = LocationConstraint（空 region）、`PUT /{bucket}?policy` = SetBucketPolicy（**接受并忽略**——匿名可读由 path-serve 按文件可见性实现，`GET ?policy` 回显默认公共读 policy）、`PUT /{bucket}` = MakeBucket（在密钥作用域内创建目录行，走 §28 assertWritable）。
 
 **bucket 语义**：bucket = 虚拟路径首段（挂载路径或密钥上传根的首段，如 uploadPath=`/uploads` → bucket=`uploads`），key = 其余路径。`GET /s3` 返回密钥可达的 bucket 列表（挂载根下的一级目录名）。
 

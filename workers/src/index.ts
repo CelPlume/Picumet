@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { corsHeaders, securityHeaders, initContext, errorHandler } from './middleware/global';
 import { authMiddleware, adminMiddleware, optionalAuthMiddleware, apiKeyAuthMiddleware, apiKeyTokenAuthMiddleware } from './middleware/auth';
 import { csrfMiddleware } from './middleware/csrf';
+import { ipBanMiddleware } from './middleware/ip-ban';
 import { rateLimitMiddleware } from './middleware/rate-limit';
 import { transferConcurrencyMiddleware } from './middleware/concurrency';
 import { downloadRateLimitMiddleware } from './middleware/download-limit';
@@ -19,6 +20,7 @@ import { ssoRoutes } from './services/sso/handlers';
 import { adminRoutes } from './services/admin/handlers';
 import { adminStorageRoutes } from './services/admin/storage';
 import { adminSsoRoutes } from './services/admin/sso';
+import { adminIndexRoutes } from './services/admin/index';
 import { compatRoutes } from './services/uploads/compat';
 import { lskyRoutes } from './services/uploads/lsky';
 import { webdavRoutes } from './services/webdav/handlers';
@@ -36,10 +38,35 @@ import { runScheduledTasks } from './services/cleanup';
 import { ok, fail } from './shared/response';
 import { ApiError } from './shared/errors';
 import type { AppVariables, Env } from './shared/types';
+import { kvStoreFor } from './utils/kv-store';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
+// MinIO 式根路径 S3 入口：minio-go 只接受 host[:port] 作为 endpoint（路径前缀无法签名），
+// 故 S3 网关同时挂在根路径 —— 以「请求携带 SigV4 签名」判别（Authorization: AWS4-HMAC-SHA256
+// 头或 X-Amz-Signature 预签名参数），签名请求进网关（按根路径解析 bucket/key），其余走常规路由。
+// 与下方 /s3 前缀挂载并存：旧配置（endpoint 带 /s3）继续可用。
+const isSigV4Request = (req: Request): boolean => {
+  if ((req.headers.get('authorization') ?? '').startsWith('AWS4-HMAC-SHA256')) return true;
+  try {
+    return new URL(req.url).searchParams.has('X-Amz-Signature');
+  } catch {
+    return false;
+  }
+};
+const s3RootApi = new Hono<{ Bindings: Env; Variables: AppVariables }>();
+s3RootApi.use('*', rateLimitMiddleware);
+s3RootApi.route('/', s3gwRoutes);
+
 app.use('*', initContext);
+// SigV4 判别在最前（DB 由 getDb 从 c.env.DB 兜底构建，不依赖 initContext 的上下文变量）
+app.use('*', async (c, next) => {
+  if (isSigV4Request(c.req.raw)) return s3RootApi.fetch(c.req.raw, c.env, c.executionCtx);
+  await next();
+});
+// IP 封禁门禁：optionalAuth 之后（管理员豁免——防运维自锁；SDNUChronoSync 同语义）、
+// 认证/限流/业务之前——被封禁 IP 的普通请求不消耗限流窗口，也不进入业务链路
+app.use('*', optionalAuthMiddleware, ipBanMiddleware);
 app.use('*', corsHeaders);
 app.use('*', securityHeaders);
 
@@ -126,6 +153,7 @@ adminApi.use('*', authMiddleware, adminMiddleware, csrfMiddleware, rateLimitMidd
 adminApi.route('/', adminRoutes);
 adminApi.route('/', adminStorageRoutes);
 adminApi.route('/', adminSsoRoutes);
+adminApi.route('/index', adminIndexRoutes);
 protectedApi.route('/admin', adminApi);
 
 app.route('/api', protectedApi);
@@ -153,7 +181,7 @@ export default {
     let seedReady = false;
     if (isProd) {
       try {
-        const marker = await env.KV.get('seed:done');
+        const marker = await kvStoreFor(env).get(env.KV, 'seed:done');
         seedReady = marker === '1';
         if (!seedReady) {
           // 尝试完成初始化；失败则由下方 fail-closed 拦截

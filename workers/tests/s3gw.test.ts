@@ -236,3 +236,68 @@ describe('S3 兼容网关（真实 AWS SDK，SigV4）', () => {
     client.destroy();
   });
 });
+
+// MinIO 式根路径入口：minio-go 只接受 host[:port]（无路径前缀），S3 API 挂在站点根，
+// 以 SigV4 签名（Authorization 头 / X-Amz-Signature 预签名参数）判别，其余请求走常规路由
+describe('S3 根路径入口（MinIO 式，无 /s3 前缀）', () => {
+  const createRootClient = async (username: string): Promise<S3KeyBundle> => {
+    const bundle = await createS3Key(username);
+    bundle.client.destroy();
+    bundle.client = new S3Client({
+      endpoint: `http://127.0.0.1:${port}`, // 无 /s3 前缀
+      region: 'auto',
+      forcePathStyle: true,
+      credentials: { accessKeyId: bundle.keyId, secretAccessKey: bundle.secret },
+    });
+    return bundle;
+  };
+
+  it('签名 PUT/GET/HEAD/ListBuckets 全部走根路径（bucket 即路径首段）', async () => {
+    const { client } = await createRootClient('s3rootcrud');
+    const body = Buffer.from('s3root-object');
+    const put = await client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'root/x.txt', Body: body }));
+    expect(put.$metadata.httpStatusCode).toBe(200);
+
+    const get = await client.send(new GetObjectCommand({ Bucket: 'uploads', Key: 'root/x.txt' }));
+    expect(Buffer.from(await get.Body!.transformToByteArray()).toString()).toBe('s3root-object');
+
+    const head = await client.send(new HeadObjectCommand({ Bucket: 'uploads', Key: 'root/x.txt' }));
+    expect(head.ContentLength).toBe(body.byteLength);
+
+    const buckets = await client.send(new ListBucketsCommand({}));
+    expect((buckets.Buckets ?? []).map((b) => b.Name)).toContain('uploads');
+    client.destroy();
+  });
+
+  it('根路径预签名 GET 可匿名下载', async () => {
+    const { client } = await createRootClient('s3rootpresign');
+    await client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'root/presign.txt', Body: 'root-presigned!' }));
+    const url = await getSignedUrl(client, new GetObjectCommand({ Bucket: 'uploads', Key: 'root/presign.txt' }), { expiresIn: 60 });
+    expect(url).not.toContain('/s3');
+    const res = await fetch(url);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('root-presigned!');
+    client.destroy();
+  });
+
+  it('占用冲突（他人文件）→ 409 OperationAborted XML（业务异常经 onError 映射，非裸 500）', async () => {
+    const a = await createRootClient('s3rootowner');
+    const b = await createRootClient('s3rootintruder');
+    await a.client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'conf/owner.bin', Body: 'owner-a' }));
+    await expect(b.client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'conf/owner.bin', Body: 'intruder' })))
+      .rejects.toThrow(/409|OperationAborted|已被其他用户占用/);
+    // a 的对象完好
+    const get = await a.client.send(new GetObjectCommand({ Bucket: 'uploads', Key: 'conf/owner.bin' }));
+    expect(Buffer.from(await get.Body!.transformToByteArray()).toString()).toBe('owner-a');
+    a.client.destroy();
+    b.client.destroy();
+  });
+
+  it('未签名的根路径请求不进入 S3 网关（保持常规路由语义）', async () => {
+    const res = await ctx.app.fetch(new Request('http://localhost:8787/uploads'), ctx.env, {} as ExecutionContext);
+    const text = await res.text();
+    // S3 匿名错误形如 <Error><Code>AccessDenied</Code>…匿名访问被拒绝 —— 不应出现
+    expect(text).not.toContain('匿名访问被拒绝');
+    expect(res.headers.get('content-type')).not.toContain('xml');
+  });
+});

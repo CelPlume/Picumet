@@ -1,0 +1,11 @@
+# Cloudflare Pages 配置：前端静态资源 + /api/* 经 Service Binding 反代到 Worker。
+# 浏览器只见 Pages 域名；Worker 的 workers.dev 已关闭（workers_dev = false），API 无公网入口。
+
+name = "picumet"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-11-01"
+
+# Service Binding：Pages Functions 内网直连 Worker（deploy/wrangler.production.toml 中的 picumet）
+[[services]]
+binding = "API"
+service = "picumet"

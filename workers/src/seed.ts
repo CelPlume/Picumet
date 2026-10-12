@@ -4,12 +4,13 @@ import { hashPassword } from './utils/crypto';
 import { getProvider } from './services/storage/providers';
 import { objectKeyFromPath } from './utils/path';
 import type { Env } from './shared/types';
+import { kvStoreFor } from './utils/kv-store';
 
 export async function ensureSeed(env: Env): Promise<void> {
-  if (await env.KV.get('seed:done')) return;
+  if (await kvStoreFor(env).get(env.KV, 'seed:done')) return;
   const db = Db.fromAny(env.DB);
   await seedAll(db, env);
-  await env.KV.put('seed:done', '1');
+  await kvStoreFor(env).put(env.KV, 'seed:done', '1');
 }
 
 const isProduction = (env: Env): boolean => (env.ENVIRONMENT ?? 'development') === 'production';

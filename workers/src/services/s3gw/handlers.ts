@@ -23,12 +23,14 @@ import { serveFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
 import { requirePermission } from '../permissions/principal';
 import { deleteFileInternal } from '../files/remove';
-import { upsertFileObject } from '../files/write';
+import { upsertFileObject, ensureFolders } from '../files/write';
+import { assertWritable } from '../files/upload-mode';
 import { serveObject } from '../storage/serve';
 import { verifySigV4, SigV4Error, parseSigV4Request, MAX_SIGNED_PAYLOAD_BYTES } from './sigv4';
 import type { SigV4ErrorCode } from './sigv4';
 import { decryptSecret } from '../../utils/crypto';
-import { normalizePath, isPathWithinBoundary } from '../../utils/path';
+import { ApiError } from '../../shared/errors';
+import { normalizePath, isPathWithinBoundary, renderUploadRoot } from '../../utils/path';
 import type { ApiKey, Mount } from '@shared/types';
 
 type Ctx = Context<AppBindings>;
@@ -74,6 +76,20 @@ const SIGV4_ERROR_STATUS: Record<SigV4ErrorCode, { status: number; code: string 
 };
 
 // ============ 认证中间件 ============
+
+/** 业务异常 → S3 XML（根路径与 /s3 挂载同语义；未映射错误交全局兜底） */
+s3gwRoutes.onError((err, c) => {
+  if (err instanceof ApiError) {
+    const status = err.statusCode ?? 500;
+    const code =
+      status === 409 ? 'OperationAborted' :
+      status === 404 ? 'NoSuchKey' :
+      status === 413 ? 'EntityTooLarge' :
+      status === 501 ? 'NotImplemented' : 'InternalError';
+    return s3ErrorResponse(status, code, err.message, c.req.path);
+  }
+  throw err;
+});
 
 s3gwRoutes.use('*', async (c, next) => {
   const db = getDb(c);
@@ -147,7 +163,8 @@ function pctDecode(s: string): string {
 
 /** 从原始 pathname 解析 bucket/key（按 '/' 切分后逐段解码，key 内可含字面 '/'） */
 function parseS3RequestPath(c: Ctx): { bucket: string; key: string } {
-  const raw = c.req.path.replace(/^\/s3\/?/, '');
+  // /s3 前缀模式剥掉前缀后不含前导 '/'；根路径（MinIO 式）模式则需一并剥掉前导 '/'
+  const raw = c.req.path.replace(/^\/s3\/?/, '').replace(/^\//, '');
   if (!raw) return { bucket: '', key: '' };
   const slash = raw.indexOf('/');
   if (slash < 0) return { bucket: pctDecode(raw), key: '' };
@@ -156,7 +173,7 @@ function parseS3RequestPath(c: Ctx): { bucket: string; key: string } {
 
 /** 网关密钥作用域：对象操作必须落在密钥上传根内；目录列表允许上传根的祖先（到达根目录） */
 function assertKeyScope(apiKey: { uploadPath: string }, virtualPath: string, exact: boolean): Response | null {
-  const uploadRoot = normalizePath(apiKey.uploadPath || '/');
+  const uploadRoot = renderUploadRoot(apiKey.uploadPath);
   if (isPathWithinBoundary(virtualPath, uploadRoot)) return null;
   if (!exact && isPathWithinBoundary(uploadRoot, virtualPath)) return null;
   return s3ErrorResponse(403, 'AccessDenied', '目标超出密钥上传根目录', virtualPath);
@@ -207,7 +224,7 @@ async function listBuckets(c: Ctx): Promise<Response> {
   const db = getDb(c);
   const apiKey = c.get('apiKey');
   if (!apiKey) return s3ErrorResponse(403, 'AccessDenied', '未认证', '/');
-  const uploadRoot = normalizePath(apiKey.uploadPath || '/');
+  const uploadRoot = renderUploadRoot(apiKey.uploadPath);
   const mounts = await MountRepo.listMounts(db);
   const names = new Set<string>();
   for (const m of mounts) {
@@ -231,6 +248,60 @@ async function listBuckets(c: Ctx): Promise<Response> {
 
 s3gwRoutes.get('/', (c) => listBuckets(c));
 
+// ============ 桶级操作（BucketExists / GetBucketLocation / Policy / MakeBucket） ============
+// Alexandrie 等 minio-go 客户端启动硬依赖：BucketExists（HEAD /{bucket}）→
+// SetBucketPolicy（PUT /{bucket}?policy，失败 os.Exit(1)）→ GetBucketLocation（GET ?location）。
+// Policy 语义由 Picumet 自身的可见性体系实现（path-serve 按文件可见性匿名直读），
+// 此处接受并回显一份公共读 policy 以完成协议握手，不做真正的 policy 引擎。
+
+/** 默认公共读 policy（对象可匿名 GET，与 path-serve 公开可见性语义一致） */
+function defaultBucketPolicy(bucket: string): string {
+  return JSON.stringify({
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Effect: 'Allow',
+        Principal: { AWS: ['*'] },
+        Action: ['s3:GetObject'],
+        Resource: [`arn:aws:s3:::${bucket}/*`],
+      },
+    ],
+  });
+}
+
+/** BucketExists：桶首段在密钥可达范围内且挂载点存在 → 200，否则 404 NoSuchBucket */
+async function bucketExists(c: Ctx, bucket: string): Promise<Response> {
+  const db = getDb(c);
+  const apiKey = c.get('apiKey');
+  if (!apiKey) return s3ErrorResponse(403, 'AccessDenied', '未认证', `/${bucket}`);
+  const denied = assertKeyScope(apiKey, `/${bucket}`, false);
+  if (denied) return denied;
+  const mount = await MountRepo.findMountForPath(db, `/${bucket}`);
+  if (!mount) return s3ErrorResponse(404, 'NoSuchBucket', '目标挂载点不存在', `/${bucket}`);
+  return new Response(null, { status: 200 });
+}
+
+/** MakeBucket：建桶 = 在密钥作用域内创建目录行（走 §28 assertWritable 与权限判定） */
+async function makeBucket(c: Ctx, bucket: string): Promise<Response> {
+  const db = getDb(c);
+  const apiKey = c.get('apiKey')!;
+  const virtualPath = normalizePath(`/${bucket}`);
+  const denied = assertKeyScope(apiKey, virtualPath, true);
+  if (denied) return denied;
+  const resolved = await resolveMountAndProvider(c, db, virtualPath);
+  if (resolved instanceof Response) return resolved;
+  const { mount } = resolved;
+  const guard = await guardPermission(c, mount, virtualPath, 'write');
+  if (guard) return guard;
+  try {
+    await assertWritable(db, mount, apiKey.userId, virtualPath);
+  } catch {
+    return s3ErrorResponse(403, 'AccessDenied', '该挂载点仅允许写入你的用户空间目录', virtualPath);
+  }
+  await ensureFolders(db, mount, virtualPath, apiKey.userId);
+  return new Response(null, { status: 200 });
+}
+
 // ============ PUT（PutObject） ============
 // §28 写入口模式在 upsertFileObject 内统一校验（user_space 强制自身用户空间）；
 // S3 网关没有「建目录」动作（key 尾部的 `/` 只是普通名字，被 normalizePath 归一），
@@ -240,6 +311,11 @@ s3gwRoutes.put('*', async (c) => {
   const db = getDb(c);
   const apiKey = c.get('apiKey')!;
   const { bucket, key } = parseS3RequestPath(c);
+  if (bucket && !key) {
+    // PUT /{bucket}：?policy = SetBucketPolicy（握手，接受即成功）；否则 MakeBucket
+    if (c.req.query('policy') !== undefined) return new Response(null, { status: 204 });
+    return makeBucket(c, bucket);
+  }
   if (!bucket || !key) {
     return s3ErrorResponse(400, 'InvalidRequest', '无效的对象路径（需 /s3/{bucket}/{key}）', c.req.path);
   }
@@ -302,22 +378,33 @@ s3gwRoutes.put('*', async (c) => {
   });
 });
 
-// ============ GET（ListObjectsV2 / GetObject） ============
+// ============ GET（ListObjectsV2 / GetObject / 桶级子资源） ============
 
 s3gwRoutes.get('*', async (c) => {
   const { bucket, key } = parseS3RequestPath(c);
   if (!bucket) return listBuckets(c);
   if (!key || c.req.query('list-type') === '2') {
+    // 桶级子资源：GetBucketLocation（minio-go 客户端初始化后首调）与 GetBucketPolicy
+    if (key === '' && c.req.query('location') !== undefined) {
+      return s3XmlResponse(200, `${XML_HEADER}<LocationConstraint xmlns="${XMLNS}"/>`);
+    }
+    if (key === '' && c.req.query('policy') !== undefined) {
+      return new Response(defaultBucketPolicy(bucket), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     return listObjectsV2(c, bucket);
   }
   return getObjectOrHead(c, bucket, key, false);
 });
 
-// ============ HEAD（HeadObject） ============
+// ============ HEAD（HeadObject / BucketExists） ============
 
 s3gwRoutes.on(['HEAD'], '*', async (c) => {
   const { bucket, key } = parseS3RequestPath(c);
-  if (!bucket || !key) return s3ErrorResponse(400, 'InvalidRequest', '无效的对象路径', c.req.path);
+  if (!bucket) return s3ErrorResponse(400, 'InvalidRequest', '无效的对象路径', c.req.path);
+  if (!key) return bucketExists(c, bucket);
   return getObjectOrHead(c, bucket, key, true);
 });
 
