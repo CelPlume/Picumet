@@ -81,7 +81,7 @@ export const MountRolePermissionSchema = z.object({
 export const PoolMemberSchema = z.object({
   providerId: z.string().min(1),
   weight: z.number().int().min(1).max(1000).optional(),
-  capacityBytes: z.number().int().min(0).nullable().optional(),
+  capacityBytes: z.number().min(0).transform((v) => Math.round(v)).nullable().optional(),
   sortOrder: z.number().int().min(0).optional(),
   standby: z.boolean().optional(),
   rolePermissions: z.array(MountRolePermissionSchema).max(3).optional(),
@@ -98,9 +98,9 @@ export const MountSchema = z.object({
   sortOrder: z.enum(['asc', 'desc']).optional(),
   priority: z.number().int().optional(),
   // 挂载容量（字节）；null = 不限（默认）；§31：设了上限时不得超过各桶上限之和（应用层校验）
-  maxStorage: z.number().int().positive().nullable().optional(),
+  maxStorage: z.number().positive().transform((v) => Math.round(v)).nullable().optional(),
   // 展示容量（§26 仪表盘占用率，字节）；null/缺省 = 未设置
-  capacityBytes: z.number().int().min(0).nullable().optional(),
+  capacityBytes: z.number().min(0).transform((v) => Math.round(v)).nullable().optional(),
   // 存储池（§E）：写入选桶策略 + 池成员（缺省 = 仅主 provider）
   poolStrategy: z.enum(['least_used', 'round_robin', 'hash', 'free_weighted', 'ordered']).optional(),
   // 池成员全量替换：缺省 = 不改；[] = 清空（回到仅主 provider 单桶语义）。§32：池 = 入参成员集

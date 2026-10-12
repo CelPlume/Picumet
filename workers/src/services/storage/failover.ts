@@ -22,6 +22,7 @@ import { getProvider } from './providers';
 import { serveObject } from './serve';
 import { ProviderError } from './errors';
 import type { ObjectBody, StorageProviderInterface } from './types';
+import { kvStoreFor } from '../../utils/kv-store';
 
 /**
  * 单文件读取的候选上限：与 `PoolMemberSchema` 的 `max(20)` 对齐——合法池规模（5—20 成员）不再被静默截断。
@@ -112,7 +113,7 @@ async function candidateProviderIds(
 
   if (ref.fileId) {
     try {
-      const raw = await env.KV.get(hintKey(ref.fileId));
+      const raw = await kvStoreFor(env).get(env.KV, hintKey(ref.fileId));
       if (raw) {
         const hint = JSON.parse(raw) as { p?: string; k?: string };
         // 物理键不一致说明文件已被改写/搬迁，提示作废；不属于本挂载池的提示同样作废
@@ -154,7 +155,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 /** 熔断标记查询（KV 异常一律视作"未熔断"，熔断只是加速手段） */
 async function isProviderDown(env: Env, providerId: string): Promise<boolean> {
   try {
-    return (await env.KV.get(downKey(providerId))) !== null;
+    return (await kvStoreFor(env).get(env.KV, downKey(providerId))) !== null;
   } catch {
     return false;
   }
@@ -163,7 +164,7 @@ async function isProviderDown(env: Env, providerId: string): Promise<boolean> {
 /** 标记上游故障：之后 DOWN_TTL 秒内该桶排到候选末尾 */
 async function markProviderDown(env: Env, providerId: string): Promise<void> {
   try {
-    await env.KV.put(downKey(providerId), '1', { expirationTtl: DOWN_TTL });
+    await kvStoreFor(env).put(env.KV, downKey(providerId), '1', { expirationTtl: DOWN_TTL });
   } catch {
     // 忽略：熔断只是加速手段
   }
@@ -172,7 +173,7 @@ async function markProviderDown(env: Env, providerId: string): Promise<void> {
 /** 清除熔断标记（兜底尝试命中即恢复） */
 async function clearProviderDown(env: Env, providerId: string): Promise<void> {
   try {
-    await env.KV.delete(downKey(providerId));
+    await kvStoreFor(env).delete(env.KV, downKey(providerId));
   } catch {
     // 忽略
   }
@@ -182,7 +183,7 @@ async function clearProviderDown(env: Env, providerId: string): Promise<void> {
 async function rememberLocation(env: Env, ref: FileObjectRef, providerId: string): Promise<void> {
   if (!ref.fileId) return;
   try {
-    await env.KV.put(hintKey(ref.fileId), JSON.stringify({ p: providerId, k: ref.physicalKey }), { expirationTtl: HINT_TTL });
+    await kvStoreFor(env).put(env.KV, hintKey(ref.fileId), JSON.stringify({ p: providerId, k: ref.physicalKey }), { expirationTtl: HINT_TTL });
   } catch {
     // 忽略：提示只是加速手段
   }
@@ -192,7 +193,7 @@ async function rememberLocation(env: Env, ref: FileObjectRef, providerId: string
 async function forgetLocation(env: Env, ref: FileObjectRef): Promise<void> {
   if (!ref.fileId) return;
   try {
-    await env.KV.delete(hintKey(ref.fileId));
+    await kvStoreFor(env).delete(env.KV, hintKey(ref.fileId));
   } catch {
     // 忽略
   }

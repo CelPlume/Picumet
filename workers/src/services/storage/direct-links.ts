@@ -23,6 +23,8 @@ export type RootTarget = (typeof ROOT_TARGET_VALUES)[number];
 export interface RoutePrefixes {
   directPrefix: DirectPrefix;
   rootTarget: RootTarget;
+  returnUrl?: string;
+  uploadUrl?: string;
 }
 
 /** 缺省配置 == 历史行为：直链挂站点根、'/' 是落地页 */
@@ -49,7 +51,7 @@ function pickPrefix<T extends string>(value: string | undefined, allowed: readon
  * 读前缀设置（一次查询，缺省/脏值用默认值兜底）；供 URL 生成与 path-serve 使用。
  * 值按 JSON 存储（迁移写入 `""`），也兼容 SettingsRepo.set 写入的裸字符串。
  */
-export async function loadRoutePrefixes(db: Db): Promise<RoutePrefixes> {
+export async function loadRoutePrefixes(db: Db, env?: { RETURN_URL?: string; UPLOAD_URL?: string }): Promise<RoutePrefixes> {
   const raw = await SettingsRepo.getAll(db);
   const read = (key: string): string | undefined => {
     const v = raw[key];
@@ -58,11 +60,17 @@ export async function loadRoutePrefixes(db: Db): Promise<RoutePrefixes> {
     return typeof parsed === 'string' ? parsed : undefined;
   };
   const rootTarget = read('root_target');
+  const rawReturnUrl = read('return_url') || env?.RETURN_URL;
+  const returnUrl = rawReturnUrl ? rawReturnUrl.trim().replace(/\/+$/, '') : undefined;
+  const rawUploadUrl = read('upload_url') || env?.UPLOAD_URL;
+  const uploadUrl = rawUploadUrl ? rawUploadUrl.trim().replace(/\/+$/, '') : undefined;
   return {
     directPrefix: pickPrefix(read('direct_prefix'), DIRECT_PREFIX_VALUES, DEFAULT_ROUTE_PREFIXES.directPrefix),
     rootTarget: (ROOT_TARGET_VALUES as readonly string[]).includes(rootTarget ?? '')
       ? (rootTarget as RootTarget)
       : DEFAULT_ROUTE_PREFIXES.rootTarget,
+    returnUrl: returnUrl && returnUrl.startsWith('http') ? returnUrl : undefined,
+    uploadUrl: uploadUrl && uploadUrl.startsWith('http') ? uploadUrl : undefined,
   };
 }
 

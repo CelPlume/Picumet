@@ -68,6 +68,11 @@ gatewayRoutes.get('/download/:token', async (c) => {
     }
   }
 
+  const isMedia = Boolean(payload.mimeType?.startsWith('image/') || payload.mimeType?.startsWith('video/'));
+  const cacheControl = isMedia
+    ? 'public, max-age=604800, s-maxage=2592000, stale-while-revalidate=86400'
+    : 'private, max-age=300';
+
   const response = await serveFileObject({
     db,
     env: c.env as Env,
@@ -84,6 +89,7 @@ gatewayRoutes.get('/download/:token', async (c) => {
     mimeType: payload.mimeType,
     rangeHeader: c.req.header('range'),
     totalSize: payload.size || undefined,
+    cacheControl,
     // §31/§28 读回退补判：按消费主体角色逐候选重判两级矩阵（匿名消费 = guest）
     principalRole: (c.get('userRole') as string) ?? 'guest',
     action: 'download',

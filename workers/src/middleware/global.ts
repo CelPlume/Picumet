@@ -70,8 +70,9 @@ export const corsHeaders = async (c: Context, next: Next) => {
     .map((s) => s.trim())
     .filter(Boolean);
   const origin = c.req.header('origin');
-  if (origin && allowed.includes(origin)) {
-    c.header('Access-Control-Allow-Origin', origin);
+  const host = c.req.header('host');
+  const isAllowed = origin && (allowed.includes(origin) || (host && (origin === `https://${host}` || origin === `http://${host}`)));
+  if (origin && isAllowed) {
     c.header('Access-Control-Allow-Credentials', 'true');
     c.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');

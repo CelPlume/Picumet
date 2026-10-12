@@ -11,7 +11,7 @@ import { hashPassword, randomString, encryptSecret } from '../../utils/crypto';
 import { clientIp, requestIp } from '../../utils/ip';
 import { isPrivateHost, validateEndpoint } from '../../utils/ssrf';
 import { normalizePath, isPathWithinBoundary, isValidFileName, validateFileType } from '../../utils/path';
-import { freeModeOriginGuard, freeModeInitGuard, freeModeSessionGuard } from '../../middleware/free-mode';
+import { freeModeOriginGuard, freeModeInitGuard, freeModeSessionGuard, revokeFmSession } from '../../middleware/free-mode';
 import type { FreeModeSession } from '../../shared/types';
 import { FreeModeInitSchema } from './schemas';
 
@@ -140,17 +140,16 @@ freeModeRoutes.post('/init', freeModeInitGuard, async (c) => {
   };
 
   const ttl = parsed.data.sessionHours * 3600;
-  // 凭据不以明文落盘：加密后写入 KV（短 TTL），仅 Workers 内存中可解密使用
-  const sealed = await encryptSecret(JSON.stringify(session), c.env.ENCRYPTION_KEY as string);
-  const sid = randomString(24);
-  await c.env.KV.put(`fm:${sid}`, sealed, { expirationTtl: ttl });
-
-  // 自由模式仅使用不可复用的会话 sid（不签发可复用的 7 天 JWT auth_token）；
-  // 会话级 CSRF token 一并下发（写操作需携带 X-CSRF-Token）
   const csrfToken = randomString(32);
-  await c.env.KV.put(`fm:csrf:${sid}`, csrfToken, { expirationTtl: ttl });
-  c.header('Set-Cookie', `${FM_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}`);
-
+  const sid = randomString(24);
+  const sessionWithCsrf: FreeModeSession = {
+    ...session,
+    csrfToken,
+    sid,
+  };
+  // 零 KV 开销：纯 HttpOnly Cookie（饼干）存储加密会话与 CSRF Token，完全不占 KV 读写
+  const sealed = await encryptSecret(JSON.stringify(sessionWithCsrf), c.env.ENCRYPTION_KEY as string);
+  c.header('Set-Cookie', `${FM_COOKIE}=${sealed}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttl}`);
   await LogRepo.create(db, {
     userId: user.id,
     action: 'free_mode_init',
@@ -307,13 +306,18 @@ freeModeRoutes.delete('/object', async (c) => {
 
 // ============ 自由模式退出 ============
 freeModeRoutes.post('/logout', async (c) => {
-  // 会话守卫已校验会话与 CSRF；此处按 sid 撤销 KV 状态
+  // 会话守卫已校验会话与 CSRF；内存记录撤销并清空 Cookie
+  const session = c.get('freeModeSession');
+  if (session?.sid) revokeFmSession(session.sid);
   const cookie = c.req.raw.headers.get('cookie') ?? '';
   const match = cookie.split(';').map((s) => s.trim()).find((s) => s.startsWith(`${FM_COOKIE}=`));
   const sidValue = match ? match.slice(`${FM_COOKIE}=`.length) : null;
   if (sidValue) {
-    await c.env.KV.delete(`fm:${sidValue}`);
-    await c.env.KV.delete(`fm:csrf:${sidValue}`);
+    revokeFmSession(sidValue);
+    if (c.env.KV) {
+      await c.env.KV.delete(`fm:${sidValue}`).catch(() => {});
+      await c.env.KV.delete(`fm:csrf:${sidValue}`).catch(() => {});
+    }
   }
   c.header('Set-Cookie', `${FM_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
   return ok(c, null);

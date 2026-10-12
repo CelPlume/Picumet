@@ -36,6 +36,7 @@ import { ApiError } from '../../shared/errors';
 import { bucketMatrixDecision } from '../permissions/check';
 import { getProvider } from './providers';
 import type { StorageProviderInterface } from './types';
+import { kvStoreFor } from '../../utils/kv-store';
 
 /** FNV-1a 32 位：稳定路径哈希（hash 策略的确定性路由，跨进程一致） */
 function fnv1a(input: string): number {
@@ -136,7 +137,7 @@ async function orderCandidates(
     case 'hash':
       return rotate(members, fnv1a(stickyDirKey(mount, targetPath)));
     case 'round_robin': {
-      const current = Number((await env.KV.get(`pool:rr:${mount.id}`)) ?? '0') || 0;
+      const current = Number((await kvStoreFor(env).get(env.KV, `pool:rr:${mount.id}`)) ?? '0') || 0;
       return rotate(members, current);
     }
     case 'free_weighted':
@@ -156,7 +157,7 @@ async function advanceRoundRobin(
   placedProviderId: string
 ): Promise<void> {
   const idx = members.findIndex((m) => m.providerId === placedProviderId);
-  await env.KV.put(`pool:rr:${mount.id}`, String(((idx < 0 ? 0 : idx + 1) % members.length)));
+  await kvStoreFor(env).put(env.KV, `pool:rr:${mount.id}`, String(((idx < 0 ? 0 : idx + 1) % members.length)));
 }
 
 export interface PickWriteOpts {

@@ -7,13 +7,15 @@ import { loadRoutePrefixes } from '../storage/direct-links';
 import { ok } from '../../shared/response';
 import { resolveUmamiPublicConfig } from '../../utils/umami';
 import { resolveSsoPublicConfig } from '../sso/config';
+import { kvStoreFor } from '../../utils/kv-store';
 
 export const publicRoutes = new Hono<AppBindings>();
 
 publicRoutes.get('/settings', async (c) => {
   const db = getDb(c);
   const raw = await SettingsRepo.getAll(db);
-  const prefixes = await loadRoutePrefixes(db);
+  const env = c.env as AppBindings['Bindings'];
+  const prefixes = await loadRoutePrefixes(db, env);
   const parse = (key: string) => {
     const v = raw[key];
     if (v === undefined || v === 'null') return undefined;
@@ -41,6 +43,11 @@ publicRoutes.get('/settings', async (c) => {
     // 路由前缀（公开直链命名空间与根路径语义）：前端据此生成直链、决定 '/' 行为
     directPrefix: prefixes.directPrefix,
     rootTarget: prefixes.rootTarget,
+    returnUrl: (parse('return_url') || env.RETURN_URL || prefixes.returnUrl) ?? '',
+    uploadUrl: (parse('upload_url') || env.UPLOAD_URL || prefixes.uploadUrl) ?? '',
+    signEnabled: parse('sign_enabled') ?? true,
+    signDefault: parse('sign_default') ?? true,
+    signExpiresIn: Number(parse('sign_expires_in') ?? 0),
     // Umami 访问统计：stats_source='umami' 且启用且脚本地址/Website ID 复核通过才下发
     // （null = 不启用，前端不注入 tracker）；下发前复核 = DB 落脏值也不会被注入
     umami: resolveUmamiPublicConfig({
@@ -74,7 +81,7 @@ publicRoutes.get('/health/ready', async (c) => {
   let ready = false;
   let detail = 'unknown';
   try {
-    const marker = await env.KV.get('seed:done');
+    const marker = await kvStoreFor(env).get(env.KV, 'seed:done');
     ready = marker === '1';
     // detail 只回枚举值，不回传 KV 异常文本（生产信息泄露面）
     detail = ready ? 'seeded' : 'not-seeded';

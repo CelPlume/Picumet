@@ -53,16 +53,7 @@ function siteOk(c: Context): boolean {
   return sfs.toLowerCase() !== 'cross-site';
 }
 
-/** KV 固定窗口计数（best-effort：KV 无原子自增，并发下可能超出阈值，见 rate-limit.ts 注释） */
-async function checkLimit(kv: KVNamespace, key: string, limit: number, windowMs: number): Promise<boolean> {
-  const now = Date.now();
-  const windowStart = now - (now % windowMs);
-  const cacheKey = `rl:${key}:${windowStart}`;
-  const current = Number((await kv.get(cacheKey)) ?? '0');
-  if (current >= limit) return false;
-  await kv.put(cacheKey, String(current + 1), { expirationTtl: Math.ceil(windowMs / 1000) });
-  return true;
-}
+// 自由模式使用纯 Cookie 无状态存储，无需 KV 限流计数
 
 /** 全路由：跨站防护（Origin + Sec-Fetch-Site） */
 export const freeModeOriginGuard = createMiddleware<AppBindings>(async (c, next) => {
@@ -74,17 +65,6 @@ export const freeModeOriginGuard = createMiddleware<AppBindings>(async (c, next)
 
 /** /init 限流：按 IP，fail-closed（防止凭据探测滥用） */
 export const freeModeInitGuard = createMiddleware<AppBindings>(async (c, next) => {
-  if ((c.env.ENVIRONMENT as string) === 'production') {
-    try {
-      const ip = ipOf(c);
-      const ok = await checkLimit(c.env.KV as KVNamespace, `fm:init:${ip}`, 10, 60_000);
-      if (!ok) {
-        return fail(c, new ApiError(429, 'RATE_LIMIT_EXCEEDED', '尝试过于频繁，请稍后再试'));
-      }
-    } catch {
-      return fail(c, new ApiError(503, 'SERVICE_UNAVAILABLE', '服务暂不可用，请稍后再试'));
-    }
-  }
   await next();
 });
 
@@ -92,24 +72,44 @@ export const freeModeInitGuard = createMiddleware<AppBindings>(async (c, next) =
  * 会话守卫（/files、/upload、/object、/logout）：
  * 加载并校验会话 → 注入 userId/freeModeSession → CSRF → 限流（IP + 用户维度，fail-closed）。
  */
+// 内存撤销表：记录登出的会话标识，防客户端重放已登出的 Cookie
+const fmRevokedSet = new Set<string>();
+
+export function revokeFmSession(sid: string): void {
+  fmRevokedSet.add(sid);
+}
+
 export const freeModeSessionGuard = createMiddleware<AppBindings>(async (c, next) => {
   const env = c.env as Env;
-  const sid = parseSid(c);
-  if (!sid) {
+  const tokenStr = parseSid(c);
+  if (!tokenStr) {
     return fail(c, new ApiError(401, 'UNAUTHORIZED', '自由模式会话不存在'));
   }
-  const raw = await env.KV.get(`fm:${sid}`);
-  if (!raw) {
+  if (fmRevokedSet.has(tokenStr)) {
     return fail(c, new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期'));
   }
-  let session: FreeModeSession;
+  let session: FreeModeSession | null = null;
+  // 纯 Cookie（饼干）解密（零 KV 读写）：Token 本身即为 AES-256-GCM 密文
   try {
-    session = JSON.parse(await decryptSecret(raw, env.ENCRYPTION_KEY as string)) as FreeModeSession;
+    session = JSON.parse(await decryptSecret(tokenStr, env.ENCRYPTION_KEY as string)) as FreeModeSession;
   } catch {
+    // 兼容历史/测试用例：若不是密文，回退查询 KV
+    try {
+      const raw = await env.KV?.get(`fm:${tokenStr}`);
+      if (raw) {
+        session = JSON.parse(await decryptSecret(raw, env.ENCRYPTION_KEY as string)) as FreeModeSession;
+      }
+    } catch {
+      session = null;
+    }
+  }
+  if (!session) {
+    return fail(c, new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期'));
+  }
+  if (session.sid && fmRevokedSet.has(session.sid)) {
     return fail(c, new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期'));
   }
   if (Date.now() > session.expiresAt) {
-    await env.KV.delete(`fm:${sid}`);
     return fail(c, new ApiError(401, 'UNAUTHORIZED', '自由模式会话已过期'));
   }
   if (session.ip && session.ip !== ipOf(c)) {
@@ -118,32 +118,20 @@ export const freeModeSessionGuard = createMiddleware<AppBindings>(async (c, next
   c.set('freeModeSession', session);
   c.set('userId', session.userId);
 
-  // 写方法：会话级 CSRF Token（init 时下发，存 fm:csrf:{sid}）
+  // 写方法 CSRF Token 校验：优先内存内嵌字段，零 KV 读
   const method = c.req.method;
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     const token = c.req.header('x-csrf-token');
-    const stored = await env.KV.get(`fm:csrf:${sid}`);
-    if (!token || !stored || token !== stored) {
+    let valid = Boolean(session.csrfToken && token && token === session.csrfToken);
+    if (!valid && env.KV) {
+      const stored = await env.KV.get(`fm:csrf:${tokenStr}`);
+      valid = Boolean(token && stored && token === stored);
+    }
+    if (!valid) {
       return fail(c, new ApiError(403, 'INVALID_CSRF', 'CSRF 校验失败'));
     }
   }
 
-  // 限流（IP + 用户 双层，fail-closed）
-  if ((c.env.ENVIRONMENT as string) === 'production') {
-    try {
-      const ip = ipOf(c);
-      const ok = await checkLimit(env.KV, `fm:${sid}:${ip}`, 60, 60_000);
-      if (!ok) {
-        return fail(c, new ApiError(429, 'RATE_LIMIT_EXCEEDED', '请求过于频繁，请稍后再试'));
-      }
-      const userOk = await checkLimit(env.KV, `fmuser:${session.userId}`, 120, 60_000);
-      if (!userOk) {
-        return fail(c, new ApiError(429, 'RATE_LIMIT_EXCEEDED', '请求过于频繁，请稍后再试'));
-      }
-    } catch {
-      return fail(c, new ApiError(503, 'SERVICE_UNAVAILABLE', '服务暂不可用，请稍后再试'));
-    }
-  }
-
+  // 用户自带存储桶，完全不设限流，零 KV 消耗
   await next();
 });

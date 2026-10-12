@@ -2,7 +2,7 @@
 import type { Context, Next } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { Db, UserRepo, ApiKeyRepo } from '../db';
-import { verifyJwt, sha256Hex } from '../utils/crypto';
+import { verifyJwt, sha256Hex, verifyPassword } from '../utils/crypto';
 import { ApiError } from '../shared/errors';
 import { fail } from '../shared/response';
 import { clientIp } from '../utils/ip';
@@ -168,8 +168,43 @@ export const apiKeyAuthMiddleware = createMiddleware<{ Bindings: Env; Variables:
   } else if (authHeader?.startsWith('Basic ')) {
     try {
       const creds = atob(authHeader.slice(6).trim());
-      const [keyId, secret] = creds.split(':');
-      if (keyId && secret) token = `${keyId}.${secret}`;
+      const colon = creds.indexOf(':');
+      if (colon >= 0) {
+        const keyId = creds.slice(0, colon);
+        const secret = creds.slice(colon + 1);
+        if (/^pk_[a-zA-Z0-9]+$/.test(keyId) && /^sk_[a-zA-Z0-9]+$/.test(secret)) {
+          token = `${keyId}.${secret}`;
+        } else {
+          // 账号密码 Basic 认证（供 WebDAV 等标准客户端直接使用）
+          const user = await UserRepo.findByLoginIdentifier(db, keyId);
+          if (user && user.status === 'active' && user.passwordHash && (await verifyPassword(secret, user.passwordHash))) {
+            c.set('userId', user.id);
+            c.set('userRole', user.role);
+            c.set('user', {
+              id: user.id,
+              username: user.username,
+              email: user.email,
+              emailVerified: user.emailVerified,
+              role: user.role,
+              defaultPath: user.defaultPath,
+              locale: user.locale,
+              theme: user.theme,
+              status: user.status,
+              permissions: user.permissions,
+            });
+            c.set('apiKey', {
+              id: `user:${user.id}`,
+              keyId: user.username,
+              userId: user.id,
+              permissions: ['read', 'write', 'delete', 'share'],
+              protocols: ['webdav', 's3', 'alist', 'api'],
+              uploadPath: '/',
+              allowedIps: [],
+              expiresAt: undefined,
+            });
+          }
+        }
+      }
     } catch {
       token = null;
     }

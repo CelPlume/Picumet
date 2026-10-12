@@ -17,6 +17,7 @@ import { requestIp, clientIp } from '../../utils/ip';
 import { checkLimit, resetLimit, shareVerifyRateLimitMiddleware } from '../../middleware/rate-limit';
 import { assertNotBanned } from '../files/ban';
 import { CreateShareSchema } from './schemas';
+import { kvStoreFor } from '../../utils/kv-store';
 
 export const shareRoutes = new Hono<AppBindings>();
 
@@ -63,7 +64,7 @@ async function sharePasswordAuthorized(c: Context, shareId: string, sharePasswor
     ?.slice(`${shareAuthCookie(shareId)}=`.length);
   if (cookieValue) {
     // 有授权 cookie → 校验 KV 中是否存在（防伪造）
-    const stored = await c.env.KV.get(`share:auth:${shareId}:${cookieValue}`);
+    const stored = await kvStoreFor(c.env).get(c.env.KV, `share:auth:${shareId}:${cookieValue}`);
     if (stored) return true;
   }
   // 兼容 query password（旧客户端/测试）：校验后不种 cookie（不改变传输面）
@@ -82,7 +83,7 @@ async function shareFileAuthorized(c: Context, shareId: string, fileId: string):
     ?.slice(`${fileAuthCookie(shareId)}=`.length);
   if (!cookieValue) return false;
   // 有授权 cookie → 校验 KV 中该访客已通过文件密码验证的 fileId 集合（防伪造）
-  const stored = await c.env.KV.get(`share:fileauth:${shareId}:${cookieValue}`);
+  const stored = await kvStoreFor(c.env).get(c.env.KV, `share:fileauth:${shareId}:${cookieValue}`);
   if (!stored) return false;
   try {
     return (JSON.parse(stored) as string[]).includes(fileId);
@@ -101,7 +102,7 @@ const SHARE_VERIFY_FAIL_WINDOW_MS = 600_000;
 
 async function assertShareVerifyCooldown(c: Context, key: string): Promise<void> {
   if ((c.env.ENVIRONMENT as string) !== 'production') return;
-  const ok = await checkLimit(c.env.KV as KVNamespace, `svfail:${key}`, SHARE_VERIFY_FAIL_LIMIT, SHARE_VERIFY_FAIL_WINDOW_MS);
+  const ok = await checkLimit(c.env, `svfail:${key}`, SHARE_VERIFY_FAIL_LIMIT, SHARE_VERIFY_FAIL_WINDOW_MS);
   if (!ok) throw new ApiError(429, 'RATE_LIMIT_EXCEEDED', '尝试过于频繁，请稍后再试');
 }
 
@@ -165,11 +166,11 @@ async function gateShareRead(c: Context, shareId: string, opts: { countView?: bo
   if (opts.countView) {
     // 次数限制（防刷：同一 IP 60s 内重复打开只计一次浏览，KV 去重标记）
     const dedupeKey = `share:view:${shareId}:${requestIp(c.req.raw) ?? 'unknown'}`;
-    const alreadyCounted = (await c.env.KV.get(dedupeKey)) !== null;
+    const alreadyCounted = (await kvStoreFor(c.env).get(c.env.KV, dedupeKey)) !== null;
     if (!alreadyCounted) {
       const canView = await ShareRepo.incrementView(db, shareId, share.maxViews);
       if (!canView) throw new ApiError(410, 'SHARE_LIMIT_REACHED', '分享访问次数已达上限');
-      await c.env.KV.put(dedupeKey, '1', { expirationTtl: 60 });
+      await kvStoreFor(c.env).put(c.env.KV, dedupeKey, '1', { expirationTtl: 60 });
       viewCounted = true;
     } else if (share.maxViews && share.viewCount >= share.maxViews) {
       throw new ApiError(410, 'SHARE_LIMIT_REACHED', '分享访问次数已达上限');
@@ -313,7 +314,7 @@ shareRoutes.post('/:id/verify', shareVerifyRateLimitMiddleware, async (c) => {
   await resetShareVerifyCooldown(c, cooldownKey);
   // 签发短期授权 cookie（值随机，仅作已验证标记；密码不落 URL/日志）
   const value = randomString(32);
-  await c.env.KV.put(`share:auth:${shareId}:${value}`, '1', { expirationTtl: SHARE_AUTH_TTL });
+  await kvStoreFor(c.env).put(c.env.KV, `share:auth:${shareId}:${value}`, '1', { expirationTtl: SHARE_AUTH_TTL });
   c.header('Set-Cookie', `${shareAuthCookie(shareId)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SHARE_AUTH_TTL}`);
   return ok(c, { authorized: true });
 });
@@ -350,7 +351,7 @@ shareRoutes.post('/:id/verify-file', shareVerifyRateLimitMiddleware, async (c) =
     ?.slice(`${cookieName}=`.length);
   let verified: string[] = [];
   if (existingValue) {
-    const stored = await c.env.KV.get(`share:fileauth:${shareId}:${existingValue}`);
+    const stored = await kvStoreFor(c.env).get(c.env.KV, `share:fileauth:${shareId}:${existingValue}`);
     if (stored) {
       try {
         verified = JSON.parse(stored) as string[];
@@ -362,7 +363,7 @@ shareRoutes.post('/:id/verify-file', shareVerifyRateLimitMiddleware, async (c) =
   if (!Array.isArray(verified)) verified = [];
   if (!verified.includes(file.id)) verified.push(file.id);
   const value = existingValue ?? randomString(32);
-  await c.env.KV.put(`share:fileauth:${shareId}:${value}`, JSON.stringify(verified), { expirationTtl: FILE_AUTH_TTL });
+  await kvStoreFor(c.env).put(c.env.KV, `share:fileauth:${shareId}:${value}`, JSON.stringify(verified), { expirationTtl: FILE_AUTH_TTL });
   c.header('Set-Cookie', `${cookieName}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${FILE_AUTH_TTL}`);
   return ok(c, { authorized: true });
 });
