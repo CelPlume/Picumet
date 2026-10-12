@@ -529,15 +529,55 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 - **骨架长在玻璃卡里**（用户选定方案）：admin Settings 七卡与 settings ApiKeys 卡片壳常驻、卡内行骨架（CardRowsSkeleton）+ 数据到位内层 `animate-fade-in` 150ms 淡入，缓解骨架→aero 闪烁。（`pages/admin/Settings.tsx`、`pages/settings/ApiKeys.tsx`）
 - **aero 文字发光 / checkbox**：`--aero-text-glow` 变量分发 + glass-control/radio-option 覆盖（大幅减弱两层光晕）；滑块标签/数值对比交换、覆盖锚点隐藏；checkbox「全部动画」档未勾选文字变灰移除。（`index.css`、`radio-group.tsx`、`slider.tsx`、`checkbox` 相关）
 
+### 2026-10-11（追加）：S3 网关 MinIO 式根路径入口（无路径前缀）
+
+结构性问题：minio-go 只接受 `host[:port]` 作为 endpoint（经 Context7 核实 minio-go `New(endpoint)` 契约），SigV4 签名覆盖完整请求路径，`/s3` 前缀既不能藏在反代后面也无法改写签名——Alexandrie 等 minio-go 客户端对 `https://{domain}/s3` 全部 403。本次不新增域名，在既有站点基址上直接可用：
+
+- **根路径入口（SigV4 判别）**：Worker 顶层中间件——携带 SigV4 签名（`Authorization: AWS4-HMAC-SHA256` 头或 `X-Amz-Signature` 预签名参数）的请求进 S3 网关（bucket = 路径首段），未签名请求走常规路由；签名判别在所有中间件之前，DB 由 `getDb` 从 `c.env.DB` 兜底构建。`parseS3RequestPath` 兼容两种形态（`/s3` 前缀剥离后无前导 `/`；根路径剥离前导 `/`）。（`workers/src/index.ts`、`services/s3gw/handlers.ts`）
+- **Pages 转发**：`_middleware.ts` 在协议通道判定中前置 SigV4 检测——否则 `GET /uploads?X-Amz-Signature=…`（无扩展名）会被当成 SPA 路由返回 index.html。（`frontend/functions/_middleware.ts`）
+- **速配信息**：创建密钥响应 `configs.s3.endpoint` 从 `${base}/s3` 改为裸基址 `base`（MinIO 式直接可填）；协议勾选标签 `s3` → 「S3 / MinIO」；旧 `/s3` 前缀入口保留（存量客户端无需迁移），bucket/key 解析两种模式同语义。（`services/keys/handlers.ts`、`ApiKeys.tsx`、i18n zh/en）
+- **测试**：`tests/s3gw.test.ts` 新增根路径套件 3 例（真实 AWS SDK 以无前缀 endpoint 完成 PUT/GET/HEAD/ListBuckets、根路径预签名 GET 匿名下载、未签名请求不进网关）；`tests/gateway-compat.test.ts` endpoint 契约更新为裸基址。workers 86 文件 / 784 例全绿；前端 93 例全绿。
+- **文档**：`docs/API.md` / `API_CN.md` S3 网关章节改「双入口」（裸域名推荐 + `/s3` 兼容），客户端配置与判别语义同步。
+
+### 2026-10-11（追加二）：用户空间按用户隔离 + 网关密钥零规则可用 + 模板上传根修复
+
+用户实测反馈批次（注册常规账号全链路复测）：
+
+- **user_space 根改为按用户隔离**：`resolveUserSpaceRoot` 从「根 = defaultPath 本身」改为 `<defaultPath>/<username>`（defaultPath 末段已是用户名则直接用，避免 `/users/alice/alice`；defaultPath 为 `/` 或越出挂载边界回落 `<mountPath>/<username>`）——`/public` 角色默认路径下每个用户拿到独立子目录 `/public/<username>`，他人目录写入 403。（`services/files/upload-mode.ts`、`tests/user-space-root.test.ts` 重写）
+- **网关密钥零规则可用（403 根因）**：UI 创建的密钥没有任何路径规则，引擎第 10 步默认拒绝使 compat/WebDAV/S3 全部写通道 403（「无权执行此操作」）——这是用户 key5 全部 403 的真正根因，与 user_space 无关。修复：引擎第 9 步属主兜底扩展到 apiKey 主体（沿用属主 defaultPath/defaultPermissions，principal.ts 已装载），叠加既有第 4 步密钥权限交集与各入口 assertKeyScope 作用域；生产实测原 key5 同路径 PUT 200。（`services/permissions/check.ts`、`tests/gateway-compat.test.ts` 新增 3 例）
+- **模板上传根修复（第二处 403 根因）**：对话框默认模板 `/uploads/{year}/{month}/` 的密钥此前**完全不能上传**——作用域判定拿「渲染后目标 vs 未渲染模板根」比较，永假。新增 `renderUploadRoot()`，compat/WebDAV/S3/AList 四通道作用域判定统一先按当前时间展开模板；实测对象真实落位 `/uploads/2026/10/`。（`utils/path.ts`、`upload-bytes.ts`、`webdav`、`alist`、`s3gw`、回归 1 例）
+- **密钥默认上传根 = 用户空间目录**：创建密钥省略 uploadPath 时，user_space 挂载上的普通用户默认为其用户空间目录；显式越界 400「上传根目录必须位于你的用户空间内」；前端对话框留空 + placeholder 说明。速配信息补全上传路径：`bearer.pathHint`/`openlist.pathHint`（此前仅 WebDAV 有 webpathHint）、`s3.keyPrefixHint`（桶首段之外的 key 前缀）——四协议复制配置均含完整上传路径。（`services/keys/handlers.ts`、`ApiKeys.tsx`、i18n zh/en）
+- **S3 桶级子资源（Alexandrie 启动握手）**：`HEAD /{bucket}` BucketExists、`GET ?location` LocationConstraint、`PUT ?policy` SetBucketPolicy（接受并忽略，匿名可读由 path-serve 可见性语义实现）、`PUT /{bucket}` MakeBucket（作用域内建目录行，走 assertWritable）。minio-go 后端启动硬依赖这组调用（缺失即 os.Exit(1)），生产实测三连 200/204。（`services/s3gw/handlers.ts`）
+- **i18n**：补缺失的 `common.add`（个性化设置「添加」按钮裸 key）。
+- **测试**：workers 86 文件 / 790 例、前端 93 例全绿；`tsc --noEmit` 两端干净。
+- **生产实测**（新建常规账号 probetest1，注册走邀请码 + D1 OTP 全流程）：默认密钥 uploadPath=/public/probetest1、四协议配置含完整路径；S3 PUT `/public/probetest1/dire/2026/10/` 200（年月真实落位）、WebDAV 201、compat 200；越界写 `/public/excnies/` 403；越界 uploadPath 400；Alexandrie 握手三连通过；签名直链匿名 200。**已知边界**：未签名匿名直读受站点级 `allow_guest_access=false` 门控（当前生产为 false）——Alexandrie 生成的是未签名裸 URL，图片对外可见需开启游客访问或改用签名直链。
+- **文档**：`API(_CN)` 创建密钥（默认值/授权模型/模板作用域/configs 提示字段）与 S3 网关（桶级子资源）同步；`ARCHITECTURE(_CN)` §28 用户空间语义。
+
+### 2026-10-12：游客可见性继承与级联（图床对接缺口闭环）
+
+用户实测（Alexandrie 经 S3 网关对接 Picumet）暴露的最后缺口：站点开启「允许访客」后匿名 GET 仍 403——文件属性面板的游客可见性（`guest_visibility`）**既不级联也不被新上传继承**，且 UI 文案「跟随角色默认（游客仅可下载）」与引擎实际语义（NULL = 不额外开放）相悖（架构文档 191 行的旧意图引擎从未实现）。
+
+- **新建行继承**：`inheritGuestVisibility`——新建文件/目录行继承**最近祖先目录行**的非 NULL `guest_visibility`（参数化 substr 前缀匹配，免疫 LIKE 转义；上传自愈创建的中间目录同样继承）。`FileRepo.createFile/createFileTx` 增 `guestVisibility` 列绑定。（`services/files/write.ts`、`db/repos/files.ts`）
+- **文件夹级联**：`PUT /api/files/:id` 设置 `guestVisibility` 时对 folder **级联子树**（与可见性级联同形，范围 + substr 谓词）——「文件夹允许游客下载」对既有子项立即生效。
+- **文案纠偏**：属性面板 `guestInherit` 改「不单独设置（游客不可访问）」、分组名/描述改为「游客访问（子目录与新上传文件自动继承）」，与引擎语义一致；刻意**不**实现「NULL 跟随角色默认放行」——合成规则先于匿名硬拒绝（F-07），NULL 放行会在 guest_access 开启时把 private 文件一并暴露。
+- **测试**：新增 `tests/guest-inherit.test.ts` 3 例（深路径继承含自愈目录、无祖先设置保持 NULL、级联收敛既有子树）；workers 87 文件 / 793 例全绿。
+- **文档**：`ARCHITECTURE(_CN)` 游客可见性语义（继承 + 级联 + 不放行 NULL 的理由）、`API(_CN)` `PUT /api/files/:id` 字段语义同步。
+- **生产实测（Alexandrie 对接配方全链路）**：admin 密钥 uploadPath=/ → `PUT /drie/u1/node1.jpg` 200（`<userId>/<nodeId>.<ext>` 布局）、BucketExists/MakeBucket/SetBucketPolicy 全过；`/drie` 设「游客仅可下载」（级联）→ **匿名 GET 200** 返回内容一致。测试密钥与对象已清理，`/drie-backups` 目录保留（Alexandrie 备份桶）。
+
+### 2026-10-12（追加）：S3 网关业务异常 XML 映射（409 裸 500 修复）+ Alexandrie 面板侧配置落地
+
+- **S3 网关 `onError`**：`upsertFileObject` 等抛出的 `ApiError`（占用 409 / 404 / 413…）此前在根路径挂载上未经映射直接裸 500（s3RootApi 独立 Hono 实例无全局 errorHandler）。新增 `s3gwRoutes.onError` 把业务异常映射为 S3 XML（409 OperationAborted / 404 NoSuchKey / 413 EntityTooLarge / 501 NotImplemented），根路径与 `/s3` 挂载同语义。回归 1 例（SDK 复现他人占用 → 409 XML，属主对象完好）。（`services/s3gw/handlers.ts`、`tests/s3gw.test.ts`）
+- **面板侧配置（硬自测通过）**：admin 创建 `alexandrie-root` 密钥（uploadPath=/，桶根任意路径写入 200）；`/public/excnies/dire` 设「游客仅可下载」（级联）；`/drie-backups` 预建。**无痕自测 `GET /public/excnies/dire/scope-ok.txt` → 200 `scope-check`**；既有 png 匿名 200。workers 87 文件 / 794 例全绿。
+
 ## 当前基线
 
-- 后端：78 个测试文件 / 717 个 Vitest 用例通过（本条新增 `randomDigits` 5 例）；`tsc --noEmit` 干净。
-- 前端：13 个测试文件 / 92 个 Vitest 用例通过（本条新增 `lib/image-cache.test.ts` 14 例）；`tsc -b && vite build` 通过，`tsc --noEmit` 干净。
+- 后端：87 个测试文件 / 794 个 Vitest 用例通过（累计本轮新增：can_browse_all 回归 3 例、网关密钥零规则与用户空间默认 3 例、模板上传根 1 例、游客可见性继承 3 例、S3 异常映射 1 例）；`tsc --noEmit` 干净。
+- 前端：13 个测试文件 / 93 个 Vitest 用例通过；`tsc -b && vite build` 通过，`tsc --noEmit` 干净。
 - 语言：中文 + 英文。
 
 ## 即将规划
 
-近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面一项详细规划与九项新方向（液态玻璃动效、组件色彩体系、Workers 稳定性调查、存储驱动与上传修复、出口机制与协议挂载、SMTP 完整测试、第一版上线、自建 S3 兼容存储的内网接入受限、两步验证（2FA / TOTP））。
+近期待办总览：Oracle Cloud provider 实现、路径变量 DSL（`{year}/{month}`）、热文件检测与强制签名 URL、拖拽交互与属性面板编辑的持续验证记录，以及下面一项详细规划与十项新方向（液态玻璃动效、组件色彩体系、Workers 稳定性调查、存储驱动与上传修复、出口机制与协议挂载、SMTP 完整测试、第一版上线、自建 S3 兼容存储的内网接入受限、两步验证（2FA / TOTP）、注册限流强化）。
 
 ### Cloudflare Turnstile 人机验证（登录 / 注册 / 分享下载 / 直链访问 / 文件下载）
 
@@ -561,7 +601,7 @@ Cloudflare Turnstile 接入方案，管理端可按面开关。背景：初版�
 - **文档联动**：API 参考补 `X-Turnstile-Token` 请求头、`TURNSTILE_REQUIRED`/`TURNSTILE_FAILED` 错误码与公开设置 `turnstile` 字段；架构文档安全设计补「人机验证」小节；部署指南补 Turnstile 密钥申请（Cloudflare Dashboard → Turnstile）与官方测试键说明；UI 指南补五面交互。
 - **明确不做（本期）**：pre-clearance（绑定 CF zone WAF，不适用多面 SPA）；过渡页 cookie 跨面复用（短 TTL 足够）；WebDAV/S3 网关/AList API 面（已有 API Key 认证 + 限流）；gallery 下载与找回密码（与分享下载/登录同模式，需要时一键纳入）。
 
-### 两步验证（2FA / TOTP，登录第二因子）
+### 两步验证（2FA / TOTP，登录第二因子，已完成本地实现与测试）
 
 规划依据经 Context7 核实（`/hectorm/otpauth`，RFC 4226 HOTP / RFC 6238 TOTP）：otpauth 支持 Node/Deno/Bun/浏览器四运行时，默认构建自带纯 JS HMAC（无 Node 内建依赖，Workers 可用）；`otpauth/bare` 需自备**同步** HMAC 函数（Web Crypto subtle 是异步的），真走 bare 构建时需内置同步实现或换库，落地时以实测为准。
 
@@ -573,7 +613,77 @@ Cloudflare Turnstile 接入方案，管理端可按面开关。背景：初版�
 - **不加验的面**：API 密钥协议面（WebDAV / S3 网关 / AList / PicList）不叠 2FA——密钥认证不是密码认证，能持密钥即视为已过登录；找回密码改密递增 `session_version` 已使旧会话失效。**待决**：SSO/OIDC 完成是否叠加第二因子（该路径不经本站密码）。
 - **会话语义**：2FA 是登录门，不递增 `session_version`；已登录会话开启 2FA 不踢下线。
 - **前端**：个性化设置「修改密码」同区新增「两步验证」卡（状态 / 启用向导：QR + 确认码 + 备用码一次性展示 / 禁用）；登录页第二步输入。i18n zh/en 两份。
-- **测试**：enroll 矩阵（错码不启用、对码启用 + 备用码发放）、登录加验（缺码 `TOTP_REQUIRED` / 对码 200 / 错码 401 同文案）、备用码单次消费、同 counter 重放拒绝、限流 fail-closed、禁用后恢复单因子登录。
+- **测试**：workers `tests/totp-2fa.test.ts`（2 例全量场景全绿）——enroll 矩阵（错码 400、对码 200 并发放 10 个备用码）、登录第二因子门控（缺码 403 `TOTP_REQUIRED` / 错码 401 / 对码 200）、时间步计数器防重放（同 30s 窗口二次提交 401）、备用码登录消费与防重用、剩余备用码计数递减、备用码重新生成并作废旧码、禁用需主密码+动态码/备用码校验、禁用后恢复单因子登录。前端 `Personalization.tsx`（管理卡+向导弹窗+QR+备份码网格+禁用弹窗）与 `Login.tsx`（第二步 OTP 输入/备用码切换）类型检查与全量单测通过。
+
+### 注册限流强化与封禁管理（已完成本地实现与测试）
+
+动机：2026-10-11 生产部署后，**恶意批量注册**成为吃满存储配额 / R2 用量的主要攻击面（每账号默认 1 GiB，N 个账号 = N GiB）。现状防线与缺口：
+
+- **现状（已实现）**：`/api/auth/*` 挂 `rateLimitMiddleware`（全局限速，`system_settings` 可调）；认证写端点另挂 `authRateLimitMiddleware`——**固定 5 次/分钟/IP**（硬编码，仅生产或 `RATE_LIMIT_FORCE=true` 生效，KV 计数，认证类存储异常 fail-closed 503）；注册门控另有开放注册开关、邀请码四项、邮箱验证（`require_email_verification`）、新用户默认 1 GiB 配额、账号 `banned` 封禁。
+- **缺口**：① 阈值硬编码不可调；② 每分钟滑动窗口防得住爆破，防不住「慢速批量注册」（每分钟 ≤5 个请求但持续注册成功）；③ 注册成功无独立速率约束；④ 无法按攻击态势在线收紧。
+
+规划项：
+
+| 项 | 设计 | 关键落点 |
+| :--- | :--- | :--- |
+| 认证限流可配置 | `system_settings.auth_rate_limit_per_minute`（默认 5 = 现状，0 = 关闭该档），管理端「安全设置」卡可调；`authRateLimitMiddleware` 从硬编码收敛到设置读取（60s 进程内缓存 + 保存失效，与审计策略同模式）；生产默认行为不变 | `middleware/rate-limit.ts`、`admin/schemas.ts`、`admin/handlers.ts`、`admin/Settings.tsx` |
+| 注册成功速率 | 新增 `register_success_per_hour_per_ip`（默认 3）：按 **注册成功**（非请求）计数，超限 429 `REGISTER_RATE_LIMITED`——防慢速批量注册；KV 计数与既有窗口同模式；邀请码必填开启时此项自动收益（码本身是稀缺凭证） | `auth/handlers.ts`（注册成功事务后计数）、`middleware/rate-limit.ts` |
+| **IP 封禁（落库，新增）** | 新表 `ip_bans`（id / ip / reason / created_by / created_at / expires_at NULL=永久）：① `ipBanMiddleware` 挂全局最早位（KV 缓存名单，写时失效），命中一律 `403` 通用文案（不透露命中原因，防枚举）；② 管理端「安全设置」新增 IP 封禁卡：增删查 + 原因 + 可选过期时间，操作写审计；③ 可选自动封禁（默认关）：同 IP 注册失败 / 注册成功超阈值自动入表 | 迁移 0014（编号以落地时为准）、`middleware/ip-ban.ts`、`admin/{schemas,handlers}.ts`、`admin/Settings.tsx` |
+| **封禁用户（增强既有，参考 SDNUChronoSync）** | 现有 `users.status='banned'` 保留为「账号封禁」；增强：① 封禁/解封操作写审计（原因、操作者）；② `users.ban_reason` 字段落库（管理端可见）；③ 登录文案语义决策——SDNUChronoSync 对所有封禁类型统一返回模糊文案「服务不可用」防枚举，Picumet 现返回具体 `ACCOUNT_BANNED`，**待决策**是否对齐模糊语义（可用性 vs 防枚举） | `users.ts`（迁移加列）、`auth/handlers.ts`、`admin/handlers.ts`（封禁审计）、`admin/Users.tsx` |
+| 观测补齐 | 注册成功/被限流写审计（`auth` 组）；管理端日志页可直接看到每 IP 注册态势 | `auth/handlers.ts`、`LogRepo` |
+| 关联项（待决策） | 全站存储硬顶 `site_max_storage`：上传预留时校验全站已用 + size ≤ 上限，超限 413——「被攻击时超 9G 停止使用」的直接答案，与本规划配套但独立成项 | `uploads/handlers.ts`、`files/write.ts`、配额预留链路 |
+| 联动 | Turnstile 重实现规划（见上文）若落地，注册面为第一优先接入面（`action='register'`）；本规划不依赖它 | — |
+
+- **参考实现（`~/SDNUChronoSync/`，2026-10-11 核对源码）**：其封禁体系为 `users.status` 单列枚举 `normal / ban / ipban / emailban`——`ban` 账号封禁、`ipban` 封禁该用户并按状态拦其 IP（管理员豁免可登录）、`emailban` 封既有用户行对应邮箱（注册/发验证码侧 `403 服务不可用`，防同邮箱再注册）；管理端 `POST /admin/users/{id}/ban {ban_type}` + `/restore`，禁止自封；所有封禁类型登录侧统一模糊文案「服务不可用」（防枚举）。**Picumet 采纳与差异**：① 独立 `ip_bans` 表取代「按用户行标 ipban」——Picumet 的 IP 封禁要覆盖未注册访客的攻击流量（SDNUChronoSync 的 ipban 只能封已注册用户）；② 保留现有 `banned` 单值 + 新增 `ban_reason` 审计列；③ 登录文案是否模糊化列为待决策；④ 无 emailban 对应物——Picumet 的邀请码 + 邮箱验证已覆盖同邮箱再注册面。
+
+- **明确不做**：账户锁定（已拒绝）；找回密码按邮箱独立限流（已拒绝，复用通用限流）；引入图形验证码（Turnstile 另有完整规划）。
+- **测试**：workers `tests/rate-limit-hardening.test.ts`（9 例全量场景全绿）——认证限流阈值可配置（默认 5、自定义值超限 429、0=关闭该档）、管理端设置 PATCH/GET 往返与缓存失效联动、注册成功速率计数（超过 `register_success_per_hour_per_ip` 报 429 `REGISTER_RATE_LIMITED`，0=关闭）、IP 封禁全局门禁（命中 403 通用文案「请求被拒绝」防枚举、过期放行、管理端解封后 KV 缓存写时失效）、管理员豁免防自锁（optionalAuth 已解析会话跳过）、非管理员禁止操作、用户封禁原因 `ban_reason` 落库与清除、`admin_user_status`/`admin_ip_ban`/`admin_ip_unban` 审计日志落库。前端 `Settings.tsx` 安全设置卡（2x2 网关/认证限流网格 + IP 封禁管理与 ConfirmDialog）类型检查与构建通过。
+
+### 2026-10-11 生产实测后续修改清单（S3 网关 / UI / 设置默认值）
+
+Pages 反代架构上线后的实测反馈，全部为**后续修改**待办。安全注：清单中 `sk_` 密钥已掩码（完整密钥只存于用户本地的 PicGo 配置，不入仓库文档）。
+
+| # | 项 | 状态 | 落地内容 |
+| :--- | :--- | :--- | :--- |
+| 1 | **S3 网关经 Pages 域名不可达（生产缺陷）** | **已修复（本地）** | `frontend/functions/` 新增 `s3/[[path]].ts`、`s3.ts`、`webdav/[[path]].ts`、`webdav.ts`、`openlist/[[path]].ts`、`openlist.ts`，将所有非 `/api` 协议面统一经 Service Binding 内网透传到 Worker，彻底解决静态层 SPA 截胡 / 405 问题。 |
+| 2 | **Tooltip 未适配三级模糊** | **已修复（本地）** | `frontend/src/components/ui/tooltip.tsx` 气泡与箭头从硬编码实底 `bg-foreground` 改为 `glass-surface-popover glass-blur border border-border/60 text-popover-foreground shadow-md`，完整接入全站四档模糊/透明度门控体系。 |
+| 3 | **系统设置增加「返回 URL」（自定义域/CF 代理）** | **已实现（本地）** | 新增 `return_url`（`returnUrl`）设置项。`loadRoutePrefixes` 读取并清洗、`buildFileAccessUrl` 与 `/copy-links` 优先将其作为 baseOrigin 生成直链与上传响应 URL；管理端「站点设置」卡增加输入框与帮助文案。 |
+| 4 | **API 密钥弹窗 S3 配置块逐行复制 + 复制全部** | **已实现（本地）** | `frontend/src/pages/settings/ApiKeys.tsx` S3 配置块每行增加独立悬浮复制按钮，底部增加「复制全部」按钮，复制输出严格按照 `key: value` 格式带末尾换行。 |
+| 5 | **API 密钥弹窗加宽** | **已实现（本地）** | 弹窗容器宽度调整为 `max-w-3xl`，长键名与长秘钥单行展示不折行拥挤。 |
+| 6 | **个性化「右键单击行为」重排 + 默认值 + 第三选项** | **已实现（本地）** | `rightClickAction` 默认值改为 `'menu'`（打开上下文菜单）；选项顺序调为：上下文菜单 → 属性面板 → 右键多选文件；`Files.tsx` 接入第三选项直接进入多选模式并选中项。 |
+| 7 | **过滚动效果默认改为橡皮筋** | **已实现（本地）** | `frontend/src/stores/theme.ts` 中 `DEFAULT.overscrollEffect` 默认值由 `'off'` 改为 `'rubberBand'`（用户已有显式设置不受影响）。 |
+| 8 | **创建邀请码生产 500（生产缺陷）** | **已修复（本地）** | `InviteRepo.createBatch` 改为单条条件 `INSERT … SELECT … UNION ALL … WHERE (SELECT COUNT(*) …) + ? <= ?`，消除 D1 事务禁读异常与伪重试逻辑，`tests/invite-codes.test.ts` 28/28 全绿。 |
+| 9 | **传输并发槽位泄漏（生产缺陷）** | **已修复** | 槽位心跳 15s 刷新，停跳 60s 视为泄漏不再计数，测试全绿。 |
+| 10 | **非平台上传的文件无法索引（新增「索引扫描/导入」功能）** | **待办** | 其他协作者进行中，当前会话不触碰。 |
+
+- **#10 设计要点（索引扫描 / 添加索引，参考 OpenList）**：
+  - **触发**：管理端存储管理按挂载点手动触发（默认）；可选挂到定时任务作为「审计不清理」模式。
+  - **扫描**：按挂载点 `ListObjects`（Delimiter 分页遍历，复用既有 listObjects 能力），取物理对象全集（key、size、mtime、content-type）。
+  - **git 式增删对比**（核心输出，逐挂载点一份 diff）：
+    - **新增**（桶有、索引无）→ 收编登记为文件行：保持原物理 key（legacy path 对象语义，应用已支持传统路径键）不动、登记路径/大小/mime/mtime；不读对象内容（不重算 sha256，直接按 legacy 键登记，避免全量读桶流量）。
+    - **删除**（索引有、桶无）→ 报告差异；动作可选「移除索引行 / 标记孤儿」，联动配额回退与既有对账语义。
+    - 两段式：先 **dry-run 出 diff 清单**（UI 呈现），用户确认后 **apply**。
+  - **与既有对账的关系**：定时对账负责「清孤儿」；本功能负责「收编合法外部对象」——收编登记后即脱离孤儿清理范围，两者共用 blob_objects / file_metadata 判定口径，避免互相打架。
+  - **设计决策点（实现前定）**：导入文件的属主与配额记账（挂到管理员 / 按挂载点归属）；目录行补建策略；mtime 缺失时的行为；与内容寻址去重的边界（legacy 键不参与 hash 去重）。
+- **#8 诊断（2026-10-11）**：`POST /api/invites`（`services/invites/handlers.ts:38`）在 `db.transaction` 内调用 `InviteRepo.countByUser(tx, …)`（读）——2026-09-30「邀请码越权加固 ②」为封 TOCTOU 把「先查后写」收敛进事务，但 **D1 事务（batch 收集器）不支持事务内读**（`db.ts D1Backend.transaction`：`tx.query` 只是收集写语句、返回假 `changes`，读 API 直接抛错）；实验室 vitest 跑 `node:sqlite` 后端（事务内可读），19 例全绿掩盖了生产必炸。同因埋雷：事务内「UNIQUE 码值碰撞 try/catch 重试」在 D1 上也是死代码（收集期拿不到真实错误，batch 失败即整体回滚）。
+- **#8 全仓排查**：扫尽 9 处 `db.transaction` 闭包（users/system/blob/role-defaults/storage/mount-role/write/remove/archive）——**仅邀请码一处事务内读**，其余全部纯写，无同类地雷。
+- **#8 修复设计（D1 兼容的原子上限）**：放弃事务内读，改**单条条件 INSERT**——`INSERT … SELECT <每码一行 UNION ALL> WHERE (SELECT COUNT(*) FROM invite_codes WHERE created_by = ?) + <count> <= <maxPerUser>`：① 上限校验随插入语句原子生效（D1 单写者串行，并发天然 TOCTOU 安全）；② 语句级 all-or-nothing（任一码 UNIQUE 冲突整句失败，外层重试整批换新码，碰撞概率 ~36⁻⁶ ≈ 0）；③ 不需要事务包装（单语句自带原子性），node:sqlite / D1 双后端行为一致；④ 语义保持「不足全部拒绝（403 INVITE_LIMIT），不做部分创建」。配套：invite-codes 测试补一条「node:sqlite 与 D1 行为一致性」断言说明，避免同类盲区再次静默。
+
+- **S3 配置实测背景（#1/#4）**：用户在 PicGo 配置 `endpoint: https://picumet.pages.dev/s3`、`region: auto`、`bucket: drie`、路径式寻址 `true`，签名请求被 SPA 截胡（见 #1）。#4 的展示块对应 PicGo 所需的全部连接参数。
+- **#1 实测（2026-10-11，curl）**：
+
+  | 测试 | 结果 |
+  | :--- | :--- |
+  | `picumet.pages.dev/s3/` GET（带不带签名头一致） | `200 text/html`，响应体是 SPA `index.html`——静态层截胡，非 S3 XML |
+  | `picumet.pages.dev/s3/{bucket}/{key}` PUT / DELETE | `405`（Pages 静态层拒绝非 GET，与签名无关） |
+  | `picumet.hxcn.dev/s3/` | 同 pages.dev（`200 text/html` SPA） |
+  | `picumet.hxcn.dev` 首页 / `/api` health | `200` / `ok`——**自定义域名已挂到 Pages 项目并正常服务**（zone 已在本账号） |
+  | 后端 `picumet.excnies.workers.dev` | `workers_dev = false` 已关闭（404），无公网入口 |
+
+  - **根因**：Worker 协议面路由为 `/api/*`、`/s3(/*)`、`/webdav`、`/openlist(/*)`（`workers/src/index.ts:80-89`），Pages Functions 仅覆盖 `/api/*`；其余前缀落在静态层 → GET 被 SPA 回退截胡、写方法 405。
+  - **修复范围（两层）**：① Pages Functions 补 `functions/s3/[[path]].ts`、`functions/webdav/[[path]].ts`、`functions/openlist/[[path]].ts`（与既有 `functions/api/[[path]].ts` 同款透传），部署后 **PicGo（endpoint 允许带 `/s3` 路径前缀）立即可用**；② **minio 类 host-only 客户端**（endpoint 只接受 `host[:port]`，不带路径前缀）需要**专用主机名**：zone `hxcn.dev` 已在本账号，可给 Worker 挂 `s3.hxcn.dev` Custom Domain（`routes` 配置）+ Worker 按 host 把 S3 网关挂到根路径（`/{bucket}/{key}` 直达网关，需 s3gw 解析逻辑兼容无 `/s3` 前缀）——待实现。
+  - **文件公网 URL 形态**：上传返回 `data.url`（`APP_BASE_URL` + 直链前缀 + 签名/公开路径）；#3 返回 URL 功能落地前，公网 URL 与上传同域。
+- **#3 语义对齐参考**：AList 存储设置的「设定 URL / 自定义域名」；PicList 源码（Context7 查阅）——上传 URL 与返回 URL 的消费差异是本项设计的输入，不是照抄。
 
 ### 液态玻璃引入与动效 / 组件优化
 
