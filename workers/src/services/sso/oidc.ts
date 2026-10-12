@@ -10,6 +10,7 @@ import { ApiError } from '../../shared/errors';
 import type { SsoProviderKind } from '@shared/types';
 import { isAllowedUpstreamUrl } from './config';
 import type { SsoAuthResult, SsoDiscovery, SsoProfile } from './types';
+import { kvStoreFor } from '../../utils/kv-store';
 
 /** Google 用标准 discovery（与自托管 OIDC 同一条代码路径，仅 issuer 固定） */
 export const GOOGLE_ISSUER = 'https://accounts.google.com';
@@ -64,7 +65,7 @@ export async function pkceChallenge(verifier: string): Promise<string> {
 
 /** 缓存失效：issuer / clientId 变更后缓存的 discovery 文档失效 */
 export async function clearDiscoveryCache(env: Env, providerId: string): Promise<void> {
-  await env.KV.delete(`sso:disc:${providerId}`);
+  await kvStoreFor(env).delete(env.KV, `sso:disc:${providerId}`);
 }
 
 function normalizeIssuer(value: string): string {
@@ -101,7 +102,7 @@ export async function loadDiscovery(env: Env, provider: SsoProviderRow, allowLoo
   const issuer = normalizeIssuer(provider.kind === 'google' ? GOOGLE_ISSUER : (provider.issuerUrl ?? ''));
   if (!issuer) throw new ApiError(500, 'SSO_NOT_CONFIGURED', '该来源未配置 issuer');
   const cacheKey = `sso:disc:${provider.id}`;
-  const cached = await env.KV.get(cacheKey);
+  const cached = await kvStoreFor(env).get(env.KV, cacheKey);
   if (cached) {
     try {
       const parsed = JSON.parse(cached) as SsoDiscovery;
@@ -149,7 +150,7 @@ export async function loadDiscovery(env: Env, provider: SsoProviderRow, allowLoo
     tokenAuthMethods: methods,
     kind: provider.kind,
   };
-  await env.KV.put(cacheKey, JSON.stringify(discovery), { expirationTtl: DISCOVERY_CACHE_TTL });
+  await kvStoreFor(env).put(env.KV, cacheKey, JSON.stringify(discovery), { expirationTtl: DISCOVERY_CACHE_TTL });
   return discovery;
 }
 

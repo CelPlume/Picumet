@@ -41,6 +41,7 @@ import {
 } from './config';
 import { buildAuthorizeUrl, exchangeCode, loadDiscovery, pkceChallenge, resolveProfile } from './oidc';
 import type { SsoPendingEntry, SsoProfile, SsoStateEntry, SsoTokens } from './types';
+import { kvStoreFor } from '../../utils/kv-store';
 
 const STATE_TTL = 600; // 授权会话 10 分钟
 const PENDING_TTL = 900; // 补充注册上下文 15 分钟
@@ -210,7 +211,7 @@ ssoRoutes.get('/:id/start', authRateLimitMiddleware, async (c) => {
     const verifier = randomString(64);
     const nonce = randomString(32);
     const entry: SsoStateEntry = { providerId: provider.id, verifier, nonce };
-    await env.KV.put(`sso:state:${state}`, JSON.stringify(entry), { expirationTtl: STATE_TTL });
+    await kvStoreFor(env).put(env.KV, `sso:state:${state}`, JSON.stringify(entry), { expirationTtl: STATE_TTL });
     // 与发起浏览器绑定（回调时校验）；scope 空串回落到类型默认（脏行不让空 scope 进授权请求）
     appendBindCookie(c, TX_COOKIE, state, STATE_TTL);
     return c.redirect(
@@ -242,8 +243,8 @@ ssoRoutes.get('/:id/callback', authRateLimitMiddleware, async (c) => {
     // state 一次性消费（防重放）：先删除再判定，**任何**回调尝试都会作废该 state
     // （包括绑定 Cookie 不匹配的请求），避免同一 state 被反复试探
     const stateKey = `sso:state:${state}`;
-    const rawState = await env.KV.get(stateKey);
-    await env.KV.delete(stateKey);
+    const rawState = await kvStoreFor(env).get(env.KV, stateKey);
+    await kvStoreFor(env).delete(env.KV, stateKey);
     // 绑定校验：本次授权必须由「发起时写入 sso_tx Cookie 的那个浏览器」完成（防登录 CSRF/会话固定）
     assertBindCookie(c, TX_COOKIE, state, 'SSO_STATE_INVALID', '授权会话与当前浏览器不匹配，请重新发起登录');
     // 校验通过即清：该 state 已消费，绑定值不再需要
@@ -343,7 +344,7 @@ async function completeAuthentication(
     // /complete 直接把该密文写入 sso_identities，不重复加密
     tokens: sealed,
   };
-  await env.KV.put(`sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+  await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
   // 与当前浏览器绑定：没有这个 Cookie 的请求（例如他人转发的链接）无法完成注册
   appendBindCookie(c, PENDING_COOKIE, token, PENDING_TTL);
   const url = new URL('/sso/complete', env.APP_BASE_URL);
@@ -358,7 +359,7 @@ ssoRoutes.get('/pending', authRateLimitMiddleware, async (c) => {
   const token = c.req.query('token');
   if (!token) throw ApiError.badRequest('缺少注册令牌');
   assertBindCookie(c, PENDING_COOKIE, token, 'SSO_PENDING_INVALID', '注册会话与当前浏览器不匹配，请重新使用第三方登录');
-  const raw = await c.env.KV.get(`sso:pending:${token}`);
+  const raw = await kvStoreFor(c.env).get(c.env.KV, `sso:pending:${token}`);
   if (!raw) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
   let pending: SsoPendingEntry;
   try {
@@ -402,7 +403,7 @@ ssoRoutes.post('/complete', authRateLimitMiddleware, async (c) => {
   const { token, username, password, email, emailCode } = parsed.data;
   // 绑定校验：只有持有 sso_pending Cookie 的浏览器能消费该令牌（他人转发的链接直接失效）
   assertBindCookie(c, PENDING_COOKIE, token, 'SSO_PENDING_INVALID', '注册会话与当前浏览器不匹配，请重新使用第三方登录');
-  const rawPending = await env.KV.get(`sso:pending:${token}`);
+  const rawPending = await kvStoreFor(env).get(env.KV, `sso:pending:${token}`);
   if (!rawPending) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
   let pending: SsoPendingEntry;
   try {
@@ -420,9 +421,9 @@ ssoRoutes.post('/complete', authRateLimitMiddleware, async (c) => {
   // 判定基准是**本次提交的邮箱**（见 emailVerificationRequired 注释）。
   const otpRequired = await emailVerificationRequired(db, env, pending, email);
   if (otpRequired) {
-    const stored = await env.KV.get(`email:otp:register:${email.toLowerCase()}`);
+    const stored = await kvStoreFor(env).get(env.KV, `email:otp:register:${email.toLowerCase()}`);
     if (!stored || stored !== emailCode) throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
-    await env.KV.delete(`email:otp:register:${email.toLowerCase()}`);
+    await kvStoreFor(env).delete(env.KV, `email:otp:register:${email.toLowerCase()}`);
   }
 
   // 邀请码门控（与 /register 同源语义与错误码）
@@ -463,7 +464,7 @@ ssoRoutes.post('/complete', authRateLimitMiddleware, async (c) => {
     ...pending.tokens,
   });
   // 令牌一次性：注册成功后上下文与绑定 Cookie 立即失效（失败重试期间保留至 TTL）
-  await env.KV.delete(`sso:pending:${token}`);
+  await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
   appendBindCookie(c, PENDING_COOKIE, '', 0);
 
   await LogRepo.create(db, {
