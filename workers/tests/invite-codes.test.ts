@@ -5,9 +5,9 @@
 // - 核销原子性：有效码注册写 users.invited_by_code_id + 配额行；FK 失败（码不存在）整体回滚
 // - GET /api/invites 按码聚合受邀记录（用户名 / 所用码 / 注册时间）
 // - 管理设置 GET/PATCH 往返与公开设置透出
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
-import { Db, UserRepo } from '../src/db';
+import { Db, UserRepo, InviteRepo } from '../src/db';
 import { generateInviteCode, INVITE_CODE_PATTERN } from '../src/services/invites/invites';
 
 let ctx: TestContext;
@@ -470,5 +470,75 @@ describe('管理端用户列表的受邀信息', () => {
     expect(data.users[0].username).toBe('ig_list_invitee');
     const byRole = await adminUsers('page=1&limit=50&role=user&search=ig_list');
     expect(byRole.pagination.total).toBe(2);
+  });
+});
+
+// ============ 单条条件 INSERT 回归（生产 D1 兼容） ============
+// D1 事务（batch 收集器）不支持事务内读，POST /api/invites 已改单条条件 INSERT：
+// 上限校验由语句内 WHERE 子查询原子生效（changes = 0 → 403），UNIQUE 碰撞整句失败 → 整批换码重试。
+describe('条件 INSERT 语义（生产缺陷回归）', () => {
+  // node:sqlite 后端在事务内可读所以旧实现实验室全绿、生产 D1 必 500；
+  // 这里不需要复刻 D1 的 tx 收集器——条件 INSERT 语义对双后端一致，直接按语句行为断言。
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetInviteSettings();
+  });
+
+  function countByUser(username: string): number {
+    const row = ctx.db
+      .prepare(`SELECT COUNT(*) AS n FROM invite_codes WHERE created_by = (SELECT id FROM users WHERE username = ?)`)
+      .get(username) as { n: number };
+    return row.n;
+  }
+
+  it('count 超限全拒：0 条创建（不足不做部分创建）', async () => {
+    resetInviteSettings();
+    setSetting('invite_enabled', 'true');
+    setSetting('invite_max_per_user', '3');
+    const user = await registerAndLogin(ctx, 'ig_cins_over');
+    // 既有 2 条，批量请求 2 条：2 + 2 > 3 → 整批拒绝、库里仍是 2 条
+    expect((await createInvites(user.authCookie, { count: 2 })).status).toBe(201);
+    const over = await createInvites(user.authCookie, { count: 2 });
+    expect(over.status).toBe(403);
+    expect(await errCode(over)).toBe('INVITE_LIMIT');
+    expect(countByUser('ig_cins_over')).toBe(2);
+  });
+
+  it('恰好达到上限成功：既有 2 + 本次 1 = 上限 3', async () => {
+    resetInviteSettings();
+    setSetting('invite_enabled', 'true');
+    setSetting('invite_max_per_user', '3');
+    const user = await registerAndLogin(ctx, 'ig_cins_exact');
+    expect((await createInvites(user.authCookie, { count: 2 })).status).toBe(201);
+    const exact = await createInvites(user.authCookie);
+    expect(exact.status).toBe(201);
+    expect(countByUser('ig_cins_exact')).toBe(3);
+    // 达到上限后连 1 条也进不来
+    const over = await createInvites(user.authCookie);
+    expect(over.status).toBe(403);
+    expect(await errCode(over)).toBe('INVITE_LIMIT');
+  });
+
+  it('UNIQUE 碰撞重试：首批码值撞库后整批换新码成功', async () => {
+    resetInviteSettings();
+    setSetting('invite_enabled', 'true');
+    setSetting('invite_max_per_user', '10');
+    const user = await registerAndLogin(ctx, 'ig_cins_collision');
+    // 注入 createBatch：第一次抛 UNIQUE 约束错误（模拟码值碰撞），第二次放行真实实现
+    const real = InviteRepo.createBatch.bind(InviteRepo);
+    let calls = 0;
+    const spy = vi.spyOn(InviteRepo, 'createBatch').mockImplementation(async (db, invites, max) => {
+      calls += 1;
+      if (calls === 1) throw new Error('UNIQUE constraint failed: invite_codes.code');
+      return real(db, invites, max);
+    });
+    const res = await createInvites(user.authCookie, { count: 2 });
+    expect(res.status).toBe(201);
+    expect(calls).toBe(2);
+    spy.mockRestore();
+    const body = await json<{ data: { codes: Array<{ code: string }> } }>(res);
+    expect(body.data.codes).toHaveLength(2);
+    expect(countByUser('ig_cins_collision')).toBe(2);
   });
 });

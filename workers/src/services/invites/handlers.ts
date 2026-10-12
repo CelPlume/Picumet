@@ -2,7 +2,7 @@
 // 挂载于 protectedApi（authMiddleware + csrf + 限流），见 workers/src/index.ts。
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { InviteRepo } from '../../db';
+import { InviteRepo, type InviteCode } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
@@ -31,33 +31,30 @@ inviteRoutes.post('/', async (c) => {
   const trimmed = parsed.data.name?.trim();
   const name = trimmed ? trimmed : null;
   const createdAt = Date.now();
-  const created: InviteCodeView[] = [];
 
-  // 累计数量上限（已有 + 本次）与插入收敛在同一事务：
-  // 先查后写在并发下会让多个请求读到同一计数、各自越过上限（TOCTOU），事务内复查杜绝该绕过。
-  await db.transaction(async (tx) => {
-    const existing = await InviteRepo.countByUser(tx, userId);
-    if (existing + count > settings.maxPerUser) {
-      throw new ApiError(403, 'INVITE_LIMIT', `邀请码累计数量不能超过 ${settings.maxPerUser} 个`);
-    }
+  // 数量上限与插入收敛在单条条件 INSERT：D1 事务（batch 收集器）不支持事务内读，
+  // 原「事务内计数 + 逐条插入」生产必 500；上限校验由语句内 WHERE 子查询原子生效
+  //（D1 单写者串行，天然 TOCTOU 安全）。不足全部拒绝，不做部分创建。
+  for (let attempt = 0; attempt <= COLLISION_RETRIES; attempt++) {
+    const batch: Array<InviteCode> = [];
     for (let i = 0; i < count; i++) {
-      let inserted: InviteCodeView | null = null;
-      for (let attempt = 0; attempt <= COLLISION_RETRIES && !inserted; attempt++) {
-        const code = generateInviteCode();
-        const id = uuid();
-        try {
-          await InviteRepo.create(tx, { id, code, name, createdBy: userId, createdAt });
-          inserted = { id, code, name, createdAt };
-        } catch (err) {
-          // 仅码值唯一约束碰撞可重试；其余错误（连接/约束外键等）直接上抛
-          if (!/unique constraint/i.test(err instanceof Error ? err.message : String(err))) throw err;
-        }
-      }
-      if (!inserted) throw ApiError.internal('邀请码生成失败：唯一码碰撞超过重试上限');
-      created.push(inserted);
+      batch.push({ id: uuid(), code: generateInviteCode(), name, createdBy: userId, createdAt });
     }
-  });
-  return ok(c, { codes: created }, undefined, 201);
+    try {
+      const changes = await InviteRepo.createBatch(db, batch, settings.maxPerUser);
+      if (changes === 0) {
+        // 条件 INSERT 的 WHERE 未命中 = 累计上限命中（meta.changes 为 0）
+        throw new ApiError(403, 'INVITE_LIMIT', `邀请码累计数量不能超过 ${settings.maxPerUser} 个`);
+      }
+      const created: InviteCodeView[] = batch.map((inv) => ({ id: inv.id, code: inv.code, name: inv.name, createdAt: inv.createdAt }));
+      return ok(c, { codes: created }, undefined, 201);
+    } catch (err) {
+      // 仅码值唯一约束碰撞可重试（整批换新码）；上限 403 与其余错误直接上抛
+      if (err instanceof ApiError) throw err;
+      if (!/unique constraint/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    }
+  }
+  throw ApiError.internal('邀请码生成失败：唯一码碰撞超过重试上限');
 });
 
 // ============ 我的邀请码与受邀记录 ============
