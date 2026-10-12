@@ -168,7 +168,8 @@ describe('网关密钥兼容面', () => {
 
   it('创建密钥返回 S3 / OpenList 速配信息', async () => {
     const k = await createKey('gwconfigs');
-    expect(k.configs.s3?.endpoint).toBe('http://localhost:8787/s3');
+    // MinIO/minio-go 只接受 host[:port]（路径前缀无法通过 SigV4 验签）→ endpoint = 裸基址
+    expect(k.configs.s3?.endpoint).toBe('http://localhost:8787');
     expect(k.configs.s3?.bucketHint).toBe('uploads');
     expect(k.configs.openlist?.url).toBe('http://localhost:8787/openlist');
     expect(k.configs.openlist?.token).toBe(k.fullToken);
@@ -204,5 +205,118 @@ describe('网关密钥兼容面', () => {
     });
     expect(readA.status).toBe(200);
     expect(await readA.text()).toBe('a-content');
+  });
+
+  // UI 创建的密钥没有任何路径规则：权限引擎第 9 步按属主 defaultPath/defaultPermissions 兜底
+  // （第 4 步密钥权限交集 + 各入口 assertKeyScope 上传根），无需管理员手工建规则即可用
+  it('无路径规则的密钥：属主 defaultPath 内可读写（引擎属主兜底），范围外仍 403', async () => {
+    const { authCookie } = await registerAndLogin(ctx, 'norule');
+    const csrf = await getCsrf(ctx, authCookie);
+    const res = await request(ctx, '/api/keys', {
+      method: 'POST',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { name: 'k', permissions: ['read', 'write', 'delete'], protocols: ['api', 's3'], uploadPath: '/uploads' },
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res) as { data: { key: { fullToken: string } } };
+    const token = data.data.key.fullToken;
+
+    // compat 上传不建规则直接可用
+    const up = await request(ctx, '/api/upload', {
+      method: 'POST',
+      headers: bearer(token),
+      body: multipart('norule.txt', 'no-rule-upload'),
+    });
+    expect(up.status).toBe(200);
+
+    // 密钥上传根之外 → assertKeyScope 403（引擎兜底不放大密钥作用域）
+    const outside = await request(ctx, '/api/compat/file?path=/etc', { headers: bearer(token) });
+    expect([403, 404]).toContain(outside.status);
+
+    // S3 网关同语义（根路径入口）：无规则密钥 PUT 200
+    const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const date = amzDate.slice(0, 8);
+    const scope = `${date}/auto/s3/aws4_request`;
+    const payloadHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('s3-norule'));
+    const hashHex = [...new Uint8Array(payloadHash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const { createHash, createHmac } = await import('node:crypto');
+    const canonicalRequest = ['PUT', '/uploads/s3-norule.txt', '', `x-amz-content-sha256:${hashHex}\nx-amz-date:${amzDate}\n`, 'x-amz-content-sha256;x-amz-date', hashHex].join('\n');
+    const secret = (data.data as { key: { fullToken: string } }).key.fullToken.split('.')[1];
+    const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, createHash('sha256').update(canonicalRequest).digest('hex')].join('\n');
+    const kDate = createHmac('sha256', `AWS4${secret}`).update(date).digest();
+    const kRegion = createHmac('sha256', kDate).update('auto').digest();
+    const kService = createHmac('sha256', kRegion).update('s3').digest();
+    const kSigning = createHmac('sha256', kService).update('aws4_request').digest();
+    const signature = createHmac('sha256', kSigning).update(stringToSign).digest('hex');
+    const keyId = token.split('.')[0];
+    const s3res = await ctx.app.fetch(new Request('http://localhost:8787/uploads/s3-norule.txt', {
+      method: 'PUT',
+      headers: {
+        authorization: `AWS4-HMAC-SHA256 Credential=${keyId}/${scope}, SignedHeaders=x-amz-content-sha256;x-amz-date, Signature=${signature}`,
+        'x-amz-content-sha256': hashHex,
+        'x-amz-date': amzDate,
+      },
+      body: 's3-norule',
+    }), ctx.env, {} as ExecutionContext);
+    expect(s3res.status).toBe(200);
+  });
+
+
+  it('user_space 挂载：普通用户密钥默认上传根 = 用户空间目录，越界 uploadPath 400', async () => {
+    await ctx.db.exec(`UPDATE mounts SET upload_mode = 'user_space' WHERE mount_path = '/'`);
+    try {
+      const { authCookie } = await registerAndLogin(ctx, 'spacedef');
+      await ctx.db.exec(`UPDATE users SET default_path = '/public' WHERE username = 'spacedef'`);
+      const csrf = await getCsrf(ctx, authCookie);
+      // 不传 uploadPath → 默认落到用户空间目录
+      const res = await request(ctx, '/api/keys', {
+        method: 'POST',
+        cookie: authCookie,
+        headers: { 'X-CSRF-Token': csrf },
+        body: { name: 'k1', permissions: ['read', 'write'], protocols: ['api'] },
+      });
+      expect(res.status).toBe(201);
+      const data = await json(res) as { data: { key: { uploadPath: string }; configs: { s3?: { keyPrefixHint?: string }; bearer?: { pathHint?: string } } } };
+      expect(data.data.key.uploadPath).toBe('/public/spacedef');
+      expect(data.data.configs.bearer?.pathHint).toBe('/public/spacedef/');
+      expect(data.data.configs.s3?.keyPrefixHint).toBe('spacedef/');
+
+      // 显式越界 → 400
+      const bad = await request(ctx, '/api/keys', {
+        method: 'POST',
+        cookie: authCookie,
+        headers: { 'X-CSRF-Token': csrf },
+        body: { name: 'k2', permissions: ['read', 'write'], protocols: ['api'], uploadPath: '/somewhere' },
+      });
+      expect(bad.status).toBe(400);
+    } finally {
+      await ctx.db.exec(`UPDATE mounts SET upload_mode = 'free' WHERE mount_path = '/'`);
+    }
+  });
+
+  // 对话框默认模板 `/uploads/{year}/{month}/`：渲染后的目标必须落进「渲染后的上传根」，
+  // 且对象真实落在 /uploads/<年>/<月>/ 下（回归：此前拿未渲染模板做边界，模板密钥全部 403）
+  it('模板上传根（{year}/{month}）真实落到 /uploads/<年>/<月>/', async () => {
+    const { authCookie } = await registerAndLogin(ctx, 'tplscope');
+    const csrf = await getCsrf(ctx, authCookie);
+    const res = await request(ctx, '/api/keys', {
+      method: 'POST',
+      cookie: authCookie,
+      headers: { 'X-CSRF-Token': csrf },
+      body: { name: 'k', permissions: ['read', 'write'], protocols: ['api'], uploadPath: '/uploads/{year}/{month}/' },
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res) as { data: { key: { fullToken: string } } };
+    const up = await request(ctx, '/api/upload', {
+      method: 'POST',
+      headers: bearer(data.data.key.fullToken),
+      body: multipart('tpl.png', 'template-payload'),
+    });
+    expect(up.status).toBe(200);
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const data2 = await json(up) as { data: { path: string } };
+    expect(data2.data.path).toBe(`/uploads/${now.getFullYear()}/${mm}/tpl.png`);
   });
 });
