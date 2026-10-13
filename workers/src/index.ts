@@ -1,6 +1,6 @@
 // Picumet Workers 入口：Hono 应用组装
 import { Hono } from 'hono';
-import { corsHeaders, securityHeaders, initContext, errorHandler } from './middleware/global';
+import { corsHeaders, corsHeadersFor, securityHeaders, initContext, errorHandler } from './middleware/global';
 import { authMiddleware, adminMiddleware, optionalAuthMiddleware, apiKeyAuthMiddleware, apiKeyTokenAuthMiddleware } from './middleware/auth';
 import { csrfMiddleware } from './middleware/csrf';
 import { ipBanMiddleware } from './middleware/ip-ban';
@@ -61,8 +61,16 @@ s3RootApi.route('/', s3gwRoutes);
 app.use('*', initContext);
 // SigV4 判别在最前（DB 由 getDb 从 c.env.DB 兜底构建，不依赖 initContext 的上下文变量）
 app.use('*', async (c, next) => {
-  if (isSigV4Request(c.req.raw)) return s3RootApi.fetch(c.req.raw, c.env, c.executionCtx);
-  await next();
+  // 浏览器预检 OPTIONS 与请求 URL 相同（含 X-Amz-Signature 查询参数）——必须放行给
+  // corsHeaders 作答，否则预检被网关 404 劫持、直传永远起不来
+  if (c.req.method === 'OPTIONS' || !isSigV4Request(c.req.raw)) return next();
+  const res = await s3RootApi.fetch(c.req.raw, c.env, c.executionCtx);
+  // 浏览器要求实际响应也带 ACAO：把同一组 CORS 头合并到网关响应上
+  const cors = await corsHeadersFor(c);
+  if (cors) {
+    for (const [k, v] of Object.entries(cors)) res.headers.set(k, v);
+  }
+  return res;
 });
 // IP 封禁门禁：optionalAuth 之后（管理员豁免——防运维自锁；SDNUChronoSync 同语义）、
 // 认证/限流/业务之前——被封禁 IP 的普通请求不消耗限流窗口，也不进入业务链路
