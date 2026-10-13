@@ -22,6 +22,20 @@ export interface SiteSettings {
   inviteGeneration?: 'all_users' | 'admin_only';
   /** Umami 访问统计（stats_source=umami 且启用且配置有效时后端才下发；null = 不注入） */
   umami?: UmamiConfig | null;
+  /** 人机验证（enabled 时下发 provider/siteKey 与各面启用态；前端据此渲染小部件） */
+  captcha?: {
+    provider: 'turnstile' | 'recaptcha';
+    enabled: boolean;
+    siteKey: string;
+    login: boolean;
+    register: boolean;
+    shareDownload: boolean;
+    upload: boolean;
+    passwordChange: boolean;
+    emailVerify: boolean;
+    passwordReset: boolean;
+    backupCodes: boolean;
+  } | null;
   /** 第三方登录（SSO/OIDC）：总开关 + 启用的来源（仅 id/kind/name），登录页据此渲染按钮 */
   sso?: SsoPublicConfig;
   uploadUrl?: string;

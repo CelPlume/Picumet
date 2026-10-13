@@ -5,6 +5,7 @@ import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, M
 import type { Db } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, getPrincipal } from '../permissions/principal';
+import { assertCaptcha } from '../captcha';
 import { assertWritable } from '../files/upload-mode';
 import { ensureFolders, registerContentObject } from '../files/write';
 import { getProvider } from '../storage/providers';
@@ -69,7 +70,11 @@ uploadRoutes.post('/upload-session', async (c) => {
   if (!parsed.success) {
     throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '上传参数无效', parsed.error.flatten());
   }
-  const { path, fileName, fileSize, mimeType, idempotencyKey } = parsed.data;
+  const { path, fileName, fileSize, mimeType, idempotencyKey, turnstileToken } = parsed.data;
+
+  // Turnstile 面（upload）：会话签发之前断言（API 密钥通道不经此入口，不受影响）
+  const tsUpload = await assertCaptcha(c, 'upload', turnstileToken);
+  if (tsUpload.response) return tsUpload.response;
 
   if (!isValidFileName(fileName)) throw ApiError.badRequest('文件名包含非法字符');
   validateFileType(fileName, mimeType);

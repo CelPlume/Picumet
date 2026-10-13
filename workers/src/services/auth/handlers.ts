@@ -22,6 +22,7 @@ import { loadInviteSettings, resolveInviteCode } from '../invites/invites';
 import { AUTH_COOKIE, setAuthCookie } from './session';
 import { toPublicUser } from './public-user';
 import { verifyTotpOrBackupCode } from './totp-verify';
+import { assertCaptcha } from '../captcha';
 
 export const authRoutes = new Hono<AppBindings>();
 
@@ -105,7 +106,11 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
   if (!parsed.success) {
     throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '注册信息无效', parsed.error.flatten());
   }
-  const { username, password, email, emailCode } = parsed.data;
+  const { username, password, email, emailCode, turnstileToken } = parsed.data;
+
+  // Turnstile 面（register）：OTP 校验之前断言
+  const tsRegister = await assertCaptcha(c, 'register', turnstileToken);
+  if (tsRegister.response) return tsRegister.response;
 
   // 注册邮箱 OTP 校验：站点开启邮箱验证时必需
   const reqVerify = (await SettingsRepo.get(db, 'require_email_verification')) ?? 'false';
@@ -446,7 +451,11 @@ authRoutes.post('/login', authRateLimitMiddleware, async (c) => {
   const parsed = LoginSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest('请输入用户名和密码');
   // username 字段承载「登录标识」：用户名或邮箱（UserRepo.findByLoginIdentifier 收敛）
-  const { username, password, totpCode } = parsed.data;
+  const { username, password, totpCode, turnstileToken } = parsed.data;
+
+  // Turnstile 面（login）：在密码校验之前断言（省 bcrypt 开销）
+  const ts = await assertCaptcha(c, 'login', turnstileToken);
+  if (ts.response) return ts.response;
 
   const user = await UserRepo.findByLoginIdentifier(db, username);
   if (!user || !verifyPassword(password, user.passwordHash ?? '')) {
@@ -540,6 +549,9 @@ authRoutes.post('/forgot-password', authRateLimitMiddleware, async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = ForgotPasswordSchema.safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '请输入有效邮箱');
+  // Turnstile 面（password_reset）：发信之前断言（不暴露邮箱存在性的语义不变）
+  const tsReset = await assertCaptcha(c, 'password_reset', parsed.data.turnstileToken);
+  if (tsReset.response) return tsReset.response;
   const { email } = parsed.data;
   const user = await UserRepo.getUserByEmail(db, email);
   if (!user) {

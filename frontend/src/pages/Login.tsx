@@ -8,6 +8,7 @@ import { Button, Input, Label, Dialog } from '@/components/ui/core';
 import { InputOTP } from '@/components/ui/input-otp';
 import { useAuth } from '@/stores/auth';
 import { useSite } from '@/stores/site';
+import { CaptchaWidget } from '@/components/captcha';
 import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
 import { toast } from '@/components/ui/toast';
@@ -30,6 +31,15 @@ export default function Login() {
   const [resetSending, setResetSending] = useState(false);
   const [showTotpStep, setShowTotpStep] = useState(false);
   const [totpCode, setTotpCode] = useState('');
+  // Turnstile 人机验证（面启用时渲染；token 单次有效，失败/消费后 reset）
+  const captcha = useSite((s) => s.captcha);
+  const [loginToken, setLoginToken] = useState('');
+  const [loginReset, setLoginReset] = useState(0);
+  // TOTP 步骤独立 token：第一步的 token 已被 siteverify 消费（一次性），二步提交必须携带新 token
+  const [totpToken, setTotpToken] = useState('');
+  const [totpTokenReset, setTotpTokenReset] = useState(0);
+  const [resetToken, setResetToken] = useState('');
+  const [resetTokenReset, setResetTokenReset] = useState(0);
   const [useBackupCode, setUseBackupCode] = useState(false);
   const redirect = params.get('redirect') || '/files';
   // 已持有有效会话（JWT Cookie）：登录页直接跳转，无需重复输密码
@@ -72,6 +82,7 @@ export default function Login() {
           username: identifier.trim(),
           password,
           totpCode: showTotpStep ? totpCode.trim() : undefined,
+          turnstileToken: captcha?.login ? (showTotpStep ? totpToken || undefined : loginToken || undefined) : undefined,
         },
       });
       const me = await apiFetch<{ user: User; quota: Quota }>('/api/auth/me');
@@ -79,11 +90,21 @@ export default function Login() {
       navigate(redirect, { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.code === 'TOTP_REQUIRED') {
-        // 进入第二步：必须在此复位 loading，否则按钮永久转圈（第二步的 finally 不覆盖此分支）
+        // 进入第二步：必须在此复位 loading，否则按钮永久转圈（第二步的 finally 不覆盖此分支）；
+        // 二步小部件自动重新出题（非交互式模式静默通过）
         setLoading(false);
         setShowTotpStep(true);
+        setTotpTokenReset((n) => n + 1);
         setError('');
         return;
+      }
+      if (err instanceof ApiError && (err.code === 'TURNSTILE_FAILED' || err.code === 'TURNSTILE_REQUIRED') && showTotpStep) {
+        setTotpTokenReset((n) => n + 1);
+        setTotpToken('');
+      }
+      if (err instanceof ApiError && (err.code === 'TURNSTILE_FAILED' || err.code === 'TURNSTILE_REQUIRED')) {
+        setLoginReset((n) => n + 1);
+        setLoginToken('');
       }
       setError(err instanceof ApiError ? err.message : t('err.network'));
       setLoading(false);
@@ -96,12 +117,16 @@ export default function Login() {
     try {
       const res = await apiFetch<{ message: string }>('/api/auth/forgot-password', {
         method: 'POST',
-        body: { email: resetEmail },
+        body: { email: resetEmail, turnstileToken: captcha?.passwordReset ? resetToken || undefined : undefined },
       });
       toast('success', res.data?.message ?? t('login.emailSent').replace('{{email}}', resetEmail));
       setShowReset(false);
       setResetEmail('');
     } catch (err) {
+      if (err instanceof ApiError && (err.code === 'TURNSTILE_FAILED' || err.code === 'TURNSTILE_REQUIRED')) {
+        setResetTokenReset((n) => n + 1);
+        setResetToken('');
+      }
       toast('error', err instanceof ApiError ? err.message : t('err.network'));
     } finally {
       setResetSending(false);
@@ -164,6 +189,16 @@ export default function Login() {
                 </div>
               )}
 
+              {captcha?.enabled && captcha.login && (
+                <CaptchaWidget
+                  provider={captcha.provider}
+                  siteKey={captcha.siteKey}
+                  action="login"
+                  onToken={setTotpToken}
+                  resetSignal={totpTokenReset}
+                />
+              )}
+
               {error && <p className="text-sm text-destructive text-center">{error}</p>}
 
               <Button
@@ -222,8 +257,18 @@ export default function Login() {
               </div>
               <div>
                 <Label className="text-sm font-medium text-foreground">{t('login.password')}</Label>
-                <Input className="mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                <Input className="mt-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
               </div>
+
+              {captcha?.enabled && captcha.login && (
+                <CaptchaWidget
+                  provider={captcha.provider}
+                  siteKey={captcha.siteKey}
+                  action="login"
+                  onToken={setLoginToken}
+                  resetSignal={loginReset}
+                />
+              )}
 
               {error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -274,6 +319,15 @@ export default function Login() {
             placeholder="you@example.com"
             onKeyDown={(e) => e.key === 'Enter' && sendReset()}
           />
+          {captcha?.enabled && captcha.passwordReset && (
+            <CaptchaWidget
+              provider={captcha.provider}
+              siteKey={captcha.siteKey}
+              action="password_reset"
+              onToken={setResetToken}
+              resetSignal={resetTokenReset}
+            />
+          )}
           <Button className="w-full" onClick={sendReset} loading={resetSending}>
             {t('login.sendReset')}
           </Button>

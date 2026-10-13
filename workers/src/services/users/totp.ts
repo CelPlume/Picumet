@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { AppBindings } from '../../shared/types';
 import { UserRepo, TotpBackupRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
+import { assertCaptcha } from '../captcha';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { verifyPassword, encryptSecret, decryptSecret, hmacSha256Hex, randomString } from '../../utils/crypto';
@@ -156,8 +157,14 @@ totpRoutes.post('/backup-codes/regenerate', async (c) => {
   const parsed = z.object({
     password: z.string().min(1, '请输入密码'),
     code: z.string().min(1, '请输入当前两步验证码'),
+    // Turnstile/reCAPTCHA 令牌（面启用时后端强校验，未启用时忽略）
+    turnstileToken: z.string().max(2048).optional(),
   }).safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '参数无效');
+
+  // Turnstile 面（backup_codes）：重生成一次性备用码属高危操作，密码校验之前断言
+  const tsBackup = await assertCaptcha(c, 'backup_codes', parsed.data.turnstileToken);
+  if (tsBackup.response) return tsBackup.response;
 
   if (!verifyPassword(parsed.data.password, user.passwordHash ?? '')) {
     throw ApiError.badRequest('密码错误');

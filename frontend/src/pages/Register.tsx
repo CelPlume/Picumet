@@ -9,6 +9,7 @@ import { toast } from '@/components/ui/toast';
 import { apiFetch, ApiError } from '@/lib/api';
 import { Logo } from '@/components/layout/Logo';
 import { useSite } from '@/stores/site';
+import { CaptchaWidget } from '@/components/captcha';
 import { ThemeToggle, LanguageSwitcher } from '@/components/layout/widgets';
 import { SsoButtons } from '@/components/sso-buttons';
 import type { User } from '@shared/types';
@@ -16,6 +17,9 @@ import type { User } from '@shared/types';
 export default function Register() {
   const { t } = useTranslation();
   const site = useSite();
+  // Turnstile 面（register）：提交时携带令牌；失败/消费后 reset
+  const [tsToken, setTsToken] = useState('');
+  const [tsReset, setTsReset] = useState(0);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [username, setUsername] = useState('');
@@ -65,7 +69,7 @@ export default function Register() {
         { user: User; message: string } | { pending: true; email: string; message: string }
       >('/api/auth/register', {
         method: 'POST',
-        body: { username, password, email, emailCode: emailCode || undefined, inviteCode: inviteCode.trim() || undefined },
+        body: { username, password, email, emailCode: emailCode || undefined, inviteCode: inviteCode.trim() || undefined, turnstileToken: site.captcha?.register ? tsToken || undefined : undefined },
       });
       // 迁移 0016：站点要求邮箱验证时，注册**不建号**，等用户点邮件链接才落库。
       // 此时跳登录页会让用户「登录不上」而困惑 —— 明确告知去收激活邮件。
@@ -77,6 +81,10 @@ export default function Register() {
       return res;
     } catch (err) {
       if (err instanceof ApiError && err.code === 'INVALID_OTP') setOtpError(true);
+      if (err instanceof ApiError && (err.code === 'TURNSTILE_FAILED' || err.code === 'TURNSTILE_REQUIRED')) {
+        setTsReset((n) => n + 1);
+        setTsToken('');
+      }
       setError(err instanceof ApiError ? err.message : t('err.network'));
     } finally {
       setLoading(false);
@@ -151,6 +159,10 @@ export default function Register() {
                 />
                 <p className="mt-1.5 text-xs text-muted-foreground">{t('auth.inviteHint')}</p>
               </div>
+            )}
+
+            {site.captcha?.enabled && site.captcha.register && (
+              <CaptchaWidget provider={site.captcha.provider} siteKey={site.captcha.siteKey} action="register" onToken={setTsToken} resetSignal={tsReset} />
             )}
 
             {error && <p className="text-sm text-destructive">{error}</p>}

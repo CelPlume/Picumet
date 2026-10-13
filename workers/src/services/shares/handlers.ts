@@ -8,6 +8,7 @@ import { getDb } from '../../middleware/auth';
 import { requirePermission, assertBucketPermission, assertMountMatrixPermission } from '../permissions/principal';
 import { getFileObject } from '../storage/failover';
 import { physicalObjectKey } from '../storage/keys';
+import { assertCaptcha } from '../captcha';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
 import { hashPassword, verifyPassword, randomString, encryptSecret, decryptSecret } from '../../utils/crypto';
@@ -518,6 +519,10 @@ shareRoutes.get('/:id/download', async (c) => {
   if (gate.passwordRequired) throw new ApiError(401, 'INVALID_PASSWORD', '分享密码错误');
   const { share } = gate;
   if (!share.allowDownload) throw new ApiError(403, 'FORBIDDEN', '分享不允许下载');
+  // Turnstile 面（share_download）：GET 无 body → 令牌走请求头。分享密码门已在
+  // gateShareRead 处置（未过直接 401，到不了这里），人机门不再区分密码态
+  const tsShare = await assertCaptcha(c, 'share_download', c.req.header('X-Turnstile-Token'));
+  if (tsShare.response) return tsShare.response;
 
   // itemId 缺省 = 第一个项目；作用域 = 项目自身或任一文件夹项目的后代
   const itemId = c.req.query('itemId') ?? gate.items[0]?.id;

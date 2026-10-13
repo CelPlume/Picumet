@@ -9,6 +9,8 @@ export const InitUploadSchema = z.object({
   mimeType: z.string().optional(),
   partCount: z.number().int().min(1).optional(),
   idempotencyKey: z.string().optional(),
+  // Turnstile 人机验证令牌（面启用时后端强校验，未启用时忽略；API 密钥通道不经过此处）
+  turnstileToken: z.string().max(2048).optional(),
 });
 
 // 完成上传：sessionId/etag/parts 统一校验

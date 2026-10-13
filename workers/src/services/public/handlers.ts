@@ -6,6 +6,7 @@ import { getDb } from '../../middleware/auth';
 import { loadRoutePrefixes } from '../storage/direct-links';
 import { ok } from '../../shared/response';
 import { resolveUmamiPublicConfig } from '../../utils/umami';
+import { parseCaptchaConfig } from '../captcha';
 import { resolveSsoPublicConfig } from '../sso/config';
 import { kvStoreFor } from '../../utils/kv-store';
 
@@ -48,6 +49,20 @@ publicRoutes.get('/settings', async (c) => {
     signEnabled: parse('sign_enabled') ?? true,
     signDefault: parse('sign_default') ?? true,
     signExpiresIn: Number(parse('sign_expires_in') ?? 0),
+    // Turnstile 人机验证：总开关 + 站点密钥 + 各面启用态（无 secret；前端据此决定是否
+    // 渲染小部件与提交令牌）。下发前复核 = DB 落脏值也不会注入
+    captcha: resolveCaptchaPublicConfig({
+      captcha_provider: parse('captcha_provider'),
+      captcha_enabled: parse('captcha_enabled'),
+      captcha_site_key: parse('captcha_site_key'),
+      captcha_face_login: parse('captcha_face_login'),
+      captcha_face_register: parse('captcha_face_register'),
+      captcha_face_share_download: parse('captcha_face_share_download'),
+      captcha_face_upload: parse('captcha_face_upload'),
+      captcha_face_password_change: parse('captcha_face_password_change'),
+      captcha_face_email_verify: parse('captcha_face_email_verify'),
+      captcha_face_password_reset: parse('captcha_face_password_reset'),
+    }),
     // Umami 访问统计：stats_source='umami' 且启用且脚本地址/Website ID 复核通过才下发
     // （null = 不启用，前端不注入 tracker）；下发前复核 = DB 落脏值也不会被注入
     umami: resolveUmamiPublicConfig({
@@ -63,6 +78,24 @@ publicRoutes.get('/settings', async (c) => {
     }),
   });
 });
+
+/** 人机验证公开面配置：未启用或未配置 sitekey 时 enabled=false（前端不加载小部件） */
+function resolveCaptchaPublicConfig(raw: Record<string, string | null | undefined>) {
+  const config = parseCaptchaConfig(raw);
+  const enabled = config.enabled && Boolean(config.siteKey);
+  return {
+    provider: config.provider,
+    enabled,
+    siteKey: enabled ? config.siteKey : '',
+    login: enabled && config.faces.login,
+    register: enabled && config.faces.register,
+    shareDownload: enabled && config.faces.share_download,
+    upload: enabled && config.faces.upload,
+    passwordChange: enabled && config.faces.password_change,
+    emailVerify: enabled && config.faces.email_verify,
+    passwordReset: enabled && config.faces.password_reset,
+  };
+}
 
 publicRoutes.get('/announcements', async (c) => {
   const db = getDb(c);

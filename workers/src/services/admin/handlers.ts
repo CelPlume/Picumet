@@ -20,6 +20,7 @@ import { encryptSecret, hashPassword } from '../../utils/crypto';
 import { subtreeMatch } from '../../utils/path';
 import { invalidateAuditPolicyCache } from '../../db';
 import { invalidateAuthRateLimitCache } from '../../middleware/rate-limit';
+import { invalidateCorsCache } from '../../utils/cors';
 import { loadRoutePrefixes } from '../storage/direct-links';
 import { UMAMI_SETTINGS_MAP, isUmamiWebsiteId, validateUmamiUrl } from '../../utils/umami';
 import { AdminUpdateShareSchema } from '../shares/schemas';
@@ -682,6 +683,19 @@ adminRoutes.get('/settings', async (c) => {
     umamiPerformance: get('umami_performance') ?? false,
     umamiExcludeSearch: get('umami_exclude_search') ?? false,
     umamiDoNotTrack: get('umami_do_not_track') ?? false,
+    // 人机验证：secret 只回掩码（未配置回空串）；provider 缺省 turnstile
+    captchaProvider: get('captcha_provider') === 'recaptcha' ? 'recaptcha' : 'turnstile',
+    captchaEnabled: Boolean(get('captcha_enabled')),
+    captchaSiteKey: get('captcha_site_key') ?? '',
+    captchaSecretKey: get('captcha_secret_key') ? '******' : '',
+    captchaFaceLogin: Boolean(get('captcha_face_login')),
+    captchaFaceRegister: Boolean(get('captcha_face_register')),
+    captchaFaceShareDownload: Boolean(get('captcha_face_share_download')),
+    captchaFaceUpload: Boolean(get('captcha_face_upload')),
+    captchaFacePasswordChange: Boolean(get('captcha_face_password_change')),
+    captchaFaceEmailVerify: Boolean(get('captcha_face_email_verify')),
+    captchaFacePasswordReset: Boolean(get('captcha_face_password_reset')),
+    captchaFaceBackupCodes: Boolean(get('captcha_face_backup_codes')),
   });
 });
 
@@ -713,6 +727,28 @@ adminRoutes.patch('/settings', async (c) => {
       throw ApiError.badRequest('访问统计来源为 Umami 时，脚本地址与 Website ID（UUID）必须已有效配置');
     }
   }
+  // 人机验证：启用（总开关或任一面）时必须已有 sitekey+secret（本次输入或既有配置）
+  const captchaWanted =
+    parsed.data.captchaEnabled === true ||
+    [parsed.data.captchaFaceLogin, parsed.data.captchaFaceRegister, parsed.data.captchaFaceShareDownload,
+     parsed.data.captchaFaceUpload, parsed.data.captchaFacePasswordChange, parsed.data.captchaFaceEmailVerify,
+     parsed.data.captchaFacePasswordReset, parsed.data.captchaFaceBackupCodes].some((f) => f === true);
+  const captchaSecretNow = await SettingsRepo.get(db, 'captcha_secret_key');
+  const captchaSecretInput = parsed.data.captchaSecretKey;
+  const captchaSecretOk = (captchaSecretInput !== undefined && captchaSecretInput !== '' && captchaSecretInput !== '******') || Boolean(captchaSecretNow);
+  if (captchaWanted && captchaSecretOk) {
+    const siteKey = parsed.data.captchaSiteKey?.trim() || (await SettingsRepo.get(db, 'captcha_site_key')) || '';
+    if (!siteKey) throw ApiError.badRequest('启用人机验证时必须填写 Site Key');
+  } else if (captchaWanted) {
+    throw ApiError.badRequest('启用人机验证时必须填写 Site Key 与 Secret Key');
+  }
+  let captchaSecretSaved = false;
+  if (captchaSecretInput !== undefined && captchaSecretInput !== '' && captchaSecretInput !== '******') {
+    const sealedCaptcha = await encryptSecret(captchaSecretInput, c.env.ENCRYPTION_KEY);
+    await SettingsRepo.set(db, 'captcha_secret_key', `enc:${sealedCaptcha}`);
+    captchaSecretSaved = true;
+  }
+
   const map: Record<string, string> = {
     siteTitle: 'site_title',
     siteHeaderTitle: 'site_header_title',
@@ -722,6 +758,17 @@ adminRoutes.patch('/settings', async (c) => {
     returnUrl: 'return_url',
     appBaseUrl: 'app_base_url',
     allowedOrigins: 'allowed_origins',
+    captchaProvider: 'captcha_provider',
+    captchaEnabled: 'captcha_enabled',
+    captchaSiteKey: 'captcha_site_key',
+    captchaFaceLogin: 'captcha_face_login',
+    captchaFaceRegister: 'captcha_face_register',
+    captchaFaceShareDownload: 'captcha_face_share_download',
+    captchaFaceUpload: 'captcha_face_upload',
+    captchaFacePasswordChange: 'captcha_face_password_change',
+    captchaFaceEmailVerify: 'captcha_face_email_verify',
+    captchaFacePasswordReset: 'captcha_face_password_reset',
+    captchaFaceBackupCodes: 'captcha_face_backup_codes',
     signEnabled: 'sign_enabled',
     signDefault: 'sign_default',
     signExpiresIn: 'sign_expires_in',
@@ -754,10 +801,13 @@ adminRoutes.patch('/settings', async (c) => {
     ...UMAMI_SETTINGS_MAP,
   };
   const savedKeys: string[] = [];
+  if (captchaSecretSaved) savedKeys.push('captcha_secret_key');
   for (const [k, v] of Object.entries(parsed.data)) {
     if (v === undefined) continue;
     // 占位符/空值表示保持原密码配置，不覆盖
     if (k === 'smtpPassword' && (v === '******' || v === '')) continue;
+    // 人机验证 secret 已在上方加密落库，跳过明文兜底写入
+    if (k === 'captchaSecretKey') continue;
     // SMTP 密码加密落库（AES-256-GCM，enc: 前缀标记）
     if (k === 'smtpPassword' && typeof v === 'string' && c.env.ENCRYPTION_KEY) {
       const encrypted = await encryptSecret(v, c.env.ENCRYPTION_KEY);
@@ -778,10 +828,15 @@ adminRoutes.patch('/settings', async (c) => {
   if (savedKeys.includes('auth_rate_limit_per_minute')) {
     invalidateAuthRateLimitCache();
   }
+  // CORS 白名单保存后立即失效进程内缓存（同认证限流模式）
+  if (savedKeys.includes('allowed_origins')) {
+    invalidateCorsCache();
+  }
+  // 人机验证配置随 SettingsRepo.set 的 invalidateSettingsCache 立即生效（无独立缓存层）
   // Umami 访问统计 / 第三方登录总开关：安全敏感设置变更写审计日志（记键不记值；
   // 二者都直接改变对外暴露的认证/脚本面，改动必须可追溯）
   const umamiDbKeys: string[] = Object.values(UMAMI_SETTINGS_MAP);
-  const sensitiveKeys = savedKeys.filter((k) => umamiDbKeys.includes(k) || k === 'sso_enabled');
+  const sensitiveKeys = savedKeys.filter((k) => umamiDbKeys.includes(k) || k === 'sso_enabled' || k === 'allowed_origins' || k.startsWith('captcha_'));
   if (sensitiveKeys.length > 0) {
     await LogRepo.create(db, {
       userId: c.get('userId') as string,

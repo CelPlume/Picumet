@@ -367,6 +367,8 @@ export async function initUploadSession(input: {
   fileName: string;
   fileSize: number;
   mimeType: string;
+  /** Turnstile/reCAPTCHA 令牌（upload 面启用时必填） */
+  turnstileToken?: string;
 }): Promise<UploadResult> {
   return (await apiFetch<UploadResult>('/api/files/upload-session', { method: 'POST', body: input })).data;
 }

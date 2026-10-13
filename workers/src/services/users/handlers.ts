@@ -11,6 +11,7 @@ import { sendMail, resolveSmtpConfig } from '../../utils/smtp';
 import { ProfileSchema, PasswordSchema as ChangePasswordSchema, SendOtpSchema, VerifyOtpSchema, DismissAnnouncementSchema } from './schemas';
 import { totpRoutes } from './totp';
 import { renderPasswordCodeMail, renderEmailCodeMail, mailBrandFrom, type MailBrand } from '../../utils/email-template';
+import { assertCaptcha } from '../captcha';
 
 export const userRoutes = new Hono<AppBindings>();
 userRoutes.route('/2fa', totpRoutes);
@@ -155,6 +156,9 @@ userRoutes.put('/me/password', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = ChangePasswordSchema.safeParse(body);
   if (!parsed.success) throw ApiError.badRequest('密码长度至少 8 位');
+  // Turnstile 面（password_change）：旧密码校验之前断言
+  const tsPassword = await assertCaptcha(c, 'password_change', parsed.data.turnstileToken);
+  if (tsPassword.response) return tsPassword.response;
   const user = await UserRepo.getUserById(db, userId);
   if (!user) throw new ApiError(404, 'NOT_FOUND', '用户不存在');
   if (!verifyPassword(parsed.data.oldPassword, user.passwordHash ?? '')) {
@@ -209,6 +213,9 @@ userRoutes.post('/me/email/send-otp', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = SendOtpSchema.safeParse(body ?? {});
   if (!parsed.success) throw ApiError.badRequest('邮箱格式无效');
+  // Turnstile 面（email_verify）：发码之前断言
+  const tsEmail = await assertCaptcha(c, 'email_verify', parsed.data.turnstileToken);
+  if (tsEmail.response) return tsEmail.response;
   const email = parsed.data.email;
 
   // 大小写无关：改绑邮箱同样不允许与既有账号的大小写变体冲突

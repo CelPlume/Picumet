@@ -43,6 +43,19 @@ interface Settings {
   returnUrl?: string;
   appBaseUrl?: string;
   allowedOrigins?: string;
+  // 人机验证（Turnstile / reCAPTCHA）：provider + 总开关 + 密钥对 + 七个防护面
+  captchaProvider?: 'turnstile' | 'recaptcha';
+  captchaEnabled?: boolean;
+  captchaSiteKey?: string;
+  captchaSecretKey?: string;
+  captchaFaceLogin?: boolean;
+  captchaFaceRegister?: boolean;
+  captchaFaceShareDownload?: boolean;
+  captchaFaceUpload?: boolean;
+  captchaFacePasswordChange?: boolean;
+  captchaFaceEmailVerify?: boolean;
+  captchaFacePasswordReset?: boolean;
+  captchaFaceBackupCodes?: boolean;
   signEnabled?: boolean;
   signDefault?: boolean;
   signExpiresIn?: number;
@@ -105,6 +118,12 @@ function CardRowsSkeleton({ rows = 4 }: { rows?: number }) {
   );
 }
 
+
+/** CORS 白名单输入解析：逗号/换行分隔；缺省 scheme 补 https:// */
+function parseCorsList(raw: string | undefined | null): string[] {
+  return Array.from(new Set((raw ?? '').split(/[,\n]/).map((x) => x.trim()).filter(Boolean)));
+}
+
 export default function AdminSettings() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -131,6 +150,11 @@ export default function AdminSettings() {
   const [newIpReason, setNewIpReason] = useState('');
   const [deletingBanId, setDeletingBanId] = useState<string | null>(null);
   const [showIpBans, setShowIpBans] = useState(false);
+  /** 「CORS 白名单」弹窗：来源列表编辑（逗号分隔存储在 allowed_origins 设置） */
+  const [showCors, setShowCors] = useState(false);
+  const [corsList, setCorsList] = useState<string[]>([]);
+  const [newCorsOrigin, setNewCorsOrigin] = useState('');
+  const [deletingCorsIndex, setDeletingCorsIndex] = useState<number | null>(null);
   // ===== 文件索引（标准/高级）→ 后台构建 + diff 确认 =====
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
   const [indexBuilding, setIndexBuilding] = useState(false);
@@ -204,15 +228,34 @@ export default function AdminSettings() {
 
   const set = (k: string, v: unknown) => setSettings((s) => (s ? { ...s, [k]: v } : s));
 
-  const save = async () => {
-    if (!settings) return;
+  const saveWith = async (snapshot: Settings) => {
     try {
-      await apiFetch('/api/admin/settings', { method: 'PATCH', body: settings });
+      await apiFetch('/api/admin/settings', { method: 'PATCH', body: snapshot });
       toast('success', t('admin.systemSettings.saved'));
     } catch (err) {
       // 跨字段校验错误（如来源选 Umami 但脚本地址/Website ID 未有效配置）透传后端文案
       toast('error', err instanceof ApiError ? err.message : t('admin.systemSettings.saveFailed'));
     }
+  };
+  const save = async () => {
+    if (!settings) return;
+    await saveWith(settings);
+  };
+
+  // ===== CORS 白名单 =====
+  const corsCount = parseCorsList(settings?.allowedOrigins).length;
+  const openCorsDialog = () => {
+    setCorsList(parseCorsList(settings?.allowedOrigins));
+    setNewCorsOrigin('');
+    setShowCors(true);
+  };
+  const persistCors = async (list: string[]) => {
+    if (!settings) return;
+    const next = list.map((o) => o.trim()).filter(Boolean);
+    setCorsList(next);
+    set('allowedOrigins', next.join(','));
+    // 复用全局保存：快照写库 + allowed_origins 审计 + 缓存失效，立即生效
+    await saveWith({ ...settings, allowedOrigins: next.join(',') });
   };
 
   // ===== 文件索引 =====
@@ -981,6 +1024,72 @@ export default function AdminSettings() {
         </CardContent>
       </Card>
 
+      {/* 人机验证（Turnstile / reCAPTCHA）：提供方 + 总开关 + 站点/服务端密钥 + 七个防护面（类 OIDC 卡片） */}
+      <Card className="reveal" style={revealDelay(6)}>
+        <CardHeader className="reveal-row" style={innerDelay(6, 0)}>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-primary" /> {t('admin.captchaTitle')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!settings || showSkeleton ? (
+            <CardRowsSkeleton rows={4} />
+          ) : (
+            <>
+          <div className="reveal-row space-y-2" style={innerDelay(6, 1)}>
+            <div>
+              <Label>{t('admin.captchaProvider')}</Label>
+              <Select
+                className="mt-1"
+                value={settings.captchaProvider ?? 'turnstile'}
+                onValueChange={(v) => set('captchaProvider', v)}
+                options={[
+                  { value: 'turnstile', label: 'Cloudflare Turnstile' },
+                  { value: 'recaptcha', label: 'Google reCAPTCHA (v2/v3)' },
+                ]}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">{t('admin.captchaEnabled')}</span>
+              <Switch checked={settings.captchaEnabled ?? false} onChange={(v) => set('captchaEnabled', v)} />
+            </div>
+            <div>
+              <Label>{t('admin.captchaSiteKey')}</Label>
+              <Input className="mt-1 font-mono text-xs" value={settings.captchaSiteKey ?? ''} onChange={(e) => set('captchaSiteKey', e.target.value)} placeholder="0x4AAAAAAA..." />
+            </div>
+            <div>
+              <Label>{t('admin.captchaSecretKey')}</Label>
+              <Input className="mt-1 font-mono text-xs" type="password" value={settings.captchaSecretKey ?? ''} onChange={(e) => set('captchaSecretKey', e.target.value)} placeholder={t('admin.systemSettings.passwordPlaceholder')} />
+              <p className="mt-1 text-xs text-muted-foreground">{t('admin.captchaSecretHint')}</p>
+            </div>
+          </div>
+          <div className="reveal-row space-y-2 border-t pt-3" style={innerDelay(6, 2)}>
+            <p className="text-xs font-medium text-muted-foreground">{t('admin.captchaFaces')}</p>
+            {([
+              ['captchaFaceLogin', 'admin.captchaFaceLogin'],
+              ['captchaFaceRegister', 'admin.captchaFaceRegister'],
+              ['captchaFaceShareDownload', 'admin.captchaFaceShareDownload'],
+              ['captchaFaceUpload', 'admin.captchaFaceUpload'],
+              ['captchaFacePasswordChange', 'admin.captchaFacePasswordChange'],
+              ['captchaFaceEmailVerify', 'admin.captchaFaceEmailVerify'],
+              ['captchaFacePasswordReset', 'admin.captchaFacePasswordReset'],
+              ['captchaFaceBackupCodes', 'admin.captchaFaceBackupCodes'],
+            ] as const).map(([key, i18nKey]) => (
+              <div key={key} className="flex items-center justify-between">
+                <span className="text-sm">{t(i18nKey)}</span>
+                <Switch checked={Boolean(settings[key])} onChange={(v) => set(key, v)} />
+              </div>
+            ))}
+            <p className="text-xs text-muted-foreground">{t('admin.captchaFacesHint')}</p>
+          </div>
+          <div className="reveal-row" style={innerDelay(6, 3)}>
+            <Button onClick={save}><Save className="h-4 w-4" /> {t('common.save')}</Button>
+          </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       <Card className="reveal" style={revealDelay(6)}>
         <CardHeader className="reveal-row" style={innerDelay(6, 0)}>
           <CardTitle className="flex items-center gap-2">
@@ -1196,6 +1305,70 @@ export default function AdminSettings() {
         onConfirm={() => deletingBanId && void removeIpBan(deletingBanId)}
         title={t('admin.removeIpBan')}
         message={t('admin.removeIpBanConfirm')}
+      />
+
+      {/* CORS 白名单弹窗：来源表（来源 / 删除）+ 添加行；与 IP 封禁弹窗同款玻璃面 */}
+      <Dialog open={showCors} onClose={() => setShowCors(false)} title={t('admin.corsOrigins')}>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">{t('admin.corsOriginsHint')}</p>
+          {corsList.length > 0 ? (
+            <div className="max-h-64 overflow-y-auto rounded-md border">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 bg-muted/30 px-3 py-1.5 text-sm font-medium text-muted-foreground">
+                <span>{t('admin.corsOriginLabel')}</span>
+                <span className="sr-only">{t('common.actions')}</span>
+              </div>
+              <div className="divide-y">
+                {corsList.map((entry, i) => (
+                  <div key={`${entry}-${i}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-sm">
+                    <span className="min-w-0 truncate font-mono text-xs font-semibold">{entry}</span>
+                    <button
+                      onClick={() => setDeletingCorsIndex(i)}
+                      className="shrink-0 rounded p-1 text-destructive transition-colors hover:bg-destructive/10"
+                      title={t('admin.removeCorsOrigin')}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="py-3 text-center text-xs text-muted-foreground">{t('admin.noCorsOrigins')}</p>
+          )}
+          <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row">
+            <Input
+              className="flex-1 font-mono text-xs"
+              placeholder={t('admin.corsOriginPlaceholder')}
+              value={newCorsOrigin}
+              onChange={(e) => setNewCorsOrigin(e.target.value)}
+            />
+            <Button
+              onClick={() => {
+                const v = newCorsOrigin.trim();
+                if (!v) return toast('error', t('admin.corsOriginRequired'));
+                if (corsList.includes(v)) return toast('error', t('admin.corsOriginDuplicate'));
+                void persistCors([...corsList, v]).then(() => setNewCorsOrigin(''));
+              }}
+              variant="outline"
+              className="shrink-0"
+            >
+              <Plus className="h-4 w-4" /> {t('admin.addCorsOrigin')}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <ConfirmDialog
+        open={deletingCorsIndex !== null}
+        onClose={() => setDeletingCorsIndex(null)}
+        onConfirm={() => {
+          if (deletingCorsIndex === null) return;
+          const next = corsList.filter((_, i) => i !== deletingCorsIndex);
+          setDeletingCorsIndex(null);
+          void persistCors(next);
+        }}
+        title={t('admin.removeCorsOrigin')}
+        message={t('admin.removeCorsOriginConfirm')}
       />
       </div>
 

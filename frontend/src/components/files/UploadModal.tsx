@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { Button, Progress, Dialog } from '@/components/ui/core';
 import { toast } from '@/components/ui/toast';
 import { initUploadSession, completeUpload } from './data';
+import { useCaptchaGate } from '@/components/captcha';
+import { useSite } from '@/stores/site';
 import { getCsrfToken, ApiError } from '@/lib/api';
 import { cn, formatBytes, fileIconEmoji } from '@/lib/utils';
 import i18n from '@/lib/i18n';
@@ -34,9 +36,23 @@ export function UploadModal({
   onDone: () => void;
 }) {
   const { t } = useTranslation();
+  const site = useSite();
+  const captcha = site.captcha;
+  // 人机验证面（upload）：每次 upload-session 前自动刷新 token（批量上传无需重复交互）
+  const gate = useCaptchaGate({
+    provider: captcha?.provider ?? 'turnstile',
+    siteKey: captcha?.siteKey ?? '',
+    action: 'upload',
+    enabled: Boolean(captcha?.enabled && captcha.upload),
+  });
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // 弹窗打开即唤起（首个文件的 token 已就绪）
+  useEffect(() => {
+    if (open && captcha?.enabled && captcha.upload) void gate.freshToken().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
   // 每个任务一个 AbortController：暂停时真实中止在途 XHR
   const controllersRef = useRef(new Map<string, AbortController>());
 
@@ -63,11 +79,21 @@ export function UploadModal({
     controllersRef.current.set(task.id, controller);
     update(task.id, { status: 'uploading', error: undefined, progress: 0 });
     try {
+      let captchaToken: string | undefined;
+      if (captcha?.enabled && captcha.upload) {
+        try {
+          captchaToken = await gate.freshToken();
+        } catch {
+          update(task.id, { status: 'failed', error: t('common.captchaFailed') });
+          throw new Error('captcha_timeout');
+        }
+      }
       const session = await initUploadSession({
         path: targetPath,
         fileName: task.name,
         fileSize: task.size,
         mimeType: task.mime,
+        turnstileToken: captchaToken,
       });
 
       const totalParts = session.totalParts ?? 0;
@@ -276,6 +302,7 @@ export function UploadModal({
             {t('upload.done')} <X className="h-3.5 w-3.5" />
           </Button>
         </div>
+        {gate.element}
       </div>
     </Dialog>
   );

@@ -10,6 +10,8 @@ export const UsernameSchema = z
 export const PasswordSchema = z.string().min(8).max(128);
 
 export const RegisterSchema = z.object({
+  // Turnstile 人机验证令牌（面启用时后端强校验，未启用时忽略）
+  turnstileToken: z.string().max(2048).optional(),
   username: UsernameSchema,
   password: PasswordSchema,
   email: z.string().email(),
@@ -25,11 +27,15 @@ export const LoginSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
   totpCode: z.string().max(32).optional(),
+  // Turnstile 人机验证令牌（面启用时后端强校验，未启用时忽略）
+  turnstileToken: z.string().max(2048).optional(),
 });
 
 // 密码找回/重置 body 统一 Zod 校验
 export const ForgotPasswordSchema = z.object({
   email: z.string().email('邮箱格式不正确'),
+  // Turnstile 人机验证令牌（面启用时后端强校验，未启用时忽略）
+  turnstileToken: z.string().max(2048).optional(),
 });
 
 export const ResetPasswordSchema = z.object({

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Ban, ChevronRight, Download, Eye, FileQuestion, FileText, FolderOpen, KeyRound, Link2, Lock, Share2, X } from 'lucide-react';
 import { Logo } from '@/components/layout/Logo';
 import { useSite } from '@/stores/site';
+import { CaptchaWidget } from '@/components/captcha';
 import { Badge, Button, Dialog, EmptyState, Input, Spinner } from '@/components/ui/core';
 import { Dropdown } from '@/components/ui/dropdown';
 import { ShareLinkPanel } from '@/components/share/ShareLinkPanel';
@@ -129,6 +130,11 @@ function ShareRow({
 }
 
 export default function SharePage({ imageMode = false }: { imageMode?: boolean }) {
+  const site = useSite();
+  // 人机验证面（share_download）：token 单次有效——每次下载前需有可用 token，失败/消费后 reset
+  const captcha = site.captcha;
+  const [shareToken, setShareToken] = useState('');
+  const [shareTokenReset, setShareTokenReset] = useState(0);
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const [info, setInfo] = useState<ShareInfo | null>(null);
@@ -233,12 +239,19 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
     if (!id) return;
     try {
       const res = await apiFetch<{ url: string; expiresIn: number }>(
-        `/api/shares/${id}/download?itemId=${encodeURIComponent(item.id)}`
+        `/api/shares/${id}/download?itemId=${encodeURIComponent(item.id)}`,
+        { headers: { 'X-Turnstile-Token': shareToken || '' } }
       );
       window.open(res.data.url, '_blank');
+      setShareToken('');
+      setShareTokenReset((n) => n + 1);
       // Umami 事件（分享下载）：来源=umami 且 tracker 就绪才实际发出
       trackUmami('share_download', { name: item.name, size: item.size });
     } catch (err) {
+      if (err instanceof ApiError && (err.code === 'CAPTCHA_FAILED' || err.code === 'CAPTCHA_REQUIRED')) {
+        setShareToken('');
+        setShareTokenReset((n) => n + 1);
+      }
       toast('error', err instanceof ApiError ? err.message : t('common.downloadFailed'));
     }
   };
@@ -251,6 +264,7 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       setPendingAction('download');
       return;
     }
+    // 人机验证面启用：首次点击先展示小部件（token 就绪后同一入口重放）
     void openDownload(item);
   };
 
@@ -564,6 +578,19 @@ export default function SharePage({ imageMode = false }: { imageMode?: boolean }
       </main>
 
       {/* 文件密码验证弹窗：分享密码（requiresPassword）已过后，对带密码文件单独验证；成功后种 HttpOnly cookie */}
+      {/* 人机验证（share_download 面）：页面打开即唤起，token 就绪后下载不再等待 */}
+      {captcha?.enabled && captcha.shareDownload && (
+        <div className="mx-auto mb-4 max-w-sm rounded-md border p-3">
+          <p className="mb-2 text-xs text-muted-foreground">{t('common.captchaDownloadHint')}</p>
+          <CaptchaWidget
+            provider={captcha.provider}
+            siteKey={captcha.siteKey}
+            action="share_download"
+            onToken={setShareToken}
+            resetSignal={shareTokenReset}
+          />
+        </div>
+      )}
       <Dialog open={!!filePwItem} onClose={() => setFilePwItem(null)} title={t('sharePage.filePasswordTitle')}>
         <div className="space-y-3">
           {filePwItem && <p className="truncate text-sm text-muted-foreground">{filePwItem.name}</p>}

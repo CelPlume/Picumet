@@ -47,6 +47,7 @@ import { ACCENT_PRESETS } from '@/stores/theme';
 import type { MotionSpeed } from '@/stores/theme';
 import { useAuth } from '@/stores/auth';
 import { useSite } from '@/stores/site';
+import { useCaptchaGate } from '@/components/captcha';
 import { useTheme } from '@/stores/theme';
 import { UsageDisplay } from '@/components/ui/usage';
 import { Avatar } from '@/components/layout/widgets';
@@ -149,6 +150,25 @@ export default function PersonalizationPage() {
   // 权限来自公开设置 invite_generation（all_users / admin_only）+ 本人角色；
   // 等 site.loaded 再判定，避免缓存缺失时先按默认值渲染再翻转。
   const site = useSite();
+  // 人机验证门（password_change / email_verify 两面）：各自独立 token 与小部件
+  const backupCaptcha = useCaptchaGate({
+    provider: site.captcha?.provider ?? 'turnstile',
+    siteKey: site.captcha?.siteKey ?? '',
+    action: 'backup_codes',
+    enabled: Boolean(site.captcha?.enabled && site.captcha.backupCodes),
+  });
+  const pwdCaptcha = useCaptchaGate({
+    provider: site.captcha?.provider ?? 'turnstile',
+    siteKey: site.captcha?.siteKey ?? '',
+    action: 'password_change',
+    enabled: Boolean(site.captcha?.enabled && site.captcha.passwordChange),
+  });
+  const emailCaptcha = useCaptchaGate({
+    provider: site.captcha?.provider ?? 'turnstile',
+    siteKey: site.captcha?.siteKey ?? '',
+    action: 'email_verify',
+    enabled: Boolean(site.captcha?.enabled && site.captcha.emailVerify),
+  });
   const [invites, setInvites] = useState<InviteCodeItem[] | null>(null);
   const [inviteMax, setInviteMax] = useState(5);
   const [inviteName, setInviteName] = useState('');
@@ -334,9 +354,10 @@ export default function PersonalizationPage() {
     if (!regenPassword || !regenCode) return toast('error', t('settings.twoFactor.codeInvalid'));
     setRegeneratingBackup(true);
     try {
+      const backupToken = site.captcha?.enabled && site.captcha.backupCodes ? await backupCaptcha.freshToken().catch(() => undefined) : undefined;
       const res = await apiFetch<{ backupCodes: string[] }>('/api/users/2fa/backup-codes/regenerate', {
         method: 'POST',
-        body: { password: regenPassword, code: regenCode },
+        body: { password: regenPassword, code: regenCode, turnstileToken: backupToken },
       });
       setNewBackupCodes(res.data.backupCodes);
       setShowRegenBackup(false);
@@ -345,6 +366,9 @@ export default function PersonalizationPage() {
       setRegenCode('');
       await loadTotpStatus();
     } catch (err) {
+      if (err instanceof ApiError && (err.code === 'CAPTCHA_FAILED' || err.code === 'CAPTCHA_REQUIRED')) {
+        toast('error', err.message);
+      }
       toast('error', err instanceof ApiError ? err.message : t('common.error'));
     } finally {
       setRegeneratingBackup(false);
@@ -415,7 +439,12 @@ export default function PersonalizationPage() {
     try {
       await apiFetch('/api/users/me/password', {
         method: 'PUT',
-        body: { oldPassword, newPassword, emailCode: pwdCode || undefined },
+        body: {
+          oldPassword,
+          newPassword,
+          emailCode: pwdCode || undefined,
+          turnstileToken: site.captcha?.enabled && site.captcha.passwordChange ? await pwdCaptcha.freshToken().catch(() => undefined) : undefined,
+        },
       });
       toast('success', t('settings.passwordChanged'));
       setOldPassword('');
@@ -434,7 +463,8 @@ export default function PersonalizationPage() {
     if (!newEmail) return toast('error', t('settings.security.newEmailRequired'));
     setOtpSending(true);
     try {
-      await apiFetch('/api/users/me/email/send-otp', { method: 'POST', body: { email: newEmail } });
+      const emailOtpToken = site.captcha?.enabled && site.captcha.emailVerify ? await emailCaptcha.freshToken().catch(() => undefined) : undefined;
+      await apiFetch('/api/users/me/email/send-otp', { method: 'POST', body: { email: newEmail, turnstileToken: emailOtpToken } });
       toast('success', t('settings.security.otpSent'));
       setOtpSent(true);
       setCountdown(60);
@@ -623,6 +653,7 @@ export default function PersonalizationPage() {
                 <Button onClick={sendOtp} loading={otpSending} variant="outline" className="shrink-0" disabled={countdown > 0}>
                   {countdown > 0 ? `${countdown}s` : t('settings.security.sendOtp')}
                 </Button>
+                {emailCaptcha.element}
               </div>
               {otpSent && (
                 <Button onClick={verifyOtp} loading={verifying} variant="outline" className="mt-2 w-full">
@@ -670,7 +701,10 @@ export default function PersonalizationPage() {
               <Label>{t('settings.confirmPassword')}</Label>
               <Input type="password" className="mt-1" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
             </div>
-            <div className="reveal-row" style={innerDelay(2, 5)}>
+            {site.captcha?.enabled && site.captcha.passwordChange && (
+              <div className="reveal-row" style={innerDelay(2, 5)}>{pwdCaptcha.element}</div>
+            )}
+            <div className="reveal-row" style={innerDelay(2, 6)}>
               <Button onClick={change} loading={savingPwd}>{t('settings.changePassword')}</Button>
             </div>
           </CardContent>
@@ -1452,6 +1486,7 @@ export default function PersonalizationPage() {
                 />
               </div>
             </div>
+            {backupCaptcha.element}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button

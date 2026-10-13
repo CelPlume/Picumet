@@ -14,11 +14,15 @@ export const PasswordSchema = z.object({
   oldPassword: z.string().min(1),
   newPassword: z.string().min(8).max(128),
   emailCode: z.string().regex(/^\d{6}$/, '验证码必须为 6 位数字').optional(),
+  // Turnstile 人机验证令牌（面启用时后端强校验，未启用时忽略）
+  turnstileToken: z.string().max(2048).optional(),
 });
 
 // 发送邮箱验证码
 export const SendOtpSchema = z.object({
   email: z.string().email(),
+  // Turnstile 人机验证令牌（面启用时后端强校验，未启用时忽略）
+  turnstileToken: z.string().max(2048).optional(),
 });
 
 // 验证邮箱验证码
