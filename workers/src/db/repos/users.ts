@@ -5,12 +5,16 @@ import { mapUser, mapQuota, num, str, type Row } from '../row';
 import { RoleDefaultsRepo } from './role-defaults';
 import { uuid } from '../../utils/crypto';
 
-/** 用户列表行：User + 受邀信息（管理端「邀请人 / 邀请码」两列；未受邀为 null） */
+/** 用户列表行：User + 受邀信息（管理端「邀请人 / 邀请码」两列；未受邀为 null）+ SSO 绑定信息（「OIDC 渠道 / OIDC 邮箱」两列；未绑定为 null） */
 export type UserListRow = User & {
   /** 核销的邀请码码值 */
   inviteCode: string | null;
   /** 邀请人用户名（邀请码创建人） */
   invitedBy: string | null;
+  /** 绑定的 SSO 渠道名（多绑定时顿号连接） */
+  ssoChannels: string | null;
+  /** 绑定的 SSO 身份邮箱（多绑定时顿号连接） */
+  ssoEmails: string | null;
 };
 
 export const UserRepo = {
@@ -154,17 +158,34 @@ export const UserRepo = {
     const countRow = await db.first(`SELECT COUNT(*) AS c FROM users u ${whereSql}`, params);
     const total = num(countRow?.c);
     // 受邀信息随列表一次 LEFT JOIN 取回（管理端「邀请人 / 邀请码」两列），避免逐行查询（N+1）；
-    // 核销列被置空或码行随创建人删除时两列为 null
+    // 核销列被置空或码行随创建人删除时两列为 null。
+    // SSO 绑定同样一次聚合取回（管理端「OIDC 渠道 / OIDC 邮箱」两列）：子查询按 user_id 聚合，
+    // 渠道取 provider.name、邮箱取身份档案 email 快照；多绑定时按绑定顺序顿号连接；无绑定两列为 null
     const rows = await db.all(
-      `SELECT u.*, ic.code AS invite_code, creator.username AS invited_by
+      `SELECT u.*, ic.code AS invite_code, creator.username AS invited_by,
+              sso.channels AS sso_channels, sso.emails AS sso_emails
        FROM users u
        LEFT JOIN invite_codes ic ON ic.id = u.invited_by_code_id
        LEFT JOIN users creator ON creator.id = ic.created_by
+       LEFT JOIN (
+         SELECT si.user_id,
+                GROUP_CONCAT(sp.name, '、') AS channels,
+                GROUP_CONCAT(si.email, '、') AS emails
+         FROM sso_identities si
+         JOIN sso_providers sp ON sp.id = si.provider_id
+         GROUP BY si.user_id
+       ) sso ON sso.user_id = u.id
        ${whereSql} ORDER BY u.created_at DESC LIMIT ? OFFSET ?`,
       [...params, opts.limit, (opts.page - 1) * opts.limit]
     );
     return {
-      rows: rows.map((r) => ({ ...mapUser(r), inviteCode: str(r.invite_code) ?? null, invitedBy: str(r.invited_by) ?? null })),
+      rows: rows.map((r) => ({
+        ...mapUser(r),
+        inviteCode: str(r.invite_code) ?? null,
+        invitedBy: str(r.invited_by) ?? null,
+        ssoChannels: str(r.sso_channels) || null,
+        ssoEmails: str(r.sso_emails) || null,
+      })),
       total,
     };
   },

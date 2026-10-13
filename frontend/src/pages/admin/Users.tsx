@@ -23,6 +23,9 @@ interface UserRow extends User {
   /** 受邀信息（管理端「邀请人 / 邀请码」两列；未受邀为 null） */
   inviteCode: string | null;
   invitedBy: string | null;
+  /** SSO 绑定信息（管理端「OIDC 渠道 / OIDC 邮箱」两列；未绑定为 null） */
+  ssoChannels: string | null;
+  ssoEmails: string | null;
 }
 
 /** GET /api/admin/roles 行：角色默认存储设置与成员数 */
@@ -395,14 +398,16 @@ export default function AdminUsers() {
               <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.registeredAt')} sortKey="createdAt" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.invitedBy')} sortKey="invitedBy" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.inviteCode')} sortKey="inviteCode" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.oidcChannel')} sortKey="ssoChannels" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
+              <th className={'px-2.5 py-2 text-left'}><SortableHeader title={t('admin.users.oidcEmail')} sortKey="ssoEmails" sort={sort} order={order} onSort={(k)=>{setSort(k);setOrder(order==='asc'?'desc':'asc');}} /></th>
               <th className={'px-2.5 py-2 text-left'}>{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {showSkeleton ? (
-              <tr><td colSpan={8}><TableSkeleton rows={8} cols={8} /></td></tr>
+              <tr><td colSpan={10}><TableSkeleton rows={8} cols={10} /></td></tr>
             ) : sortedRows.length === 0 ? (
-              <tr><td colSpan={8}><EmptyState icon={<Users className="h-7 w-7" />} title={t('admin.users.empty')} description={t('admin.users.emptyDesc')} /></td></tr>
+              <tr><td colSpan={10}><EmptyState icon={<Users className="h-7 w-7" />} title={t('admin.users.empty')} description={t('admin.users.emptyDesc')} /></td></tr>
             ) : (
             sortedRows.map((u, i) => (
               <tr key={u.id} className="reveal border-b hover:bg-accent/50" style={revealDelay(i, 'inner', REVEAL_INNER_BASE + REVEAL_STEP)}>
@@ -430,6 +435,9 @@ export default function AdminUsers() {
                 <td className="px-2.5 py-2 text-xs text-muted-foreground">
                   {u.inviteCode ? <code className="font-mono tracking-wide">{u.inviteCode}</code> : '-'}
                 </td>
+                {/* SSO 绑定：渠道 = provider 名称（多绑定顿号连接）；未绑定为 '-' */}
+                <td className="px-2.5 py-2 text-xs text-muted-foreground">{u.ssoChannels ?? '-'}</td>
+                <td className="px-2.5 py-2 text-xs text-muted-foreground">{u.ssoEmails ?? '-'}</td>
                 <td className="px-2.5 py-2">
                   <div className="flex gap-1">
                     <button onClick={() => openEdit(u)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
