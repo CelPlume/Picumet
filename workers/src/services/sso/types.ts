@@ -57,4 +57,17 @@ export interface SsoPendingEntry {
   kind: SsoProviderKind;
   profile: SsoProfile;
   tokens: SsoTokens;
+  /**
+   * 「关联已有账号」中间态：密码验证通过后的目标账号与二次因子步骤。
+   * 写回同一 KV 键（同 token），目标账号 id 只存在于服务端暂存，不经 Cookie/URL 暴露。
+   */
+  link?: {
+    userId: string;
+    /** totp = 待验两步验证；email = 待验邮箱验证码（发往账号邮箱）；none = 无二次因子（仅密码） */
+    step: 'totp' | 'email' | 'none';
+    /** email 步骤的收件邮箱（= 账号邮箱，非提供方档案邮箱） */
+    email: string | null;
+    /** 二次因子失败次数（含密码步骤？否——密码失败直接 401 不进入 link 态），≥5 锁定并清上下文 */
+    attempts: number;
+  };
 }

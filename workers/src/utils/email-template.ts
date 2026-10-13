@@ -194,6 +194,17 @@ export function renderRegisterOtpMail(code: string, brand?: MailBrand): string {
   });
 }
 
+/** 第三方身份关联验证码邮件：密码验证通过后确认对既有账号邮箱的控制权 */
+export function renderSsoLinkOtpMail(code: string, brand?: MailBrand): string {
+  return mailShell({
+    brand,
+    badge: '身份关联',
+    heading: '身份关联验证码',
+    lede: '在第三方登录关联页填入下面的 6 位验证码，即可把第三方身份绑定到你的账号。',
+    body: mailCodeBlock(code, brand) + mailNote('若非本人操作，请立即修改密码——该验证码可证明账号控制权。'),
+  });
+}
+
 /** 邮箱验证 / 完成注册邮件（带一键按钮 + 兜底链接）
  *  variant='confirmRegister'：待验证注册核销（迁移 0016），账号在点链接前**未落库**
  *  variant='verify'（默认）：存量已建号用户的补验证

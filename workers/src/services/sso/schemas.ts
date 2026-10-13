@@ -43,3 +43,23 @@ export const SsoCompleteSchema = z.object({
 export type SsoProviderCreateRequest = z.infer<typeof SsoProviderCreateSchema>;
 export type SsoProviderUpdateRequest = z.infer<typeof SsoProviderUpdateSchema>;
 export type SsoCompleteRequest = z.infer<typeof SsoCompleteSchema>;
+
+/**
+ * 「关联已有账号」第一步：密码验证既有账号。identifier 与登录同口径（用户名或邮箱）；
+ * 密码错误与不存在统一 401（防账号枚举）。人机验证复用 login 面（同是凭据验证动作）。
+ */
+export const SsoLinkSchema = z.object({
+  token: z.string().min(20).max(200),
+  identifier: z.string().trim().min(1, '请输入用户名或邮箱').max(200),
+  password: z.string().min(1, '请输入密码').max(128),
+  turnstileToken: z.string().max(4096).optional(),
+});
+
+/** 第二步：两步验证码（TOTP/备用码）或邮箱验证码 */
+export const SsoLinkVerifySchema = z.object({
+  token: z.string().min(20).max(200),
+  code: z.string().trim().min(4, '验证码长度不正确').max(20),
+});
+
+export type SsoLinkRequest = z.infer<typeof SsoLinkSchema>;
+export type SsoLinkVerifyRequest = z.infer<typeof SsoLinkVerifySchema>;

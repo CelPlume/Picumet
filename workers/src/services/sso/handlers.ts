@@ -15,7 +15,7 @@ import { ok } from '../../shared/response';
 import { getDb } from '../../middleware/auth';
 import { authRateLimitMiddleware } from '../../middleware/rate-limit';
 import { requestIp } from '../../utils/ip';
-import { hashPassword, randomString, timingSafeEqualStr } from '../../utils/crypto';
+import { hashPassword, randomString, timingSafeEqualStr, verifyPassword, randomDigits } from '../../utils/crypto';
 import {
   LogRepo,
   QuotaRepo,
@@ -30,7 +30,11 @@ import {
 import { loadInviteSettings, resolveInviteCode } from '../invites/invites';
 import { setAuthCookie } from '../auth/session';
 import { toPublicUser } from '../auth/public-user';
-import { SsoCompleteSchema } from './schemas';
+import { verifyTotpOrBackupCode } from '../auth/totp-verify';
+import { resolveSmtpConfig, sendMail } from '../../utils/smtp';
+import { renderSsoLinkOtpMail, type MailBrand } from '../../utils/email-template';
+import { assertCaptcha } from '../captcha';
+import { SsoCompleteSchema, SsoLinkSchema, SsoLinkVerifySchema } from './schemas';
 import {
   DEFAULT_SCOPES,
   allowLoopbackIssuer,
@@ -479,4 +483,262 @@ ssoRoutes.post('/complete', authRateLimitMiddleware, async (c) => {
   const fresh = await UserRepo.getUserById(db, user.id);
   const quota = await QuotaRepo.getQuota(db, user.id);
   return ok(c, { user: toPublicUser(fresh ?? user), quota }, '注册成功', 201);
+});
+
+// ============ 关联已有账号（/sso/complete 的第二分支） ============
+//
+// 第三方身份已验证（提供方背书），但站点侧仍需证明「这个浏览器属于该本地账号的主人」：
+// 第一步密码（与登录同强度、同防枚举口径），第二步按账号能力二选一——启用两步验证的账号
+// 必须过 TOTP/备用码；未启用但有发信能力的账号走邮箱验证码（验证码发往**账号邮箱**，
+// 证明的是对既有账号的控制权，与提供方档案无关）；两者皆无时仅凭密码（与登录等同强度）。
+// 全程复用 pending 令牌 + 绑定 Cookie（与注册分支同一浏览器绑定），目标账号 id 只写服务端 KV。
+
+function maskEmail(email: string): string {
+  const at = email.indexOf('@');
+  if (at <= 0) return '***';
+  const local = email.slice(0, at);
+  return `${local[0]}***${email.slice(at)}`;
+}
+
+/** 邮件品牌（与 auth/send-otp 同源解析：站点标题 / Logo / 强调色） */
+async function loadLinkMailBrand(raw: Record<string, unknown>, baseUrl?: string): Promise<MailBrand> {
+  const read = (key: string): string | undefined => {
+    const v = raw[key];
+    if (v === undefined || v === null || v === 'null') return undefined;
+    try {
+      const parsed: unknown = JSON.parse(String(v));
+      return typeof parsed === 'string' ? parsed : undefined;
+    } catch {
+      return typeof v === 'string' ? v : undefined;
+    }
+  };
+  return {
+    siteTitle: read('site_title') || 'Picumet',
+    siteLogo: read('site_logo'),
+    siteUrl: read('return_url') || read('upload_url') || baseUrl,
+    primary: read('accent_color'),
+  };
+}
+
+/** 「关联已有账号」端点共用的 pending 上下文读取（与 /pending、/complete 同口径：令牌 + 绑定 Cookie + 来源可用性） */
+async function loadPendingContext(c: Context<AppBindings>, token: string): Promise<{ db: Db; pending: SsoPendingEntry; provider: SsoProviderRow }> {
+  const db = getDb(c);
+  if (!(await loadSsoEnabled(db))) throw new ApiError(403, 'SSO_DISABLED', '站点未启用第三方登录');
+  if (!token) throw ApiError.badRequest('缺少注册令牌');
+  assertBindCookie(c, PENDING_COOKIE, token, 'SSO_PENDING_INVALID', '注册会话与当前浏览器不匹配，请重新使用第三方登录');
+  const raw = await kvStoreFor(c.env).get(c.env.KV, `sso:pending:${token}`);
+  if (!raw) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
+  let pending: SsoPendingEntry;
+  try {
+    pending = JSON.parse(raw) as SsoPendingEntry;
+  } catch {
+    throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话无效，请重新使用第三方登录');
+  }
+  const provider = await SsoProviderRepo.getById(db, pending.providerId);
+  if (!provider || !provider.enabled) throw new ApiError(404, 'SSO_PROVIDER_NOT_FOUND', '该登录来源不可用');
+  return { db, pending, provider };
+}
+
+/** 关联成功收尾：建身份（或刷新既有行）、清 pending、审计、发会话 */
+async function finishLink(
+  c: Context<AppBindings>,
+  token: string,
+  pending: SsoPendingEntry,
+  provider: SsoProviderRow,
+  user: { id: string; username: string; role: string; sessionVersion: number; status: string },
+  method: 'totp' | 'email' | 'none'
+): Promise<void> {
+  const db = getDb(c);
+  const existing = await SsoIdentityRepo.findByProviderSubject(db, provider.id, pending.profile.subject);
+  if (existing) {
+    await SsoIdentityRepo.refresh(db, existing.id, {
+      email: pending.profile.email,
+      username: pending.profile.username,
+      displayName: pending.profile.displayName,
+      avatarUrl: pending.profile.avatarUrl,
+      ...pending.tokens,
+    });
+  } else {
+    await SsoIdentityRepo.create(db, {
+      providerId: provider.id,
+      userId: user.id,
+      subject: pending.profile.subject,
+      email: pending.profile.email,
+      username: pending.profile.username,
+      displayName: pending.profile.displayName,
+      avatarUrl: pending.profile.avatarUrl,
+      ...pending.tokens,
+    });
+  }
+  await kvStoreFor(c.env).delete(c.env.KV, `sso:pending:${token}`);
+  appendBindCookie(c, PENDING_COOKIE, '', 0);
+  await LogRepo.create(db, {
+    userId: user.id,
+    action: 'sso_link',
+    path: '/',
+    ipAddress: requestIp(c.req.raw),
+    userAgent: c.req.header('user-agent'),
+    metadata: JSON.stringify({ providerId: provider.id, kind: provider.kind, reason: 'password_manual', method }),
+  });
+  await issueSession(c, user, provider, true);
+}
+
+ssoRoutes.post('/:id/link', authRateLimitMiddleware, async (c) => {
+  const db = getDb(c);
+  const env = c.env;
+  const body = await c.req.json().catch(() => null);
+  const parsed = SsoLinkSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '参数无效', parsed.error.flatten());
+  }
+  const { token, identifier, password } = parsed.data;
+  const { pending, provider } = await loadPendingContext(c, token);
+
+  // 被锁定的关联上下文（第二步失败过多）必须重新走一次第三方授权，不能只换密码再试
+  if (pending.link && pending.link.attempts >= 5) {
+    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    appendBindCookie(c, PENDING_COOKIE, '', 0);
+    throw new ApiError(429, 'SSO_LINK_LOCKED', '尝试次数过多，请重新使用第三方登录');
+  }
+
+  // 人机验证复用 login 面（凭据验证动作，同一防线）
+  const ts = await assertCaptcha(c, 'login', parsed.data.turnstileToken);
+  if (ts.response) return ts.response;
+
+  // 与 /api/auth/login 同口径：标识不存在与密码错误回同一 401 文案（防账号枚举）
+  const user = await UserRepo.findByLoginIdentifier(db, identifier);
+  if (!user || !verifyPassword(password, user.passwordHash ?? '')) {
+    await LogRepo.create(db, {
+      action: 'login_failed',
+      path: `/api/auth/sso/${provider.id}/link`,
+      ipAddress: requestIp(c.req.raw),
+      userAgent: c.req.header('user-agent'),
+      metadata: JSON.stringify({ sso: provider.id, reason: 'link_password' }),
+    });
+    throw new ApiError(401, 'INVALID_CREDENTIALS', '用户名或密码错误');
+  }
+  if (user.status !== 'active') throw new ApiError(403, 'SSO_ACCOUNT_DISABLED', '账号已被禁用');
+
+  // 该第三方身份已绑定此账号 → 幂等收尾（回调分支 1 漏掉的边缘：pending 存在但身份行已建）
+  const existingIdentity = await SsoIdentityRepo.findByProviderSubject(db, provider.id, pending.profile.subject);
+  if (existingIdentity && existingIdentity.userId === user.id) {
+    await SsoIdentityRepo.refresh(db, existingIdentity.id, {
+      email: pending.profile.email,
+      username: pending.profile.username,
+      displayName: pending.profile.displayName,
+      avatarUrl: pending.profile.avatarUrl,
+      ...pending.tokens,
+    });
+    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    appendBindCookie(c, PENDING_COOKIE, '', 0);
+    await issueSession(c, user, provider, true);
+    const fresh = await UserRepo.getUserById(db, user.id);
+    const quota = await QuotaRepo.getQuota(db, user.id);
+    return ok(c, { step: 'done', user: toPublicUser(fresh ?? user), quota });
+  }
+  // 身份已绑定到**另一个**本地账号：subject 唯一，不能二次绑定（否则一个第三方身份挂两个账号）
+  if (existingIdentity) {
+    throw new ApiError(409, 'SSO_IDENTITY_BOUND', '该第三方身份已关联其他账号，请先用密码登录后在该账号内管理');
+  }
+
+  // 二次因子选择：TOTP 优先（账号自选的强因子）→ 邮箱验证码（证明账号邮箱控制权）→ 仅密码
+  if (user.totpEnabled) {
+    pending.link = { userId: user.id, step: 'totp', email: null, attempts: 0 };
+    await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    return ok(c, { step: 'totp' });
+  }
+
+  const raw = await SettingsRepo.getAll(db);
+  const smtp = await resolveSmtpConfig(raw, env as unknown as { ENCRYPTION_KEY: string; SMTP_HOST?: string });
+  const accountEmail = (user.email ?? '').trim();
+  if (smtp && accountEmail) {
+    const code = randomDigits(6);
+    const now = Date.now();
+    // 只走 D1（email_tokens），不写 KV——KV 写配额另行珍惜（与注册发码的 KV 兜底不同）
+    await db.run(`DELETE FROM email_tokens WHERE email = ? AND purpose = 'sso_link'`, [accountEmail.toLowerCase()]);
+    await db.run(
+      `INSERT INTO email_tokens (id, user_id, email, code, purpose, expires_at, attempts, created_at)
+       VALUES (?, ?, ?, ?, 'sso_link', ?, 0, ?)`,
+      [crypto.randomUUID(), user.id, accountEmail.toLowerCase(), code, now + 300_000, now]
+    );
+    try {
+      const brand = await loadLinkMailBrand(raw, env.APP_BASE_URL);
+      await sendMail(
+        { ...smtp, from: smtp.from || 'Picumet <noreply@example.com>' },
+        accountEmail,
+        `${brand.siteTitle} 身份关联验证码`,
+        renderSsoLinkOtpMail(code, brand)
+      );
+    } catch (err) {
+      await db.run(`DELETE FROM email_tokens WHERE email = ? AND purpose = 'sso_link'`, [accountEmail.toLowerCase()]);
+      console.error('[sso] link OTP mail failed:', err instanceof Error ? err.message : String(err));
+      throw new ApiError(502, 'MAIL_ERROR', '验证码邮件发送失败，请联系管理员检查邮件服务配置');
+    }
+    pending.link = { userId: user.id, step: 'email', email: accountEmail.toLowerCase(), attempts: 0 };
+    await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    return ok(c, { step: 'email', emailMasked: maskEmail(accountEmail) });
+  }
+
+  // 无 TOTP 也发不了邮件：密码即全部因子（与登录等同强度），直接关联
+  pending.link = { userId: user.id, step: 'none', email: null, attempts: 0 };
+  await finishLink(c, token, pending, provider, user, 'none');
+  const fresh = await UserRepo.getUserById(db, user.id);
+  const quota = await QuotaRepo.getQuota(db, user.id);
+  return ok(c, { step: 'done', user: toPublicUser(fresh ?? user), quota });
+});
+
+ssoRoutes.post('/:id/link-verify', authRateLimitMiddleware, async (c) => {
+  const db = getDb(c);
+  const env = c.env;
+  const body = await c.req.json().catch(() => null);
+  const parsed = SsoLinkVerifySchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '参数无效', parsed.error.flatten());
+  }
+  const { token, code } = parsed.data;
+  const { pending, provider } = await loadPendingContext(c, token);
+  if (!pending.link) throw new ApiError(400, 'SSO_LINK_NOT_STARTED', '请先完成密码验证');
+  if (pending.link.attempts >= 5) {
+    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    appendBindCookie(c, PENDING_COOKIE, '', 0);
+    throw new ApiError(429, 'SSO_LINK_LOCKED', '尝试次数过多，请重新使用第三方登录');
+  }
+
+  const linkUser = await UserRepo.getUserById(db, pending.link.userId);
+  if (!linkUser || linkUser.status !== 'active') {
+    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    appendBindCookie(c, PENDING_COOKIE, '', 0);
+    throw new ApiError(403, 'SSO_ACCOUNT_DISABLED', '账号已被禁用');
+  }
+
+  const fail = async () => {
+    pending.link!.attempts += 1;
+    await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    throw new ApiError(400, 'INVALID_OTP', pending.link!.step === 'totp' ? '两步验证码或备用码错误' : '邮箱验证码错误或已过期');
+  };
+
+  if (pending.link.step === 'totp') {
+    if (!(await verifyTotpOrBackupCode(db, env, pending.link.userId, code))) {
+      await fail();
+    }
+  } else if (pending.link.step === 'email' && pending.link.email) {
+    const row = await db.first(
+      `SELECT id, code, attempts, expires_at FROM email_tokens
+       WHERE email = ? AND purpose = 'sso_link' ORDER BY created_at DESC LIMIT 1`,
+      [pending.link.email]
+    );
+    if (!row || Number(row.expires_at) <= Date.now() || Number(row.attempts) >= 5 || String(row.code) !== code.trim()) {
+      if (row && Number(row.expires_at) > Date.now() && String(row.code) !== code.trim()) {
+        await db.run(`UPDATE email_tokens SET attempts = attempts + 1 WHERE id = ?`, [row.id]);
+      }
+      await fail();
+    } else {
+      await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
+    }
+  }
+
+  await finishLink(c, token, pending, provider, linkUser, pending.link.step);
+  const fresh = await UserRepo.getUserById(db, linkUser.id);
+  const quota = await QuotaRepo.getQuota(db, linkUser.id);
+  return ok(c, { step: 'done', user: toPublicUser(fresh ?? linkUser), quota }, '关联成功');
 });
