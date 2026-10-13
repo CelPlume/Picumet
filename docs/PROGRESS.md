@@ -569,9 +569,30 @@ E2E（真浏览器实测，1280×800 与 375×812 双视口）：竖图 fit 渲�
 - **S3 网关 `onError`**：`upsertFileObject` 等抛出的 `ApiError`（占用 409 / 404 / 413…）此前在根路径挂载上未经映射直接裸 500（s3RootApi 独立 Hono 实例无全局 errorHandler）。新增 `s3gwRoutes.onError` 把业务异常映射为 S3 XML（409 OperationAborted / 404 NoSuchKey / 413 EntityTooLarge / 501 NotImplemented），根路径与 `/s3` 挂载同语义。回归 1 例（SDK 复现他人占用 → 409 XML，属主对象完好）。（`services/s3gw/handlers.ts`、`tests/s3gw.test.ts`）
 - **面板侧配置（硬自测通过）**：admin 创建 `alexandrie-root` 密钥（uploadPath=/，桶根任意路径写入 200）；`/public/excnies/dire` 设「游客仅可下载」（级联）；`/drie-backups` 预建。**无痕自测 `GET /public/excnies/dire/scope-ok.txt` → 200 `scope-check`**；既有 png 匿名 200。workers 87 文件 / 794 例全绿。
 
+### 2026-10-12（追加二）：CORS 白名单通配符 + 弹窗管理
+
+- **设置消费修复（真 bug）**：系统设置 `allowed_origins` 此前只存不用——`corsHeaders` 中间件仅读环境变量；且同源回退改造时误删了 `Access-Control-Allow-Origin` 反射头，白名单命中的跨源响应也不带头。中间件改为「同源回退 → 环境变量精确 → 设置表白名单（含通配）」三段判定，命中即反射来源 + 凭据头。
+- **通配符**：`https://*.example.com` 命中任意层级子域与裸域；scheme 与端口严格（条目未写端口时来源不得带显式端口）；通配符只允许主机名首段，非法条目恒不匹配（`utils/cors.ts` 的 `originMatches` 纯函数 + `parseOriginList` + 60s 进程缓存的 `loadCorsOrigins` / `invalidateCorsCache`）。
+- **白名单并集**：环境变量 `ALLOWED_ORIGINS` 与设置表条目始终叠加；管理端保存 `allowed_origins` 走 `settings_update` 审计（记键不记值）+ 同 isolate 缓存立即失效。
+- **管理端 UI**：安全卡片的纯文本输入替换为「CORS 白名单」弹窗 + 表格（IP 封禁弹窗同款玻璃面：来源 / 删除 / 添加行，删除走 ConfirmDialog），增删立即经既有设置保存落库。
+- **域名族归属**：`https://*.cnies.org / *.hxcn.space / *.hxcn.dev / *.hxcn.top` 写在 `deploy/wrangler.production.toml` 的 `ALLOWED_ORIGINS`（未追踪上线配置，域名族属部署配置不入迁移）；生产库 `allowed_origins` 保持既有两个精确来源，两者运行时并集叠加。
+- **测试**：`tests/cors-origins.test.ts` 6 例（通配/端口/scheme 语义、预检反射、缓存失效即时生效、审计）；workers 88 文件 / 800 例全绿。
+- **生产实测**：`files.cnies.org / app.hxcn.space / blog.hxcn.top / hxcn.dev（裸域）/ picumet.pages.dev` 预检均反射 ACAO + credentials；`stranger.example.com / evil-cnies.org`（后缀伪装）无 ACAO。
+
+### 2026-10-12（追加三）：人机验证接入（Turnstile / reCAPTCHA 双提供方）
+
+「即将规划」中的人机验证方案落地（用户提供生产密钥，七面全开上线）：
+
+- **服务端**（`services/captcha.ts`）：`assertCaptcha(c, action, token)` —— 面未启用放行；token 缺失 403 `CAPTCHA_REQUIRED`；siteverify 失败/action 不符 403 `CAPTCHA_FAILED`；网络异常/5xx 503 `CAPTCHA_UNAVAILABLE`（fail-closed）。双提供方 siteverify（官方文档核实，契约同构）：Turnstile `challenges.cloudflare.com/turnstile/v0/siteverify`、reCAPTCHA `www.google.com/recaptcha/api/siteverify`（v2 无 action 跳过比对）。配置进程内 60s 缓存，保存即失效。
+- **七面接线**：login（密码校验前，省 bcrypt）、register（OTP 前）、share_download（分享下载令牌签发，`X-Turnstile-Token` 头）、upload（`upload-session` 签发，API 密钥通道不经过）、password_change（`PUT /users/me/password` 旧密码校验前）、email_verify（`/users/me/email/send-otp` 换绑发码前）、password_reset（`/forgot-password` 发信前，不暴露邮箱存在性语义不变）。
+- **配置**：设置键 `captcha_provider/captcha_enabled/captcha_site_key/captcha_secret_key（enc: 密文）/captcha_face_*`（迁移 0018 种子，七面默认关）；管理端系统设置右列新增「人机验证」卡片（类 OIDC 卡片：提供方下拉 + 总开关 + Site Key + Secret 写后掩码 + 七面开关，启用校验缺钥 400）；公开设置下发 `captcha`（provider/enabled/siteKey/各面，无 secret）；保存写 `settings_update` 审计 + 缓存失效。
+- **客户端**（`components/captcha.tsx`）：双提供方显式渲染小部件（脚本 URL 固定常量，主题/语言跟随，interaction-only）+ `useCaptchaGate` hook（多请求场景每次调用前 reset 并等待新 token，30s 超时）。页面接线：登录（表单 + 忘记密码弹窗）、注册、分享下载（点击先出小部件，token 就绪后同入口重放）、上传弹窗（`sr-only` 挂载，批量上传每文件自动刷新 token 无需重复交互）、个性化（改密 + 换绑邮箱）；`TURNSTILE_FAILED/REQUIRED` → reset + toast。
+- **测试**：`tests/captcha.test.ts` 8 例（siteverify stub 矩阵：成功/失败/action 不符/网络异常/面未启用放行/reCAPTCHA 端点与无 action；管理端保存加密落库 + 掩码回读 + 公开下发无 secret + 审计）。workers 89 文件 / 808 例全绿。
+- **生产**：Turnstile 双钥已配（管理端 API），七面全开；实测无 token 登录/注册 403 `CAPTCHA_REQUIRED`；公开设置正确下发 siteKey 与各面。**注意**：login 面开启后，脚本化登录（curl 等）需先过 Turnstile——管理操作请走面板；紧急通道可在卡片临时关闭该面。
+
 ## 当前基线
 
-- 后端：87 个测试文件 / 794 个 Vitest 用例通过（累计本轮新增：can_browse_all 回归 3 例、网关密钥零规则与用户空间默认 3 例、模板上传根 1 例、游客可见性继承 3 例、S3 异常映射 1 例）；`tsc --noEmit` 干净。
+- 后端：89 个测试文件 / 808 个 Vitest 用例通过（累计本轮新增：can_browse_all 回归 3 例、网关密钥零规则与用户空间默认 3 例、模板上传根 1 例、游客可见性继承 3 例、S3 异常映射 1 例、CORS 白名单 6 例、人机验证 8 例）；`tsc --noEmit` 干净。
 - 前端：13 个测试文件 / 93 个 Vitest 用例通过；`tsc -b && vite build` 通过，`tsc --noEmit` 干净。
 - 语言：中文 + 英文。
 
@@ -720,6 +741,35 @@ Pages 反代架构上线后的实测反馈，全部为**后续修改**待办。�
 - **性质**：有意防护而非疏漏——Worker 会主动请求该地址，属真实 SSRF 面（审计项 SEC-02/SEC-12，回归 `admin-provider-update.test.ts` 与 lab `assert_endpoint_guard`）；且 Workers 运行时出口本就回源不了用户私网，放开校验也连不上。本地实验室靠直写 SQLite 绕过（`scripts/lab/fixtures.py` 的 `seed_provider_direct`），仅限本地开发。
 - **实际约束**：自建 S3 需 Nginx/Caddy 等 TLS 反代到 443/80 并暴露公网域名才可接入；纯内网部署（NAS、VPC 内）在 Workers 版不可用。
 - **候选方向（待决策）**：① 维持现状——内网自建存储不是 Workers 版的目标部署形态；② 环境变量级私网白名单（如 `S3_ENDPOINT_ALLOWLIST`，管理员显式声明、仅解封指定 endpoint，其余私网段照拒）；③ 并入「将来规划 — Go 高性能版」：自托管部署形态下私网 endpoint 既可达又合理，允许列表 + 校验开关自然落在那一版。
+
+### D1 免费档行读配额耗尽（2026-10-13 事故与修复）
+
+**现象**：生产全站 API 500（`/api/public/settings`、`/api/auth/me`、登录、文件列表全部 `INTERNAL_ERROR`），静态页与 `/api/public/health` 正常；回滚 Worker 版本无效。tail 抓到真实异常：`D1_ERROR: Your account has exceeded D1's free tier daily row read limit`（免费档 5,000,000 行读/日，UTC 午夜重置）。
+
+**消耗画像**（`wrangler d1 insights` 近 24h，top 查询）：
+
+| 查询 | 行读 | 次数 | 单次 | 归因 |
+| :--- | ---: | ---: | ---: | :--- |
+| 文件列表 `SELECT *, COUNT(*) OVER () … FROM file_metadata WHERE mount_id = ? AND ((type='file' AND path=?) OR (type='folder' AND <childFolderMatch>))` | 3.6M | 1,234 | ~2,900 行 | `childFolderMatch` 的 `path > ?` 范围**无上界**：`(mount_id, path)` 索引区间扫描会读过同挂载点内字母序靠后的全部路径（如列 `/public` 时扫过 `/uploads` 全部行）再靠 `substr` 过滤 |
+| 目录树（`listDescendants`/扁平树 join） | 2.7M | 106 | **~25,000 行** | 根路径 `/` 与整棵子树查询语义上就是全库扫描（全库 2,835 行 + join 放大），每次展开文件页树/管理端树/移动对话框都是一次全表 |
+| `SELECT COUNT(*)`/`SUM(size)` 聚合（对账 cron + 仪表盘） | ~0.9M | ~200 | 全表 | cron `*/10` 每 10 分钟一轮全表对账；仪表盘每次打开全表计数 |
+
+密集浏览/测试期（另一 agent 的文件管理测试 + 部署验证反复列目录）单日即打穿额度；免费档下 2,835 文件的库大约只能支撑 ~1,700 次列表/日。
+
+**已落地修复（部署版本 `0886785c`，2026-10-13）**：
+
+| 修复 | 落点 | 预期效果 |
+| :--- | :--- | :--- |
+| 前缀谓词上界 `path < p0`（非根目录；`'/'(0x2F) < '0'(0x30)` ⇒ `p/…` < `p0`，兄弟路径被范围直接排除） | `workers/src/utils/path.ts` `prefixBound` + `prefixMatch`/`subtreeMatch`/`childFolderMatch`（全部调用方语义不变，`substr` 仍兜底） | 列表/子树类查询行读从「挂载点内字母序靠后全部」收窄到真实子树，降约一个数量级 |
+| `SettingsRepo` isolate 级 60s 缓存（`getAll` 全表 + 单键 `get` 走同一缓存；`set()` 即失效；测试 `createTestContext` 与直写设置的用例显式 `invalidateSettingsCache()`） | `workers/src/db/repos/system.ts`、`tests/helpers.ts` + 11 个测试文件 | settings 全表读 839 次/日与 captcha 15 键逐键点查归零（缓存内取值）；captcha 自身冗余缓存层删除（失效顺序不再是隐藏契约） |
+| cron 全表聚合对账每小时节流（`getUTCMinutes() < 10` 的整点轮才跑：`repairMovedFolderOrphans`/`reconcileQuotas`/`reconcileBlobs`/`cleanupBlobObjects`；会话/分享过期等索引点查保持 `*/10`） | `workers/src/services/cleanup.ts` | 对账类 ~60 万行/日 → ~6 万行/日（对账本就是兜底自愈，小时级延迟不影响正确性） |
+
+**残余风险（未解决）**：
+
+- **树查询仍是全库扫描**——根路径无上界是语义正确（整棵树本来就要全量），单次 ~2.5 万行；反复展开文件页树/管理端树/移动对话框仍是单日额度黑洞。候选优化：树懒加载逐层取子（前端契约变更）、树结果按挂载点缓存（失效挂钩写路径）、或物化 path 层级表。
+- 免费档与当前使用强度（持续测试 + 多端浏览）不匹配，列表优化后仍可能被高频树操作打穿。**治本选项**：升级 Workers Paid（$5/月，D1 行读上限提升数个量级）。
+
+**运维注意**：`wrangler d1 execute --remote` / `wrangler deploy` 走 Cloudflare 控制面 API，与配额无关的 `api.cloudflare.com` 链路故障（2026-10-13 曾整体不可达数小时）会同时阻塞部署、回滚与直连改库，与 D1 配额耗尽症状（站点 500 但边缘正常）相互独立，排障时先区分。
 
 ### 出口机制与协议兼容完善
 
