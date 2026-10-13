@@ -5,6 +5,7 @@
 // ④ 无祖先设置时新建行 guest_visibility 为 NULL（不额外开放游客）。
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, registerAndLogin, getCsrf, json, grantApiKeyRule, type TestContext } from './helpers';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 let ctx: TestContext;
 
@@ -54,6 +55,7 @@ describe('游客可见性继承', () => {
     await setGuestViaApi('/public');
     // 匿名读还需站点级「允许访客」（path-serve 前置门禁）
     ctx.db.exec(`UPDATE system_settings SET value = 'true' WHERE key = 'allow_guest_access'`);
+  invalidateSettingsCache();
     const key = await createKey('guestinherit', '/public');
     // 深层路径：dire/2026/10 全部为自愈创建的目录行，均应继承 download
     const up = await request(ctx, '/api/upload', {

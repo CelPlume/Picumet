@@ -259,12 +259,23 @@ export function safeDecodePath(raw: string): string {
  * 不拼 LIKE 模式——D1 的 SQLITE_MAX_LIKE_PATTERN_LENGTH = 50，路径 ≥49 字符时
  * `escapeLikePattern(p) + '/%'` 直接 500（LAB F-04）。范围 + substr 改写无长度上限，
  * `path > ?` 仍可走 (mount_id, path) 索引区间；`%`/`_` 也不再是通配符。
+ *
+ * 上界 `p0`（非根目录）：'/'(0x2F) < '0'(0x30) ⇒ 任何 `p/…` 都 < `p0`，
+ * 而同挂载点内字母序靠后的兄弟路径（如 /uploads 之于 /public）≥ `p0` 被范围直接排除。
+ * 无上界时 (mount_id, path) 区间扫描会读过 mount 内 `> p` 的所有行再靠 substr 过滤——
+ * 实测 2.8k 行的库每次列表读 1,723 行（D1 免费档 5M 行/日配额的主消耗之一）。
+ * 根目录 p='/' 时全部路径都以 '/' 开头，上界无意义，省略。
  */
+function prefixBound(p: string): string | null {
+  return p === '/' ? null : `${p}0`;
+}
+
 export function prefixMatch(column: string, p: string): { sql: string; params: unknown[] } {
   const prefix = p === '/' ? '/' : `${p}/`;
+  const bound = prefixBound(p);
   return {
-    sql: `(${column} > ? AND substr(${column}, 1, ?) = ?)`,
-    params: [p, prefix.length, prefix],
+    sql: `(${column} > ? AND ${bound ? `${column} < ? AND ` : ''}substr(${column}, 1, ?) = ?)`,
+    params: bound ? [p, bound, prefix.length, prefix] : [p, prefix.length, prefix],
   };
 }
 
@@ -281,8 +292,11 @@ export function subtreeMatch(column: string, p: string): { sql: string; params: 
  */
 export function childFolderMatch(column: string, p: string): { sql: string; params: unknown[] } {
   const prefix = p === '/' ? '/' : `${p}/`;
+  const bound = prefixBound(p);
   return {
-    sql: `(${column} > ? AND substr(${column}, 1, ?) = ? AND instr(substr(${column}, ?), '/') = 0)`,
-    params: [p, prefix.length, prefix, prefix.length + 1],
+    sql: `(${column} > ? AND ${bound ? `${column} < ? AND ` : ''}substr(${column}, 1, ?) = ? AND instr(substr(${column}, ?), '/') = 0)`,
+    params: bound
+      ? [p, bound, prefix.length, prefix, prefix.length + 1]
+      : [p, prefix.length, prefix, prefix.length + 1],
   };
 }

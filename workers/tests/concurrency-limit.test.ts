@@ -4,6 +4,7 @@
 // 槽位状态直接读写 transfer_slots，避免依赖真实并发（同进程内顺序请求会立即释放槽位）。
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 let ctx: TestContext;
 let authCookie = '';
@@ -29,6 +30,7 @@ function setLimit(value: number): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     )
     .run(String(value), Date.now());
+  invalidateSettingsCache();
 }
 
 function slotCount(): number {

@@ -8,6 +8,7 @@ vi.mock('../src/utils/smtp', async () => {
 });
 import { createTestContext, request, initSeeded, type TestContext } from './helpers';
 import { Db } from '../src/db';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 function dbi(ctx: TestContext): Db {
   return Db.fromAny(ctx.env.DB as D1Database);
@@ -34,6 +35,7 @@ async function enableVerifyFlow(ctx: TestContext): Promise<void> {
   (ctx.env as unknown as Record<string, unknown>).SMTP_PORT = '465';
   (ctx.env as unknown as Record<string, unknown>).SMTP_FROM = 'no-reply@test.local';
   await dbi(ctx).run(`UPDATE system_settings SET value = ? WHERE key = 'require_email_verification'`, ['true']);
+  invalidateSettingsCache();
   // 邮件通道在测试里不可用：让 sendMail 的失败路径不阻塞（pending 行已在写库后才删，
   // 因此这里改为断言 pending 已写、随后手工核销）
 }
@@ -42,6 +44,7 @@ async function setVerify(ctx: TestContext, on: boolean): Promise<void> {
   await dbi(ctx).run(`UPDATE system_settings SET value = ? WHERE key = 'require_email_verification'`, [
     on ? 'true' : 'false',
   ]);
+  invalidateSettingsCache();
 }
 
 describe('待验证注册：不落库 + 点链接才建号', () => {

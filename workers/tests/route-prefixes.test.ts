@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
 import { Db } from '../src/db';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 import { directUrl, loadRoutePrefixes } from '../src/services/storage/direct-links';
 
 interface PrefixSettings {
@@ -109,10 +110,12 @@ describe('路由前缀设置', () => {
   it('脏值兜底：库里越界取值或键缺失时回退默认，不污染直服范围', async () => {
     const db = Db.fromSqlite(ctx.db);
     ctx.db.exec(`UPDATE system_settings SET value = '"junk"' WHERE key IN ('direct_prefix', 'root_target')`);
+    invalidateSettingsCache();
     expect(await loadRoutePrefixes(db)).toEqual({ directPrefix: '', rootTarget: 'landing' });
     expect(await readSettings()).toMatchObject({ directPrefix: '', rootTarget: 'landing' });
 
     ctx.db.exec(`DELETE FROM system_settings WHERE key IN ('direct_prefix', 'root_target')`);
+    invalidateSettingsCache();
     expect(await loadRoutePrefixes(db)).toEqual({ directPrefix: '', rootTarget: 'landing' });
 
     // 复原默认行（等价于 0001 §23 的播种）

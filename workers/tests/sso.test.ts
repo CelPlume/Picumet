@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
 import { decryptSecret } from '../src/utils/crypto';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 const ISSUER = 'http://localhost:9443';
 const OIDC_AUTHORIZE = `${ISSUER}/oauth2/authorize`;
@@ -124,6 +125,7 @@ function setSetting(key: string, value: string): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     )
     .run(key, value, Date.now());
+  invalidateSettingsCache();
 }
 
 function readSetting(key: string): string | undefined {

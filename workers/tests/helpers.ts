@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildApp } from '../src/index';
 import { ensureSeed } from '../src/seed';
 import { resetMemoryLimits } from '../src/middleware/rate-limit';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 import type { Env } from '../src/shared/types';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -226,6 +227,9 @@ export interface TestContext {
 
 export function createTestContext(): TestContext {
   resetMemoryLimits();
+  // 设置读取带 isolate 级 60s 缓存（模块级单例）——每个用例新建内存库，
+  // 必须同步失效，否则上一用例的设置缓存会污染本用例
+  invalidateSettingsCache();
   const db = new DatabaseSyncCtor(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   for (const sql of MIGRATIONS) db.exec(sql);

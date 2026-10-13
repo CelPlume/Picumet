@@ -389,20 +389,25 @@ export async function purgeKvFallback(env: Env): Promise<number> {
 
 /** 全部定时任务 */
 export async function runScheduledTasks(env: Env): Promise<Record<string, number>> {
+  // D1 行读节流（免费档 5M 行/日配额）：全表聚合类对账（配额/内容寻址/blob GC/子树孤儿）
+  // 每小时跑一轮——cron 整点触发的那次执行，其余 5 轮跳过计 0。这些对账都是兜底自愈
+  // （正常路径实时扣减/写时修复），延迟到小时级不影响正确性；会话/分享过期等索引点查
+  // 任务保持每 10 分钟。
+  const hourlyReconcile = new Date().getUTCMinutes() < 10;
   // 子树孤儿自愈先行：先把跨挂载点移动遗留的子树孤儿 mount_id 归位，
   // 随后 reconcileQuotas 的挂载容量对账才能按正确归属把容量跟着搬过去
-  const moveOrphansRepaired = await repairMovedFolderOrphans(env);
+  const moveOrphansRepaired = hourlyReconcile ? await repairMovedFolderOrphans(env) : 0;
   const [released, cleaned, expired, reconciled, pendingPurged, kvFallbackPurged] = await Promise.all([
     releaseExpiredReservations(env),
     cleanupOldObjects(env),
     expireDueShares(env),
-    reconcileQuotas(env),
+    hourlyReconcile ? reconcileQuotas(env) : Promise.resolve(0),
     purgePendingRegistrations(env),
     purgeKvFallback(env),
   ]);
   // §F：内容对象回收与索引对账（依赖上面的配额/落桶回填完成后再跑）
-  const blobsFixed = await reconcileBlobs(env);
-  const blobGc = await cleanupBlobObjects(env);
+  const blobsFixed = hourlyReconcile ? await reconcileBlobs(env) : 0;
+  const blobGc = hourlyReconcile ? await cleanupBlobObjects(env) : 0;
   // 用户删除登记的传统路径键/分片对象清理（非内容寻址，不在上面的 blob GC 范围内）
   const userDeletedObjects = await cleanupUserDeletedObjects(env);
   // multipart abort 失败队列重试（带 upload_id）

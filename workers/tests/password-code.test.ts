@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 // 命名空间导入仅用于类型位（vi.mock 的 importOriginal 需要模块类型）
 import * as smtp from '../src/utils/smtp';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 const { sendMailMock } = vi.hoisted(() => ({
   sendMailMock: vi.fn(async (_config: smtp.SmtpConfig, _to: string, _subject: string, _html: string) => undefined),
@@ -51,6 +52,7 @@ function setSetting(key: string, value: string): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     )
     .run(key, value, Date.now());
+  invalidateSettingsCache();
 }
 
 function enableMailService(): void {

@@ -5,6 +5,7 @@
 //   跳转用例 stub 全局 fetch 与 caches，不触外网（真实抓取 + 边缘缓存仍由浏览器端到端验证覆盖）
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestContext, initSeeded, request, json, type TestContext } from './helpers';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 let ctx: TestContext;
 
@@ -23,6 +24,7 @@ const seedSettings = (logo: string, favicon: string): void => {
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
       .run(key, value, Date.now());
   }
+  invalidateSettingsCache();
 };
 
 describe('GET /api/public/site-asset/:kind', () => {

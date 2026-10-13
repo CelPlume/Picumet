@@ -4,6 +4,7 @@
 // 非下载路径不受影响、开发环境跳过。
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 let ctx: TestContext;
 let authCookie = '';
@@ -34,6 +35,8 @@ function setLimit(value: number): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     )
     .run(String(value), Date.now());
+  // 设置读取走 isolate 级 60s 缓存——直接写库必须显式失效
+  invalidateSettingsCache();
 }
 
 /** 预置当前分钟窗口内的下载计数 */

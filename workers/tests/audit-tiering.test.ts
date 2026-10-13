@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
 import { Db, DashboardRepo } from '../src/db';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 import { archiveAuditLogs } from '../src/services/audit/archive';
 import type { Env } from '../src/shared/types';
 
@@ -94,6 +95,7 @@ describe('冷归档导出、校验、rollup 与清理', () => {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`
       )
       .run(Date.now());
+  invalidateSettingsCache();
     (ctx.env as Env).AUDIT_BUCKET = ctx.r2 as unknown as R2Bucket;
 
     const oldHour = Math.floor((Date.now() - 3 * DAY) / HOUR) * HOUR;

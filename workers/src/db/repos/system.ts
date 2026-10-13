@@ -627,10 +627,32 @@ export const LogRepo = {
 
 // ============ 系统设置 ============
 
+// isolate 级 60s 缓存：设置读取是每请求热路径（登录/注册/上传面各读一组键，
+// 全表 getAll 52 行 × 839 次/日 + captcha 等 15 键逐键点查）——D1 免费档 5M 行/日
+// 配额下不可忽视。设置变更走 set() 时同 isolate 立即失效；跨 isolate 至多 60s 生效延迟
+// （与管理端保存后「立即生效」的语义差异可接受，安全敏感开关如封禁/注册由用户管理路径
+// 独立读取不受影响）。
+const SETTINGS_CACHE_TTL = 60_000;
+let settingsCache: { at: number; data: Record<string, string> } | null = null;
+
+/** 设置缓存失效（set() 与管理端批量保存后调用；测试可直接调用重置） */
+export function invalidateSettingsCache(): void {
+  settingsCache = null;
+}
+
 export const SettingsRepo = {
+  async getAll(db: Db): Promise<Record<string, string>> {
+    if (settingsCache && Date.now() - settingsCache.at < SETTINGS_CACHE_TTL) return settingsCache.data;
+    const rows = await db.all('SELECT key, value FROM system_settings');
+    const out: Record<string, string> = {};
+    for (const r of rows) out[str(r.key)!] = str(r.value)!;
+    settingsCache = { at: Date.now(), data: out };
+    return out;
+  },
   async get(db: Db, key: string): Promise<string | null> {
-    const row = await db.first('SELECT value FROM system_settings WHERE key = ?', [key]);
-    return row ? (str(row.value) ?? null) : null;
+    // 单键读走同一份全量缓存：点查 15 键（captcha 面）从 15 次查询降为缓存内取值
+    const all = await this.getAll(db);
+    return all[key] ?? null;
   },
   /** 布尔设置读取：值按 JSON 存储（'true'/'false'），缺失或格式异常回退 fallback */
   async getBool(db: Db, key: string, fallback = false): Promise<boolean> {
@@ -650,12 +672,7 @@ export const SettingsRepo = {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       [key, v, Date.now()]
     );
-  },
-  async getAll(db: Db): Promise<Record<string, string>> {
-    const rows = await db.all('SELECT key, value FROM system_settings');
-    const out: Record<string, string> = {};
-    for (const r of rows) out[str(r.key)!] = str(r.value)!;
-    return out;
+    invalidateSettingsCache();
   },
 };
 

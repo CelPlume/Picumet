@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, type TestContext } from './helpers';
 import { Db, UserRepo, InviteRepo } from '../src/db';
 import { generateInviteCode, INVITE_CODE_PATTERN } from '../src/services/invites/invites';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 let ctx: TestContext;
 let adminCookie: string;
@@ -20,6 +21,7 @@ function setSetting(key: string, value: string): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     )
     .run(key, value, Date.now());
+  invalidateSettingsCache();
 }
 
 /** 每个 describe 前后复位到迁移种子默认值，避免用例间串扰 */

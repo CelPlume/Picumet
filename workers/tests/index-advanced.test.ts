@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { createTestContext, initSeeded, request, json, type TestContext } from './helpers';
 import { Db } from '../src/db';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 import { str } from '../src/db/row';
 
 let ctx: TestContext;
@@ -82,6 +83,7 @@ describe('文件索引（标准 / 高级）', () => {
 
   beforeEach(async () => {
     await dbOf().query(`DELETE FROM system_settings WHERE key IN ('index_running','index_pending','index_last_run_at')`);
+  invalidateSettingsCache();
   });
 
   it('标准索引：构建完成写入 pending，apply 后记录 lastRunAt 并清空 pending', async () => {

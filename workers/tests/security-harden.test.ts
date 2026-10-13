@@ -11,6 +11,7 @@ import {
   type TestContext,
 } from './helpers';
 import { checkLimit } from '../src/middleware/rate-limit';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 import { signPath, verifyPathSign } from '../src/utils/crypto';
 import type { Env } from '../src/shared/types';
 
@@ -46,6 +47,7 @@ function setSetting(key: string, value: string): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     )
     .run(key, value, Date.now());
+  invalidateSettingsCache();
 }
 
 // ============ 注册验证码 CSPRNG ============
