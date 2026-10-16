@@ -48,7 +48,7 @@ function makeKv(mode: 'ok' | 'quota' | 'readonly') {
 function makeDb(): Db {
   const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
   const raw = new DatabaseSync(':memory:');
-  raw.exec(readFileSync(join(MIGRATIONS_DIR, '0017_kv_fallback.sql'), 'utf8'));
+  raw.exec(readFileSync(join(MIGRATIONS_DIR, '0001_initial.sql'), 'utf8'));
   const run = (sql: string, params: unknown[] = []) => {
     const st = raw.prepare(sql);
     const r = st.run(...(params as never[]));
@@ -88,13 +88,24 @@ describe('KV ↔ D1 混合存储', () => {
     await expect(store.get(kv, 'sso:state:x')).resolves.toBe('payload');
   });
 
-  it('KV 未命中而 D1 有值（配额切换/跨侧重启）：能读到回退数据', async () => {
+  it('KV 降级/配额耗尽而 D1 有值（配额切换/无 KV 绑定）：能读到回退数据', async () => {
     const db = makeDb();
-    const { kv } = makeKv('readonly');
+    const { kv } = makeKv('quota');
     const seeded = new HybridStore(db, 't3');
     await seeded.put(undefined, 'pool:rr:m1', '2', { expirationTtl: 600 });
     const reader = new HybridStore(db, 't3');
     expect(await reader.get(kv, 'pool:rr:m1')).toBe('2');
+  });
+
+  it('KV 正常且未命中时直接返回 null，不向 D1 发起额外查询（杜绝行读放大）', async () => {
+    const db = makeDb();
+    const { kv, calls } = makeKv('ok');
+    const store = new HybridStore(db, 't-clean-miss');
+    // 预先向 D1 fallback 塞入一条数据
+    await db.run(`INSERT INTO kv_fallback (key, value, expires_at, created_at) VALUES (?, ?, ?, ?)`, ['k:orphan', 'val', Date.now() + 60_000, Date.now()]);
+    // KV 正常但未命中该 key：必须直接返回 null，绝不能把 D1 的陈旧孤儿行捞出
+    expect(await store.get(kv, 'k:orphan')).toBeNull();
+    expect(calls.get).toBe(1);
   });
 
   it('KV 恢复正常后重新走快路径（熔断窗口按 scope 共享，回退行不影响）', async () => {
@@ -110,7 +121,7 @@ describe('KV ↔ D1 混合存储', () => {
     expect((await store.stats()).rows).toBe(2);
   });
 
-  it('过期回退行视为未命中并被清理', async () => {
+  it('过期回退行视为未命中，清理延迟到 purgeExpired', async () => {
     const db = makeDb();
     const store = new HybridStore(db, 't5');
     const { kv } = makeKv('readonly');
@@ -119,6 +130,8 @@ describe('KV ↔ D1 混合存储', () => {
       ['exp:1', 'old', Date.now() - 1000, Date.now() - 2000]
     );
     expect(await store.get(kv, 'exp:1')).toBeNull();
+    expect((await store.stats()).rows).toBe(1);
+    expect(await store.purgeExpired()).toBe(1);
     expect((await store.stats()).rows).toBe(0);
   });
 

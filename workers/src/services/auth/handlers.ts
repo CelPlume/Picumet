@@ -79,7 +79,7 @@ authRoutes.post('/register/send-otp', authRateLimitMiddleware, async (c) => {
   try {
     await c.env.KV?.put(`email:otp:register:${email}`, code, { expirationTtl: 300 });
   } catch {
-    // 忽略 KV 配额超限异常
+    // 忽略 KV 配额超限异常（D1 为核心真值）
   }
   try {
     const brand = await loadMailBrand(raw, c.env.APP_BASE_URL);
@@ -131,7 +131,7 @@ authRoutes.post('/register', authRateLimitMiddleware, async (c) => {
       }
     }
     if (!verified) {
-      // 兼容在途 KV 存量令牌
+      // 兼容在途可能未过期的 KV 存量令牌
       try {
         const stored = await c.env.KV?.get(`email:otp:register:${email.toLowerCase()}`);
         if (stored && stored === emailCode) {

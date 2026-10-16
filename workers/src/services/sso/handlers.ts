@@ -17,6 +17,7 @@ import { authRateLimitMiddleware } from '../../middleware/rate-limit';
 import { requestIp } from '../../utils/ip';
 import { hashPassword, randomString, timingSafeEqualStr, verifyPassword, randomDigits } from '../../utils/crypto';
 import {
+  AuthStateRepo,
   LogRepo,
   QuotaRepo,
   SettingsRepo,
@@ -215,7 +216,19 @@ ssoRoutes.get('/:id/start', authRateLimitMiddleware, async (c) => {
     const verifier = randomString(64);
     const nonce = randomString(32);
     const entry: SsoStateEntry = { providerId: provider.id, verifier, nonce };
-    await kvStoreFor(env).put(env.KV, `sso:state:${state}`, JSON.stringify(entry), { expirationTtl: STATE_TTL });
+    // D1 强一致持久化 state（加密 payload + SHA-256 索引）
+    await AuthStateRepo.createState(db, {
+      token: state,
+      kind: 'sso_state',
+      payload: entry,
+      expiresAt: Date.now() + STATE_TTL * 1000,
+      encryptionKey: env.ENCRYPTION_KEY,
+    });
+    try {
+      await kvStoreFor(env).put(env.KV, `sso:state:${state}`, JSON.stringify(entry), { expirationTtl: STATE_TTL });
+    } catch {
+      // 忽略 KV 异常
+    }
     // 与发起浏览器绑定（回调时校验）；scope 空串回落到类型默认（脏行不让空 scope 进授权请求）
     appendBindCookie(c, TX_COOKIE, state, STATE_TTL);
     return c.redirect(
@@ -244,24 +257,33 @@ ssoRoutes.get('/:id/callback', authRateLimitMiddleware, async (c) => {
     const code = c.req.query('code');
     const state = c.req.query('state');
     if (!code || !state) throw new ApiError(400, 'SSO_STATE_INVALID', '回调参数不完整');
-    // state 一次性消费（防重放）：先删除再判定，**任何**回调尝试都会作废该 state
-    // （包括绑定 Cookie 不匹配的请求），避免同一 state 被反复试探
-    const stateKey = `sso:state:${state}`;
-    const rawState = await kvStoreFor(env).get(env.KV, stateKey);
-    await kvStoreFor(env).delete(env.KV, stateKey);
     // 绑定校验：本次授权必须由「发起时写入 sso_tx Cookie 的那个浏览器」完成（防登录 CSRF/会话固定）
     assertBindCookie(c, TX_COOKIE, state, 'SSO_STATE_INVALID', '授权会话与当前浏览器不匹配，请重新发起登录');
-    // 校验通过即清：该 state 已消费，绑定值不再需要
     appendBindCookie(c, TX_COOKIE, '', 0);
-    if (!rawState) throw new ApiError(400, 'SSO_STATE_INVALID', '授权会话已失效，请重新发起登录');
-    let entry: SsoStateEntry;
-    try {
-      entry = JSON.parse(rawState) as SsoStateEntry;
-    } catch {
-      throw new ApiError(400, 'SSO_STATE_INVALID', '授权会话无效，请重新发起登录');
-    }
-    if (entry.providerId !== providerId) throw new ApiError(400, 'SSO_STATE_INVALID', '授权会话与登录来源不匹配');
 
+    // D1 强一致原子消费：先原子认领 state，防并发回调与重放
+    let entry = await AuthStateRepo.consumeState<SsoStateEntry>(db, {
+      token: state,
+      kind: 'sso_state',
+      encryptionKey: env.ENCRYPTION_KEY,
+    });
+    if (!entry) {
+      // 兼容在途 KV 存量条目
+      const stateKey = `sso:state:${state}`;
+      const rawState = await kvStoreFor(env).get(env.KV, stateKey);
+      if (rawState) {
+        await kvStoreFor(env).delete(env.KV, stateKey);
+        try {
+          entry = JSON.parse(rawState) as SsoStateEntry;
+        } catch {
+          // 忽略
+        }
+      }
+    } else {
+      try { await kvStoreFor(env).delete(env.KV, `sso:state:${state}`); } catch {}
+    }
+    if (!entry) throw new ApiError(400, 'SSO_STATE_INVALID', '授权会话已失效，请重新发起登录');
+    if (entry.providerId !== providerId) throw new ApiError(400, 'SSO_STATE_INVALID', '授权会话与登录来源不匹配');
     const provider = await SsoProviderRepo.getById(db, providerId);
     if (!provider || !provider.enabled) throw new ApiError(404, 'SSO_PROVIDER_NOT_FOUND', '该登录来源不可用');
     const clientSecret = await unsealCredential(provider.clientSecret, env.ENCRYPTION_KEY);
@@ -348,7 +370,19 @@ async function completeAuthentication(
     // /complete 直接把该密文写入 sso_identities，不重复加密
     tokens: sealed,
   };
-  await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+  // D1 强一致存储 pending（AES-GCM 加密，15 分钟有效期）
+  await AuthStateRepo.createState(db, {
+    token,
+    kind: 'sso_pending',
+    payload: pending,
+    expiresAt: Date.now() + PENDING_TTL * 1000,
+    encryptionKey: env.ENCRYPTION_KEY,
+  });
+  try {
+    await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+  } catch {
+    // 忽略
+  }
   // 与当前浏览器绑定：没有这个 Cookie 的请求（例如他人转发的链接）无法完成注册
   appendBindCookie(c, PENDING_COOKIE, token, PENDING_TTL);
   const url = new URL('/sso/complete', env.APP_BASE_URL);
@@ -363,14 +397,21 @@ ssoRoutes.get('/pending', authRateLimitMiddleware, async (c) => {
   const token = c.req.query('token');
   if (!token) throw ApiError.badRequest('缺少注册令牌');
   assertBindCookie(c, PENDING_COOKIE, token, 'SSO_PENDING_INVALID', '注册会话与当前浏览器不匹配，请重新使用第三方登录');
-  const raw = await kvStoreFor(c.env).get(c.env.KV, `sso:pending:${token}`);
-  if (!raw) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
-  let pending: SsoPendingEntry;
-  try {
-    pending = JSON.parse(raw) as SsoPendingEntry;
-  } catch {
-    throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话无效，请重新使用第三方登录');
+  let pending: SsoPendingEntry | null = null;
+  const stateRec = await AuthStateRepo.getState<SsoPendingEntry>(db, {
+    token,
+    kind: 'sso_pending',
+    encryptionKey: c.env.ENCRYPTION_KEY,
+  });
+  if (stateRec) {
+    pending = stateRec.payload;
+  } else {
+    const raw = await kvStoreFor(c.env).get(c.env.KV, `sso:pending:${token}`);
+    if (raw) {
+      try { pending = JSON.parse(raw) as SsoPendingEntry; } catch {}
+    }
   }
+  if (!pending) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
   // 来源在补充注册期间被停用/删除时不再继续（与 /start、/callback 同口径）
   const provider = await SsoProviderRepo.getById(db, pending.providerId);
   if (!provider || !provider.enabled) throw new ApiError(404, 'SSO_PROVIDER_NOT_FOUND', '该登录来源不可用');
@@ -407,29 +448,57 @@ ssoRoutes.post('/complete', authRateLimitMiddleware, async (c) => {
   const { token, username, password, email, emailCode } = parsed.data;
   // 绑定校验：只有持有 sso_pending Cookie 的浏览器能消费该令牌（他人转发的链接直接失效）
   assertBindCookie(c, PENDING_COOKIE, token, 'SSO_PENDING_INVALID', '注册会话与当前浏览器不匹配，请重新使用第三方登录');
-  const rawPending = await kvStoreFor(env).get(env.KV, `sso:pending:${token}`);
-  if (!rawPending) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
-  let pending: SsoPendingEntry;
-  try {
-    pending = JSON.parse(rawPending) as SsoPendingEntry;
-  } catch {
-    throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话无效，请重新使用第三方登录');
+  // 先读取未消费的 pending 上下文，保留校验失败（如验证码输错）可重试语义
+  let pending: SsoPendingEntry | null = null;
+  const stateRec = await AuthStateRepo.getState<SsoPendingEntry>(db, {
+    token,
+    kind: 'sso_pending',
+    encryptionKey: env.ENCRYPTION_KEY,
+  });
+  if (stateRec) {
+    pending = stateRec.payload;
+  } else {
+    const rawPending = await kvStoreFor(env).get(env.KV, `sso:pending:${token}`);
+    if (rawPending) {
+      try { pending = JSON.parse(rawPending) as SsoPendingEntry; } catch {}
+    }
   }
+  if (!pending) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
   const provider = await SsoProviderRepo.getById(db, pending.providerId);
   if (!provider || !provider.enabled) throw new ApiError(404, 'SSO_PROVIDER_NOT_FOUND', '该登录来源不可用');
 
   const allowRegistration = (await SettingsRepo.get(db, 'allow_registration')) ?? 'true';
   if (allowRegistration === 'false') throw new ApiError(403, 'REGISTRATION_DISABLED', '站点当前关闭注册');
 
-  // 邮箱验证码：与 /register 共用同一 KV 命名空间（注册验证码），一次消费。
-  // 判定基准是**本次提交的邮箱**（见 emailVerificationRequired 注释）。
+  // 邮箱验证码：直接读 D1 email_tokens 表单一真值，杜绝 KV 丢失造成阻断
   const otpRequired = await emailVerificationRequired(db, env, pending, email);
   if (otpRequired) {
-    const stored = await kvStoreFor(env).get(env.KV, `email:otp:register:${email.toLowerCase()}`);
-    if (!stored || stored !== emailCode) throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
-    await kvStoreFor(env).delete(env.KV, `email:otp:register:${email.toLowerCase()}`);
+    const row = await db.first(
+      `SELECT id, code, attempts, expires_at FROM email_tokens
+       WHERE email = ? AND purpose = 'register'
+       ORDER BY created_at DESC LIMIT 1`,
+      [email.toLowerCase()]
+    );
+    let verified = false;
+    if (row && Number(row.expires_at) > Date.now() && Number(row.attempts) < 5) {
+      if (String(row.code) === emailCode) {
+        verified = true;
+        await db.run(`DELETE FROM email_tokens WHERE id = ?`, [row.id]);
+      } else {
+        await db.run(`UPDATE email_tokens SET attempts = attempts + 1 WHERE id = ?`, [row.id]);
+      }
+    }
+    if (!verified) {
+      try {
+        const stored = await kvStoreFor(env).get(env.KV, `email:otp:register:${email.toLowerCase()}`);
+        if (stored && stored === emailCode) {
+          verified = true;
+          await kvStoreFor(env).delete(env.KV, `email:otp:register:${email.toLowerCase()}`);
+        }
+      } catch {}
+    }
+    if (!verified) throw new ApiError(400, 'INVALID_OTP', '邮箱验证码错误或已过期');
   }
-
   // 邀请码门控（与 /register 同源语义与错误码）
   const inviteSettings = await loadInviteSettings(db);
   const invitedByCodeId = await resolveInviteCode(db, inviteSettings, parsed.data.inviteCode);
@@ -442,6 +511,18 @@ ssoRoutes.post('/complete', authRateLimitMiddleware, async (c) => {
   if (existingEmail) {
     throw new ApiError(409, 'ALREADY_EXISTS', '该邮箱已在本站注册，请直接用该邮箱登录（第三方身份暂不自动关联该账号）');
   }
+  // 所有输入校验通过：强一致原子认领消费 pending，杜绝并发建号竞争
+  if (stateRec) {
+    const claimed = await AuthStateRepo.consumeState<SsoPendingEntry>(db, {
+      token,
+      kind: 'sso_pending',
+      encryptionKey: env.ENCRYPTION_KEY,
+    });
+    if (!claimed) {
+      throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
+    }
+  }
+  try { await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`); } catch {}
 
   const user = await UserRepo.createUser(db, {
     username,
@@ -521,22 +602,31 @@ async function loadLinkMailBrand(raw: Record<string, unknown>, baseUrl?: string)
 }
 
 /** 「关联已有账号」端点共用的 pending 上下文读取（与 /pending、/complete 同口径：令牌 + 绑定 Cookie + 来源可用性） */
-async function loadPendingContext(c: Context<AppBindings>, token: string): Promise<{ db: Db; pending: SsoPendingEntry; provider: SsoProviderRow }> {
+async function loadPendingContext(c: Context<AppBindings>, token: string): Promise<{ db: Db; pending: SsoPendingEntry; provider: SsoProviderRow; version: number }> {
   const db = getDb(c);
   if (!(await loadSsoEnabled(db))) throw new ApiError(403, 'SSO_DISABLED', '站点未启用第三方登录');
   if (!token) throw ApiError.badRequest('缺少注册令牌');
   assertBindCookie(c, PENDING_COOKIE, token, 'SSO_PENDING_INVALID', '注册会话与当前浏览器不匹配，请重新使用第三方登录');
-  const raw = await kvStoreFor(c.env).get(c.env.KV, `sso:pending:${token}`);
-  if (!raw) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
-  let pending: SsoPendingEntry;
-  try {
-    pending = JSON.parse(raw) as SsoPendingEntry;
-  } catch {
-    throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话无效，请重新使用第三方登录');
+  let pending: SsoPendingEntry | null = null;
+  let version = 0;
+  const stateRec = await AuthStateRepo.getState<SsoPendingEntry>(db, {
+    token,
+    kind: 'sso_pending',
+    encryptionKey: c.env.ENCRYPTION_KEY,
+  });
+  if (stateRec) {
+    pending = stateRec.payload;
+    version = stateRec.version;
+  } else {
+    const raw = await kvStoreFor(c.env).get(c.env.KV, `sso:pending:${token}`);
+    if (raw) {
+      try { pending = JSON.parse(raw) as SsoPendingEntry; } catch {}
+    }
   }
+  if (!pending) throw new ApiError(400, 'SSO_PENDING_INVALID', '注册会话已过期，请重新使用第三方登录');
   const provider = await SsoProviderRepo.getById(db, pending.providerId);
   if (!provider || !provider.enabled) throw new ApiError(404, 'SSO_PROVIDER_NOT_FOUND', '该登录来源不可用');
-  return { db, pending, provider };
+  return { db, pending, provider, version };
 }
 
 /** 关联成功收尾：建身份（或刷新既有行）、清 pending、审计、发会话 */
@@ -570,7 +660,8 @@ async function finishLink(
       ...pending.tokens,
     });
   }
-  await kvStoreFor(c.env).delete(c.env.KV, `sso:pending:${token}`);
+  await AuthStateRepo.invalidateState(db, token, 'sso_pending');
+  try { await kvStoreFor(c.env).delete(c.env.KV, `sso:pending:${token}`); } catch {}
   appendBindCookie(c, PENDING_COOKIE, '', 0);
   await LogRepo.create(db, {
     userId: user.id,
@@ -592,11 +683,12 @@ ssoRoutes.post('/:id/link', authRateLimitMiddleware, async (c) => {
     throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '参数无效', parsed.error.flatten());
   }
   const { token, identifier, password } = parsed.data;
-  const { pending, provider } = await loadPendingContext(c, token);
+  const { pending, provider, version } = await loadPendingContext(c, token);
 
   // 被锁定的关联上下文（第二步失败过多）必须重新走一次第三方授权，不能只换密码再试
   if (pending.link && pending.link.attempts >= 5) {
-    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    await AuthStateRepo.invalidateState(db, token, 'sso_pending');
+    try { await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`); } catch {}
     appendBindCookie(c, PENDING_COOKIE, '', 0);
     throw new ApiError(429, 'SSO_LINK_LOCKED', '尝试次数过多，请重新使用第三方登录');
   }
@@ -629,7 +721,8 @@ ssoRoutes.post('/:id/link', authRateLimitMiddleware, async (c) => {
       avatarUrl: pending.profile.avatarUrl,
       ...pending.tokens,
     });
-    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    await AuthStateRepo.invalidateState(db, token, 'sso_pending');
+    try { await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`); } catch {}
     appendBindCookie(c, PENDING_COOKIE, '', 0);
     await issueSession(c, user, provider, true);
     const fresh = await UserRepo.getUserById(db, user.id);
@@ -644,7 +737,16 @@ ssoRoutes.post('/:id/link', authRateLimitMiddleware, async (c) => {
   // 二次因子选择：TOTP 优先（账号自选的强因子）→ 邮箱验证码（证明账号邮箱控制权）→ 仅密码
   if (user.totpEnabled) {
     pending.link = { userId: user.id, step: 'totp', email: null, attempts: 0 };
-    await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    await AuthStateRepo.updateState(db, {
+      token,
+      kind: 'sso_pending',
+      payload: pending,
+      expectedVersion: version,
+      encryptionKey: env.ENCRYPTION_KEY,
+    });
+    try {
+      await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    } catch {}
     return ok(c, { step: 'totp' });
   }
 
@@ -675,7 +777,16 @@ ssoRoutes.post('/:id/link', authRateLimitMiddleware, async (c) => {
       throw new ApiError(502, 'MAIL_ERROR', '验证码邮件发送失败，请联系管理员检查邮件服务配置');
     }
     pending.link = { userId: user.id, step: 'email', email: accountEmail.toLowerCase(), attempts: 0 };
-    await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    await AuthStateRepo.updateState(db, {
+      token,
+      kind: 'sso_pending',
+      payload: pending,
+      expectedVersion: version,
+      encryptionKey: env.ENCRYPTION_KEY,
+    });
+    try {
+      await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    } catch {}
     return ok(c, { step: 'email', emailMasked: maskEmail(accountEmail) });
   }
 
@@ -696,27 +807,38 @@ ssoRoutes.post('/:id/link-verify', authRateLimitMiddleware, async (c) => {
     throw ApiError.badRequest(parsed.error.issues[0]?.message ?? '参数无效', parsed.error.flatten());
   }
   const { token, code } = parsed.data;
-  const { pending, provider } = await loadPendingContext(c, token);
+  const { pending, provider, version } = await loadPendingContext(c, token);
   if (!pending.link) throw new ApiError(400, 'SSO_LINK_NOT_STARTED', '请先完成密码验证');
   if (pending.link.attempts >= 5) {
-    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    await AuthStateRepo.invalidateState(db, token, 'sso_pending');
+    try { await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`); } catch {}
     appendBindCookie(c, PENDING_COOKIE, '', 0);
     throw new ApiError(429, 'SSO_LINK_LOCKED', '尝试次数过多，请重新使用第三方登录');
   }
 
   const linkUser = await UserRepo.getUserById(db, pending.link.userId);
   if (!linkUser || linkUser.status !== 'active') {
-    await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`);
+    await AuthStateRepo.invalidateState(db, token, 'sso_pending');
+    try { await kvStoreFor(env).delete(env.KV, `sso:pending:${token}`); } catch {}
     appendBindCookie(c, PENDING_COOKIE, '', 0);
     throw new ApiError(403, 'SSO_ACCOUNT_DISABLED', '账号已被禁用');
   }
 
   const fail = async () => {
     pending.link!.attempts += 1;
-    await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    await AuthStateRepo.updateState(db, {
+      token,
+      kind: 'sso_pending',
+      payload: pending,
+      expectedVersion: version,
+      attempts: pending.link!.attempts,
+      encryptionKey: env.ENCRYPTION_KEY,
+    });
+    try {
+      await kvStoreFor(env).put(env.KV, `sso:pending:${token}`, JSON.stringify(pending), { expirationTtl: PENDING_TTL });
+    } catch {}
     throw new ApiError(400, 'INVALID_OTP', pending.link!.step === 'totp' ? '两步验证码或备用码错误' : '邮箱验证码错误或已过期');
   };
-
   if (pending.link.step === 'totp') {
     if (!(await verifyTotpOrBackupCode(db, env, pending.link.userId, code))) {
       await fail();

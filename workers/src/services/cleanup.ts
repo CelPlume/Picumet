@@ -1,5 +1,5 @@
 // 定时任务：过期配额释放、移动源对象清理、过期分享标记
-import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo, ReconciliationRepo, ReservationRepo, PendingRegistrationRepo } from '../db';
+import { BlobRepo, Db, SessionRepo, ShareRepo, FileRepo, MountRepo, MountProviderQuotaRepo, ProviderRepo, ReconciliationRepo, ReservationRepo, PendingRegistrationRepo, AuthStateRepo } from '../db';
 import { getProvider } from './storage/providers';
 import { ensureAllMountFolders } from './storage/mount-folders';
 import { archiveAuditLogs } from './audit/archive';
@@ -387,6 +387,16 @@ export async function purgeKvFallback(env: Env): Promise<number> {
   }
 }
 
+/** 回收过期或已消费的强一致临时鉴权状态（SSO state/pending 等） */
+export async function purgeEphemeralAuthStates(env: Env): Promise<number> {
+  const db = Db.fromAny(env.DB);
+  try {
+    return await AuthStateRepo.purgeExpired(db, 200);
+  } catch {
+    return 0;
+  }
+}
+
 /** 全部定时任务 */
 export async function runScheduledTasks(env: Env): Promise<Record<string, number>> {
   // D1 行读节流（免费档 5M 行/日配额）：全表聚合类对账（配额/内容寻址/blob GC/子树孤儿）
@@ -397,13 +407,14 @@ export async function runScheduledTasks(env: Env): Promise<Record<string, number
   // 子树孤儿自愈先行：先把跨挂载点移动遗留的子树孤儿 mount_id 归位，
   // 随后 reconcileQuotas 的挂载容量对账才能按正确归属把容量跟着搬过去
   const moveOrphansRepaired = hourlyReconcile ? await repairMovedFolderOrphans(env) : 0;
-  const [released, cleaned, expired, reconciled, pendingPurged, kvFallbackPurged] = await Promise.all([
+  const [released, cleaned, expired, reconciled, pendingPurged, kvFallbackPurged, authStatesPurged] = await Promise.all([
     releaseExpiredReservations(env),
     cleanupOldObjects(env),
     expireDueShares(env),
     hourlyReconcile ? reconcileQuotas(env) : Promise.resolve(0),
     purgePendingRegistrations(env),
     purgeKvFallback(env),
+    purgeEphemeralAuthStates(env),
   ]);
   // §F：内容对象回收与索引对账（依赖上面的配额/落桶回填完成后再跑）
   const blobsFixed = hourlyReconcile ? await reconcileBlobs(env) : 0;
@@ -416,5 +427,5 @@ export async function runScheduledTasks(env: Env): Promise<Record<string, number
   const mountFolders = await ensureAllMountFolders(Db.fromAny(env.DB));
   // 审计日志冷归档（未配置 AUDIT_BUCKET 或保留期 <= 0 时整体跳过，绝不先删后归档）
   const auditArchived = await archiveAuditLogs(env);
-  return { released, cleaned, expired, reconciled, pendingPurged, kvFallbackPurged, moveOrphansRepaired, blobsFixed, blobGc, userDeletedObjects, multipartAborts, mountFolders, auditArchived };
+  return { released, cleaned, expired, reconciled, pendingPurged, kvFallbackPurged, authStatesPurged, moveOrphansRepaired, blobsFixed, blobGc, userDeletedObjects, multipartAborts, mountFolders, auditArchived };
 }

@@ -19,17 +19,22 @@ import { Db as DbClass } from '../db';
 import type { Env } from '../shared/types';
 
 /**
- * 按 scope 缓存 HybridStore 实例（同一 scope 复用同一个 store）。
- * scope 用于**熔断粒度**：KV 配额耗尽是账号级的，因此所有 scope 共用一个默认 scope，
- * 一旦某个 scope 撞到配额异常，其它 scope 也能立即走 D1，不必逐个再撞一次。
+ * 按 DB binding 与 scope 隔离缓存 HybridStore 实例。
+ * 避免同一 isolate 内多租户或测试切换不同 DB 时错误复用首个 DB 实例。
  */
-const stores = new Map<string, HybridStore>();
+const storesByBinding = new WeakMap<object, Map<string, HybridStore>>();
 
 export function kvStoreFor(env: Env, scope = 'default'): HybridStore {
-  let s = stores.get(scope);
+  const binding = (env.DB as unknown as object) ?? storesByBinding;
+  let map = storesByBinding.get(binding);
+  if (!map) {
+    map = new Map<string, HybridStore>();
+    storesByBinding.set(binding, map);
+  }
+  let s = map.get(scope);
   if (!s) {
     s = HybridStore.fromEnv(env, scope);
-    stores.set(scope, s);
+    map.set(scope, s);
   }
   return s;
 }
@@ -48,12 +53,21 @@ function isQuotaError(err: unknown): boolean {
   return /limit exceeded|exceeded the limit|quota|KV .* limit|Too Many/i.test(msg);
 }
 
-/** 进程内短期熔断：配额耗尽后不必每次都先撞一次 KV 异常再回退（省一次往返） */
+function redactKey(key: string): string {
+  const parts = key.split(':');
+  if (parts.length <= 1) return key.slice(0, 8);
+  return `${parts[0]}:${parts.length > 2 ? parts[1] + ':***' : '***'}`;
+}
+
+/** 配额耗尽后熔断到下一个 UTC 日，避免每分钟重新撞 KV 再回退 D1。 */
 const kvDownUntil = new Map<string, number>();
 const KV_DOWN_WINDOW = 60_000;
-
-function markKvDown(scope: string): void {
-  kvDownUntil.set(scope, Date.now() + KV_DOWN_WINDOW);
+function markKvDown(scope: string, err?: unknown): void {
+  const now = Date.now();
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  const dailyQuota = /limit exceeded|exceeded the limit|for the day|daily.*quota|quota.*exceed/i.test(message);
+  const nextUtcDay = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate() + 1);
+  kvDownUntil.set(scope, dailyQuota ? nextUtcDay : now + KV_DOWN_WINDOW);
 }
 
 function kvConsiderDown(scope: string): boolean {
@@ -94,9 +108,9 @@ export class HybridStore {
         return;
       } catch (err) {
         if (!isQuotaError(err)) {
-          console.error('[kvstore] put failed, falling back to D1:', key, err);
+          console.error('[kvstore] put failed, falling back to D1:', redactKey(key), err);
         }
-        markKvDown(this.scope);
+        markKvDown(this.scope, err);
       }
     }
     const now = Date.now();
@@ -108,27 +122,27 @@ export class HybridStore {
   }
 
   /**
-   * 读取。KV 命中即返回；KV 未命中/不可用时读 D1（过期行顺手删除）。
+   * 读取。KV 命中即返回；KV 未命中/不可用时读 D1。过期行由定时清理，
+   * 不在请求热路径额外发起 DELETE。
    */
   async get(kv: KvLike | undefined | null, key: string): Promise<string | null> {
     if (kv && !kvConsiderDown(this.scope)) {
       try {
         const hit = await kv.get(key);
-        if (hit !== null && hit !== undefined) return hit;
+        // KV 正常运作：命中返回值，未命中直接返回 null（绝不向 D1 fallback 放大行读）
+        return hit !== null && hit !== undefined ? hit : null;
       } catch (err) {
         if (!isQuotaError(err)) {
-          console.error('[kvstore] get failed, falling back to D1:', key, err);
+          console.error('[kvstore] get failed, falling back to D1:', redactKey(key), err);
         }
-        markKvDown(this.scope);
+        markKvDown(this.scope, err);
       }
     }
+    // 仅当 KV 未绑定或处于配额耗尽熔断期时，才回退查询 D1 降级表
     const row = await this.db.first('SELECT value, expires_at FROM kv_fallback WHERE key = ? LIMIT 1', [key]);
     if (!row) return null;
     const expiresAt = row.expires_at == null ? null : Number(row.expires_at);
-    if (expiresAt !== null && expiresAt <= Date.now()) {
-      await this.db.run('DELETE FROM kv_fallback WHERE key = ?', [key]);
-      return null;
-    }
+    if (expiresAt !== null && expiresAt <= Date.now()) return null;
     return typeof row.value === 'string' ? row.value : null;
   }
 
@@ -145,8 +159,16 @@ export class HybridStore {
   }
 
   /** 清理过期回退行（定时任务调用） */
-  async purgeExpired(): Promise<number> {
-    const res = await this.db.run('DELETE FROM kv_fallback WHERE expires_at IS NOT NULL AND expires_at <= ?', [Date.now()]);
+  async purgeExpired(limit = 200): Promise<number> {
+    const res = await this.db.run(
+      `DELETE FROM kv_fallback
+       WHERE rowid IN (
+         SELECT rowid FROM kv_fallback
+         WHERE expires_at IS NOT NULL AND expires_at <= ?
+         LIMIT ?
+       )`,
+      [Date.now(), limit]
+    );
     return res.changes ?? 0;
   }
 
