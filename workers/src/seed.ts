@@ -5,12 +5,88 @@ import { getProvider } from './services/storage/providers';
 import { objectKeyFromPath } from './utils/path';
 import type { Env } from './shared/types';
 import { kvStoreFor } from './utils/kv-store';
+const SEED_MARKER_KEY = 'seed:done';
+const SEED_SETTING_KEY = 'seed_initialized';
+const readyBindings = new WeakSet<object>();
+const inFlight = new WeakMap<object, Promise<void>>();
 
+/**
+ * 初始化只在每个 D1 binding 首次请求执行；真值落在 D1，KV 仅作热路径提示。
+ * KV 配额耗尽时不再每个请求重复跑 seedAll，也不再依赖 KV marker 才能通过启动门禁。
+ */
 export async function ensureSeed(env: Env): Promise<void> {
-  if (await kvStoreFor(env).get(env.KV, 'seed:done')) return;
+  const binding = env.DB as unknown as object;
+  if (readyBindings.has(binding)) return;
+  const pending = inFlight.get(binding);
+  if (pending) return pending;
+
+  const task = ensureSeedOnce(env);
+  inFlight.set(binding, task);
+  try {
+    await task;
+    readyBindings.add(binding);
+  } finally {
+    inFlight.delete(binding);
+  }
+}
+
+async function ensureSeedOnce(env: Env): Promise<void> {
   const db = Db.fromAny(env.DB);
+  let marker: string | null = null;
+  try {
+    marker = await kvStoreFor(env).get(env.KV, SEED_MARKER_KEY);
+  } catch {
+    // KV / fallback 表不可用时，继续用 D1 的持久化初始化标记判定。
+  }
+  if (marker === '1') {
+    await markSeedInitialized(db);
+    return;
+  }
+
+  const durable = await db.first('SELECT 1 AS initialized FROM system_settings WHERE key = ? AND value = ? LIMIT 1', [SEED_SETTING_KEY, '1']);
+  if (durable) {
+    try {
+      await kvStoreFor(env).put(env.KV, SEED_MARKER_KEY, '1');
+    } catch {
+      // KV 只是加速提示，D1 标记已足够保证正确性。
+    }
+    return;
+  }
+
   await seedAll(db, env);
-  await kvStoreFor(env).put(env.KV, 'seed:done', '1');
+  await markSeedInitialized(db);
+  try {
+    await kvStoreFor(env).put(env.KV, SEED_MARKER_KEY, '1');
+  } catch {
+    // 初始化已在 D1 完成；KV 配额恢复后再补回热路径 marker。
+  }
+}
+
+async function markSeedInitialized(db: Db): Promise<void> {
+  await db.run(
+    `INSERT INTO system_settings (key, value, description, updated_at)
+     VALUES (?, '1', '初始化完成标记；KV 仅作缓存提示', ?)
+     ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at`,
+    [SEED_SETTING_KEY, Date.now()]
+  );
+}
+
+/** 就绪探针只读 D1 标记，不消耗 KV 读取配额。 */
+export async function isSeedReady(env: Env): Promise<boolean> {
+  const binding = env.DB as unknown as object;
+  if (readyBindings.has(binding)) return true;
+  const pending = inFlight.get(binding);
+  if (pending) {
+    try {
+      await pending;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const row = await Db.fromAny(env.DB).first('SELECT 1 AS initialized FROM system_settings WHERE key = ? AND value = ? LIMIT 1', [SEED_SETTING_KEY, '1']);
+  if (row) readyBindings.add(binding);
+  return Boolean(row);
 }
 
 const isProduction = (env: Env): boolean => (env.ENVIRONMENT ?? 'development') === 'production';

@@ -1,13 +1,17 @@
 // 速率限制中间件：固定窗口计数（IP + 用户/标识 双层）
 //
-// 计数后端：**进程内内存（快）+ 混合存储（KV 优先 / D1 回退，跨 isolate 一致）**。
+// 计数后端：**进程内内存（快）+ 混合存储（KV 优先 / D1 回退，窗口首请求同步）**。
 //
 // 为什么不是纯内存：
 //   Workers 有多个 isolate / 多 colo，每个 isolate 各有一份内存计数器——
 //   冷启动的 isolate 计数归零（限流被绕过），而已用完计数的 isolate 又会误伤新用户。
-//   纯 KV 则受每日 1000 次写配额约束（配额耗尽即失效）。
-//   混合存储把「快」与「准」分开：内存负责热路径，KV 负责常态，KV 配额耗尽时自动落 D1，
-//   因此限流既不会被绕过，也不会因配额耗尽而失控。
+//   纯 KV 则受每日写配额约束（配额耗尽即失效）。
+//   混合存储把「快」与「准」分开：每个 isolate 的 key/window 首请求回源并持久化，
+//   后续热请求只走内存；KV 配额耗尽时该首请求自动落 D1。
+/**
+ * 固定窗口计数：每个 isolate 的同一 key/window 最多一次 KV/D1 回源与写回，
+ * 后续请求只更新内存，避免限流热路径本身耗尽免费存储配额。
+ */
 import { createMiddleware } from 'hono/factory';
 import type { Db } from '../db';
 import { SettingsRepo } from '../db';
@@ -61,40 +65,38 @@ export async function checkLimit(
   // 固定窗口：起点按 windowMs 对齐，跨 isolate 读到的是同一个窗口键
   const windowStart = now - (now % windowMs);
   const cacheKey = `${key}:${windowStart}`;
-  const prevWindowKey = `${key}:${windowStart - windowMs}`;
 
   const store = env?.DB ? kvStoreFor(env as unknown as Env, 'ratelimit') : null;
   const kv = (env?.KV ?? null) as KvLike | null;
+  const entry = memoryLimits.get(key);
+  const sameWindow = entry?.windowStart === windowStart;
 
-  // 读回：内存优先；跨 isolate 一致性靠混合存储（KV 命中 → 否则 D1 回退行）
+  // 每个 isolate 的同一 key/window 只回源一次；后续请求只读内存，
+  // 避免限流本身把每个请求放大为 KV 读写与 D1 fallback。
   let durable = 0;
-  if (store) {
-    try {
-      const raw = await store.get(kv, cacheKey);
-      if (raw != null) durable = Number(raw) || 0;
-      // 上个窗口的残留值不参与本窗口判定，仅在无值时用作兜底下限（防跨窗口瞬时重置）
-      else if (kv) {
-        const old = await kv.get(prevWindowKey);
-        if (old != null) durable = 0;
+  if (!sameWindow) {
+    if (store) {
+      try {
+        const raw = await store.get(kv, cacheKey);
+        if (raw != null) durable = Number(raw) || 0;
+      } catch {
+        durable = 0;
       }
-    } catch {
-      durable = 0;
-    }
-  } else if (kv) {
-    try {
-      const raw = await kv.get(cacheKey);
-      if (raw != null) durable = Number(raw) || 0;
-    } catch {
-      durable = 0;
+    } else if (kv) {
+      try {
+        const raw = await kv.get(cacheKey);
+        if (raw != null) durable = Number(raw) || 0;
+      } catch {
+        durable = 0;
+      }
     }
   }
 
-  const entry = memoryLimits.get(key);
-  const inMemory = entry && entry.windowStart === windowStart ? entry.count : 0;
+  const inMemory = sameWindow ? entry?.count ?? 0 : 0;
   const current = Math.max(inMemory, durable);
   const next = current + 1;
 
-  if (entry && entry.windowStart === windowStart) {
+  if (sameWindow && entry) {
     entry.count = next;
   } else {
     if (memoryLimits.size > MAX_LIMIT_ENTRIES) {
@@ -105,18 +107,20 @@ export async function checkLimit(
     memoryLimits.set(key, { count: next, resetAt: now + windowMs, windowStart });
   }
 
-  // 写回：混合存储（KV 优先，D1 自动回退），保证其他 isolate 能看到同一计数
-  if (store) {
-    try {
-      await store.put(kv, cacheKey, String(next), { expirationTtl: Math.ceil(windowMs / 1000) + 5 });
-    } catch {
-      // 存储异常时内存计数仍然生效（单 isolate 内不失效）
-    }
-  } else if (kv) {
-    try {
-      await kv.put(cacheKey, String(next), { expirationTtl: Math.ceil(windowMs / 1000) + 5 });
-    } catch {
-      // 忽略
+  // 每个 isolate 每个 key/window 最多写一次；热请求完全不写 KV。
+  if (!sameWindow) {
+    if (store) {
+      try {
+        await store.put(kv, cacheKey, String(next), { expirationTtl: Math.ceil(windowMs / 1000) + 5 });
+      } catch {
+        // 存储异常时内存计数仍然生效（单 isolate 内不失效）
+      }
+    } else if (kv) {
+      try {
+        await kv.put(cacheKey, String(next), { expirationTtl: Math.ceil(windowMs / 1000) + 5 });
+      } catch {
+        // 忽略
+      }
     }
   }
 

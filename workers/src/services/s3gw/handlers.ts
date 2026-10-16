@@ -232,7 +232,7 @@ async function listBuckets(c: Ctx): Promise<Response> {
     if (!overlap) continue;
     if (m.mountPath === '/') {
       // 根挂载：属主范围内的一级文件夹名即 bucket
-      const { rows } = await FileRepo.listChildren(db, m.id, '/', { type: 'folder' }, apiKey.userId);
+      const { rows } = await FileRepo.listChildren(db, m.id, '/', { type: 'folder', includeTotal: false }, apiKey.userId);
       for (const r of rows) names.add(r.name);
       if (uploadRoot !== '/') names.add(uploadRoot.split('/').filter(Boolean)[0] ?? '');
     } else {
@@ -482,7 +482,7 @@ async function listObjectsV2(c: Ctx, bucket: string): Promise<Response> {
   const contents: Array<{ key: string; size: number; etag?: string; mtime: number }> = [];
   const prefixes = new Set<string>();
   if (delimiter === '/') {
-    const { rows } = await FileRepo.listChildren(db, mount.id, virtualDir, { limit: maxKeys }, apiKey.userId);
+    const { rows } = await FileRepo.listChildren(db, mount.id, virtualDir, { limit: maxKeys, includeTotal: false }, apiKey.userId);
     for (const r of rows) {
       if (r.type === 'folder') prefixes.add(`${toRelKey(r.path)}/`);
       else contents.push({ key: toRelKey(`${r.path}/${r.name}`), size: r.size, etag: r.etag, mtime: r.updatedAt });

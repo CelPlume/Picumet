@@ -499,7 +499,7 @@ shareRoutes.get('/:id/list', async (c) => {
     db,
     rootFile.mountId,
     absPath,
-    { sortBy: 'name', sortOrder: 'asc', limit: 500, offset: 0 },
+    { sortBy: 'name', sortOrder: 'asc', limit: 500, offset: 0, includeTotal: false },
     rootFile.ownerId
   );
 

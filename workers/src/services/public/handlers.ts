@@ -8,7 +8,7 @@ import { ok } from '../../shared/response';
 import { resolveUmamiPublicConfig } from '../../utils/umami';
 import { parseCaptchaConfig } from '../captcha';
 import { resolveSsoPublicConfig } from '../sso/config';
-import { kvStoreFor } from '../../utils/kv-store';
+import { isSeedReady } from '../../seed';
 
 export const publicRoutes = new Hono<AppBindings>();
 
@@ -114,12 +114,10 @@ publicRoutes.get('/health/ready', async (c) => {
   let ready = false;
   let detail = 'unknown';
   try {
-    const marker = await kvStoreFor(env).get(env.KV, 'seed:done');
-    ready = marker === '1';
-    // detail 只回枚举值，不回传 KV 异常文本（生产信息泄露面）
+    ready = await isSeedReady(env);
     detail = ready ? 'seeded' : 'not-seeded';
   } catch {
-    detail = 'kv-unavailable';
+    detail = 'd1-unavailable';
   }
   return c.json({ service: 'picumet-api', status: ready ? 'ok' : 'degraded', ready, detail }, ready ? 200 : 503);
 });

@@ -38,7 +38,6 @@ import { runScheduledTasks } from './services/cleanup';
 import { ok, fail } from './shared/response';
 import { ApiError } from './shared/errors';
 import type { AppVariables, Env } from './shared/types';
-import { kvStoreFor } from './utils/kv-store';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -187,40 +186,26 @@ export default {
     // 业务 API 返回 503，仅放行健康检查与公共路由；不再静默吞错继续服务。
     const isProd = (env.ENVIRONMENT as string) === 'production';
     let seedReady = false;
-    if (isProd) {
-      try {
-        const marker = await kvStoreFor(env).get(env.KV, 'seed:done');
-        seedReady = marker === '1';
-        if (!seedReady) {
-          // 尝试完成初始化；失败则由下方 fail-closed 拦截
-          await ensureSeed(env);
-          seedReady = true;
-        }
-      } catch (err) {
-        console.error('seed failed (production fail-closed)', err);
-        seedReady = false;
-      }
-      if (!seedReady) {
-        const url = new URL(request.url);
-        const publicPath = url.pathname === '/' ||
-          url.pathname.startsWith('/api/health') ||
-          url.pathname.startsWith('/api/public');
-        if (!publicPath) {
-          return new Response(
-            JSON.stringify({
-              success: false,
-              error: { code: 'INITIALIZATION_REQUIRED', message: '服务尚未完成初始化，请联系管理员' },
-              timestamp: Date.now(),
-            }),
-            { status: 503, headers: { 'Content-Type': 'application/json; charset=utf-8' } }
-          );
-        }
-      }
-    } else {
-      try {
-        await ensureSeed(env);
-      } catch (err) {
-        console.error('seed failed', err);
+    try {
+      await ensureSeed(env);
+      seedReady = true;
+    } catch (err) {
+      console.error(isProd ? 'seed failed (production fail-closed)' : 'seed failed', err);
+    }
+    if (isProd && !seedReady) {
+      const url = new URL(request.url);
+      const publicPath = url.pathname === '/' ||
+        url.pathname.startsWith('/api/health') ||
+        url.pathname.startsWith('/api/public');
+      if (!publicPath) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: { code: 'INITIALIZATION_REQUIRED', message: '服务尚未完成初始化，请联系管理员' },
+            timestamp: Date.now(),
+          }),
+          { status: 503, headers: { 'Content-Type': 'application/json; charset=utf-8' } }
+        );
       }
     }
     return app.fetch(request, env, ctx);

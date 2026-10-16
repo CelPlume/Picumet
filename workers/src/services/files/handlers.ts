@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { AppBindings } from '../../shared/types';
 import type { FileMetadata, Mount } from '@shared/types';
 import type { FileListItem } from '@shared/types';
-import { FileRepo, MountRepo, ProviderRepo, LogRepo, BlobRepo, SettingsRepo } from '../../db';
+import { FileRepo, MountRepo, ProviderRepo, LogRepo, BlobRepo, SettingsRepo, DirectoryStateRepo, PermissionRevisionRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, can, getPrincipal } from '../permissions/principal';
 import { isPasswordExempt, checkPermission } from '../permissions/check';
@@ -24,7 +24,7 @@ import {
   validateFileType,
   subtreeMatch,
 } from '../../utils/path';
-import { hashPassword, verifyPassword, signPath } from '../../utils/crypto';
+import { hashPassword, verifyPassword, signPath, sha256Hex } from '../../utils/crypto';
 import { clientIp, requestIp } from '../../utils/ip';
 import { toFileListItem } from '../../db/repos/files';
 import { assertNotBanned } from './ban';
@@ -127,6 +127,32 @@ filesRoutes.get('/', async (c) => {
     viewerId,
   });
 
+  const dirState = await DirectoryStateRepo.get(db, mount.id, targetPath);
+  const dirRevision = dirState?.revision ?? 1;
+  const permRevision = await PermissionRevisionRepo.get(db);
+  const etagRaw = `${mount.id}:${targetPath}:${dirRevision}:${permRevision}:${c.get('userRole') ?? 'anon'}:${c.get('userId') ?? 'anon'}:${page}:${limit}:${sortBy}:${sortOrder}:${q.search ?? ''}:${typeFilter ?? ''}`;
+  const etagHash = await sha256Hex(etagRaw);
+  const etag = `W/"${etagHash.slice(0, 24)}"`;
+  c.header('ETag', etag);
+  c.header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120');
+
+  const ifNoneMatch = c.req.header('if-none-match');
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    return ok(c, {
+      notModified: true,
+      revision: dirRevision,
+      etag,
+      items: [],
+      pagination: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
+      mount: {
+        id: mount.id,
+        name: mount.name,
+        sortBy: mount.sortBy,
+        sortOrder: mount.sortOrder,
+      },
+    });
+  }
+
   // LAB O4：列表内联缩略图数据——媒体文件行附 thumbUrl（同一批签名），文件夹行附
   // previewItems（前 4 子项）。前端网格/预览格不再逐项发起 /download 令牌或 per-folder 列表请求
   //（目录 5 文件夹 × 4 格的请求数 ≈40 → 1）。
@@ -157,6 +183,7 @@ filesRoutes.get('/', async (c) => {
       sortOrder,
       limit: 4,
       viewerId,
+      includeTotal: false,
     });
     kidsByPath.set(fr.path, kids);
   }
@@ -192,7 +219,87 @@ filesRoutes.get('/', async (c) => {
       sortBy: mount.sortBy,
       sortOrder: mount.sortOrder,
     },
+    revision: dirRevision,
+    etag,
   });
+});
+
+/** 轻量只读目录查询：仅返回子文件夹列表，不计算 total，不拉取文件预览，供侧边文件树极速懒加载 */
+filesRoutes.get('/directories', async (c) => {
+  const db = getDb(c);
+  const targetPath = normalizePath(c.req.query('path') ?? '/');
+  const mount = await MountRepo.findMountForPath(db, targetPath);
+  if (!mount) {
+    const virtual = await resolveVirtualListing(c, targetPath);
+    if (virtual) {
+      const foldersOnly = virtual.filter((i) => i.type === 'folder');
+      return ok(c, { items: foldersOnly, revision: 1, etag: 'W/"virtual-root"' });
+    }
+    throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  }
+
+  await requirePermission(c, mount, targetPath, 'read');
+  const viewerId = c.get('userRole') === 'admin' ? undefined : c.get('userId');
+  const dirState = await DirectoryStateRepo.get(db, mount.id, targetPath);
+  const dirRevision = dirState?.revision ?? 1;
+  const permRevision = await PermissionRevisionRepo.get(db);
+  const etagRaw = `dirs:${mount.id}:${targetPath}:${dirRevision}:${permRevision}:${c.get('userRole') ?? 'anon'}:${c.get('userId') ?? 'anon'}`;
+  const etagHash = await sha256Hex(etagRaw);
+  const etag = `W/"${etagHash.slice(0, 24)}"`;
+  c.header('ETag', etag);
+  c.header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120');
+
+  const ifNoneMatch = c.req.header('if-none-match');
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    return ok(c, { notModified: true, revision: dirRevision, etag, items: [] });
+  }
+
+  const { rows } = await FileRepo.listChildren(db, mount.id, targetPath, {
+    type: 'folder',
+    limit: 200,
+    viewerId,
+    includeTotal: false,
+  });
+
+  const items = rows.map((r) => toFileListItem(r));
+  return ok(c, { items, revision: dirRevision, etag });
+});
+
+/** 树视图按层子项查询：仅展开某层时按需取回，避免一次性加载整棵 5000 行子树 */
+filesRoutes.get('/tree/children', async (c) => {
+  const db = getDb(c);
+  const targetPath = normalizePath(c.req.query('path') ?? '/');
+  const mount = await MountRepo.findMountForPath(db, targetPath);
+  if (!mount) {
+    const virtual = await resolveVirtualListing(c, targetPath);
+    if (virtual) return ok(c, { items: virtual, revision: 1, etag: 'W/"virtual-root"' });
+    throw new ApiError(404, 'NOT_FOUND', '路径不存在或未挂载');
+  }
+
+  await requirePermission(c, mount, targetPath, 'read');
+  const viewerId = c.get('userRole') === 'admin' ? undefined : c.get('userId');
+  const dirState = await DirectoryStateRepo.get(db, mount.id, targetPath);
+  const dirRevision = dirState?.revision ?? 1;
+  const permRevision = await PermissionRevisionRepo.get(db);
+  const etagRaw = `tree-node:${mount.id}:${targetPath}:${dirRevision}:${permRevision}:${c.get('userRole') ?? 'anon'}:${c.get('userId') ?? 'anon'}`;
+  const etagHash = await sha256Hex(etagRaw);
+  const etag = `W/"${etagHash.slice(0, 24)}"`;
+  c.header('ETag', etag);
+  c.header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120');
+
+  const ifNoneMatch = c.req.header('if-none-match');
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    return ok(c, { notModified: true, revision: dirRevision, etag, items: [] });
+  }
+
+  const { rows } = await FileRepo.listChildren(db, mount.id, targetPath, {
+    limit: 500,
+    viewerId,
+    includeTotal: false,
+  });
+
+  const items = rows.map((r) => toFileListItem(r));
+  return ok(c, { items, revision: dirRevision, etag });
 });
 
 // ============ 扁平化树视图（树视图数据源） ============

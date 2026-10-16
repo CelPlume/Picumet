@@ -115,6 +115,7 @@ publicFsRoutes.get('/fs', async (c) => {
     sortBy: mount.sortBy,
     sortOrder: mount.sortOrder,
     limit: 500,
+    includeTotal: false,
   });
 
   const providerRow = await ProviderRepo.getProviderById(db, mount.providerId);

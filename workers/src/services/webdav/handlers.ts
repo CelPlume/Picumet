@@ -201,7 +201,7 @@ webdavRoutes.on(['PROPFIND'], '*', async (c) => {
 
   if (selfIsFolder && depth !== '0') {
     // 所有者隔离：仅列出属主自己的子项
-    const { rows } = await FileRepo.listChildren(db, mount.id, targetPath, {}, apiKey.userId);
+    const { rows } = await FileRepo.listChildren(db, mount.id, targetPath, { includeTotal: false }, apiKey.userId);
     for (const r of rows) {
       items.push(davProps({
         name: r.name,
