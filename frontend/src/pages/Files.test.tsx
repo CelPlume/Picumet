@@ -53,6 +53,7 @@ vi.mock('@/components/files/data', async (importOriginal) => {
       error: null,
     }),
     useFilesTreeQuery: () => ({ data: { items: [], truncated: false }, isLoading: false, error: null }),
+    useFileDirectoriesQuery: () => ({ data: { items: [] }, isLoading: false, error: null }),
     useCreateFolder: () => ({ mutateAsync }),
     useRenameFile: () => ({ mutateAsync }),
     useDeleteFile: () => ({ mutateAsync, isPending: false }),

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { INDICATOR_CLASS, useIndicator } from '@/components/ui/indicator';
-import { useFilesQuery } from './data';
+import { useFileDirectoriesQuery } from './data';
 
 function TreeNode({
   path,
@@ -26,9 +26,9 @@ function TreeNode({
   root?: boolean;
 }) {
   const isOpen = root || expanded.has(path);
-  // 展开时才查询子文件夹（懒加载）
-  const { data } = useFilesQuery(path, { enabled: isOpen });
-  const folders = (data?.items ?? []).filter((i) => i.type === 'folder');
+  // 展开时才查询直接子文件夹（轻量纯目录懒加载，零缩略图与全表扫描）
+  const { data } = useFileDirectoriesQuery(path, isOpen);
+  const folders = data?.items ?? [];
   const isCurrent = currentPath === path;
   const isAncestor = !isCurrent && path !== '/' && currentPath.startsWith(path + '/');
 

@@ -155,6 +155,23 @@ export interface FileListResponse {
   items: FileListItem[];
   pagination: { total: number; page: number; limit: number; pages: number };
   mount?: { id: string; name: string; sortBy: string; sortOrder: string } | null;
+  revision?: number;
+  etag?: string;
+  notModified?: boolean;
+}
+
+/** 侧边树轻量只读目录查询：仅取直接子文件夹，跳过 total 计算与预览 N+1，并缓存 60 秒 */
+export function useFileDirectoriesQuery(path: string, enabled = true) {
+  return useQuery({
+    queryKey: ['file-directories', path],
+    queryFn: async () => {
+      const q = new URLSearchParams({ path });
+      return (await apiFetch<{ items: FileListItem[]; revision?: number; etag?: string }>(`/api/files/directories?${q.toString()}`)).data;
+    },
+    enabled,
+    staleTime: 60_000,
+    gcTime: 300_000,
+  });
 }
 
 /** 树视图 / 挂载点视图共享的行类型：文件列表项 + 管理端附加的属主名 */
@@ -260,6 +277,8 @@ export function useFilesQuery(
     queryKey: ['files', path, opts.search, opts.sort, opts.order, opts.page ?? 1, opts.limit ?? 0],
     queryFn: async () => (await apiFetch<FileListResponse>(`/api/files?${q.toString()}`)).data,
     enabled: opts.enabled,
+    staleTime: 60_000,
+    gcTime: 300_000,
   });
 }
 
@@ -270,6 +289,7 @@ export function useCreateFolder() {
       (await apiFetch(`/api/files/folder`, { method: 'POST', body: input })).data as { file: FileListItem },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['files'] });
+      void qc.invalidateQueries({ queryKey: ['file-directories'] });
     },
   });
 }
@@ -279,7 +299,10 @@ export function useRenameFile() {
   return useMutation({
     mutationFn: async (input: { id: string; name: string }) =>
       (await apiFetch(`/api/files/${input.id}`, { method: 'PUT', body: { name: input.name } })).data,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['files'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['files'] });
+      void qc.invalidateQueries({ queryKey: ['file-directories'] });
+    },
   });
 }
 
@@ -288,7 +311,10 @@ export function useUpdateFile() {
   return useMutation({
     mutationFn: async (input: { id: string; fields: Record<string, unknown> }) =>
       (await apiFetch(`/api/files/${input.id}`, { method: 'PUT', body: input.fields })).data,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['files'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['files'] });
+      void qc.invalidateQueries({ queryKey: ['file-directories'] });
+    },
   });
 }
 
@@ -296,7 +322,10 @@ export function useDeleteFile() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => (await apiFetch(`/api/files/${id}`, { method: 'DELETE' })).data,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['files'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['files'] });
+      void qc.invalidateQueries({ queryKey: ['file-directories'] });
+    },
   });
 }
 
@@ -305,7 +334,10 @@ export function useMoveFile() {
   return useMutation({
     mutationFn: async (input: { id: string; targetPath: string }) =>
       (await apiFetch(`/api/files/${input.id}/move`, { method: 'POST', body: { targetPath: input.targetPath } })).data,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['files'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['files'] });
+      void qc.invalidateQueries({ queryKey: ['file-directories'] });
+    },
   });
 }
 
@@ -314,10 +346,12 @@ export function useBatchDelete() {
   return useMutation({
     mutationFn: async (fileIds: string[]) =>
       (await apiFetch(`/api/files/batch`, { method: 'POST', body: { action: 'delete', fileIds, permanent: true } })).data,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['files'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['files'] });
+      void qc.invalidateQueries({ queryKey: ['file-directories'] });
+    },
   });
 }
-
 export function useVerifyPassword() {
   return useMutation({
     mutationFn: async (input: { id: string; password: string }) =>
