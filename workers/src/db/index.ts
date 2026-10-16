@@ -16,6 +16,12 @@ export {
   type SsoIdentityRow,
   type SsoTokenSet,
 } from './repos/sso';
+export { AuthStateRepo, type AuthEphemeralState } from './repos/auth-state';
+export {
+  DirectoryStateRepo,
+  PermissionRevisionRepo,
+  type DirectoryState,
+} from './repos/directory-state';
 export {
   ProviderRepo,
   MountRepo,
