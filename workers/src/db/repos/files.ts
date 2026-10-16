@@ -4,6 +4,13 @@ import { Db, type Tx } from '../db';
 import { mapFile, mapUploadSession, toFileListItem, num, str, type Row } from '../row';
 import { uuid } from '../../utils/crypto';
 import { childFolderMatch, subtreeMatch } from '../../utils/path';
+import { DirectoryStateRepo } from './directory-state';
+
+function parentDirOf(fullPath: string): string {
+  const parts = fullPath.split('/').filter(Boolean);
+  if (parts.length <= 1) return '/';
+  return '/' + parts.slice(0, -1).join('/');
+}
 
 export interface FileInsert {
   mountId: string;
@@ -49,6 +56,11 @@ export const FileRepo = {
         f.customTitle ?? null, f.customColor ?? null, f.coverUrl ?? null, f.iconEmoji ?? null, f.accessPassword ?? null,
         f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, f.guestVisibility ?? null, now, now]
     );
+    const dirs: Array<{ mountId: string; path: string }> = [{ mountId: f.mountId, path: f.path }];
+    if (f.type === 'folder' && f.path !== '/') {
+      dirs.push({ mountId: f.mountId, path: parentDirOf(f.path) });
+    }
+    await DirectoryStateRepo.bumpRevisions(db, dirs);
     return (await this.getFileById(db, id)) as FileMetadata;
   },
   /** 事务内插入（D1 batch / node:sqlite 事务均可）：元数据 + 配额 + 日志同批提交，任一失败整批回滚 */
@@ -63,12 +75,28 @@ export const FileRepo = {
         f.customTitle ?? null, f.customColor ?? null, f.coverUrl ?? null, f.iconEmoji ?? null, f.accessPassword ?? null,
         f.manualPosition ?? null, f.metadata ?? null, f.ownerId, f.providerId ?? null, f.physicalKey ?? (f.type === 'file' ? f.objectKey : null), f.blobHash ?? null, f.guestVisibility ?? null, now, now]
     );
+    const dirs: Array<{ mountId: string; path: string }> = [{ mountId: f.mountId, path: f.path }];
+    if (f.type === 'folder' && f.path !== '/') {
+      dirs.push({ mountId: f.mountId, path: parentDirOf(f.path) });
+    }
+    await DirectoryStateRepo.bumpRevisions(db, dirs);
   },
   async updateFileTx(db: Db | Tx, id: string, fields: Record<string, unknown>): Promise<void> {
+    const old = await db.first('SELECT mount_id, path, type FROM file_metadata WHERE id = ?', [id]);
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
     if (entries.length === 0) return;
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
     await db.query(`UPDATE file_metadata SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
+    if (old) {
+      const mountId = str(old.mount_id)!;
+      const path = str(old.path)!;
+      const type = str(old.type);
+      const affectedDirs: Array<{ mountId: string; path: string }> = [{ mountId, path }];
+      if (type === 'folder' && path !== '/') {
+        affectedDirs.push({ mountId, path: parentDirOf(path) });
+      }
+      await DirectoryStateRepo.bumpRevisions(db, affectedDirs);
+    }
   },
   async getFileById(db: Db, id: string): Promise<FileMetadata | null> {
     const row = await db.first('SELECT * FROM file_metadata WHERE id = ?', [id]);
@@ -98,7 +126,7 @@ export const FileRepo = {
     );
     return row ? mapFile(row) : null;
   },
-  async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number; viewerId?: string }, ownerId?: string): Promise<{ rows: FileMetadata[]; total: number }> {
+  async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number; viewerId?: string; includeTotal?: boolean }, ownerId?: string): Promise<{ rows: FileMetadata[]; total: number }> {
     // 文件行 path = 父目录；文件夹行 path = 自身全路径 → 需额外匹配深度 1 的子文件夹
     const base: string[] = [];
     const params: unknown[] = [mountId];
@@ -143,14 +171,16 @@ export const FileRepo = {
     const order = opts.sortOrder === 'desc' ? 'DESC' : 'ASC';
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
-    // LAB O6：总数用窗口函数随行返回，省掉一次单独的 COUNT(*) 查询（列表 p50 显著下降）
+    const includeTotal = opts.includeTotal !== false;
+    // 主文件页需要精确 total；预览、协议列表等只消费 rows，跳过 COUNT(*) OVER ()，
+    // 避免为返回 4/100 行而扫描整个目录。
     const rowsRaw = await db.all(
-      `SELECT *, COUNT(*) OVER () AS total_count FROM file_metadata WHERE mount_id = ? AND ${whereSql}
+      `SELECT ${includeTotal ? '*, COUNT(*) OVER () AS total_count' : '*'} FROM file_metadata WHERE mount_id = ? AND ${whereSql}
        ORDER BY type = 'folder' DESC, ${sortCol} ${order}, name ASC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
-    const total = rowsRaw.length > 0 ? num((rowsRaw[0] as Record<string, unknown>).total_count) : 0;
+    const total = includeTotal ? (rowsRaw.length > 0 ? num((rowsRaw[0] as Record<string, unknown>).total_count) : 0) : rowsRaw.length;
     return { rows: rowsRaw.map(mapFile), total };
   },
   /** 列出某路径下所有子项（含子文件夹，递归），用于文件夹删除/移动；ownerId 传入时限定属主 */

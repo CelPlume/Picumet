@@ -1,7 +1,7 @@
 // 文件路由 B：删除、移动、批量操作、任务状态
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { FileRepo, MountRepo, JobRepo, ShareRepo } from '../../db';
+import { FileRepo, MountRepo, JobRepo, ShareRepo, DirectoryStateRepo } from '../../db';
 import type { Db } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission } from '../permissions/principal';
@@ -130,6 +130,12 @@ fileOpsRoutes.delete('/:id', async (c) => {
     await tx.query(`DELETE FROM shares WHERE file_id = ?`, [file.id]);
     await ShareRepo.deleteEmptyShares(tx);
     await releaseBlobsTx(tx, blobHashes, Date.now());
+    const affectedDirs: Array<{ mountId: string; path: string }> = [{ mountId: mount.id, path: file.path }];
+    if (file.type === 'folder' && file.path !== '/') {
+      const parts = file.path.split('/').filter(Boolean);
+      affectedDirs.push({ mountId: mount.id, path: parts.length <= 1 ? '/' : '/' + parts.slice(0, -1).join('/') });
+    }
+    await DirectoryStateRepo.bumpRevisions(tx, affectedDirs);
   });
 
   if (objectKeys.length > 0) await cleanupObjects(c, mount.id, objectKeys);
@@ -225,6 +231,12 @@ fileOpsRoutes.post('/batch', async (c) => {
           await tx.query(`DELETE FROM shares WHERE file_id = ?`, [file.id]);
           await ShareRepo.deleteEmptyShares(tx);
           await releaseBlobsTx(tx, blobHashes, Date.now());
+          const affectedDirs: Array<{ mountId: string; path: string }> = [{ mountId: mount.id, path: file.path }];
+          if (file.type === 'folder' && file.path !== '/') {
+            const parts = file.path.split('/').filter(Boolean);
+            affectedDirs.push({ mountId: mount.id, path: parts.length <= 1 ? '/' : '/' + parts.slice(0, -1).join('/') });
+          }
+          await DirectoryStateRepo.bumpRevisions(tx, affectedDirs);
         });
         if (keys.length > 0) await cleanupObjects(c, mount.id, keys);
         succeeded.push(id);

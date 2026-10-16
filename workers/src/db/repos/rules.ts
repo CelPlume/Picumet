@@ -2,6 +2,7 @@
 import type { PathRule, Permission, Role, ApiKey } from '@shared/types';
 import { Db } from '../db';
 import { mapPathRule, mapApiKey, num, type Row } from '../row';
+import { PermissionRevisionRepo } from './directory-state';
 import { uuid } from '../../utils/crypto';
 
 export const RuleRepo = {
@@ -31,6 +32,7 @@ export const RuleRepo = {
         JSON.stringify(r.permissions), r.requirePassword ? 1 : 0, r.passwordHash ?? null,
         r.allowedIps?.join(',') ?? null, r.priority ?? 0, r.origin ?? 'admin', r.createdBy ?? null, now, now]
     );
+    await PermissionRevisionRepo.bump(db);
     return (await this.getRuleById(db, id)) as PathRule;
   },
   /** 用户自建规则列表（origin='user' 且 created_by 匹配） */
@@ -62,9 +64,11 @@ export const RuleRepo = {
     if (entries.length === 0) return;
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
     await db.run(`UPDATE path_rules SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
+    await PermissionRevisionRepo.bump(db);
   },
   async deleteRule(db: Db, id: string): Promise<void> {
     await db.run('DELETE FROM path_rules WHERE id = ?', [id]);
+    await PermissionRevisionRepo.bump(db);
   },
   /**
    * 查询所有可能匹配某主体的规则（用户/角色/API密钥）。

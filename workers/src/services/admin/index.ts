@@ -4,7 +4,8 @@
 // 状态存 system_settings：index_running（'1'/'0'）、index_pending（JSON）、index_last_run_at（ms 字符串）。
 import { Hono } from 'hono';
 import type { AppBindings, Env } from '../../shared/types';
-import { Db, FileRepo, MountRepo, SettingsRepo } from '../../db';
+import { Db, MountRepo, SettingsRepo, DirectoryStateRepo } from '../../db';
+import { sha256Hex } from '../../utils/crypto';
 import { getDb } from '../../middleware/auth';
 import { ok } from '../../shared/response';
 import { ApiError } from '../../shared/errors';
@@ -17,6 +18,8 @@ export const adminIndexRoutes = new Hono<AppBindings>();
 const RUNNING_KEY = 'index_running';
 const PENDING_KEY = 'index_pending';
 const LAST_RUN_KEY = 'index_last_run_at';
+const INDEX_COUNT_CACHE_TTL_MS = 60_000;
+let indexFileCountCache: { value: number; at: number } | null = null;
 function guessMimeType(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase();
   switch (ext) {
@@ -71,15 +74,25 @@ export interface IndexStatus {
 }
 
 async function fileCount(db: Db): Promise<number> {
+  if (indexFileCountCache && Date.now() - indexFileCountCache.at < INDEX_COUNT_CACHE_TTL_MS) {
+    return indexFileCountCache.value;
+  }
   const row = await db.first('SELECT COUNT(*) AS c FROM file_metadata');
-  return num(row?.c);
+  const value = num(row?.c);
+  indexFileCountCache = { value, at: Date.now() };
+  return value;
+}
+
+function invalidateIndexFileCountCache(): void {
+  indexFileCountCache = null;
 }
 
 export async function getIndexStatus(db: Db): Promise<IndexStatus> {
-  const running = (await SettingsRepo.get(db, RUNNING_KEY)) === '1';
-  const lastRaw = await SettingsRepo.get(db, LAST_RUN_KEY);
+  const settings = await SettingsRepo.getAll(db);
+  const running = settings[RUNNING_KEY] === '1';
+  const lastRaw = settings[LAST_RUN_KEY];
   const lastRunAt = lastRaw == null || lastRaw === 'null' ? null : Number(lastRaw) || null;
-  const rawPending = await SettingsRepo.get(db, PENDING_KEY);
+  const rawPending = settings[PENDING_KEY];
   let pending: IndexPending | null = null;
   if (rawPending && rawPending !== 'null') {
     try {
@@ -113,6 +126,16 @@ function renderDiffSnippet(entries: IndexDiffEntry[], unchanged: number): string
   return lines.join('\n');
 }
 
+function computeDirectoryFingerprint(
+  items: Array<{ name: string; size: number; etag?: string; physicalKey?: string; type: string }>
+): Promise<string> {
+  const sorted = [...items].sort((a, b) => a.name.localeCompare(b.name));
+  const payload = sorted
+    .map((s) => `${s.type}\u0000${s.name}\u0000${s.size}\u0000${s.etag ?? ''}\u0000${s.physicalKey ?? ''}`)
+    .join('\n');
+  return sha256Hex(payload);
+}
+
 /**
  * 标准索引：本地快速对账（零远端扫描）。
  * - 清理悬空父目录：文件行 path 指向不存在的父目录行时，补齐父目录行（幂等）。
@@ -120,36 +143,56 @@ function renderDiffSnippet(entries: IndexDiffEntry[], unchanged: number): string
  */
 async function runStandardIndex(db: Db): Promise<IndexPending> {
   const startedAt = Date.now();
-  // 补齐缺失的父目录行（遍历文件行 path 的每一级，缺失即补）——保证索引树完整
-  const fileRows = await db.all(`SELECT DISTINCT path, mount_id FROM file_metadata WHERE type = 'file'`);
-  const dirs = new Map<string, Set<string>>();
-  for (const r of fileRows) {
-    const p = str(r.path) ?? '';
-    if (!p || p === '/') continue;
-    const segs = p.split('/').filter(Boolean);
-    let acc = '';
-    for (const s of segs) {
-      acc = acc ? `${acc}/${s}` : `/${s}`;
-      if (!dirs.has(String(r.mount_id))) dirs.set(String(r.mount_id), new Set());
-      dirs.get(String(r.mount_id))!.add(acc);
-    }
-  }
-  for (const [mountId, paths] of dirs) {
-    for (const dirPath of paths) {
-      const exist = await db.first(
-        `SELECT id FROM file_metadata WHERE mount_id = ? AND type = 'folder' AND path = ?`,
-        [mountId, dirPath]
-      );
-      if (!exist) {
-        const name = dirPath.split('/').filter(Boolean).pop() ?? dirPath;
-        await db.run(
-          `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, size, owner_id, visibility, review_status, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'folder', 0, ?, 'private', 'approved', 0, ?, ?)`,
-          [crypto.randomUUID(), mountId, `folder:${dirPath}`, dirPath, name, 'system', Date.now(), Date.now()]
-        );
-      }
-    }
-  }
+  const now = Date.now();
+  // 一条递归 INSERT 生成每个文件父路径的全部祖先，并用 NOT EXISTS + 唯一键幂等补目录。
+  // 旧算法为每个目录做一次 SELECT，再逐行 INSERT；文件量大时会把一次重建放大成 N+1 次 D1 往返。
+  await db.run(
+    `WITH RECURSIVE needed(mount_id, dir_path) AS (
+       SELECT mount_id, path
+       FROM file_metadata
+       WHERE type = 'file' AND path <> '/' AND substr(path, 1, 1) = '/'
+       UNION
+       SELECT mount_id,
+              CASE
+                WHEN length(rtrim(dir_path, replace(dir_path, '/', ''))) > 1
+                THEN substr(rtrim(dir_path, replace(dir_path, '/', '')), 1,
+                            length(rtrim(dir_path, replace(dir_path, '/', ''))) - 1)
+                ELSE '/'
+              END
+       FROM needed
+       WHERE dir_path <> '/'
+     ), distinct_dirs AS (
+       SELECT DISTINCT mount_id, dir_path
+       FROM needed
+       WHERE dir_path <> '/'
+     )
+     INSERT OR IGNORE INTO file_metadata
+       (id, mount_id, object_key, path, name, type, size, owner_id, visibility, review_status, version, created_at, updated_at)
+     SELECT lower(hex(randomblob(16))),
+            d.mount_id,
+            'folder:' || d.dir_path,
+            d.dir_path,
+            substr(d.dir_path, length(rtrim(d.dir_path, replace(d.dir_path, '/', ''))) + 1),
+            'folder',
+            0,
+            admin.id,
+            'private',
+            'approved',
+            0,
+            ?,
+            ?
+     FROM distinct_dirs d
+     CROSS JOIN (SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1) admin
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM file_metadata existing
+       WHERE existing.mount_id = d.mount_id
+         AND existing.type = 'folder'
+         AND existing.path = d.dir_path
+     )`,
+    [now, now]
+  );
+  invalidateIndexFileCountCache();
   const completedAt = Date.now();
   const total = await fileCount(db);
   const pending: IndexPending = {
@@ -168,69 +211,92 @@ async function runStandardIndex(db: Db): Promise<IndexPending> {
 async function runAdvancedIndex(db: Db, env: Env): Promise<IndexPending> {
   const startedAt = Date.now();
   const mounts = await MountRepo.allMounts(db);
+  const mountProviderById = new Map(mounts.map((mount) => [mount.id, mount.providerId]));
   const fileRows = await db.all(
-    `SELECT id, mount_id, object_key, path, name, owner_id, size, etag, physical_key, blob_hash, type FROM file_metadata WHERE type = 'file'`
+    `SELECT id, mount_id, object_key, path, name, owner_id, size, etag, physical_key, blob_hash, provider_id, type
+     FROM file_metadata
+     WHERE type = 'file'`
   );
 
-  const referenced = new Set<string>();
-  const byPhysKey = new Map<string, Array<{ fileId: string; size: number; etag?: string }>>();
-  for (const r of fileRows) {
-    const phys = str(r.physical_key) ?? str(r.object_key) ?? '';
+  type FileRef = { fileId: string; size: number };
+  const fileRowsById = new Map<string, Record<string, unknown>>();
+  const refsByProvider = new Map<string, Map<string, FileRef[]>>();
+  const referencedByProvider = new Map<string, Set<string>>();
+  for (const row of fileRows) {
+    const fileId = str(row.id);
+    if (!fileId) continue;
+    fileRowsById.set(fileId, row);
+    const providerId = str(row.provider_id) ?? mountProviderById.get(str(row.mount_id) ?? '') ?? '';
+    const phys = str(row.physical_key) ?? str(row.object_key) ?? '';
     if (!phys) continue;
+    let refs = refsByProvider.get(providerId);
+    if (!refs) {
+      refs = new Map<string, FileRef[]>();
+      refsByProvider.set(providerId, refs);
+    }
+    const sameKey = refs.get(phys) ?? [];
+    sameKey.push({ fileId, size: num(row.size) });
+    refs.set(phys, sameKey);
+    let referenced = referencedByProvider.get(providerId);
+    if (!referenced) {
+      referenced = new Set<string>();
+      referencedByProvider.set(providerId, referenced);
+    }
     referenced.add(phys);
-    if (!byPhysKey.has(phys)) byPhysKey.set(phys, []);
-    byPhysKey.get(phys)!.push({ fileId: str(r.id)!, size: num(r.size), etag: str(r.etag) });
   }
 
-  // 按 provider 缓存对象清单（多个挂载可共用同一 provider/桶）
+  // 按真实 provider id 缓存对象清单：避免同 provider 多挂载重复 ListObjects，
+  // 也避免旧的 type+bucket 键把不同 endpoint 的同名桶错误合并。
   const listingByProvider = new Map<string, Map<string, number>>();
   for (const mount of mounts) {
+    if (listingByProvider.has(mount.providerId)) continue;
     const provider = await getProviderForMount(db, mount.id, env).catch(() => null);
-    if (!provider) continue;
-    const cacheKey = `${provider.type}:${provider.bucketName}`;
-    let keySize = listingByProvider.get(cacheKey);
-    if (!keySize) {
-      keySize = await listAllObjects(provider);
-      listingByProvider.set(cacheKey, keySize);
+    if (!provider) {
+      listingByProvider.set(mount.providerId, new Map());
+      continue;
     }
-    // 本挂载文件行的物理键若不在对象清单 → 缺失（removed）；size 不符 → modified
-    // 注：byPhysKey 与 listingByProvider 为全局集合；不同挂载的物理键天然不冲突（键含 mount 路径前缀/哈希）。
+    listingByProvider.set(mount.providerId, await listAllObjects(provider));
   }
 
-  // 缺失/变动判定
+  // 缺失/变动判定。旧实现对每条引用执行 fileRows.find（O(n²)），
+  // 这里按 id 建 Map，单次索引比较收敛为 O(files + listed objects)。
   const entries: IndexDiffEntry[] = [];
-  for (const [phys, refs] of byPhysKey) {
-    const objSize = listingHas(listingByProvider, phys);
-    for (const ref of refs) {
-      const row = fileRows.find((x) => str(x.id) === ref.fileId);
-      const vpath =
-        row && str(row.path) && str(row.name)
-          ? `${str(row.path) === '/' ? '' : str(row.path)}/${str(row.name)}`
-          : phys;
-      if (objSize === undefined) {
-        entries.push({
-          type: 'removed',
-          fileId: ref.fileId,
-          ownerId: str(row?.owner_id),
-          path: vpath,
-          name: str(row?.name) ?? '',
-          size: ref.size,
-        });
-      } else if (objSize !== ref.size) {
-        entries.push({
-          type: 'modified',
-          fileId: ref.fileId,
-          path: vpath,
-          name: str(row?.name) ?? '',
-          prevSize: ref.size,
-          size: objSize,
-        });
+  for (const [providerId, byPhys] of refsByProvider) {
+    const listing = listingByProvider.get(providerId);
+    for (const [phys, refs] of byPhys) {
+      const objSize = listing?.get(phys);
+      for (const ref of refs) {
+        const row = fileRowsById.get(ref.fileId);
+        const vpath =
+          row && str(row.path) && str(row.name)
+            ? `${str(row.path) === '/' ? '' : str(row.path)}/${str(row.name)}`
+            : phys;
+        if (objSize === undefined) {
+          entries.push({
+            type: 'removed',
+            fileId: ref.fileId,
+            ownerId: str(row?.owner_id),
+            path: vpath,
+            name: str(row?.name) ?? '',
+            size: ref.size,
+          });
+        } else if (objSize !== ref.size) {
+          entries.push({
+            type: 'modified',
+            fileId: ref.fileId,
+            path: vpath,
+            name: str(row?.name) ?? '',
+            prevSize: ref.size,
+            size: objSize,
+          });
+        }
       }
     }
   }
 
-  // 对象清单中未被任何文件引用的键 → 新增（孤儿/未索引对象）
-  for (const keySize of listingByProvider.values()) {
+  // 对象清单中未被同一 provider 的文件引用的键 → 新增（孤儿/未索引对象）。
+  for (const [providerId, keySize] of listingByProvider) {
+    const referenced = referencedByProvider.get(providerId) ?? new Set<string>();
     for (const [phys, size] of keySize) {
       if (referenced.has(phys)) continue;
       // 暂存/临时对象与文件夹占位不参与统计
@@ -244,6 +310,31 @@ async function runAdvancedIndex(db: Db, env: Env): Promise<IndexPending> {
   const modified = entries.filter((e) => e.type === 'modified').length;
   const unchanged = Math.max(0, fileRows.length - removed - modified);
   const completedAt = Date.now();
+
+  // 收集并持久化各目录的结构指纹，供后续增量判断
+  const dirItems = new Map<string, Array<{ name: string; size: number; etag?: string; physicalKey?: string; type: string }>>();
+  for (const r of fileRows) {
+    const mId = str(r.mount_id) ?? '';
+    const p = str(r.path) ?? '/';
+    const k = `${mId}\u0000${p}`;
+    let list = dirItems.get(k);
+    if (!list) {
+      list = [];
+      dirItems.set(k, list);
+    }
+    list.push({
+      name: str(r.name) ?? '',
+      size: num(r.size),
+      etag: str(r.etag) ?? undefined,
+      physicalKey: str(r.physical_key) ?? undefined,
+      type: 'file',
+    });
+  }
+  for (const [key, items] of dirItems) {
+    const [mId, p] = key.split('\u0000');
+    const fp = await computeDirectoryFingerprint(items);
+    await DirectoryStateRepo.updateFingerprint(db, mId, p, fp, items.length, false);
+  }
 
   const pending: IndexPending = {
     jobId: crypto.randomUUID(),
@@ -270,13 +361,6 @@ async function listAllObjects(provider: StorageProviderInterface): Promise<Map<s
   return out;
 }
 
-/** 对象清单里是否含物理键（跨 provider 缓存合并判断） */
-function listingHas(listingByProvider: Map<string, Map<string, number>>, key: string): number | undefined {
-  for (const m of listingByProvider.values()) {
-    if (m.has(key)) return m.get(key);
-  }
-  return undefined;
-}
 
 // ============ 路由 ============
 
@@ -388,7 +472,16 @@ adminIndexRoutes.post('/apply', async (c) => {
         }
       }
     }
+    const affectedDirs: Array<{ mountId: string; path: string }> = [];
+    for (const e of pending.entries) {
+      const parts = e.path.split('/').filter(Boolean);
+      parts.pop();
+      const parentPath = parts.length === 0 ? '/' : `/${parts.join('/')}`;
+      affectedDirs.push({ mountId, path: parentPath });
+    }
+    await DirectoryStateRepo.bumpRevisions(tx, affectedDirs, 'reconcile');
   });
+  invalidateIndexFileCountCache();
 
   await SettingsRepo.set(db, LAST_RUN_KEY, String(Date.now()));
   await SettingsRepo.set(db, PENDING_KEY, null);

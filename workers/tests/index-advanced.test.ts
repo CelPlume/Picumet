@@ -104,6 +104,35 @@ describe('文件索引（标准 / 高级）', () => {
     expect(after.pending).toBeNull();
     expect(after.lastRunAt).toBeGreaterThan(0);
   });
+  it('标准索引：一次 SQL 补齐嵌套父目录且重复构建幂等', async () => {
+    const mount = await dbOf().first(`SELECT id FROM mounts WHERE mount_path = '/' LIMIT 1`);
+    const admin = await dbOf().first(`SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1`);
+    expect(mount?.id).toBeTruthy();
+    expect(admin?.id).toBeTruthy();
+    const marker = crypto.randomUUID();
+    const now = Date.now();
+    await dbOf().query(
+      `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, size, owner_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'file', 1, ?, ?, ?)`,
+      [crypto.randomUUID(), String(mount!.id), `index:${marker}`, `/index-${marker}/nested`, 'payload.txt', String(admin!.id), now, now]
+    );
+    ctx.r2.putRaw(`index:${marker}`, new Uint8Array([0]), {});
+
+    expect(await buildIndex('standard')).toBe(202);
+    const first = await dbOf().all(
+      `SELECT path, owner_id FROM file_metadata WHERE mount_id = ? AND type = 'folder' AND path IN (?, ?) ORDER BY path`,
+      [String(mount!.id), `/index-${marker}`, `/index-${marker}/nested`]
+    );
+    expect(first.map((row) => String(row.path))).toEqual([`/index-${marker}`, `/index-${marker}/nested`]);
+    expect(first.every((row) => String(row.owner_id) === String(admin!.id))).toBe(true);
+
+    expect(await buildIndex('standard')).toBe(202);
+    const second = await dbOf().first(
+      `SELECT COUNT(*) AS c FROM file_metadata WHERE mount_id = ? AND type = 'folder' AND path IN (?, ?)`,
+      [String(mount!.id), `/index-${marker}`, `/index-${marker}/nested`]
+    );
+    expect(Number(second?.c)).toBe(2);
+  });
 
   it('高级索引：存储与 D1 一致时不产生 removed/modified', async () => {
     expect(await buildIndex('advanced')).toBe(202);

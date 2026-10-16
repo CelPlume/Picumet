@@ -1,7 +1,7 @@
 // 移动操作 Saga（复制 → 校验 → 原子切换 → 异步清理源，带失败补偿）
 // 主文件 API 与 WebDAV MOVE 统一走此服务，各入口禁止直接改 file_metadata。
 import type { Context } from 'hono';
-import { FileRepo, MountRepo, JobRepo, ReconciliationRepo, ProviderRepo, MountQuotaRepo, MountProviderQuotaRepo, ReservationRepo } from '../../db';
+import { FileRepo, MountRepo, JobRepo, ReconciliationRepo, ProviderRepo, MountQuotaRepo, MountProviderQuotaRepo, ReservationRepo, DirectoryStateRepo } from '../../db';
 import type { OperationJob } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { getPrincipal, requirePermission } from '../permissions/principal';
@@ -395,6 +395,22 @@ async function executeMove(c: Ctx, jobId: string) {
         }
         if (state.reservationId) await ReservationRepo.remove(tx, state.reservationId);
       }
+      const parentOf = (p: string) => {
+        const parts = p.split('/').filter(Boolean);
+        return parts.length <= 1 ? '/' : '/' + parts.slice(0, -1).join('/');
+      };
+      const srcPath = job.sourcePath || movingFile?.path || '/';
+      const dstPath = state.destDir || job.targetPath || '/';
+      const affectedDirs: Array<{ mountId: string; path: string }> = [
+        { mountId: state.sourceMountId, path: state.isFolder ? parentOf(srcPath) : srcPath },
+        { mountId: state.targetMountId, path: dstPath },
+      ];
+      if (state.isFolder) {
+        affectedDirs.push({ mountId: state.sourceMountId, path: srcPath });
+        affectedDirs.push({ mountId: state.targetMountId, path: state.targetFullPath });
+      }
+      await DirectoryStateRepo.bumpRevisions(tx, affectedDirs);
+
       await tx.query(
         `UPDATE operation_jobs SET status = 'completed', completed_at = ?, progress = 100 WHERE id = ?`,
         [Date.now(), jobId]
