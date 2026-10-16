@@ -770,6 +770,21 @@ Pages 反代架构上线后的实测反馈，全部为**后续修改**待办。�
 - 免费档与当前使用强度（持续测试 + 多端浏览）不匹配，列表优化后仍可能被高频树操作打穿。**治本选项**：升级 Workers Paid（$5/月，D1 行读上限提升数个量级）。
 
 **运维注意**：`wrangler d1 execute --remote` / `wrangler deploy` 走 Cloudflare 控制面 API，与配额无关的 `api.cloudflare.com` 链路故障（2026-10-13 曾整体不可达数小时）会同时阻塞部署、回滚与直连改库，与 D1 配额耗尽症状（站点 500 但边缘正常）相互独立，排障时先区分。
+### 2026-10-16 D1/KV 配额耗尽后的本地优化批次
+
+**证据**：Wrangler `d1 info picumet-db` 显示最近 24h 为 **2,777 次读查询 / 5,095,975 行读 / 241 次写**；`d1 insights` 当时返回空数组，无法依赖远端 top-query 明细。`wrangler tail picumet-api --search D1_ERROR` 在短时窗口未捕获新事件；历史事故记录与本地 `EXPLAIN QUERY PLAN` 仍能定位主要放大路径。Wrangler 日志显示 Pages 部署链路正常，但 `workers/wrangler.toml` 的占位 account_id 会造成错误配置警告，生产配置仍应使用 `deploy/wrangler.production.toml`。
+
+| 项 | 处理 | 影响 |
+| :--- | :--- | :--- |
+| 标准文件索引 | `runStandardIndex` 从「每个目录一次 SELECT + INSERT」改为递归 CTE + 单条 `INSERT OR IGNORE`；嵌套目录完整补齐且重复构建幂等 | 从 N+1 D1 往返收敛为单条写语句 |
+| 高级文件索引 | 按真实 `provider_id` 只做一次对象列表；文件行按 id/provider/物理键建 Map，去掉每条引用的 `fileRows.find` 与跨 provider 错配 | 复杂度从引用比较 O(n²) 收敛到 O(files + objects)，多挂载共享 provider 不重复 ListObjects |
+| 文件目录列表 | `listChildren` 增加 `includeTotal=false`；缩略图预览、公开目录、AList/S3/WebDAV/分享列表不再执行 `COUNT(*) OVER()` 全目录扫描；主文件页仍返回精确 total | 保持 API 形状；非分页调用只取实际 rows |
+| KV 配额降压 | KV fallback 过期行请求命中只返回 miss，删除延迟给每 10 分钟清理；每日配额错误熔断到下个 UTC 日；限流同 isolate 同 key/window 只回源/写回一次，热请求走内存 | 避免每次请求重复 KV/D1 fallback 与 delete；保留 fail-closed 认证限流语义 |
+| Seed/ready | seed 真值写入 D1 `system_settings.seed_initialized`，请求内复用 binding 级 promise/cache；ready 探针只查 D1，不再每请求读 KV | KV 耗尽时不重复跑 seed，不把启动门禁绑死在 KV marker |
+
+**本地验证**：`bun run typecheck`；`bunx vitest run tests/index-advanced.test.ts`（6/6）；`bunx vitest run tests/kv-fallback.test.ts tests/rate-limit-hardening.test.ts tests/rate-limit-failclosed.test.ts`（19/19）。递归索引 `EXPLAIN QUERY PLAN` 使用 `idx_file_metadata_type` 起始扫描、`idx_file_metadata_mount_path` 做目录存在性检查。
+
+**远端限制**：本批未执行任何远程写入。远端查询可读到 D1 24h 总量，但 `d1 insights` 无详细结果；生产配额耗尽期间不应继续运行远端 `execute`、索引重建或部署验证，待 UTC 配额恢复/升级后按迁移 journal 与 readiness 逐项复核。
 
 ### 出口机制与协议兼容完善
 
