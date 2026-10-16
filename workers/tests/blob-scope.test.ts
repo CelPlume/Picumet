@@ -206,8 +206,7 @@ describe('§F 内容对象按挂载隔离', () => {
     expect(survived.length).toBe(1);
   });
 
-  it('迁移 0007 回填：有引用的存量索引取首个引用挂载，无引用置空串哨兵，主键为复合键', () => {
-    // 生产库存量数据迁移：helpers 的全新库不会走到回填分支，这里单独跑 0001 + 0007 验证
+  it('复合主键与按挂载隔离：同一 hash 跨挂载独立，同一挂载去重，orphan_objects 含 provider_id', () => {
     const db = new DatabaseSyncCtor(':memory:');
     const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
     db.exec(readFileSync(join(dir, '0001_initial.sql'), 'utf-8'));
@@ -218,41 +217,30 @@ describe('§F 内容对象按挂载隔离', () => {
     ).run(now, now);
     db.prepare(
       `INSERT INTO mounts (id, provider_id, mount_path, name, priority, created_at, updated_at, status)
-       VALUES ('m1', 'p1', '/', 'root', 100, ?, ?, 'active')`
-    ).run(now, now);
+       VALUES ('m1', 'p1', '/', 'root', 100, ?, ?, 'active'), ('m2', 'p1', '/m2', 'm2', 100, ?, ?, 'active')`
+    ).run(now, now, now, now);
     db.prepare(
       `INSERT INTO users (id, username, email, email_verified, password_hash, role, default_path, created_at, updated_at)
        VALUES ('u1', 'u1', 'u1@test.local', 0, 'x', 'user', '/', ?, ?)`
     ).run(now, now);
+
+    // 复合主键：同一 hash 可在不同挂载各自登记一行
     db.prepare(
-      `INSERT INTO file_metadata (id, mount_id, object_key, path, name, type, size, owner_id, blob_hash, physical_key, created_at, updated_at)
-       VALUES ('f1', 'm1', 'v1', '/', 'a.txt', 'file', 1, 'u1', 'h-ref', 'k-ref', ?, ?)`
-    ).run(now, now);
-    // 一条有引用的存量索引 + 一条已无引用的历史孤儿索引
-    db.prepare(
-      `INSERT INTO blob_objects (hash, provider_id, object_key, size, etag, created_at, updated_at) VALUES
-         ('h-ref', 'p1', 'k-ref', 1, NULL, ?, ?),
-         ('h-orphan', 'p1', 'k-orphan', 2, NULL, ?, ?)`
+      `INSERT INTO blob_objects (hash, mount_id, provider_id, object_key, size, created_at, updated_at)
+       VALUES ('h-ref', 'm1', 'p1', 'k-ref-1', 1, ?, ?),
+              ('h-ref', 'm2', 'p1', 'k-ref-2', 1, ?, ?)`
     ).run(now, now, now, now);
 
-    db.exec(readFileSync(join(dir, '0007_blob_mount_scope.sql'), 'utf-8'));
-
-    const backfilled: Record<string, string> = {};
-    for (const row of db.prepare('SELECT hash, mount_id FROM blob_objects').all()) {
-      backfilled[String(row.hash)] = String(row.mount_id);
-    }
-    expect(backfilled['h-ref']).toBe('m1');
-    expect(backfilled['h-orphan']).toBe('');
-
-    // 复合主键：同一 hash 可再登记另一个挂载；重复的 (hash, mount) 由 INSERT OR IGNORE 忽略
+    // 重复 (hash, mount_id) 被 INSERT OR IGNORE 忽略
     db.prepare(
       `INSERT OR IGNORE INTO blob_objects (hash, mount_id, provider_id, object_key, size, created_at, updated_at)
-       VALUES ('h-ref', 'm2', 'p1', 'k-ref-2', 1, ?, ?), ('h-ref', 'm1', 'p1', 'dup', 1, ?, ?)`
-    ).run(now, now, now, now);
+       VALUES ('h-ref', 'm1', 'p1', 'dup', 1, ?, ?)`
+    ).run(now, now);
+
     const scoped = db.prepare('SELECT COUNT(*) AS c FROM blob_objects WHERE hash = ?').get('h-ref') as CountRow | undefined;
     expect(Number(scoped?.c ?? 0)).toBe(2);
 
-    // orphan_objects 已补 provider_id 列
+    // orphan_objects 已含 provider_id 列
     expect(db.prepare('SELECT provider_id FROM orphan_objects LIMIT 1').all()).toEqual([]);
   });
 });

@@ -824,3 +824,320 @@ CREATE TABLE IF NOT EXISTS mount_provider_role_permissions (
 CREATE INDEX IF NOT EXISTS idx_access_logs_action_created_at ON access_logs(action, created_at);
 -- shares 趋势按创建时间分桶（新建分享数）；既有索引只覆盖 file_id / creator_id / status / expires_at。
 CREATE INDEX IF NOT EXISTS idx_shares_created_at ON shares(created_at);
+
+-- ============ 34. Provider 生命周期外键收紧 ============
+-- mount_providers / mount_provider_role_permissions 的 provider 外键改为 RESTRICT，
+-- 防止删除仍被文件、对象索引或桶级矩阵引用的 Provider。
+CREATE TABLE IF NOT EXISTS mount_providers_new (
+  mount_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  weight INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  capacity_bytes INTEGER,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  quota_reserved INTEGER NOT NULL DEFAULT 0,
+  standby INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (mount_id, provider_id),
+  FOREIGN KEY (mount_id) REFERENCES mounts(id) ON DELETE CASCADE,
+  FOREIGN KEY (provider_id) REFERENCES storage_providers(id) ON DELETE RESTRICT
+);
+INSERT OR IGNORE INTO mount_providers_new
+  (mount_id, provider_id, weight, created_at, capacity_bytes, sort_order, quota_reserved, standby)
+SELECT p.mount_id, p.provider_id, p.weight, p.created_at, p.capacity_bytes, p.sort_order, p.quota_reserved, p.standby
+  FROM mount_providers p
+ WHERE EXISTS (SELECT 1 FROM storage_providers s WHERE s.id = p.provider_id)
+   AND EXISTS (SELECT 1 FROM mounts m WHERE m.id = p.mount_id);
+DROP TABLE mount_providers;
+ALTER TABLE mount_providers_new RENAME TO mount_providers;
+
+CREATE TABLE IF NOT EXISTS mount_provider_role_permissions_new (
+  mount_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  permissions TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (mount_id, provider_id, role),
+  FOREIGN KEY (mount_id) REFERENCES mounts(id) ON DELETE CASCADE,
+  FOREIGN KEY (provider_id) REFERENCES storage_providers(id) ON DELETE RESTRICT
+);
+INSERT OR IGNORE INTO mount_provider_role_permissions_new
+  (mount_id, provider_id, role, permissions, created_at, updated_at)
+SELECT r.mount_id, r.provider_id, r.role, r.permissions, r.created_at, r.updated_at
+  FROM mount_provider_role_permissions r
+ WHERE EXISTS (SELECT 1 FROM storage_providers s WHERE s.id = r.provider_id)
+   AND EXISTS (SELECT 1 FROM mounts m WHERE m.id = r.mount_id);
+DROP TABLE mount_provider_role_permissions;
+ALTER TABLE mount_provider_role_permissions_new RENAME TO mount_provider_role_permissions;
+
+-- ============ 35. 内容对象索引按挂载隔离 + 孤儿对象清理队列 ============
+ALTER TABLE orphan_objects ADD COLUMN provider_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_orphan_objects_queue ON orphan_objects(reason, cleaned, created_at);
+CREATE TABLE IF NOT EXISTS blob_objects_scoped (
+  hash TEXT NOT NULL,
+  mount_id TEXT NOT NULL DEFAULT '',
+  provider_id TEXT NOT NULL,
+  object_key TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  etag TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (hash, mount_id)
+);
+INSERT OR IGNORE INTO blob_objects_scoped (hash, mount_id, provider_id, object_key, size, etag, created_at, updated_at)
+SELECT b.hash,
+       COALESCE((SELECT f.mount_id FROM file_metadata f WHERE f.blob_hash = b.hash ORDER BY f.mount_id LIMIT 1), ''),
+       b.provider_id, b.object_key, b.size, b.etag, b.created_at, b.updated_at
+FROM blob_objects b;
+DROP TABLE blob_objects;
+ALTER TABLE blob_objects_scoped RENAME TO blob_objects;
+CREATE INDEX IF NOT EXISTS idx_blob_objects_provider ON blob_objects(provider_id);
+CREATE INDEX IF NOT EXISTS idx_blob_objects_mount ON blob_objects(mount_id);
+
+-- ============ 36. 生命周期队列、上传完成原子领取、直写预留台账 ============
+CREATE TABLE IF NOT EXISTS blob_gc_scoped (
+  hash TEXT NOT NULL,
+  mount_id TEXT NOT NULL DEFAULT '',
+  provider_id TEXT NOT NULL,
+  object_key TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (hash, mount_id)
+);
+INSERT OR IGNORE INTO blob_gc_scoped (hash, mount_id, provider_id, object_key, attempts, created_at)
+SELECT g.hash,
+       COALESCE((SELECT b.mount_id FROM blob_objects b WHERE b.hash = g.hash ORDER BY b.mount_id LIMIT 1), ''),
+       g.provider_id, g.object_key, g.attempts, g.created_at
+FROM blob_gc g;
+DROP TABLE blob_gc;
+ALTER TABLE blob_gc_scoped RENAME TO blob_gc;
+CREATE INDEX IF NOT EXISTS idx_blob_gc_mount ON blob_gc(mount_id, provider_id);
+ALTER TABLE orphan_objects ADD COLUMN upload_id TEXT;
+ALTER TABLE upload_sessions ADD COLUMN complete_claimed_at INTEGER;
+CREATE TABLE IF NOT EXISTS quota_reservations (
+  id TEXT PRIMARY KEY,
+  mount_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quota_reservations_scope ON quota_reservations(mount_id, provider_id);
+
+-- ============ 37. 审计日志冷热分层 ============
+CREATE INDEX IF NOT EXISTS idx_access_logs_created_id ON access_logs(created_at, id);
+CREATE INDEX IF NOT EXISTS idx_access_logs_action_created_id ON access_logs(action, created_at, id);
+DROP INDEX IF EXISTS idx_access_logs_action;
+CREATE TABLE IF NOT EXISTS audit_archives (
+  id TEXT PRIMARY KEY,
+  range_start INTEGER NOT NULL,
+  range_end INTEGER NOT NULL,
+  row_count INTEGER NOT NULL,
+  object_key TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  pruned INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_archives_range ON audit_archives(range_start, range_end);
+CREATE TABLE IF NOT EXISTS audit_rollups (
+  bucket_start INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  status_code INTEGER NOT NULL DEFAULT 0,
+  event_count INTEGER NOT NULL DEFAULT 0,
+  bytes_transferred INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket_start, action, status_code)
+);
+
+-- ============ 38. 邀请码注册机制 ============
+CREATE TABLE IF NOT EXISTS invite_codes (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  name TEXT,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_invite_codes_created_by ON invite_codes(created_by);
+ALTER TABLE users ADD COLUMN invited_by_code_id TEXT REFERENCES invite_codes(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_users_invited_by_code ON users(invited_by_code_id);
+INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALUES
+('invite_enabled', 'false', '是否开启邀请码注册', unixepoch() * 1000),
+('invite_required', 'false', '开启后邀请码是否必填（必填 = 无码不可注册）', unixepoch() * 1000),
+('invite_generation', 'all_users', '邀请码生成权限（all_users = 全部用户 / admin_only = 仅管理员）', unixepoch() * 1000),
+('invite_max_per_user', '5', '每用户最大邀请码生成数量', unixepoch() * 1000);
+
+-- ============ 39. Umami 访问统计设置 ============
+INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALUES
+('stats_source', 'd1', '访问统计来源（d1 = 网关审计日志 / umami = 前端行为统计）', unixepoch() * 1000),
+('umami_enabled', 'false', 'Umami 启用开关（stats_source=umami 时生效）', unixepoch() * 1000),
+('umami_script_url', '', 'Umami tracker 脚本地址', unixepoch() * 1000),
+('umami_website_id', '', 'Umami 站点 ID（data-website-id，UUID）', unixepoch() * 1000),
+('umami_host_url', '', 'Umami 采集端点覆盖（可选）', unixepoch() * 1000),
+('umami_domains', '', 'Umami 域名白名单（可选）', unixepoch() * 1000),
+('umami_performance', 'false', 'Umami 采集性能指标', unixepoch() * 1000),
+('umami_exclude_search', 'false', 'Umami 排除搜索参数', unixepoch() * 1000),
+('umami_do_not_track', 'false', 'Umami 遵循浏览器 Do Not Track', unixepoch() * 1000);
+
+-- ============ 40. SSO / OIDC ============
+CREATE TABLE IF NOT EXISTS sso_providers (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  issuer_url TEXT,
+  client_id TEXT NOT NULL,
+  client_secret TEXT NOT NULL,
+  scopes TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CONSTRAINT chk_sso_provider_kind CHECK (kind IN ('google', 'github', 'oidc'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_providers_singleton
+  ON sso_providers(kind) WHERE kind IN ('google', 'github');
+CREATE INDEX IF NOT EXISTS idx_sso_providers_enabled ON sso_providers(enabled, created_at);
+CREATE TABLE IF NOT EXISTS sso_identities (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  email TEXT,
+  username TEXT,
+  display_name TEXT,
+  avatar_url TEXT,
+  access_token TEXT,
+  refresh_token TEXT,
+  token_type TEXT,
+  scope TEXT,
+  expires_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (provider_id) REFERENCES sso_providers(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_identities_provider_subject ON sso_identities(provider_id, subject);
+CREATE INDEX IF NOT EXISTS idx_sso_identities_user ON sso_identities(user_id);
+INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALUES
+('sso_enabled', 'false', '是否启用第三方登录（SSO/OIDC）', unixepoch() * 1000);
+
+-- ============ 41. SSO 来源邮箱信任 ============
+ALTER TABLE sso_providers ADD COLUMN trust_email_verified INTEGER NOT NULL DEFAULT 0;
+UPDATE sso_providers SET trust_email_verified = 1 WHERE kind IN ('google', 'github');
+
+-- ============ 42. IP 封禁与注册限流设置 ============
+CREATE TABLE IF NOT EXISTS ip_bans (
+  id TEXT PRIMARY KEY,
+  ip TEXT NOT NULL,
+  reason TEXT,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ip_bans_ip ON ip_bans(ip);
+CREATE INDEX IF NOT EXISTS idx_ip_bans_created_at ON ip_bans(created_at);
+ALTER TABLE users ADD COLUMN ban_reason TEXT;
+INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALUES
+('auth_rate_limit_per_minute', '10', '认证接口限流阈值（次/分钟；IP 与账号标识双维度；0 = 关闭该档）', unixepoch() * 1000),
+('register_success_per_hour_per_ip', '3', '每 IP 每小时注册成功数上限（0 = 关闭）', unixepoch() * 1000),
+('auto_ban_register_failures', '0', '同 IP 注册失败自动封禁阈值（0 = 关闭）', unixepoch() * 1000);
+
+-- ============ 43. TOTP 两步验证 ============
+ALTER TABLE users ADD COLUMN totp_secret_enc TEXT NULL;
+ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN totp_last_used_counter INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS totp_backup_codes (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  code_enc TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  used_at INTEGER NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_totp_backup_codes_user ON totp_backup_codes(user_id, used_at);
+
+-- ============ 44. 待验证注册 ============
+CREATE TABLE IF NOT EXISTS pending_registrations (
+  id TEXT PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
+  username TEXT NOT NULL,
+  email TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  invited_by_code_id TEXT,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_registrations_token ON pending_registrations(token);
+CREATE INDEX IF NOT EXISTS idx_pending_registrations_expires_at ON pending_registrations(expires_at);
+CREATE INDEX IF NOT EXISTS idx_pending_registrations_email ON pending_registrations(email);
+CREATE INDEX IF NOT EXISTS idx_pending_registrations_username ON pending_registrations(username);
+-- ============ 45. KV ↔ D1 混合存储回退表 ============
+CREATE TABLE IF NOT EXISTS kv_fallback (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  expires_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kv_fallback_expires_at ON kv_fallback(expires_at);
+CREATE INDEX IF NOT EXISTS idx_kv_fallback_created_at ON kv_fallback(created_at);
+
+-- ============ 46. 人机验证设置 ============
+INSERT OR IGNORE INTO system_settings (key, value, description, updated_at) VALUES
+('captcha_provider', 'turnstile', '人机验证提供方（turnstile | recaptcha）', unixepoch() * 1000),
+('captcha_enabled', 'false', '人机验证总开关', unixepoch() * 1000),
+('captcha_site_key', '', '人机验证 Site Key（公开下发）', unixepoch() * 1000),
+('captcha_secret_key', '', '人机验证 Secret Key（AES-GCM 密文，写后不回读）', unixepoch() * 1000),
+('captcha_face_login', 'false', '人机验证面：登录', unixepoch() * 1000),
+('captcha_face_register', 'false', '人机验证面：注册', unixepoch() * 1000),
+('captcha_face_share_download', 'false', '人机验证面：分享文件下载', unixepoch() * 1000),
+('captcha_face_upload', 'false', '人机验证面：上传', unixepoch() * 1000),
+('captcha_face_password_change', 'false', '人机验证面：修改密码', unixepoch() * 1000),
+('captcha_face_email_verify', 'false', '人机验证面：验证邮箱（换绑 OTP）', unixepoch() * 1000),
+('captcha_face_password_reset', 'false', '人机验证面：重置密码', unixepoch() * 1000);
+
+-- ============ 47. 目录状态与版本（增量索引与条件请求） ============
+CREATE TABLE IF NOT EXISTS directory_states (
+  mount_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  structure_hash TEXT,
+  child_count INTEGER NOT NULL DEFAULT 0,
+  file_count INTEGER NOT NULL DEFAULT 0,
+  total_size INTEGER NOT NULL DEFAULT 0,
+  last_changed_at INTEGER NOT NULL,
+  last_indexed_at INTEGER,
+  source TEXT NOT NULL DEFAULT 'application',
+  PRIMARY KEY (mount_id, path),
+  FOREIGN KEY (mount_id) REFERENCES mounts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_directory_states_changed
+  ON directory_states(mount_id, last_changed_at);
+
+-- ============ 48. 权限版本控制（ETag 权限敏感失效） ============
+CREATE TABLE IF NOT EXISTS permission_revisions (
+  scope TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO permission_revisions (scope, revision, updated_at) VALUES
+('global', 1, unixepoch() * 1000);
+
+-- ============ 49. 临时鉴权强一致状态表（SSO/一次性状态原子消费） ============
+CREATE TABLE IF NOT EXISTS auth_ephemeral_states (
+  token_hash TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  payload_cipher TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER,
+  version INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_ephemeral_states_expiry
+  ON auth_ephemeral_states(expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_auth_ephemeral_states_kind_expiry
+  ON auth_ephemeral_states(kind, expires_at);
