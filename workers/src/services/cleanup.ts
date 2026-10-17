@@ -119,29 +119,36 @@ export async function expireDueShares(env: Env): Promise<number> {
 export async function repairMovedFolderOrphans(env: Env): Promise<number> {
   const db = Db.fromAny(env.DB);
   const mounts = await MountRepo.listMounts(db);
+  if (mounts.length <= 1) return 0;
   const mountPathById: Record<string, string> = {};
   for (const m of mounts) mountPathById[m.id] = m.mountPath;
-  const rows = await db.all(
-    // 不用 `path LIKE p.path || '/%'`——p.path（目录名可含 %/_）会被当通配符误命中兄弟子树，
-    // 且 SQLite LIKE 对 ASCII 大小写不敏感；改用精确前缀切片比较（等价语义、无通配歧义）。
-    `SELECT p.id AS pid, p.path AS ppath, p.mount_id AS pmount, c.id AS cid, c.mount_id AS cmount
-     FROM file_metadata p
-     JOIN file_metadata c
-       ON c.mount_id != p.mount_id AND substr(c.path, 1, length(p.path) + 1) = p.path || '/'
-     WHERE p.type = 'folder'`
-  );
+
+  // 仅查询目录行（走 idx_file_metadata_type 覆盖索引），再针对其它挂载点利用 (mount_id, path) 索引做范围扫描。
+  // 旧实现通过 file_metadata 自连接 + substr 谓词导致每小时全表无界笛卡尔扫描（单次读 ~18.8 万行，单日烧穿免费配额）。
+  const folderRows = await db.all("SELECT id, path, mount_id FROM file_metadata WHERE type = 'folder'");
   let repaired = 0;
-  for (const row of rows) {
-    const parentPath = String(row.ppath);
-    const childMountPath = mountPathById[String(row.cmount)];
-    // 嵌套挂载点行：子行挂载点位于父文件夹路径子树内，mount_id 不同是合法结构
-    if (childMountPath && isPathWithinBoundary(childMountPath, parentPath)) continue;
-    await db.run(`UPDATE file_metadata SET mount_id = ?, updated_at = ? WHERE id = ?`, [
-      String(row.pmount),
-      Date.now(),
-      String(row.cid),
-    ]);
-    repaired++;
+  for (const p of folderRows) {
+    const parentPath = String(p.path);
+    const pmount = String(p.mount_id);
+    for (const m of mounts) {
+      if (m.id === pmount) continue;
+      // 嵌套挂载点：子行所属挂载的根路径位于父文件夹子树内，属合法结构，跳过
+      if (isPathWithinBoundary(m.mountPath, parentPath)) continue;
+      const orphans = await db.all(
+        `SELECT id FROM file_metadata
+         WHERE mount_id = ? AND path >= ? AND path < ?
+           AND substr(path, 1, length(?) + 1) = ? || '/'`,
+        [m.id, parentPath + '/', parentPath + '0', parentPath, parentPath]
+      );
+      for (const row of orphans) {
+        await db.run('UPDATE file_metadata SET mount_id = ?, updated_at = ? WHERE id = ?', [
+          pmount,
+          Date.now(),
+          String(row.id),
+        ]);
+        repaired++;
+      }
+    }
   }
   return repaired;
 }
