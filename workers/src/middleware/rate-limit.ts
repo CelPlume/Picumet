@@ -29,6 +29,8 @@ interface MemoryRateEntry {
   resetAt: number;
   /** 当前计数所属的固定窗口起点（epoch 对齐，跨 isolate 与持久层同键） */
   windowStart: number;
+  /** 本窗口是否已持久化（保证每 key/window 最多一次写） */
+  persisted?: boolean;
 }
 const memoryLimits = new Map<string, MemoryRateEntry>();
 const MAX_LIMIT_ENTRIES = 10_000;
@@ -108,16 +110,30 @@ export async function checkLimit(
   }
 
   // 每个 isolate 每个 key/window 最多写一次；热请求完全不写 KV。
-  if (!sameWindow) {
+  //
+  // 只有**安全敏感**计数（认证 / 分享密码 / 注册冷却）在窗口首个请求就持久化——
+  // 这些动作低频且必须跨 isolate 生效。通用 API 限额（ip:/user:/dl:）只是成本与滥用
+  // 控制，不是安全边界：若每个窗口都持久化，KV 免费档 1,000 写/日会在正常浏览下被
+  // 打穿（每个活跃 IP 每分钟一次写）。改为越过阈值才持久化——正常流量零写，
+  // 接近限额时才落库，跨 isolate 仍能收敛。
+  const securitySensitive = /^(auth:|sv:|svfail:|rreg:)/.test(key);
+  const persistThreshold = securitySensitive ? 1 : Math.max(2, Math.ceil(limit / 2));
+  const shouldPersist = securitySensitive || next >= persistThreshold;
+
+  const slot = memoryLimits.get(key);
+  if (slot && !slot.persisted && shouldPersist) {
+    const ttl = { expirationTtl: Math.ceil(windowMs / 1000) + 5 };
     if (store) {
       try {
-        await store.put(kv, cacheKey, String(next), { expirationTtl: Math.ceil(windowMs / 1000) + 5 });
+        await store.put(kv, cacheKey, String(next), ttl);
+        slot.persisted = true;
       } catch {
         // 存储异常时内存计数仍然生效（单 isolate 内不失效）
       }
     } else if (kv) {
       try {
-        await kv.put(cacheKey, String(next), { expirationTtl: Math.ceil(windowMs / 1000) + 5 });
+        await kv.put(cacheKey, String(next), ttl);
+        slot.persisted = true;
       } catch {
         // 忽略
       }

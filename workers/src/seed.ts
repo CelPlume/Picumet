@@ -39,7 +39,10 @@ async function ensureSeedOnce(env: Env): Promise<void> {
     // KV / fallback 表不可用时，继续用 D1 的持久化初始化标记判定。
   }
   if (marker === '1') {
-    await markSeedInitialized(db);
+    // KV 命中只作加速提示：先确认 D1 标记确实在，缺了才补写。
+    // 旧实现无条件 upsert，等价于每次 isolate 冷启动都产生一条 D1 写查询。
+    const durable = await db.first('SELECT 1 AS initialized FROM system_settings WHERE key = ? AND value = ? LIMIT 1', [SEED_SETTING_KEY, '1']);
+    if (!durable) await markSeedInitialized(db);
     return;
   }
 
