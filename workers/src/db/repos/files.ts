@@ -82,21 +82,10 @@ export const FileRepo = {
     await DirectoryStateRepo.bumpRevisions(db, dirs);
   },
   async updateFileTx(db: Db | Tx, id: string, fields: Record<string, unknown>): Promise<void> {
-    const old = await db.first('SELECT mount_id, path, type FROM file_metadata WHERE id = ?', [id]);
     const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
     if (entries.length === 0) return;
     const sets = entries.map(([k]) => `${k} = ?`).join(', ');
     await db.query(`UPDATE file_metadata SET ${sets}, updated_at = ? WHERE id = ?`, [...entries.map(([, v]) => v), Date.now(), id]);
-    if (old) {
-      const mountId = str(old.mount_id)!;
-      const path = str(old.path)!;
-      const type = str(old.type);
-      const affectedDirs: Array<{ mountId: string; path: string }> = [{ mountId, path }];
-      if (type === 'folder' && path !== '/') {
-        affectedDirs.push({ mountId, path: parentDirOf(path) });
-      }
-      await DirectoryStateRepo.bumpRevisions(db, affectedDirs);
-    }
   },
   async getFileById(db: Db, id: string): Promise<FileMetadata | null> {
     const row = await db.first('SELECT * FROM file_metadata WHERE id = ?', [id]);
@@ -127,40 +116,12 @@ export const FileRepo = {
     return row ? mapFile(row) : null;
   },
   async listChildren(db: Db, mountId: string, path: string, opts: { sortBy?: string; sortOrder?: string; search?: string; type?: string; limit?: number; offset?: number; viewerId?: string; includeTotal?: boolean }, ownerId?: string): Promise<{ rows: FileMetadata[]; total: number }> {
-    // 文件行 path = 父目录；文件夹行 path = 自身全路径 → 需额外匹配深度 1 的子文件夹
-    const base: string[] = [];
-    const params: unknown[] = [mountId];
-    if (ownerId) {
-      // 目录行为共享命名空间（所有网关密钥可见），仅文件行按属主隔离
-      base.push("(type = 'folder' OR owner_id = ?)");
-      params.push(ownerId);
-    }
-    // 子文件夹前缀匹配：目录名可含 %/_。改写为范围 + substr 谓词（LAB F-04：D1 LIKE
-    // 模式 50 字符上限会让深路径目录列表 500；范围/substr 无长度限制且天然免疫通配符）
-    if (opts.type) {
-      if (opts.type === 'file') {
-        base.push("type = 'file' AND path = ?");
-        params.push(path);
-      } else if (opts.type === 'folder') {
-        const cfm = childFolderMatch('path', path);
-        base.push(`type = 'folder' AND ${cfm.sql}`);
-        params.push(...cfm.params);
-      }
-    } else {
-      const cfm = childFolderMatch('path', path);
-      base.push(`(type = 'file' AND path = ?) OR (type = 'folder' AND ${cfm.sql})`);
-      params.push(path, ...cfm.params);
-    }
-    if (opts.search) {
-      base.push('instr(name, ?) > 0');
-      params.push(opts.search);
-    }
-    if (opts.viewerId) {
-      // §4.4a：非管理员看不到他人的 private 项（文件夹与文件同一条件，owner/admin 可见）
-      base.push("(visibility <> 'private' OR owner_id = ?)");
-      params.push(opts.viewerId);
-    }
-    const whereSql = base.map((b) => `(${b})`).join(' AND ');
+    // 文件行 path = 父目录；文件夹行 path = 自身全路径 → 需额外匹配深度 1 的子文件夹。
+    //
+    // 两个分支用 UNION ALL 而不是 `A OR B`：OR 会让 SQLite 退化成「按 mount 前缀扫描 +
+    // 临时 B 树排序」，读行数=整个挂载点（1 万文件的挂载点，读一个 10 文件的子目录也要
+    // 扫 1 万行）。拆开后两分支都走 idx_file_metadata_listing(mount_id, type, path)：
+    // 文件分支三列等值、目录分支两列等值 + path 范围，读行数=本目录自身子项数。
     const sortMap: Record<string, string> = {
       name: 'name',
       time: 'updated_at',
@@ -172,10 +133,48 @@ export const FileRepo = {
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
     const includeTotal = opts.includeTotal !== false;
-    // 主文件页需要精确 total；预览、协议列表等只消费 rows，跳过 COUNT(*) OVER ()，
-    // 避免为返回 4/100 行而扫描整个目录。
+
+    // 分支共享的过滤条件（search / 可见性）；owner 只作用于文件行（目录行是共享命名空间）
+    const shared: string[] = [];
+    const sharedParams: unknown[] = [];
+    if (opts.search) {
+      shared.push('instr(name, ?) > 0');
+      sharedParams.push(opts.search);
+    }
+    if (opts.viewerId) {
+      // §4.4a：非管理员看不到他人的 private 项（文件夹与文件同一条件，owner/admin 可见）
+      shared.push('(visibility <> \'private\' OR owner_id = ?)');
+      sharedParams.push(opts.viewerId);
+    }
+    const fileConds = ["type = 'file'", 'path = ?', ...shared];
+    const fileParams: unknown[] = [path, ...sharedParams];
+    if (ownerId) {
+      fileConds.push('owner_id = ?');
+      fileParams.push(ownerId);
+    }
+
+    const branches: Array<{ sql: string; params: unknown[] }> = [];
+    if (!opts.type || opts.type === 'file') {
+      branches.push({
+        sql: `SELECT * FROM file_metadata WHERE mount_id = ? AND ${fileConds.join(' AND ')}`,
+        params: [mountId, ...fileParams],
+      });
+    }
+    if (!opts.type || opts.type === 'folder') {
+      // 子文件夹前缀匹配：目录名可含 %/_。范围 + substr 谓词（LAB F-04：D1 LIKE 模式长度上限）。
+      const cfm = childFolderMatch('path', path);
+      const folderConds = ["type = 'folder'", cfm.sql, ...shared];
+      branches.push({
+        sql: `SELECT * FROM file_metadata WHERE mount_id = ? AND ${folderConds.join(' AND ')}`,
+        params: [mountId, ...cfm.params, ...sharedParams],
+      });
+    }
+
+    const unionSql = branches.map((b) => b.sql).join(' UNION ALL ');
+    const params = branches.flatMap((b) => b.params);
+    // 主文件页需要精确 total；预览、协议列表等只消费 rows，跳过 COUNT(*) OVER ()。
     const rowsRaw = await db.all(
-      `SELECT ${includeTotal ? '*, COUNT(*) OVER () AS total_count' : '*'} FROM file_metadata WHERE mount_id = ? AND ${whereSql}
+      `SELECT ${includeTotal ? '*, COUNT(*) OVER () AS total_count' : '*'} FROM (${unionSql})
        ORDER BY type = 'folder' DESC, ${sortCol} ${order}, name ASC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
@@ -183,6 +182,7 @@ export const FileRepo = {
     const total = includeTotal ? (rowsRaw.length > 0 ? num((rowsRaw[0] as Record<string, unknown>).total_count) : 0) : rowsRaw.length;
     return { rows: rowsRaw.map(mapFile), total };
   },
+
   /** 列出某路径下所有子项（含子文件夹，递归），用于文件夹删除/移动；ownerId 传入时限定属主 */
   async listDescendants(db: Db, mountId: string, path: string, ownerId?: string): Promise<FileMetadata[]> {
     // 目录名可含 %/_；前缀子树用范围 + substr 谓词（LAB F-04，无 LIKE 长度上限）
@@ -260,9 +260,6 @@ export const FileRepo = {
   },
   async updateVersion(db: Db, id: string): Promise<void> {
     await db.run(`UPDATE file_metadata SET version = version + 1, updated_at = ? WHERE id = ?`, [Date.now(), id]);
-  },
-  async deleteFileById(db: Db | Tx, id: string): Promise<void> {
-    await db.query('DELETE FROM file_metadata WHERE id = ?', [id]);
   },
   async deleteByPath(db: Db | Tx, mountId: string, path: string): Promise<FileMetadata[]> {
     // 子树谓词与 listDescendants / operations 一致（范围 + substr，无 LIKE 模式长度上限）

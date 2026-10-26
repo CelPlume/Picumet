@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_metadata_mount_path ON file_metadata(mount_id, path);
+CREATE INDEX IF NOT EXISTS idx_file_metadata_listing ON file_metadata(mount_id, type, path);
 CREATE INDEX IF NOT EXISTS idx_file_metadata_owner_id ON file_metadata(owner_id);
 CREATE INDEX IF NOT EXISTS idx_file_metadata_name ON file_metadata(name);
 CREATE INDEX IF NOT EXISTS idx_file_metadata_type ON file_metadata(type);

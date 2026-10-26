@@ -8,7 +8,7 @@
 // 分片上传（上传会话 multipart）不经过这里：分片直传存储商，物理键仍为虚拟路径键（blob_hash 为空）。
 import type { Context } from 'hono';
 import type { Mount, StorageProvider } from '@shared/types';
-import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo, ReservationRepo } from '../../db';
+import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo, ReservationRepo, DirectoryStateRepo } from '../../db';
 import type { Db, Tx } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requestIp } from '../../utils/ip';
@@ -270,6 +270,11 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
           provider_id: outcome.providerId,
           ...(legacyCleanup ? { source_cleanup_pending: 1, old_object_key: oldPhysicalKey } : {}),
         });
+        // 目录 revision：覆盖写可能换目录（旧父目录少一项、新父目录多一项）
+        await DirectoryStateRepo.bumpRevisions(tx, [
+          { mountId: existing.mountId, path: existing.path },
+          { mountId: opts.mount.id, path: parentPath },
+        ]);
         // 旧内容引用释放：同一批内判定「最后一个引用」，归零则入回收队列
         if (existing.blobHash && existing.blobHash !== outcome.hash) {
           await BlobRepo.releaseTx(tx, existing.blobHash, now);

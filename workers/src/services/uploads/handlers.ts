@@ -1,7 +1,7 @@
 // 上传路由：单文件 + 分片 + Worker 代理上传 + 完成校验（防伪造）
 import { Hono } from 'hono';
 import type { AppBindings } from '../../shared/types';
-import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, MountProviderQuotaRepo, ReconciliationRepo, BlobRepo, isActionLoggable } from '../../db';
+import { SessionRepo, QuotaRepo, FileRepo, LogRepo, MountRepo, MountQuotaRepo, MountProviderQuotaRepo, ReconciliationRepo, BlobRepo, DirectoryStateRepo, isActionLoggable } from '../../db';
 import type { Db } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, getPrincipal } from '../permissions/principal';
@@ -548,6 +548,11 @@ uploadRoutes.post('/upload-complete', async (c) => {
           provider_id: session.providerId ?? mount.providerId,
           ...(legacyCleanup ? { source_cleanup_pending: 1, old_object_key: oldPhysicalKey } : {}),
         });
+        // 目录 revision：覆盖完成后父目录内容变化（同目录覆盖也需失效前端缓存）
+        await DirectoryStateRepo.bumpRevisions(tx, [
+          { mountId: existing.mountId, path: existing.path },
+          { mountId: session.mountId, path: session.path },
+        ]);
         if (existing.blobHash && existing.blobHash !== (session.blobHash ?? null)) {
           await BlobRepo.releaseTx(tx, existing.blobHash, now);
         }
