@@ -65,8 +65,19 @@ describe('目录 Revision 与 ETag 条件请求', () => {
     const etag = res.headers.get('ETag');
     expect(etag).toBe(body.data.etag);
 
-    // 带 If-None-Match 请求
-    const condRes = await request(ctx, '/api/files?path=/', {
+    // 默认（未声明 conditional）即便带 If-None-Match 也必须回完整数据：
+    // 浏览器 HTTP 缓存再验证会自动带该头，回空 items 会让前端把目录覆盖成空列表。
+    const plainRes = await request(ctx, '/api/files?path=/', {
+      cookie,
+      headers: { 'If-None-Match': body.data.etag },
+    });
+    expect(plainRes.status).toBe(200);
+    const plainBody = await json<{ data: { notModified?: boolean; items: FileListItem[] } }>(plainRes);
+    expect(plainBody.data.notModified).toBeUndefined();
+    expect(Array.isArray(plainBody.data.items)).toBe(true);
+
+    // 显式声明条件请求 -> 命中 ETag 回轻量 notModified
+    const condRes = await request(ctx, '/api/files?path=/&conditional=1', {
       cookie,
       headers: {
         'If-None-Match': body.data.etag,
@@ -111,7 +122,7 @@ describe('目录 Revision 与 ETag 条件请求', () => {
     expect(body.data.etag).toBeDefined();
 
     // 命中 ETag
-    const condRes = await request(ctx, '/api/files/directories?path=/', {
+    const condRes = await request(ctx, '/api/files/directories?path=/&conditional=1', {
       cookie,
       headers: {
         'If-None-Match': body.data.etag,
@@ -120,5 +131,30 @@ describe('目录 Revision 与 ETag 条件请求', () => {
     expect(condRes.status).toBe(200);
     const condBody = await json<{ data: { notModified?: boolean } }>(condRes);
     expect(condBody.data.notModified).toBe(true);
+  });
+});
+
+// 回归：版本表缺失（存量库未补齐迁移）时，文件列表这类核心读取路径**不得** 500。
+// revision 只服务缓存失效与 ETag，属优化项；读不到就降级为常量版本。
+describe('版本表缺失时的降级行为', () => {
+  it('/api/files 与 /api/files/directories 在 directory_states / permission_revisions 缺失时仍返回 200', async () => {
+    const localCtx = createTestContext();
+    await initSeeded(localCtx);
+    const auth = await registerAndLogin(localCtx, 'norev_user');
+    const localCookie = auth.authCookie;
+
+    localCtx.db.exec('DROP TABLE IF EXISTS directory_states');
+    localCtx.db.exec('DROP TABLE IF EXISTS permission_revisions');
+
+    const list = await request(localCtx, '/api/files?path=/', { cookie: localCookie });
+    expect(list.status).toBe(200);
+    const listBody = await json<{ data: { revision: number; etag: string } }>(list);
+    expect(listBody.data.revision).toBe(1);
+    expect(listBody.data.etag).toMatch(/^W\/"[a-f0-9]{24}"$/);
+
+    const dirs = await request(localCtx, '/api/files/directories?path=/', { cookie: localCookie });
+    expect(dirs.status).toBe(200);
+    const dirsBody = await json<{ data: { revision: number } }>(dirs);
+    expect(dirsBody.data.revision).toBe(1);
   });
 });

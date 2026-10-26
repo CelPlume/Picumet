@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { AppBindings } from '../../shared/types';
 import type { FileMetadata, Mount } from '@shared/types';
 import type { FileListItem } from '@shared/types';
-import { FileRepo, MountRepo, ProviderRepo, LogRepo, BlobRepo, SettingsRepo, DirectoryStateRepo, PermissionRevisionRepo } from '../../db';
+import { FileRepo, MountRepo, ProviderRepo, LogRepo, BlobRepo, SettingsRepo } from '../../db';
 import { getDb } from '../../middleware/auth';
 import { requirePermission, can, getPrincipal } from '../permissions/principal';
 import { isPasswordExempt, checkPermission } from '../permissions/check';
@@ -27,6 +27,7 @@ import {
 import { hashPassword, verifyPassword, signPath, sha256Hex } from '../../utils/crypto';
 import { clientIp, requestIp } from '../../utils/ip';
 import { toFileListItem } from '../../db/repos/files';
+import { safeDirectoryRevision, safePermissionRevision } from './revision';
 import { assertNotBanned } from './ban';
 import { assertWritable, assertFolderCreateAllowed } from './upload-mode';
 import type { Env } from '../../shared/types';
@@ -127,16 +128,19 @@ filesRoutes.get('/', async (c) => {
     viewerId,
   });
 
-  const dirState = await DirectoryStateRepo.get(db, mount.id, targetPath);
-  const dirRevision = dirState?.revision ?? 1;
-  const permRevision = await PermissionRevisionRepo.get(db);
+  const dirRevision = await safeDirectoryRevision(db, mount.id, targetPath);
+  const permRevision = await safePermissionRevision(db);
   const etagRaw = `${mount.id}:${targetPath}:${dirRevision}:${permRevision}:${c.get('userRole') ?? 'anon'}:${c.get('userId') ?? 'anon'}:${page}:${limit}:${sortBy}:${sortOrder}:${q.search ?? ''}:${typeFilter ?? ''}`;
   const etagHash = await sha256Hex(etagRaw);
   const etag = `W/"${etagHash.slice(0, 24)}"`;
   c.header('ETag', etag);
   c.header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120');
 
-  const ifNoneMatch = c.req.header('if-none-match');
+  // 条件请求必须由客户端显式声明（?conditional=1）：浏览器对带 max-age 的 GET 会自动
+  // 携带 If-None-Match 做缓存再验证，此时若回 notModified 轻量响应，前端 React Query
+  // 会用空 items 覆盖已有列表，表现为「目录突然空了」。默认一律回完整数据。
+  const wantsConditional = c.req.query('conditional') === '1';
+  const ifNoneMatch = wantsConditional ? c.req.header('if-none-match') : null;
   if (ifNoneMatch && ifNoneMatch === etag) {
     return ok(c, {
       notModified: true,
@@ -240,16 +244,19 @@ filesRoutes.get('/directories', async (c) => {
 
   await requirePermission(c, mount, targetPath, 'read');
   const viewerId = c.get('userRole') === 'admin' ? undefined : c.get('userId');
-  const dirState = await DirectoryStateRepo.get(db, mount.id, targetPath);
-  const dirRevision = dirState?.revision ?? 1;
-  const permRevision = await PermissionRevisionRepo.get(db);
+  const dirRevision = await safeDirectoryRevision(db, mount.id, targetPath);
+  const permRevision = await safePermissionRevision(db);
   const etagRaw = `dirs:${mount.id}:${targetPath}:${dirRevision}:${permRevision}:${c.get('userRole') ?? 'anon'}:${c.get('userId') ?? 'anon'}`;
   const etagHash = await sha256Hex(etagRaw);
   const etag = `W/"${etagHash.slice(0, 24)}"`;
   c.header('ETag', etag);
   c.header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120');
 
-  const ifNoneMatch = c.req.header('if-none-match');
+  // 条件请求必须由客户端显式声明（?conditional=1）：浏览器对带 max-age 的 GET 会自动
+  // 携带 If-None-Match 做缓存再验证，此时若回 notModified 轻量响应，前端 React Query
+  // 会用空 items 覆盖已有列表，表现为「目录突然空了」。默认一律回完整数据。
+  const wantsConditional = c.req.query('conditional') === '1';
+  const ifNoneMatch = wantsConditional ? c.req.header('if-none-match') : null;
   if (ifNoneMatch && ifNoneMatch === etag) {
     return ok(c, { notModified: true, revision: dirRevision, etag, items: [] });
   }
@@ -278,16 +285,19 @@ filesRoutes.get('/tree/children', async (c) => {
 
   await requirePermission(c, mount, targetPath, 'read');
   const viewerId = c.get('userRole') === 'admin' ? undefined : c.get('userId');
-  const dirState = await DirectoryStateRepo.get(db, mount.id, targetPath);
-  const dirRevision = dirState?.revision ?? 1;
-  const permRevision = await PermissionRevisionRepo.get(db);
+  const dirRevision = await safeDirectoryRevision(db, mount.id, targetPath);
+  const permRevision = await safePermissionRevision(db);
   const etagRaw = `tree-node:${mount.id}:${targetPath}:${dirRevision}:${permRevision}:${c.get('userRole') ?? 'anon'}:${c.get('userId') ?? 'anon'}`;
   const etagHash = await sha256Hex(etagRaw);
   const etag = `W/"${etagHash.slice(0, 24)}"`;
   c.header('ETag', etag);
   c.header('Cache-Control', 'private, max-age=60, stale-while-revalidate=120');
 
-  const ifNoneMatch = c.req.header('if-none-match');
+  // 条件请求必须由客户端显式声明（?conditional=1）：浏览器对带 max-age 的 GET 会自动
+  // 携带 If-None-Match 做缓存再验证，此时若回 notModified 轻量响应，前端 React Query
+  // 会用空 items 覆盖已有列表，表现为「目录突然空了」。默认一律回完整数据。
+  const wantsConditional = c.req.query('conditional') === '1';
+  const ifNoneMatch = wantsConditional ? c.req.header('if-none-match') : null;
   if (ifNoneMatch && ifNoneMatch === etag) {
     return ok(c, { notModified: true, revision: dirRevision, etag, items: [] });
   }
