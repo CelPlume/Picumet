@@ -7,7 +7,7 @@
 //   2. 未知哈希：暂存键 + 流式哈希 → 命中删除暂存，未命中复制到内容键后删除暂存。
 // 分片上传（上传会话 multipart）不经过这里：分片直传存储商，物理键仍为虚拟路径键（blob_hash 为空）。
 import type { Context } from 'hono';
-import type { Mount, StorageProvider } from '@shared/types';
+import type { GuestVisibility, Mount, StorageProvider } from '@shared/types';
 import { BlobRepo, FileRepo, QuotaRepo, ReconciliationRepo, MountQuotaRepo, MountProviderQuotaRepo, ProviderRepo, ReservationRepo, DirectoryStateRepo } from '../../db';
 import type { Db, Tx } from '../../db';
 import { getDb } from '../../middleware/auth';
@@ -110,6 +110,12 @@ export interface UpsertFileOpts {
   ensureParents?: boolean;
   /** §F 已知内容 SHA-256（调用方已对整包做过校验，如 S3 网关 SigV4 载荷哈希） */
   contentHash?: string;
+  /**
+   * 显式对象级游客可见性（S3 网关 `x-amz-acl` / PutObjectAcl 的落库形态）：
+   * 缺省 = 继承最近祖先目录的 guest_visibility（§C）；显式值覆盖继承。
+   * 'public-read' 映射 'view'（匿名可读+下载）、'private' 映射 'none'（显式拒绝匿名）。
+   */
+  guestVisibility?: GuestVisibility;
 }
 
 export interface UpsertFileResult {
@@ -269,6 +275,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
           path: parentPath,
           provider_id: outcome.providerId,
           ...(legacyCleanup ? { source_cleanup_pending: 1, old_object_key: oldPhysicalKey } : {}),
+          ...(opts.guestVisibility !== undefined ? { guest_visibility: opts.guestVisibility } : {}),
         });
         // 目录 revision：覆盖写可能换目录（旧父目录少一项、新父目录多一项）
         await DirectoryStateRepo.bumpRevisions(tx, [
@@ -292,7 +299,7 @@ export async function upsertFileObject(c: Context, opts: UpsertFileOpts): Promis
           id: fileId, mountId: opts.mount.id, objectKey, path: parentPath, name: fileName,
           type: 'file', mimeType, size: finalSize, etag: outcome.etag, ownerId: userId,
           providerId: outcome.providerId, physicalKey: outcome.objectKey, blobHash: outcome.hash,
-          guestVisibility: await inheritGuestVisibility(db, opts.mount.id, parentPath),
+          guestVisibility: opts.guestVisibility ?? (await inheritGuestVisibility(db, opts.mount.id, parentPath)),
         });
         await tx.query(
           `UPDATE user_quotas SET used_storage = used_storage + ?, quota_reserved = MAX(0, quota_reserved - ?), used_files = used_files + 1, updated_at = ? WHERE user_id = ?`,

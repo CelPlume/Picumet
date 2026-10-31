@@ -75,6 +75,39 @@ const SIGV4_ERROR_STATUS: Record<SigV4ErrorCode, { status: number; code: string 
   NotImplemented: { status: 501, code: 'NotImplemented' },
 };
 
+// ============ 对象级 ACL（x-amz-acl ↔ guest_visibility） ============
+// 平台语义：匿名读放行由「桶级/目录级 guest_visibility + 站点允许访客」决定（合成游客规则），
+// 对象级 ACL 映射为**行级 guest_visibility 覆盖**——同一套判定链，不引入第二套授权模型。
+// public-read → 'view'（匿名可读+下载）；private → 'none'（显式拒绝匿名）；
+// authenticated-read / bucket-owner-full-control 等只涉及 S3 账号语义 → 忽略（保持继承）。
+const ACL_TO_GUEST: Record<string, 'view' | 'none'> = {
+  'public-read': 'view',
+  private: 'none',
+};
+
+function aclHeaderToGuest(header: string | null | undefined): 'view' | 'none' | undefined {
+  const v = (header ?? '').trim().toLowerCase();
+  return ACL_TO_GUEST[v];
+}
+
+/** PutObjectAcl 的 XML 请求体 → 游客可见性（只有 AllUsers+READ 视为公开） */
+function aclBodyToGuest(xml: string): 'view' | 'none' {
+  const hasAllUsers = xml.includes('http://acs.amazonaws.com/groups/global/AllUsers');
+  const hasRead = /<Permission>\s*READ\s*<\/Permission>/.test(xml);
+  return hasAllUsers && hasRead ? 'view' : 'none';
+}
+
+/** GetObjectAcl XML：属主 FULL_CONTROL；guest_visibility 允许匿名时追加 AllUsers READ */
+function aclPolicyXml(ownerId: string, guest: string | null): string {
+  const grantee = (id: string) =>
+    `<Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser"><ID>${escapeXml(id)}</ID></Grantee>`;
+  const publicRead = guest === 'view' || guest === 'download';
+  const publicGrant = publicRead
+    ? '<Grant><Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Group"><URI>http://acs.amazonaws.com/groups/global/AllUsers</URI></Grantee><Permission>READ</Permission></Grant>'
+    : '';
+  return `${XML_HEADER}<AccessControlPolicy xmlns="${XMLNS}"><Owner><ID>${escapeXml(ownerId)}</ID></Owner><AccessControlList><Grant>${grantee(ownerId)}<Permission>FULL_CONTROL</Permission></Grant>${publicGrant}</AccessControlList></AccessControlPolicy>`;
+}
+
 // ============ 认证中间件 ============
 
 /** 业务异常 → S3 XML（根路径与 /s3 挂载同语义；未映射错误交全局兜底） */
@@ -322,6 +355,10 @@ s3gwRoutes.put('*', async (c) => {
   if (c.req.header('x-amz-copy-source')) {
     return s3ErrorResponse(501, 'NotImplemented', 'CopyObject 暂未实现（上传/下载/列举不受影响）', c.req.path);
   }
+  // PutObjectAcl（PUT /{bucket}/{key}?acl）：对象级 ACL 落为行级 guest_visibility 覆盖
+  if (c.req.query('acl') !== undefined) {
+    return putObjectAcl(c, db, bucket, key);
+  }
   const virtualPath = normalizePath(`/${bucket}/${key}`);
   const denied = assertKeyScope(apiKey, virtualPath, true);
   if (denied) return denied;
@@ -371,6 +408,8 @@ s3gwRoutes.put('*', async (c) => {
     via: 's3',
     metadata,
     contentHash,
+    // x-amz-acl：public-read/private 映射为对象级 guest_visibility（其余值保持目录继承）
+    guestVisibility: aclHeaderToGuest(c.req.header('x-amz-acl')),
   });
   return new Response(null, {
     status: 200,
@@ -394,7 +433,19 @@ s3gwRoutes.get('*', async (c) => {
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (key === '' && c.req.query('acl') !== undefined) {
+      // GetBucketAcl：桶级 ACL 由挂载/目录的游客可见性派生（匿名读开放 = AllUsers READ）
+      const apiKey = c.get('apiKey')!;
+      const bucketPath = normalizePath(`/${bucket}`);
+      const resolvedBucket = await resolveMountAndProvider(c, getDb(c), bucketPath);
+      if (resolvedBucket instanceof Response) return resolvedBucket;
+      const folderRow = await FileRepo.getFileAtPath(getDb(c), resolvedBucket.mount.id, bucketPath, bucket);
+      return s3XmlResponse(200, aclPolicyXml(apiKey.userId, folderRow?.guestVisibility ?? null));
+    }
     return listObjectsV2(c, bucket);
+  }
+  if (c.req.query('acl') !== undefined) {
+    return getObjectAcl(c, bucket, key);
   }
   return getObjectOrHead(c, bucket, key, false);
 });
@@ -407,6 +458,63 @@ s3gwRoutes.on(['HEAD'], '*', async (c) => {
   if (!key) return bucketExists(c, bucket);
   return getObjectOrHead(c, bucket, key, true);
 });
+
+// ============ 对象级 ACL 端点 ============
+
+/** GetObjectAcl（GET /{bucket}/{key}?acl）：基于 guest_visibility 派生 ACL 策略 */
+async function getObjectAcl(c: Ctx, bucket: string, key: string): Promise<Response> {
+  const db = getDb(c);
+  const apiKey = c.get('apiKey')!;
+  const virtualPath = normalizePath(`/${bucket}/${key}`);
+  const scopeDenied = assertKeyScope(apiKey, virtualPath, true);
+  if (scopeDenied) return scopeDenied;
+  const resolved = await resolveMountAndProvider(c, db, virtualPath);
+  if (resolved instanceof Response) return resolved;
+  const { mount } = resolved;
+  const segs = virtualPath.split('/').filter(Boolean);
+  const name = segs.pop()!;
+  const parent = '/' + segs.join('/');
+  const file = await FileRepo.getFileAtPath(db, mount.id, parent, name, apiKey.userId);
+  if (!file || file.type === 'folder') {
+    return s3ErrorResponse(404, 'NoSuchKey', '对象不存在', virtualPath);
+  }
+  return s3XmlResponse(200, aclPolicyXml(apiKey.userId, file.guestVisibility));
+}
+
+/** PutObjectAcl（PUT /{bucket}/{key}?acl）：头优先，其次 XML body；落为行级 guest_visibility */
+async function putObjectAcl(c: Ctx, db: ReturnType<typeof getDb>, bucket: string, key: string): Promise<Response> {
+  const apiKey = c.get('apiKey')!;
+  const virtualPath = normalizePath(`/${bucket}/${key}`);
+  const scopeDenied = assertKeyScope(apiKey, virtualPath, true);
+  if (scopeDenied) return scopeDenied;
+  const resolved = await resolveMountAndProvider(c, db, virtualPath);
+  if (resolved instanceof Response) return resolved;
+  const { mount } = resolved;
+  const segs = virtualPath.split('/').filter(Boolean);
+  const name = segs.pop()!;
+  const parent = '/' + segs.join('/');
+  const file = await FileRepo.getFileAtPath(db, mount.id, parent, name, apiKey.userId);
+  if (!file || file.type === 'folder') {
+    return s3ErrorResponse(404, 'NoSuchKey', '对象不存在', virtualPath);
+  }
+  // 写权限与 PutObject 同口径（改 ACL 是写动作）
+  const guard = await guardPermission(c, mount, virtualPath, 'write', file.ownerId, file.providerId);
+  if (guard) return guard;
+
+  const headerAcl = c.req.header('x-amz-acl');
+  let guest: 'view' | 'none';
+  if (headerAcl !== null && headerAcl !== undefined) {
+    const mapped = aclHeaderToGuest(headerAcl);
+    // 未映射的 S3 账号语义 ACL（authenticated-read 等）→ 保持现状，不落库
+    if (!mapped) return new Response(null, { status: 200 });
+    guest = mapped;
+  } else {
+    const body = await c.req.text().catch(() => '');
+    guest = aclBodyToGuest(body);
+  }
+  await FileRepo.updateFileTx(db, file.id, { guest_visibility: guest });
+  return new Response(null, { status: 200 });
+}
 
 async function getObjectOrHead(c: Ctx, bucket: string, key: string, head: boolean): Promise<Response> {
   const db = getDb(c);

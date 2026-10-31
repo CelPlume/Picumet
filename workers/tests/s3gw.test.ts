@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import { createHash, createHmac } from 'node:crypto';
 import {
-  S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand,
+  S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, GetObjectAclCommand, PutObjectAclCommand,
   DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command, ListBucketsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -12,6 +12,7 @@ import {
   createTestContext, initSeeded, request, json, registerAndLogin, getCsrf, grantApiKeyRule,
   type TestContext,
 } from './helpers';
+import { invalidateSettingsCache } from '../src/db/repos/system';
 
 let ctx: TestContext;
 let server: http.Server;
@@ -299,5 +300,86 @@ describe('S3 根路径入口（MinIO 式，无 /s3 前缀）', () => {
     // S3 匿名错误形如 <Error><Code>AccessDenied</Code>…匿名访问被拒绝 —— 不应出现
     expect(text).not.toContain('匿名访问被拒绝');
     expect(res.headers.get('content-type')).not.toContain('xml');
+  });
+});
+
+// 对象级 ACL：x-amz-acl / ?acl 子资源映射为行级 guest_visibility（平台语义：匿名读仍由
+// guest_visibility + 站点「允许访客」决定，不引入第二套授权模型）
+describe('对象级 ACL（x-amz-acl ↔ guest_visibility）', () => {
+  const enableGuest = (): void => {
+    ctx.db.prepare(`UPDATE system_settings SET value = 'true' WHERE key = 'allow_guest_access'`).run();
+    invalidateSettingsCache();
+  };
+
+  it('PutObject 带 public-read → 行级 view，匿名 GET 直链 200；private → none 拒绝', async () => {
+    enableGuest();
+    const { client } = await createS3Key('s3gwacl');
+    const put = await client.send(
+      new PutObjectCommand({ Bucket: 'uploads', Key: 'acl/pub.txt', Body: 'acl-public', ACL: 'public-read' })
+    );
+    expect(put.$metadata.httpStatusCode).toBe(200);
+    const row = ctx.db
+      .prepare(`SELECT guest_visibility FROM file_metadata WHERE path = '/uploads/acl' AND name = 'pub.txt'`)
+      .get() as { guest_visibility: string | null };
+    expect(row.guest_visibility).toBe('view');
+
+    // 匿名直链（path-serve，非网关）：/uploads/acl/pub.txt
+    const anon = await fetch(`http://127.0.0.1:${port}/uploads/acl/pub.txt`);
+    expect(anon.status).toBe(200);
+    expect(await anon.text()).toBe('acl-public');
+
+    // private 覆盖同一对象 → 匿名 403
+    await client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'acl/pub.txt', Body: 'acl-private', ACL: 'private' }));
+    const row2 = ctx.db
+      .prepare(`SELECT guest_visibility FROM file_metadata WHERE path = '/uploads/acl' AND name = 'pub.txt'`)
+      .get() as { guest_visibility: string | null };
+    expect(row2.guest_visibility).toBe('none');
+    const anon2 = await fetch(`http://127.0.0.1:${port}/uploads/acl/pub.txt`);
+    expect(anon2.status).toBe(403);
+    client.destroy();
+  });
+
+  it('无 ACL 头 → 保持目录继承（祖先 view 时匿名可读）；GetObjectAcl 返回派生的 AllUsers READ', async () => {
+    enableGuest();
+    const { client } = await createS3Key('s3gwaclinherit');
+    // 祖先目录设 view（模拟管理端「游客查看+下载」）
+    await client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'inherit/seed.txt', Body: 'seed' }));
+    ctx.db.prepare(`UPDATE file_metadata SET guest_visibility = 'view' WHERE path = '/uploads/inherit' AND type = 'folder'`).run();
+    await client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'inherit/child.txt', Body: 'inherited' }));
+    const row = ctx.db
+      .prepare(`SELECT guest_visibility FROM file_metadata WHERE path = '/uploads/inherit' AND name = 'child.txt'`)
+      .get() as { guest_visibility: string | null };
+    expect(row.guest_visibility).toBe('view');
+    const anon = await fetch(`http://127.0.0.1:${port}/uploads/inherit/child.txt`);
+    expect(anon.status).toBe(200);
+
+    const acl = await client.send(new GetObjectAclCommand({ Bucket: 'uploads', Key: 'inherit/child.txt' }));
+    expect(acl.$metadata.httpStatusCode).toBe(200);
+    const grants = acl.Grants ?? [];
+    expect(grants.some((g) => g.Grantee?.URI?.includes('AllUsers') && g.Permission === 'READ')).toBe(true);
+    expect(grants.some((g) => g.Permission === 'FULL_CONTROL')).toBe(true);
+    client.destroy();
+  });
+
+  it('PutObjectAcl（?acl，头与 XML）改可见性，之后匿名读放行/拒绝随之变化', async () => {
+    enableGuest();
+    const { client } = await createS3Key('s3gwaclput');
+    await client.send(new PutObjectCommand({ Bucket: 'uploads', Key: 'aclput/a.txt', Body: 'acl-put' }));
+
+    await client.send(new PutObjectAclCommand({ Bucket: 'uploads', Key: 'aclput/a.txt', ACL: 'public-read' }));
+    expect((await fetch(`http://127.0.0.1:${port}/uploads/aclput/a.txt`)).status).toBe(200);
+
+    await client.send(
+      new PutObjectAclCommand({
+        Bucket: 'uploads',
+        Key: 'aclput/a.txt',
+        AccessControlPolicy: {
+          Owner: { ID: 'x' },
+          Grants: [{ Grantee: { Type: 'CanonicalUser', ID: 'x' }, Permission: 'FULL_CONTROL' }],
+        },
+      })
+    );
+    expect((await fetch(`http://127.0.0.1:${port}/uploads/aclput/a.txt`)).status).toBe(403);
+    client.destroy();
   });
 });
